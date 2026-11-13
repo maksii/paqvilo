@@ -17,7 +17,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const USER = '77777777-7777-4777-8777-0000000000c1';
 const STEP = '30000000-0000-4000-8000-0000000000c1';
@@ -45,7 +45,7 @@ test(
   async (t) => {
     const sdkAssembly = clrSdk(),
       root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-trace-clr-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
     await fs.writeFile(path.join(root, 'NoteWriter.cs'), SOURCE);
     compileClr(path.join(root, 'NoteWriter.cs'), path.join(root, 'NoteWriter.dll'), {
       references: [sdkAssembly, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'],
@@ -144,7 +144,7 @@ test(
   async (t) => {
     const sdkAssembly = clrSdk(),
       root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-trace-clr-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
     await fs.writeFile(path.join(root, 'Context.cs'), CONTEXT_SOURCE);
     compileClr(path.join(root, 'Context.cs'), path.join(root, 'Context.dll'), {
       references: [sdkAssembly, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'],

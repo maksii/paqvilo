@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's browser-native date fallback is its own designed runtime behaviour (UserLocal storage)
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -19,11 +20,11 @@ test('browser date fallback builds the native picker group from the bound box an
     </body></html>`);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ timezoneId: 'UTC' });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -87,11 +88,11 @@ test('browser date fallback shows UserLocal values in the browser time zone and 
     </body></html>`);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ timezoneId: 'Europe/Berlin' });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

@@ -10,7 +10,7 @@ import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/pl
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { builtInKey } from '../lib/dataverse-elastic.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-4000-8000-000000000001',
   id = '20000000-0000-4000-8000-000000000001',
@@ -144,7 +144,7 @@ test(
   async (t) => {
     const sdk = clrSdk(),
       root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-elastic-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => removeFixtureDirectory(root));
     const source = path.join(root, 'Elastic.cs'),
       assembly = path.join(root, 'Elastic.dll');
     await fs.writeFile(

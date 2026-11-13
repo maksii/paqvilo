@@ -19,7 +19,7 @@ import { runtimeConstructorSettings, stepConstructorSettings } from '../lib/plug
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
@@ -63,7 +63,7 @@ for (const format of ['xml', 'zip'])
   test(`${format} constructor inputs survive persistent and process-shared scan caches without entering cache JSON`, async (t) => {
     settleFileTimes(t);
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-config-cache-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => removeFixtureDirectory(root));
     const source = path.join(root, format === 'xml' ? 'customizations.xml' : 'Invented.zip');
     await fs.writeFile(
       source,
@@ -206,7 +206,7 @@ test(
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-constructor-config-'));
     let backend;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await backend?.close();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

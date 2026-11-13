@@ -2,13 +2,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { openCdpTabDriver } from '../parity-suite.mjs';
 import { devToolsActivePort, openResumingClient } from './shared-browser.mjs';
 
@@ -67,12 +66,12 @@ function recordingHandler(writes, respond) {
 async function openDriver(t, directory, reference, frame, options = {}) {
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   let driver;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await driver?.close();
     await context.close();
     await closeServer(reference);
     await closeServer(frame);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   const origin = `http://127.0.0.1:${reference.address().port}`;
   driver = await openCdpTabDriver({ cdpUrl, origin, allowLoopbackReference: true, ...options });
@@ -273,12 +272,12 @@ fetch('/foreign-save', { method: 'POST', body: 'x' }).catch(() => {});</script>`
   const foreignOrigin = `http://127.0.0.1:${foreign.address().port}`;
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   let driver;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await driver?.close();
     await context.close();
     await closeServer(reference);
     await closeServer(foreign);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   driver = await openCdpTabDriver({ cdpUrl, origin, allowLoopbackReference: true });
   // The driver's API tab stays open after a read, so the driver holds a tab while the foreign page loads.
@@ -364,11 +363,11 @@ test('the signed-in driver sends the If-None-Match header of a conditional read'
   const origin = `http://127.0.0.1:${reference.address().port}`;
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   let driver;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await driver?.close();
     await context.close();
     await closeServer(reference);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   driver = await openCdpTabDriver({ cdpUrl, origin, allowLoopbackReference: true });
   const first = await driver.http('/items');
@@ -454,12 +453,12 @@ test('a popup resumed by another debugging client before the driver guards it se
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   const coClient = await openResumingClient(cdpUrl);
   let driver;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await driver?.close();
     await coClient.close();
     await context.close();
     await closeServer(reference);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   const released = Promise.all([...fates.values()].map((fate) => fate.promise));
   driver = await openCdpTabDriver({
@@ -546,12 +545,12 @@ test('a popup request that is paused before its interception is acknowledged is 
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   const resuming = await openResumingClient(cdpUrl);
   let driver;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await driver?.close();
     await resuming.close();
     await context.close();
     await closeServer(reference);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   driver = await openCdpTabDriver({
     cdpUrl,

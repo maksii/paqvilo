@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -8,7 +9,7 @@ import { signInContext } from '../testing/session.mjs';
 test('backend operations exposes plugin source bindings and persists an editable local rejection', async (t) => {
   const { app } = await pluginFixture(t);
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await signInContext(page.context(), app, 'editor', { roles: ['Editor'] });
   const errors = [];

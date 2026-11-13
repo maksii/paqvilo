@@ -57,8 +57,27 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+      # The code that decides which fixtures preparation downloads names the caches this lane restores.
+      - name: Select the fixture archives this lane prepares
+        id: fixtures
+        run: node scripts/ci.mjs fixtures --suite ${{ matrix.suite }} --${{ matrix.lane }} ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Preparation re-verifies a restored archive by its pinned digest before it extracts it.
+      - name: Restore the pinned ecosystem fixture archives
+        id: ecosystem-cache
+        if: steps.fixtures.outputs.ecosystem == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Prepare the existing test lane
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --${{ matrix.lane }} ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
+      - name: Save the pinned ecosystem fixture archives
+        if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Run the existing test lane with Node coverage
         env:
           NODE_V8_COVERAGE: ${{ runner.temp }}/paqvilo-v8-coverage

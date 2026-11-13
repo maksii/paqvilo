@@ -8,7 +8,7 @@ import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
@@ -62,7 +62,7 @@ async function fixture(t, steps, handlers, { runtimes = new Map(), overrides = {
     runtimes,
     descriptors: new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor])),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, backend };
 }
 // Handler contexts carry a trace function: keep their data only.
@@ -228,7 +228,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-single-multiple-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Bridge.cs'),
       assembly = path.join(root, 'Bridge.dll'),

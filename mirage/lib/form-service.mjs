@@ -29,25 +29,30 @@ const falsy = (value) => value === false || /^(false|0)$/i.test(String(value ?? 
 // Required-field text uses lexical HTML handling, including
 // unterminated comments falling back to an ordinary <...> span. Failed comment
 // and tag searches are terminal: repeating opening delimiters cannot rescan the
-// same suffix for every candidate.
-function richTextRequiredText(value) {
+// same suffix for every candidate. work (optional, { scanned }) counts the characters the searches pass over.
+function richTextRequiredText(value, work = null) {
   const source = String(value ?? ''),
     parts = [];
+  const find = (needle, from) => {
+    const at = source.indexOf(needle, from);
+    if (work) work.scanned += (at < 0 ? source.length : at + needle.length) - from;
+    return at;
+  };
   let cursor = 0,
     canCloseComment = true;
   while (cursor < source.length) {
-    const opening = source.indexOf('<', cursor);
+    const opening = find('<', cursor);
     if (opening < 0) break;
     parts.push(source.slice(cursor, opening));
     if (canCloseComment && source.startsWith('<!--', opening)) {
-      const closing = source.indexOf('-->', opening + 4);
+      const closing = find('-->', opening + 4);
       if (closing >= 0) {
         cursor = closing + 3;
         continue;
       }
       canCloseComment = false;
     }
-    const closing = source.indexOf('>', opening + 1);
+    const closing = find('>', opening + 1);
     if (closing < 0) {
       cursor = opening;
       break;
@@ -771,6 +776,8 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
     cloudAttachments = null,
     diagnostic = () => {},
+    // Counts the characters the required rich-text check scans ({ scanned }) when given.
+    validationWork = null,
   },
 ) {
   const text = (value, fallback = '') => formText(value, fallback, language);
@@ -1214,7 +1221,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     }
     const requiredEmpty =
       field.richText && !/<img\b/i.test(String(value ?? ''))
-        ? empty(richTextRequiredText(value))
+        ? empty(richTextRequiredText(value, validationWork))
         : empty(scalar(value));
     if (field.required && !field.hidden && !field.readOnly && requiredEmpty)
       invalid(field, 'FormFieldRequired', `${field.label} is a required field.`);

@@ -87,7 +87,7 @@ export function inspectExportProfiles(sourceDir, deploymentProfiles = {}) {
   while (pending.length) {
     inspectProfileDirectory(pending.pop(), sourceDir, bound, diagnostics, pending, ignored);
   }
-  return diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
+  return diagnostics.sort((a, b) => a.file.localeCompare(b.file, 'en') || a.line - b.line || a.column - b.column);
 }
 
 /** Inspect exported source YAML without walking local state or dependency trees. */

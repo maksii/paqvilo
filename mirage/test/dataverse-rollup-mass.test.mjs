@@ -1,6 +1,7 @@
 // @test-kind unproven: local model of rollup recalculation over many rows; no native capture cited
 // The Mass Calculate Rollup Fields job (lib/dataverse-rollup.mjs): a recurring scheduler task recalculates every stale rollup
 // column; with a manual scheduler it runs only when the clock passes the interval.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -39,7 +40,7 @@ test('the hourly mass recalculation computes stale rollup columns on the schedul
     settings: dataverseSettings({ enabled: false }),
     scheduler,
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const row = () => store.state.tables.x_parent[0];
   assert.ok(scheduler.pending().some((task) => task.name === 'Mass Calculate Rollup Fields'));
 

@@ -6,6 +6,15 @@ import { execFile } from 'node:child_process';
 import YAML from 'yaml';
 import { catalogueRoot, loadCatalogue, readEnvSettings, resolveMirageConfig } from '../config.mjs';
 import { assertScaffoldPath } from '../scaffold.mjs';
+import {
+  breakStaleLock,
+  createHeld,
+  lockHolder,
+  lockOwnershipNote,
+  lockVerdict,
+  releaseHeld,
+} from '../commands/mirage.mjs';
+import { GIT_HANG_GUARD_MS, GIT_MISSING_MESSAGE, gitAnswered, gitMissing } from '../git.mjs';
 import { readLocalFile } from '../local-file.mjs';
 import { detectFormat, portalSourceDir } from '../portal-model.mjs';
 import {
@@ -423,72 +432,40 @@ function assertSaveInput(input, linkedSite, localFile) {
 
 const SAVE_LOCK_STALE_MS = 30_000;
 
-// An age that cannot be computed (for example a lock record without a numeric `at`) counts as expired.
-const saveLockExpired = (ageMs) => Number.isNaN(ageMs) || ageMs > SAVE_LOCK_STALE_MS;
-
-const processAlive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
+// The save lock has the record and the rule of the Mirage ownership lock (lense/commands/mirage.mjs): it is removed
+// when its process has gone, and a live save holds it however long its work takes. A save does not wait, it answers
+// busy at once, so the stale window decides only when the holder is checked, never whether a live holder is
+// overridden: a lock older than the window has its live holder checked, and is removed when the number now names
+// another program; the holder itself, or a start that cannot be read, keeps it. A lock without a record (its creator
+// may still be writing it) is removed once older than the window. That age is this machine's wall clock less the
+// file's modification time, which on a network share is the server's clock: a wrong server clock only moves the moment
+// such a lock, which no process can be shown to hold, is removed. One remover at a time re-reads the lock first, so a
+// lock another save has just created is never removed. A lock taken on another host (another operating system or
+// machine sharing the folder) is never judged here and answers busy, naming that host.
+async function openSaveLock(lockFile, options) {
+  if (await createHeld(lockFile, options)) return;
+  const holder = await lockHolder(lockFile, options);
+  const longHeld = (lock) => lock.ageMs > SAVE_LOCK_STALE_MS;
+  const verdict = await lockVerdict(holder, longHeld(holder), options);
+  if (holder.missing) {
+    let refusal;
+    const refused = (error) => {
+      refusal = error;
+    };
+    if (await createHeld(lockFile, { ...options, refused })) return;
+    if ((await lockHolder(lockFile, options)).missing)
+      throw new Error(`Could not create ${lockFile}: the folder refuses new files. Make it writable and save again.`, {
+        cause: refusal,
+      });
+  } else if (verdict === 'gone') {
+    const breakerVerdict = (busy) => lockVerdict(busy, longHeld(busy), options);
+    const broken = await breakStaleLock(lockFile, holder.key, { ...options, breakerVerdict });
+    if (broken.removed && (await createHeld(lockFile, options))) return;
   }
-};
-
-// A lock left by an interrupted save names its process. It is removed when that process has gone or when it is older
-// than the stale window. A lock without a valid record is judged by its file age: its creator may still be writing it.
-async function removeStaleSaveLock(lockFile) {
-  let record;
-  try {
-    record = JSON.parse(await fs.readFile(lockFile, 'utf8'));
-  } catch (error) {
-    if (error.code === 'ENOENT') return true;
-    record = null;
-  }
-  const valid = Number.isInteger(record?.pid) && record.pid > 0;
-  const stale = valid
-    ? !processAlive(record.pid) || saveLockExpired(Date.now() - record.at)
-    : await unrecordedSaveLockIsStale(lockFile);
-  if (stale) await fs.rm(lockFile, { force: true });
-  return stale;
-}
-
-async function unrecordedSaveLockIsStale(lockFile) {
-  try {
-    const { mtimeMs } = await fs.stat(lockFile);
-    return saveLockExpired(Date.now() - mtimeMs);
-  } catch (error) {
-    if (error.code === 'ENOENT') return true;
-    throw error;
-  }
-}
-
-async function createSaveLock(lockFile) {
-  const lock = await fs.open(lockFile, 'wx');
-  try {
-    await lock.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
-  } catch (error) {
-    await lock.close();
-    await fs.rm(lockFile, { force: true });
-    throw error;
-  }
-  return lock;
-}
-
-async function openSaveLock(lockFile) {
-  try {
-    return await createSaveLock(lockFile);
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    if (await removeStaleSaveLock(lockFile)) {
-      try {
-        return await createSaveLock(lockFile);
-      } catch (error_) {
-        if (error_.code !== 'EEXIST') throw error_;
-      }
-    }
-    throw setupError('Configuration is being saved. Retry shortly.', 409);
-  }
+  throw setupError(
+    `Configuration is being saved.${lockOwnershipNote(verdict, holder)} Retry shortly; if no save is running, remove ${lockFile}.`,
+    409,
+  );
 }
 
 /** Journey stages (docs/setup.md): done, next (the first open stage), blocked (open behind it) or optional. */
@@ -541,7 +518,12 @@ function document(text, label) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw setupError(`${label} must be a mapping`);
   return { doc, raw };
 }
-export async function sourceStatus(directory, { portal = false, runGit = run, gitQueues = new Map() } = {}) {
+// The setup page shows a folder's Git state within this deadline; a later answer is shown as a timeout.
+const SOURCE_STATUS_GIT_DEADLINE_MS = 3000;
+export async function sourceStatus(
+  directory,
+  { portal = false, runGit = run, gitQueues = new Map(), gitDeadlineMs = SOURCE_STATUS_GIT_DEADLINE_MS } = {},
+) {
   const status = { path: directory, exists: false, format: null, git: null };
   if (!directory) return status;
   try {
@@ -555,40 +537,47 @@ export async function sourceStatus(directory, { portal = false, runGit = run, gi
     status.layout = detectSourceDialect(directory);
     status.format = status.layout.imported ? detectFormat(status.exportPath) : null;
   }
+  const opts = {
+    cwd: directory,
+    windowsHide: true,
+    timeout: gitDeadlineMs,
+    maxBuffer: 1024 * 1024,
+    // Git's message is read below to recognise a folder outside any repository; C keeps it the same in every locale.
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' },
+  };
+  const git = (args) => runGit('git', ['-c', 'core.fsmonitor=false', ...args], opts);
+  // A command Git did not answer is no statement about the folder.
+  const failure = (error) => (error.killed || error.code === 'ETIMEDOUT' ? 'timeout' : 'unavailable');
+  let repository, commit;
   try {
-    const opts = {
-      cwd: directory,
-      windowsHide: true,
-      timeout: 3000,
-      maxBuffer: 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    };
-    const location = await runGit(
-      'git',
-      ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD'],
-      opts,
-    );
-    const [repository, branch] = location.stdout.trim().split(/\r?\n/);
-    const commit = await runGit('git', ['-c', 'core.fsmonitor=false', 'rev-parse', '--short', 'HEAD'], opts);
-    status.git = { branch, commit: commit.stdout.trim(), changed: null };
-    // Serialize expensive status calls sharing a checkout and scope each label to its folder.
-    const previous = gitQueues.get(repository) ?? Promise.resolve();
-    const changes = previous
-      .catch(() => {})
-      .then(() => runGit('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '-uno', '--', '.'], opts));
-    gitQueues.set(repository, changes);
-    try {
-      status.git.changed = Boolean((await changes).stdout.trim());
-      status.gitState = 'ready';
-    } catch (error) {
-      status.gitState = error.killed || error.code === 'ETIMEDOUT' ? 'timeout' : 'unavailable';
-    }
+    repository = (await git(['rev-parse', '--show-toplevel'])).stdout.trim();
   } catch (error) {
-    if (error.killed || error.code === 'ETIMEDOUT') status.gitState = 'timeout';
-    else if (/not a git repository/i.test(error.stderr ?? '')) status.gitState = 'not-checkout';
-    else if (/ambiguous argument ['"]?HEAD|unknown revision|does not have any commits/i.test(error.stderr ?? ''))
-      status.gitState = 'uncommitted';
-    else status.gitState = 'unavailable';
+    status.gitState =
+      gitAnswered(error) && /not a git repository/i.test(error.stderr ?? '') ? 'not-checkout' : failure(error);
+    return status;
+  }
+  try {
+    commit = (await git(['rev-parse', '--verify', '--quiet', '--short', 'HEAD'])).stdout.trim();
+  } catch (error) {
+    // `--verify --quiet` exits with 1, and no message, when HEAD names no commit yet.
+    status.gitState = error.code === 1 ? 'uncommitted' : failure(error);
+    return status;
+  }
+  try {
+    status.git = { branch: (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim(), commit, changed: null };
+  } catch (error) {
+    status.gitState = failure(error);
+    return status;
+  }
+  // Serialize expensive status calls sharing a checkout and scope each label to its folder.
+  const previous = gitQueues.get(repository) ?? Promise.resolve();
+  const changes = previous.catch(() => {}).then(() => git(['status', '--porcelain', '-uno', '--', '.']));
+  gitQueues.set(repository, changes);
+  try {
+    status.git.changed = Boolean((await changes).stdout.trim());
+    status.gitState = 'ready';
+  } catch (error) {
+    status.gitState = failure(error);
   }
   return status;
 }
@@ -602,7 +591,10 @@ const placeholder = (value) => {
 
 /** Fixed configuration destinations. No arbitrary filesystem read/write endpoint. */
 export class SetupStore {
-  constructor({ directory = process.cwd(), config, project, processEnv = process.env } = {}) {
+  constructor({ directory = process.cwd(), config, project, processEnv = process.env, runGit = run, lock = {} } = {}) {
+    this.runGit = runGit;
+    // How the save lock reads other processes and reports a lock it could not remove (see openSaveLock).
+    this.lock = { warn: (message) => console.error(message), ...lock };
     this.kind = config || !project ? 'catalogue' : 'project';
     this.file = path.resolve(directory, config ?? project ?? 'paqvilo.config.yml');
     this.directory = path.dirname(this.file);
@@ -993,9 +985,33 @@ export class SetupStore {
     await assertScaffoldPath(ignoreFile);
     await fs.mkdir(this.directory, { recursive: true });
     if (linkedSite) await fs.mkdir(path.dirname(file), { recursive: true });
+    // Whether Git tracks the file depends on the index, not on the configuration the lock guards, so it is asked
+    // before the lock is taken and a slow Git never holds the lock.
+    if (input.layer === 'personal') {
+      // Exit 0: tracked; 1: not tracked; 128: no repository. Without an answer from Git the save cannot be safe.
+      const tracked = await this.runGit('git', ['ls-files', '--error-unmatch', '--', path.basename(file)], {
+        cwd: this.directory,
+        windowsHide: true,
+        timeout: GIT_HANG_GUARD_MS,
+      }).then(
+        () => true,
+        (error) => {
+          if (gitAnswered(error)) return false;
+          if (gitMissing(error)) throw setupError(GIT_MISSING_MESSAGE, 503);
+          throw setupError(
+            `Git did not answer whether the personal configuration is tracked (${error.code ?? error.signal}). Retry the save.`,
+            503,
+          );
+        },
+      );
+      if (tracked)
+        throw setupError(
+          'Personal configuration is already tracked by Git. Untrack it before saving private overrides.',
+        );
+    }
     const lockFile = this.file + '.setup.lock';
     await assertScaffoldPath(lockFile);
-    const lock = await openSaveLock(lockFile);
+    await openSaveLock(lockFile, this.lock);
     let temporary;
     try {
       const before = await this.files();
@@ -1016,20 +1032,6 @@ export class SetupStore {
           input.layer === 'shared' ? text : before.shared,
           input.layer === 'personal' ? text : before.personal,
         );
-      }
-      if (input.layer === 'personal') {
-        const tracked = await run('git', ['ls-files', '--error-unmatch', '--', path.basename(file)], {
-          cwd: this.directory,
-          windowsHide: true,
-          timeout: 3000,
-        }).then(
-          () => true,
-          () => false,
-        );
-        if (tracked)
-          throw setupError(
-            'Personal configuration is already tracked by Git. Untrack it before saving private overrides.',
-          );
       }
       // JSON projects keep their original encoding.
       if (projectFile && /\.json$/i.test(file)) text = JSON.stringify(document(text, 'Project').raw, null, 2) + '\n';
@@ -1054,9 +1056,8 @@ export class SetupStore {
 
       await fs.rename(temporary, file);
     } finally {
-      await lock.close();
       if (temporary) await fs.rm(temporary, { force: true }).catch(() => {});
-      await fs.rm(lockFile, { force: true });
+      await releaseHeld(lockFile, this.lock.warn);
     }
     return this.snapshot();
   }

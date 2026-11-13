@@ -8,8 +8,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ownedFixture } from '../../../../mirage/testing/owned-fixture.mjs';
-import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const worker = fileURLToPath(new URL('../collector/worker.mjs', import.meta.url));
 const operation = '10000000-0000-4000-8000-000000000001';

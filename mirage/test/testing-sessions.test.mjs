@@ -83,7 +83,7 @@ test('ten cookie-isolated visitors read and write through real portal handlers w
     sessions = await Promise.all(
       contacts.map((contact) => runtime.createSession({ id: contact.contactid, contactId: contact.contactid })),
     );
-  t.after(() => sessions.forEach((session) => session.close()));
+  ownedFixture(t).add(() => sessions.forEach((session) => session.close()));
   const cases = [
     {
       id: 'liquid',
@@ -184,7 +184,7 @@ test('local-only visitor refuses outbound reads when mode changes during its ren
     template = `{% fetchxml first %}${query}{% endfetchxml %}{% fetchxml second %}${query}{% endfetchxml %}`;
   const { app, contacts } = await fixture(t, { liveBridge, template }),
     visitor = await createPortalSession({ origin: app.url, contactId: contacts[0].contactid });
-  t.after(() => visitor.close());
+  ownedFixture(t).add(() => visitor.close());
   let changed = false;
   app.store.setPluginPipeline(({ stage }) => {
     if (stage === 40) {
@@ -232,7 +232,7 @@ test('runtime experiment controls change local policy and keep concurrent instan
     ]);
   const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
     otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
-  t.after(() => {
+  ownedFixture(t).add(() => {
     visitor.close();
     otherVisitor.close();
   });

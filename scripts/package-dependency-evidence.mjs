@@ -8,7 +8,7 @@ export function packageDependencyEvidence(sourceLock, consumerLock, packageName)
         version: entry.version,
         ...(entry.integrity ? { integrity: entry.integrity } : {}),
       }))
-      .sort((a, b) => a.path.localeCompare(b.path));
+      .sort((a, b) => a.path.localeCompare(b.path, 'en'));
   const sourcePackages = packages(sourceLock);
   const consumerPackages = packages(consumerLock);
   const source = new Map(sourcePackages.map((entry) => [entry.path, entry]));

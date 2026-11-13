@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -19,7 +20,7 @@ const base = '/v1.0/sites/site-a/drives/drive-a';
 
 async function server(t, diagnostics = []) {
   const fixture = await createSharePointFixtureServer({ fixtures, diagnostic: (entry) => diagnostics.push(entry) });
-  t.after(() => fixture.close());
+  ownedFixture(t).add(() => fixture.close());
   const call = async (method, path, { body, headers } = {}) => {
     const response = await fetch(fixture.url + path, { method, headers, body });
     const text = await response.text();
@@ -123,7 +124,7 @@ test('the fixture server takes its clock and ids from the injected seam', async 
   const { fixedClock, sequentialIds } = await import('../lib/runtime-clock.mjs');
   const clock = fixedClock();
   const fixture = await createSharePointFixtureServer({ fixtures, clock, ids: sequentialIds() });
-  t.after(() => fixture.close());
+  ownedFixture(t).add(() => fixture.close());
   const response = await fetch(fixture.url + `${base}/root:/x_case:/children`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

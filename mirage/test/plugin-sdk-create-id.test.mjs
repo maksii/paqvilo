@@ -1,5 +1,5 @@
 // @test-kind unproven: local model of SDK Create Entity.Id versus primary attribute channels; no native capture cited
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -11,7 +11,7 @@ import { prepareClrRuntime, dispatchSdkCall, clrHostPoolStatus, closeClrHostPool
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000';
 const user = '10000000-0000-0000-0000-000000000001';
@@ -331,201 +331,209 @@ public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){Thr
   },
 );
 
-// @test-kind unproven: local model of Create identity channels; its PreOperation Target never carrying versionnumber is native
-// (dev-environment recorder corpus 2026-10-30, crud/upsert/reads/pipelineEffects Create stage 20 and 40 Targets).
-test(
-  'original CLR direct and named SDK Create preserve Entity.Id and primary Attribute input channels',
-  { skip: CLR_SKIP },
-  async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-create-id-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = clrSdk(),
-      source = path.join(root, 'CreateId.cs'),
-      assembly = path.join(root, 'CreateId.dll');
-    // Timing: native Create Targets (recorder parity corpus, crud) never carry versionnumber at any stage.
-    await fs.writeFile(
-      source,
-      `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;namespace Invented {
+// One runtime serves every identity case below; each case is its own test, so each has its own hang guard.
+let createIdRoot, createIdRuntime;
+before(async () => {
+  if (CLR_SKIP) return;
+  createIdRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-create-id-'));
+  const root = createIdRoot;
+  const sdk = clrSdk(),
+    source = path.join(root, 'CreateId.cs'),
+    assembly = path.join(root, 'CreateId.dll');
+  // Timing: native Create Targets (recorder parity corpus, crud) never carry versionnumber at any stage.
+  await fs.writeFile(
+    source,
+    `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;namespace Invented {
 public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var mode=t.GetAttributeValue<string>("mode");var child=new Entity("widget");child["mode"]=mode;var id=new Guid("${requested}");if(mode=="id-only"||mode=="same")child.Id=id;if(mode=="attribute-only"||mode=="same")child["widgetid"]=id;var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var result=t.GetAttributeValue<bool>("named")?((CreateResponse)service.Execute(new CreateRequest{Target=child})).id:service.Create(child);t["result"]=result.ToString();}}
 public sealed class Observe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var mode=t.GetAttributeValue<string>("mode");bool authored=mode=="attribute-only"||mode=="same";if(t.Id==Guid.Empty||t.Id!=c.PrimaryEntityId)throw new Exception("Allocated Entity.Id differs from request primary");if(t.Contains("widgetid")!=(authored||c.Stage!=10))throw new Exception("Entity.Id became an authored primary Attribute at stage "+c.Stage);if(t.Contains("widgetid")&&(Guid)t["widgetid"]!=t.Id)throw new Exception("Primary Attribute differs from allocated identity");if(mode!="empty"&&t.Id!=new Guid("${requested}"))throw new Exception("Caller identity was lost");if(!t.Contains("flag")||!(t["flag"] is bool)||(bool)t["flag"])throw new Exception("Source Boolean default missing");if(c.Stage==10)foreach(var name in new[]{"createdon","modifiedon","createdby","modifiedby","statecode","statuscode","ownerid"})if(t.Contains(name))throw new Exception("Derived column appeared before main: "+name);}}
 public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];bool authored=t.GetAttributeValue<bool>("authoredstate");if(!t.Contains("flag")||!(t["flag"] is bool)||(bool)t["flag"])throw new Exception("Source Boolean default lost");if(c.Stage==10){foreach(var name in new[]{"createdon","modifiedon","createdby","modifiedby","ownerid","versionnumber"})if(t.Contains(name))throw new Exception("Derived column appeared in PreValidation: "+name);if(t.Contains("statecode")!=authored||t.Contains("statuscode")!=authored)throw new Exception("Authored state/status projection lost");if(t.Contains("choice"))throw new Exception("Unqualified picklist timing changed");}else{foreach(var name in new[]{"createdon","modifiedon","createdby","modifiedby","statecode","statuscode","widgetid"})if(!t.Contains(name))throw new Exception("Derived column missing at PreOperation: "+name);if(t.Contains("versionnumber"))throw new Exception("Row version appeared in the Target");}}}
 }`,
-    );
-    compileClr(source, assembly, { references: [sdk] });
-    const runtime = await prepareClrRuntime({
-      trust: 'execute-local-assembly',
-      root,
-      assembly: 'CreateId.dll',
-      typeName: 'Invented.Observe',
-      sdkRoot: path.dirname(sdk),
-      sdkAssembly: path.basename(sdk),
-      cacheRoot: path.join(root, 'cache'),
-      serviceProfile: profile,
-      context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
-    });
-    for (const { organization, pooled } of [
-      { organization: false, pooled: false },
-      { organization: true, pooled: false },
-      { organization: true, pooled: true },
-    ])
-      for (const named of [false, true])
-        for (const mode of ['id-only', 'attribute-only', 'same', 'empty'])
-          await t.test(
-            `${pooled ? 'pooled' : 'isolated'}/${organization ? 'organization' : 'store'}/${named ? 'named' : 'direct'}/${mode}`,
-            async (t) => {
-              const f = organization
-                ? await contractModuleFixture(t, {
-                    extension: { name: 'sdk-create-id-fixture', install() {} },
-                    mappings: {
-                      ...schema,
-                      trigger: { ...schema.trigger, fields: { ...fields, named: { dataverseType: 'bit' } } },
-                    },
-                    tables: { widget: [], trigger: [] },
-                  })
-                : (() => {
-                    const state = emptyState();
-                    state.mappings = structuredClone(schema);
-                    state.tables.widget = [];
-                    state.tables.trigger = [];
-                    return { store: new DataStore({ state }) };
-                  })();
-              const captured = [];
-              const hostStarts = [];
-              const steps = observerStages.map((stage, index) => ({
-                id: `30000000-0000-0000-0000-00000000000${index}`,
-                enabled: true,
-                entity: 'widget',
-                message: 'Create',
-                stage,
-                rank: 1,
-                mode: 0,
-                supportedDeployment: 0,
-                filteringAttributes: [],
-                images: [],
-                typeName: 'Invented.Observe',
-                assemblyId: 'invented',
-              }));
-              steps.push({
-                ...steps[1],
-                id: '30000000-0000-0000-0000-000000000004',
-                entity: 'trigger',
-                typeName: 'Invented.Caller',
-              });
-              steps.push(
-                ...steps.slice(0, 3).map((step, index) => ({
-                  ...step,
-                  id: `40000000-0000-0000-0000-00000000000${index}`,
-                  rank: 2,
-                  typeName: 'Invented.Capture',
-                })),
-              );
-              await attachClrSteps(t, {
-                store: f.store,
-                steps,
-                runtime: (step) =>
-                  step.typeName === 'Invented.Capture' ? null : identityRuntime(runtime, step.typeName, pooled),
-                handlers: new Map([
-                  [
-                    'Invented.Capture',
-                    ({ context }) => {
-                      captured.push(context.Stage);
-                    },
-                  ],
-                ]),
-                diagnostic: (event) => {
-                  if (event.code === 'PLUGIN_CLR_HOST_STARTED')
-                    hostStarts.push({
-                      code: event.code,
-                      pooled: event.pooled,
-                      stage: event.stage,
-                      entity: event.entity,
-                      operation: event.operation,
-                    });
+  );
+  compileClr(source, assembly, { references: [sdk] });
+  createIdRuntime = await prepareClrRuntime({
+    trust: 'execute-local-assembly',
+    root,
+    assembly: 'CreateId.dll',
+    typeName: 'Invented.Observe',
+    sdkRoot: path.dirname(sdk),
+    sdkAssembly: path.basename(sdk),
+    cacheRoot: path.join(root, 'cache'),
+    serviceProfile: profile,
+    context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
+  });
+});
+// The pooled host is closed before its runtime's folder is removed.
+after(async () => {
+  if (createIdRuntime) closeClrHostPool({ runtime: createIdRuntime });
+  if (createIdRoot) await removeFixtureDirectory(createIdRoot);
+});
+
+// @test-kind unproven: local model of Create identity channels; its PreOperation Target never carrying versionnumber is native
+// (dev-environment recorder corpus 2026-10-30, crud/upsert/reads/pipelineEffects Create stage 20 and 40 Targets).
+for (const { organization, pooled } of [
+  { organization: false, pooled: false },
+  { organization: true, pooled: false },
+  { organization: true, pooled: true },
+])
+  for (const named of [false, true])
+    for (const mode of ['id-only', 'attribute-only', 'same', 'empty'])
+      test(
+        `original CLR SDK Create preserves Entity.Id and primary Attribute input channels: ${pooled ? 'pooled' : 'isolated'}/${organization ? 'organization' : 'store'}/${named ? 'named' : 'direct'}/${mode}`,
+        { skip: CLR_SKIP },
+        async (t) => {
+          const f = organization
+            ? await contractModuleFixture(t, {
+                extension: { name: 'sdk-create-id-fixture', install() {} },
+                mappings: {
+                  ...schema,
+                  trigger: { ...schema.trigger, fields: { ...fields, named: { dataverseType: 'bit' } } },
                 },
-              });
-              const row = await f.store.create('trigger', { mode, named }, { admin: true });
-              const expectedStarts = [
-                {
-                  code: 'PLUGIN_CLR_HOST_STARTED',
-                  pooled,
-                  stage: 20,
-                  entity: 'trigger',
-                  operation: 'create',
-                },
-                ...(!pooled
-                  ? observerStages.map((stage) => ({
-                      code: 'PLUGIN_CLR_HOST_STARTED',
-                      pooled: false,
-                      stage,
-                      entity: 'widget',
-                      operation: 'create',
-                    }))
-                  : []),
-              ];
-              t.diagnostic(
-                JSON.stringify({
-                  scenario: `${pooled ? 'pooled' : 'isolated'}/${organization ? 'organization' : 'store'}/${named ? 'named' : 'direct'}/${mode}`,
-                  hostStarts,
-                }),
-              );
-              assert.deepEqual(
-                hostStarts,
-                expectedStarts,
-                'only the caller host and isolated stage hosts should start',
-              );
-              assert.deepEqual(captured, [10, 20, 40]);
-              if (pooled) {
-                const hosts = clrHostPoolStatus();
-                // One long-lived host per prepared runtime serves both types and depths (native-r2 depth: nested
-                // steps run on the caller's process); it is idle once the request completed.
-                assert.equal(hosts.length, 1);
-                assert(hosts.every((host) => !host.active));
-              }
-              const child = f.store.tableRows('widget')[0];
-              assert.equal(f.store.tableRows('widget').length, 1);
-              assert.equal(row.result, child.widgetid);
-              assert.notEqual(child.widgetid, empty);
-              if (mode !== 'empty') assert.equal(child.widgetid, requested);
-            },
+                tables: { widget: [], trigger: [] },
+              })
+            : (() => {
+                const state = emptyState();
+                state.mappings = structuredClone(schema);
+                state.tables.widget = [];
+                state.tables.trigger = [];
+                return { store: new DataStore({ state }) };
+              })();
+          const captured = [];
+          const hostStarts = [];
+          const steps = observerStages.map((stage, index) => ({
+            id: `30000000-0000-0000-0000-00000000000${index}`,
+            enabled: true,
+            entity: 'widget',
+            message: 'Create',
+            stage,
+            rank: 1,
+            mode: 0,
+            supportedDeployment: 0,
+            filteringAttributes: [],
+            images: [],
+            typeName: 'Invented.Observe',
+            assemblyId: 'invented',
+          }));
+          steps.push({
+            ...steps[1],
+            id: '30000000-0000-0000-0000-000000000004',
+            entity: 'trigger',
+            typeName: 'Invented.Caller',
+          });
+          steps.push(
+            ...steps.slice(0, 3).map((step, index) => ({
+              ...step,
+              id: `40000000-0000-0000-0000-00000000000${index}`,
+              rank: 2,
+              typeName: 'Invented.Capture',
+            })),
           );
-    for (const authored of [false, true])
-      await t.test(`HTTP-derived-column-timing/${authored ? 'authored-state-status' : 'defaults'}`, async (t) => {
-        const f = await contractModuleFixture(t, {
-          extension: { name: 'sdk-create-timing-fixture', install() {} },
-          mappings: schema,
-          tables: { widget: [], trigger: [] },
-        });
-        const steps = [10, 20, 40].map((stage, index) => ({
-          id: `50000000-0000-0000-0000-00000000000${index}`,
-          enabled: true,
-          entity: 'widget',
-          message: 'Create',
-          stage,
-          rank: 1,
-          mode: 0,
-          supportedDeployment: 0,
-          filteringAttributes: [],
-          images: [],
-          typeName: 'Invented.Timing',
-          assemblyId: 'invented',
-        }));
-        await attachClrSteps(t, {
-          store: f.store,
-          steps,
-          runtime: identityRuntime(runtime, 'Invented.Timing', false),
-        });
-        const response = await f.request('POST', '/widgets', {
-          mode: 'timing',
-          authoredstate: authored,
-          ...(authored ? { statecode: 0, statuscode: 1 } : {}),
-        });
-        assert.equal(response.status, 201, await response.text());
-        const row = f.store.tableRows('widget')[0];
-        assert.equal(row.flag, false);
-        assert.equal(row.choice, 2);
-        assert.equal(row.statecode, 0);
-        assert.equal(row.statuscode, 1);
-        assert(row.createdby && row.createdon && row.modifiedby && row.modifiedon && row.versionnumber);
+          await attachClrSteps(t, {
+            store: f.store,
+            steps,
+            runtime: (step) =>
+              step.typeName === 'Invented.Capture' ? null : identityRuntime(createIdRuntime, step.typeName, pooled),
+            handlers: new Map([
+              [
+                'Invented.Capture',
+                ({ context }) => {
+                  captured.push(context.Stage);
+                },
+              ],
+            ]),
+            diagnostic: (event) => {
+              if (event.code === 'PLUGIN_CLR_HOST_STARTED')
+                hostStarts.push({
+                  code: event.code,
+                  pooled: event.pooled,
+                  stage: event.stage,
+                  entity: event.entity,
+                  operation: event.operation,
+                });
+            },
+          });
+          const row = await f.store.create('trigger', { mode, named }, { admin: true });
+          const expectedStarts = [
+            {
+              code: 'PLUGIN_CLR_HOST_STARTED',
+              pooled,
+              stage: 20,
+              entity: 'trigger',
+              operation: 'create',
+            },
+            ...(!pooled
+              ? observerStages.map((stage) => ({
+                  code: 'PLUGIN_CLR_HOST_STARTED',
+                  pooled: false,
+                  stage,
+                  entity: 'widget',
+                  operation: 'create',
+                }))
+              : []),
+          ];
+          t.diagnostic(
+            JSON.stringify({
+              scenario: `${pooled ? 'pooled' : 'isolated'}/${organization ? 'organization' : 'store'}/${named ? 'named' : 'direct'}/${mode}`,
+              hostStarts,
+            }),
+          );
+          assert.deepEqual(hostStarts, expectedStarts, 'only the caller host and isolated stage hosts should start');
+          assert.deepEqual(captured, [10, 20, 40]);
+          if (pooled) {
+            const hosts = clrHostPoolStatus();
+            // One long-lived host per prepared runtime serves both types and depths (native-r2 depth: nested
+            // steps run on the caller's process); it is idle once the request completed.
+            assert.equal(hosts.length, 1);
+            assert(hosts.every((host) => !host.active));
+          }
+          const child = f.store.tableRows('widget')[0];
+          assert.equal(f.store.tableRows('widget').length, 1);
+          assert.equal(row.result, child.widgetid);
+          assert.notEqual(child.widgetid, empty);
+          if (mode !== 'empty') assert.equal(child.widgetid, requested);
+        },
+      );
+// @test-kind unproven: local model of Create derived-column timing; its PreOperation Target never carrying versionnumber is
+// native (dev-environment recorder corpus 2026-10-30, crud Create stage 20 and 40 Targets).
+for (const authored of [false, true])
+  test(
+    `original CLR SDK Create derived-column timing over HTTP: ${authored ? 'authored-state-status' : 'defaults'}`,
+    { skip: CLR_SKIP },
+    async (t) => {
+      const f = await contractModuleFixture(t, {
+        extension: { name: 'sdk-create-timing-fixture', install() {} },
+        mappings: schema,
+        tables: { widget: [], trigger: [] },
       });
-  },
-);
+      const steps = [10, 20, 40].map((stage, index) => ({
+        id: `50000000-0000-0000-0000-00000000000${index}`,
+        enabled: true,
+        entity: 'widget',
+        message: 'Create',
+        stage,
+        rank: 1,
+        mode: 0,
+        supportedDeployment: 0,
+        filteringAttributes: [],
+        images: [],
+        typeName: 'Invented.Timing',
+        assemblyId: 'invented',
+      }));
+      await attachClrSteps(t, {
+        store: f.store,
+        steps,
+        runtime: identityRuntime(createIdRuntime, 'Invented.Timing', false),
+      });
+      const response = await f.request('POST', '/widgets', {
+        mode: 'timing',
+        authoredstate: authored,
+        ...(authored ? { statecode: 0, statuscode: 1 } : {}),
+      });
+      assert.equal(response.status, 201, await response.text());
+      const row = f.store.tableRows('widget')[0];
+      assert.equal(row.flag, false);
+      assert.equal(row.choice, 2);
+      assert.equal(row.statecode, 0);
+      assert.equal(row.statuscode, 1);
+      assert(row.createdby && row.createdon && row.modifiedby && row.modifiedon && row.versionnumber);
+    },
+  );

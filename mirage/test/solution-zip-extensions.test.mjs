@@ -10,7 +10,7 @@ import { sourceOrganizationExtensions } from '../lib/source-organization-extensi
 import { readSolutionWorkflows } from '../lib/dataverse-workflows.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLASSIC = '77777777-7777-4777-8777-777777777771';
 const FLOW = '77777777-7777-4777-8777-777777777772';
@@ -45,7 +45,7 @@ async function inventory(t, layers) {
     settings: dataverseSettings({ enabled: false }),
     extensions: await sourceOrganizationExtensions({ layers }),
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   const sorted = (logical, column) => (store.state.tables[logical] ?? []).map((row) => row[column]).sort();
   return {
     customapi: sorted('customapi', 'uniquename'),

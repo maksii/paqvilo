@@ -92,7 +92,7 @@ test('offline host descriptions resolve installed core seams and retain absent p
     runtime: { kind: 'dataverse-api' },
     config: { providers: { messaging: { missing: { kind: 'pack:absent/bus' } } } },
   });
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   const report = await host.preflight();
   assertCoreSeams(report);
   assert.equal(host.registry.get('provider:messaging/missing').level, 'inventory');

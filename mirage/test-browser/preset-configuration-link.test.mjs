@@ -8,13 +8,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { fixture, initial } from '../test/fixtures/platform-experiments.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('a failed lazy configuration link marks its preset immediately and repeated attempts retain one diagnostic', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-preset-link-ui-'));
   await fixture(root);
   let app, browser;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser?.close();
     await app?.close();
     await fs.rm(root, { recursive: true, force: true });
@@ -86,7 +86,7 @@ test('preset picker retains edits made during the initial access view load', asy
   let app, browser, releasePersonas, signalPersonas;
   const personasHeld = new Promise((resolve) => (releasePersonas = resolve));
   const personasRequested = new Promise((resolve) => (signalPersonas = resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     releasePersonas();
     await browser?.close();
     await app?.close();

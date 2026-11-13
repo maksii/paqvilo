@@ -35,12 +35,27 @@ test('default lookup ignores attacker-controlled PATH', (t) => {
     { cwd: dir, env: childEnv, encoding: 'utf8' },
   ).trim();
   assert.notEqual(child, fs.realpathSync(fake));
-  try {
-    const result = resolveGitExecutable({ env: { PATH: dir } });
-    assert.notEqual(result, fs.realpathSync(fake));
-    assert.ok(path.isAbsolute(result));
-  } catch (error) {
-    assert.match(error.message, /trusted system location/);
+  // The test owns the file system the lookup sees, so each outcome is forced rather than taken from the machine.
+  const fakePath = fs.realpathSync(fake);
+  const existing = new Set([fakePath]);
+  t.mock.method(fs, 'realpathSync', (name) => {
+    if (!existing.has(name)) throw Object.assign(new Error(`ENOENT: ${name}`), { code: 'ENOENT' });
+    return name;
+  });
+  t.mock.method(fs, 'statSync', (name) => ({ isFile: () => existing.has(name), uid: 0, mode: 0o755 }));
+  t.mock.method(fs, 'accessSync', () => {});
+  // A drive-letter path is absolute only to the Windows path module, so the Windows lookup runs on Windows hosts.
+  const trusted = {
+    linux: '/usr/bin/git',
+    ...(process.platform === 'win32' ? { win32: String.raw`C:\Program Files\Git\cmd\git.exe` } : {}),
+  };
+  for (const [platform, location] of Object.entries(trusted)) {
+    // Only the Git on PATH exists: no trusted location is found, and PATH is not used instead.
+    existing.delete(location);
+    assert.throws(() => resolveGitExecutable({ env: { PATH: dir }, platform }), /trusted system location/, platform);
+    // A Git in a trusted location is the one chosen, not the one on PATH.
+    existing.add(location);
+    assert.equal(resolveGitExecutable({ env: { PATH: dir }, platform }), location, platform);
   }
 });
 

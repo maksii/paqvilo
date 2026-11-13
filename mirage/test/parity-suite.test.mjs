@@ -67,7 +67,7 @@ const text = (value) => ({ t: value });
 test('isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-owned-import-'));
   let owned;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await owned?.app.close();
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -698,7 +698,7 @@ test('an opaque reference redirect compares by status class, and the conditional
   });
   localServer.listen(0, '127.0.0.1');
   await once(localServer, 'listening');
-  t.after(() => new Promise((resolve) => localServer.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => localServer.close(resolve)));
   const localOrigin = `http://127.0.0.1:${localServer.address().port}`;
   const local = createHttpDriver({ origin: localOrigin, identity: 'local' });
   const liveConditions = [];
@@ -836,7 +836,7 @@ test('runner compares synthetic loopback sides, classifies deltas, redacts value
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    t.after(
+    ownedFixture(t).add(
       () =>
         new Promise((resolve) => {
           server.closeAllConnections();
@@ -1312,7 +1312,7 @@ test('local identity mirrors the reference persona with a session role override 
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const controller = createIdentityController(`http://127.0.0.1:${server.address().port}`);
   assert.equal(controller.cookie(), null);
   const mirrored = await controller.mirror({
@@ -1415,7 +1415,7 @@ test('shell and client probes both block inadmissible captures and retain status
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const server = http.createServer((_req, res) => res.end(JSON.stringify({ data: {}, config: {}, status: {} })));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -1614,4 +1614,29 @@ test('the reference sees only GET and HEAD: the fixed allow-list is empty and no
   const plan = await loadScenarioPlans({ core: true, packs: 'all' });
   validatePlan(plan);
   assert.deepEqual(plan.allowPost, []);
+});
+
+// @test-kind contract: the page drivers retry a capture only when the page read lost its document, named by these exact texts
+test('a capture is retried only for the exact lost-context messages of the DevTools protocol and Playwright', () => {
+  const { PAGE_CONTEXT_LOST_MESSAGES, pageContextLost } = __testing;
+  assert.deepEqual(PAGE_CONTEXT_LOST_MESSAGES, [
+    'Execution context was destroyed',
+    'Cannot find context with specified id',
+    'Inspected target navigated or closed',
+  ]);
+  for (const message of [
+    'Execution context was destroyed.',
+    'page.evaluate: Execution context was destroyed, most likely because of a navigation',
+    'Cannot find context with specified id',
+    'Inspected target navigated or closed',
+  ])
+    assert.equal(pageContextLost(new Error(message)), true, message);
+  for (const message of [
+    'TypeError: navigation is not defined',
+    'Navigation failed because page crashed!',
+    'CDP Runtime.evaluate timed out.',
+    'execution context was destroyed',
+  ])
+    assert.equal(pageContextLost(new Error(message)), false, message);
+  assert.equal(pageContextLost(undefined), false);
 });

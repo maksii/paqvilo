@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter, once } from 'node:events';
 import { OverlaySession } from '../lense/session.mjs';
 import { PortalModel, isSourceFile } from '../lense/portal-model.mjs';
@@ -119,6 +120,136 @@ test('Git awareness handles branches, detached HEAD and linked worktree director
   assert.deepEqual(await gitHead(linked), { commit: head.commit, branch: null, detached: true });
   git(fx.dir, 'switch', '--detach');
   assert.equal((await gitHead(fx.dir)).detached, true);
+});
+
+test('Git awareness reads "no repository" from Git and rejects when Git gives no answer', async (t) => {
+  const dir = tempDirSync('pp-no-repository-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  // The ceiling stops Git at the folder itself, so whatever repository holds the temporary directory is not found.
+  const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = fs.realpathSync.native(path.dirname(dir));
+  t.after(() => {
+    if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = ceiling;
+  });
+  assert.equal(await gitHead(dir), null);
+  assert.equal(await gitDirectories(dir), null);
+  // Killed at its hang guard, or not started: the reads reject instead of answering "no repository".
+  let failure;
+  const replaced = t.mock.method(childProcess, 'execFile', (_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(failure, '', ''));
+    return {};
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  for (failure of [
+    Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null }),
+    Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }),
+  ]) {
+    await assert.rejects(gitHead(dir), failure);
+    await assert.rejects(gitDirectories(dir), failure);
+  }
+  failure = Object.assign(new Error('git exited 128'), { code: 128 });
+  assert.equal(await gitHead(dir), null);
+  assert.equal(await gitDirectories(dir), null);
+});
+
+// Replaces the synchronous Git runner: `answer(args)` returns an error to throw, or nothing to run the real Git.
+function syncGit(t, answer) {
+  const original = childProcess.execFileSync;
+  const replaced = t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    const failure = answer(args);
+    if (failure) throw failure;
+    return original(file, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+}
+const noAnswer = () =>
+  Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM' });
+
+test('a baseline read Git does not answer makes the baseline unavailable instead of the file new', async (t) => {
+  const fx = fixture(t);
+  const file = fx.file('web-files/app.js');
+  const original = fx.read('web-files/app.js');
+  let silent = (args) => args.includes('show') || args.includes('cat-file');
+  syncGit(t, (args) => silent(args) && noAnswer());
+  const shown = new GitBaseline(fx.dir, 'HEAD');
+  assert.equal(shown.show(file), null);
+  assert.equal(shown.available, false, 'no answer is not "absent at the baseline"');
+  assert.match(shown.error, /Cannot read baseline HEAD: spawnSync git ETIMEDOUT/);
+  const preloaded = new GitBaseline(fx.dir, 'HEAD');
+  preloaded.preload([file]);
+  assert.equal(preloaded.available, false);
+  // Once Git answers, a ref check makes the baseline available and the file reads from it.
+  silent = () => false;
+  assert.equal(await shown.checkForUpdate(), true);
+  assert.equal(shown.show(file), original);
+  // An answered "not there" stays a new file and keeps the baseline available.
+  assert.equal(shown.show(fx.file('web-files/never-committed.js')), null);
+  assert.equal(shown.available, true);
+});
+
+test('the source watcher keeps polling HEAD while Git gives no answer and warns once per outage', async (t) => {
+  const dir = tempDirSync('pp-silent-git-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  // Git does not answer where the repository lives, so the watcher cannot watch it and polls instead.
+  const replaced = t.mock.method(childProcess, 'execFile', (_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null })));
+    return {};
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  // HEAD checks: no answer twice, an answer, then no answer again; the sixth check ends the scenario.
+  const outcomes = ['silent', 'silent', 'answer', 'silent', 'silent'];
+  let checks = 0,
+    finish;
+  const finished = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const head = { commit: 'a'.repeat(40), branch: 'main', detached: false };
+  const s = Object.assign(new EventEmitter(), {
+    cfg: { sourceDir: dir, origin: 'https://portal.example', site: {} },
+    refreshHead: async () => {
+      const outcome = outcomes[checks++];
+      if (outcome === undefined) finish();
+      if (outcome === 'answer' || outcome === undefined) return head;
+      throw new Error('spawn git ETIMEDOUT');
+    },
+  });
+  const logs = [];
+  const watcher = watchSources(s, { pages: () => [] }, { baselinePollMs: 10, log: (line) => logs.push(line) });
+  ownedFixture(t).add(() => watcher.close());
+  await finished;
+  await watcher.close();
+  const warnings = logs.filter((line) => /WARN {3}Git did not answer/.test(line));
+  // One warning for the unanswered repository lookup and the first two HEAD checks, one after the answer.
+  assert.equal(warnings.length, 2, logs.join('\n'));
+  assert.ok(checks > outcomes.length, 'HEAD is still asked after Git gave no answer');
+  assert.equal(
+    logs.some((line) => /ERROR/.test(line)),
+    false,
+    logs.join('\n'),
+  );
+});
+
+test('a repository probe Git does not answer reports the missing answer instead of a broken ref', (t) => {
+  const fx = fixture(t);
+  const refused = Object.assign(new Error('git exited 128'), { status: 128, signal: null });
+  syncGit(t, (args) => (args.includes('--verify') ? refused : args.includes('--is-inside-work-tree') && noAnswer()));
+  const baseline = new GitBaseline(fx.dir, 'HEAD');
+  assert.equal(baseline.available, false);
+  assert.equal(baseline.unborn, false);
+  assert.match(baseline.error, /spawnSync git ETIMEDOUT/);
 });
 
 test('repository watching notices a commit with a pinned baseline and polling still works when disabled', async (t) => {

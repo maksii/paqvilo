@@ -17,7 +17,7 @@ import {
   normalizeGeneratedIds,
 } from '../baseline-compare.mjs';
 import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const req = (seq, url, extra = {}) => ({
   seq,
@@ -815,7 +815,7 @@ test('the evidence receiver ties each post to its run; a late post of an abandon
   const { startSaver } = await import('../baseline-suite.mjs');
   const { writeCapture } = await import('../baseline-capture.mjs');
   const saver = await startSaver();
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const post = (run, body) =>
     fetch(saver.url, {
       method: 'POST',

@@ -12,7 +12,8 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const caller = '10000000-0000-0000-0000-000000000001';
 const id = '20000000-0000-0000-0000-000000000001';
@@ -96,7 +97,7 @@ async function fixture(t, steps, { runtimes = new Map(), overrides = {} } = {}) 
       new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor])),
     ),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 
@@ -151,7 +152,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-bulk-target-shape-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'TargetShape.cs'),
       assembly = path.join(root, 'TargetShape.dll');
@@ -186,7 +187,7 @@ public sealed class Create40:IPlugin{public void Execute(IServiceProvider s){}}}
         grants: [{ entity: 'x_item', operations: ['read'] }],
       },
       context: { initiatingUserId: caller, organizationId: caller, businessUnitId: caller },
-      timeoutMs: 30000,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     // The per-record Create steps re-encode each record's Target between the grouped stages (plugin-bulk.mjs recordPhase).
     const steps = [

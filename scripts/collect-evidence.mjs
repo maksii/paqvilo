@@ -4,12 +4,48 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
+// Round evidence carries the writing run in its name (`multipart.run-<pid>.json`), so lanes running at once never
+// write the same file.
+const RUN = String.raw`\.run-\d+`;
 const OUTPUTS = {
   'synthetic-navigation': /^[a-f0-9]{32}-(?:diagnostic\.json|failure\.png)$/,
-  'extended-round':
-    /^(?:multipart\.json|(?:classic|enhanced)-workflows\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)\.json)$/,
-  'multi-portal-round': /^(?:acceptance|cli-smoke)\.json$/,
+  'extended-round': new RegExp(
+    String.raw`^(?:multipart${RUN}\.json|(?:classic|enhanced)-workflows${RUN}\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)${RUN}\.json)$`,
+  ),
+  'multi-portal-round': new RegExp(String.raw`^(?:acceptance|cli-smoke)${RUN}\.json$`),
 };
+
+const processRunning = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+};
+
+/**
+ * The path a browser test writes the round evidence `name` (for example `multipart.json`) to: `<stateDir>/<round>/`,
+ * with this run in the file name. A name the collector would not publish is refused, so a test cannot write evidence
+ * the collector misses. Writing removes the same evidence of runs that have ended, so a developer's state directory
+ * keeps one file per name and running lane; the collector itself never deletes evidence.
+ */
+export function syntheticEvidencePath(stateDir, round, name, pid = process.pid) {
+  const extension = path.extname(name);
+  const stem = name.slice(0, -extension.length);
+  const file = `${stem}.run-${pid}${extension}`;
+  if (round === 'synthetic-navigation' || !OUTPUTS[round]?.test(file))
+    throw new Error(`The evidence collector does not publish ${round}/${file}.`);
+  const folder = path.join(stateDir, round);
+  fs.mkdirSync(folder, { recursive: true });
+  const earlier = new RegExp(String.raw`^${RegExp.escape(stem)}\.run-(\d+)${RegExp.escape(extension)}$`);
+  for (const entry of fs.readdirSync(folder)) {
+    const run = earlier.exec(entry)?.[1];
+    if (run && Number(run) !== pid && !processRunning(Number(run)))
+      fs.rmSync(path.join(folder, entry), { force: true });
+  }
+  return path.join(folder, file);
+}
 
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
 const ordinaryFile = (entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1n && entry.size >= 0n;

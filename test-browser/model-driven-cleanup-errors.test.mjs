@@ -17,7 +17,7 @@ import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
 
 // A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
 // asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
@@ -322,14 +322,15 @@ test('startup cancellation closes its owned page before draining stalled inspect
 
 test('initial document deadline detaches an external CDP browser and preserves its existing draft', async (t) => {
   const setup = await fixture(t, { resetDocument: true });
-  const port = await freeDebugPort();
-  const external = await chromium.launchPersistentContext(path.join(setup.directory, 'external-profile'), {
+  const profile = path.join(setup.directory, 'external-profile');
+  const external = await chromium.launchPersistentContext(profile, {
     channel: setup.channel === 'chromium' ? undefined : setup.channel,
     headless: true,
     ...setup.network,
-    args: [...setup.network.args, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'],
+    args: [...setup.network.args, ...ANY_DEBUG_PORT_ARGS],
   });
   setup.owner.add(() => external.close());
+  const port = await devToolsPort(profile);
   const sibling = external.pages()[0];
   await sibling.setContent('<input value="external draft">');
   // The owner and Lense use independent CDP connections. Delay only the

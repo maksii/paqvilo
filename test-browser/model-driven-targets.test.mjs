@@ -10,9 +10,10 @@ import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { browserChannel } from '../mirage/lib/browser-launch.mjs';
 
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
 import { waitForChildOutput } from './helpers/child-readiness.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
@@ -97,13 +98,17 @@ async function modelTargetsFixture(t) {
       path.join(resources, `${name}.data.xml`),
       `<WebResource><Name>${name}</Name><WebResourceType>${type}</WebResourceType><FileName>WebResources/${name}</FileName></WebResource>`,
     );
-  execFileSync('git', ['init', '-q'], { cwd: solution, windowsHide: true });
-  execFileSync('git', ['add', '.'], { cwd: solution, windowsHide: true });
-  execFileSync(
-    'git',
-    ['-c', 'user.name=Invented', '-c', 'user.email=invented@example.invalid', 'commit', '-qm', 'Initial'],
-    { cwd: solution, windowsHide: true },
-  );
+  // Repository variables of a calling Git process, and hooks and signing in the user's configuration, stay out.
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const git = (...args) =>
+    execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], {
+      cwd: solution,
+      env: gitEnv,
+      windowsHide: true,
+    });
+  git('init', '-q');
+  git('add', '.');
+  git('-c', 'user.name=Invented', '-c', 'user.email=invented@example.invalid', 'commit', '-qm', 'Initial');
   const maps = [];
   for (let index = 0; index < 2; index++) {
     const file = path.join(directory, `map-${index}.json`);
@@ -144,7 +149,6 @@ async function modelTargetsFixture(t) {
       })),
     }),
   );
-  const debugPort = await freeDebugPort();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
@@ -162,47 +166,6 @@ async function modelTargetsFixture(t) {
       await sleep(50);
     }
   };
-  child = spawn(
-    process.execPath,
-    [
-      '--import',
-      new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
-      cli,
-      'model-driven',
-      'dev',
-      '--project',
-      project,
-      '--env',
-      'development',
-      '--browser',
-      process.platform === 'win32' ? 'msedge' : 'chromium',
-      '--headless',
-      '--debug-port',
-      String(debugPort),
-      '--output',
-      path.join(directory, 'report.json'),
-    ],
-    {
-      cwd: directory,
-      env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origins[0] },
-      windowsHide: true,
-      signal: t.signal,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  child.on('error', (error) => {
-    if (error.name !== 'AbortError') output += `\n${error.name}: ${error.message}`;
-  });
-  closed = new Promise((resolve) =>
-    child.once('close', (code, signal) => {
-      if (code !== 0 && code !== null) t.diagnostic(output);
-      resolve({ code, signal });
-    }),
-  );
-  for (const stream of [child.stdout, child.stderr])
-    stream.on('data', (chunk) => {
-      output = (output + chunk).slice(-32000);
-    });
   const agents = path.join(directory, '.paqvilo/agents');
   const discoveries = async () => {
     let names;
@@ -218,13 +181,59 @@ async function modelTargetsFixture(t) {
         .map((name) => fs.readFile(path.join(agents, name), 'utf8').then(JSON.parse)),
     );
   };
-  // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
-  // so neither a starting CDP listener nor a partially written discovery file is observed.
-  await waitForChildOutput(child, {
-    signal: t.signal,
-    pattern: /^Opening model-driven app at /m,
-    readOutput: () => output,
-    label: 'owned browser and agent',
+  const debugPort = await startOnFreePort(async (debugPort) => {
+    // Each start has its own output; a start that lost its debugging port has already closed.
+    output = '';
+    child = spawn(
+      process.execPath,
+      [
+        '--import',
+        new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
+        cli,
+        'model-driven',
+        'dev',
+        '--project',
+        project,
+        '--env',
+        'development',
+        '--browser',
+        browserChannel(),
+        '--headless',
+        '--debug-port',
+        String(debugPort),
+        '--output',
+        path.join(directory, 'report.json'),
+      ],
+      {
+        cwd: directory,
+        env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origins[0] },
+        windowsHide: true,
+        signal: t.signal,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    child.on('error', (error) => {
+      if (error.name !== 'AbortError') output += `\n${error.name}: ${error.message}`;
+    });
+    closed = new Promise((resolve) =>
+      child.once('close', (code, signal) => {
+        if (code !== 0 && code !== null) t.diagnostic(output);
+        resolve({ code, signal });
+      }),
+    );
+    for (const stream of [child.stdout, child.stderr])
+      stream.on('data', (chunk) => {
+        output = (output + chunk).slice(-32000);
+      });
+    // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
+    // so neither a starting CDP listener nor a partially written discovery file is observed.
+    await waitForChildOutput(child, {
+      signal: t.signal,
+      pattern: /^Opening model-driven app at /m,
+      readOutput: () => output,
+      label: 'owned browser and agent',
+    });
+    return debugPort;
   });
   t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);

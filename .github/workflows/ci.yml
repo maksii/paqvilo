@@ -102,6 +102,32 @@ jobs:
         run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: npm run ci:prepare -- --quality
+      # The cache key is a digest of the two tools' pins for this runner's platform.
+      - name: Name the pinned workflow tool archives
+        id: tools
+        if: needs.changes.outputs.quality == 'true'
+        run: node scripts/check-workflows.mjs --cache-key
+      # Only the verified archives are cached; every run re-verifies them by pin and unpacks them afresh.
+      - name: Restore the pinned workflow tool archives
+        id: tools-cache
+        if: needs.changes.outputs.quality == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/tools/*/*.tar.gz
+          key: workflow-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.key }}
+      # The read-only token reaches only this download step, and only the GitHub API host.
+      - name: Provision the pinned workflow tools
+        if: needs.changes.outputs.quality == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-workflows.mjs --provision
+      # Saved as soon as provisioning verified them, so a run whose checks fail still keeps them for the next run.
+      - name: Save the pinned workflow tool archives
+        if: needs.changes.outputs.quality == 'true' && steps.tools-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/tools/*/*.tar.gz') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/tools/*/*.tar.gz
+          key: workflow-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.key }}
       - name: Check formatting, lint and workflows
         if: needs.changes.outputs.quality == 'true'
         run: npm run quality
@@ -158,8 +184,27 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+      # The code that decides which fixtures preparation downloads names the caches this lane restores.
+      - name: Select the fixture archives this lane prepares
+        id: fixtures
+        run: node scripts/ci.mjs fixtures --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Preparation re-verifies a restored archive by its pinned digest before it extracts it.
+      - name: Restore the pinned ecosystem fixture archives
+        id: ecosystem-cache
+        if: steps.fixtures.outputs.ecosystem == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Prepare the selected suite
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
+      - name: Save the pinned ecosystem fixture archives
+        if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
   browser:
@@ -208,8 +253,27 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+      # The code that decides which fixtures preparation downloads names the caches this lane restores.
+      - name: Select the fixture archives this lane prepares
+        id: fixtures
+        run: node scripts/ci.mjs fixtures --suite ${{ matrix.suite }} --browser ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Preparation re-verifies a restored archive by its pinned digest before it extracts it.
+      - name: Restore the pinned CLR SDK reference archive
+        id: sdk-reference-cache
+        if: steps.fixtures.outputs.sdk_reference == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/sdk-reference/sdk.zip
+          key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
       - name: Prepare the selected suite
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --browser ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # Saved as soon as preparation verified it, so a run whose tests fail still keeps it for the next run.
+      - name: Save the pinned CLR SDK reference archive
+        if: steps.fixtures.outputs.sdk_reference == 'true' && steps.sdk-reference-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/sdk-reference/sdk.zip') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/sdk-reference/sdk.zip
+          key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --browser --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Collect only synthetic evidence
@@ -265,9 +329,41 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.13'
+      # The code that decides which fixtures preparation downloads names the caches this lane restores.
+      - name: Select the fixture archives this lane prepares
+        id: fixtures
+        run: node scripts/ci.mjs fixtures --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true' && '--sdk' || '' }}
+      # Preparation re-verifies a restored archive by its pinned digest before it extracts it.
+      - name: Restore the pinned ecosystem fixture archives
+        id: ecosystem-cache
+        if: steps.fixtures.outputs.ecosystem == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
+      - name: Restore the pinned CLR SDK reference archive
+        id: sdk-reference-cache
+        if: steps.fixtures.outputs.sdk_reference == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/sdk-reference/sdk.zip
+          key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
       # The complete SDK gate runs once for every applicable PR, beside the first Mirage shard.
       - name: Prepare the selected suite
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true' && '--sdk' || '' }}
+      # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
+      - name: Save the pinned ecosystem fixture archives
+        if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/ecosystem/*.tar.gz
+          key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
+      - name: Save the pinned CLR SDK reference archive
+        if: steps.fixtures.outputs.sdk_reference == 'true' && steps.sdk-reference-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/sdk-reference/sdk.zip') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .paqvilo/ci/sdk-reference/sdk.zip
+          key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       # ServiceClient drops the port from its URL, so its gate binds loopback port 80. The hosted Windows image's kernel

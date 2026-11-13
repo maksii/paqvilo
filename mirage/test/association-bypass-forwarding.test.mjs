@@ -1,4 +1,5 @@
 // @test-kind compatibility: Microsoft Learn bypass custom business logic (CustomSync, CustomAsync, step ids) applied to the Update a 1:N associate implies
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -91,7 +92,7 @@ async function attach(t, store) {
   );
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { seen, backend };
 }
 
@@ -122,7 +123,7 @@ for (const drive of [
           Object.assign(state.mappings, mappings);
           Object.assign(state.tables, tables);
           store = new DataStore({ state });
-          t.after(() => store.close());
+          ownedFixture(t).add(() => store.close());
         }
         const { seen, backend } = await attach(t, store);
         if (drive.startsWith('raw')) {

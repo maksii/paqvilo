@@ -1,4 +1,5 @@
 // @test-kind unproven: the checks in this file exercise data store lifecycle with local fixtures; no native capture establishes the behaviour they assert.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -45,7 +46,7 @@ test('binding a state file to a store without published pages starts later table
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-bind-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new DataStore();
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   const foreign = store.ensureRecordSession();
   const file = path.join(root, 'state.json');
   store.file = file;
@@ -58,7 +59,7 @@ test('binding a state file to a store without published pages starts later table
   store.state.mappings.item = { idColumn: 'itemid', entitySet: 'items' };
   await store.save();
   const reopened = new DataStore({ file });
-  t.after(() => reopened.closeRecordStorage());
+  ownedFixture(t).add(() => reopened.closeRecordStorage());
   await reopened.init();
   assert.equal(reopened.get('items', 'one', { admin: true }).name, 'Bound');
 });

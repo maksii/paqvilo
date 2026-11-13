@@ -25,7 +25,7 @@ async function serveHandler(t, handler) {
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   return `http://127.0.0.1:${server.address().port}`;
 }
 
@@ -206,7 +206,7 @@ test('partial canvas sources remain playable but list and inventory report incom
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const list = await (await fetch(`${url}/_apps/canvas/`, { headers: { accept: 'application/json' } })).json();
   assert.equal(list.apps[0].level, 'inventory');
@@ -255,7 +255,7 @@ test('collision source is inventoried without starting, and real runtime refuses
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const inventory = await (await fetch(`${url}/_apps/canvas/api/collision`)).json();
   assert.equal(inventory.reason, 'CANVAS_SOURCE_NAME_COLLISION');
@@ -288,7 +288,7 @@ test('canvas archive media is served only through bounded same-origin asset rout
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const inventory = await (await fetch(`${url}/_apps/canvas/api/media`)).json();
   assert.deepEqual(inventory.assets, {
@@ -321,7 +321,7 @@ test('player page declares an empty icon so the browser does not request favicon
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const page = await fetch(`http://127.0.0.1:${server.address().port}/_apps/canvas/test`);
   assert.match(await page.text(), /<link rel="icon" href="data:,">/);
 });
@@ -336,7 +336,7 @@ test('the canvas app list page declares an empty icon so the browser does not re
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const html = await (await fetch(`http://127.0.0.1:${server.address().port}/_apps/canvas/`)).text();
   assert.match(html, /<link rel="icon" href="data:,">/);
 });
@@ -364,7 +364,7 @@ async function formStart(t, options, token) {
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/_apps/api/canvas/test`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },

@@ -465,7 +465,7 @@ async function readManifestControl({ root, manifestFile, readFile, schemaName, a
   return { control: record, assets: declaredAssets };
 }
 
-// Read stage for one control. It pushes nothing shared: the fold applies the returned state in readdir order.
+// Read stage for one control. It pushes nothing shared: the fold applies the returned state in control-name order.
 async function readControl({ root, manifestFile, identityFile, readFile }) {
   const state = { supersedes: null, identified: false, diagnostics: [], admitted: new Map() };
   try {
@@ -515,7 +515,7 @@ async function readControlSlot({ parent, name, readFile }) {
     for (const resource of previous?.resources ?? []) assets.delete(resource.url);
     controls.delete(name);
   };
-  // Applied in readdir order, so a declaration still supersedes the earlier control even when its manifest fails.
+  // Applied in control-name order, so a declaration still supersedes the earlier control even when its manifest fails.
   const apply = (result) => {
     if (result.fatal) throw result.fatal;
     if (result.supersedes) forget(result.supersedes);
@@ -532,7 +532,8 @@ async function readControlSlot({ parent, name, readFile }) {
     const layerRoot = await fs.realpath(layer.dir).catch(() => null);
     const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
     if (!parent || !layerRoot || !contained(layerRoot, parent)) continue;
-    const names = await fs.readdir(parent);
+    // Code-unit order, not the file system listing order: a later control supersedes an earlier one.
+    const names = (await fs.readdir(parent)).sort((a, b) => Number(a > b) - Number(a < b));
     // Every control settles before the fold, so a failed read never leaves another read pending.
     const outcomes = await orderedMap(names, 8, (name) => attempt(() => readControlSlot({ parent, name, readFile })));
     for (const outcome of outcomes) {

@@ -1,4 +1,5 @@
 // @test-kind contract: Explicit metadata epoch observations preserve synthesized defaults and follow configuration changes independently of data edits.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -75,9 +76,9 @@ test('HTTP CSDL and record annotations share an explicitly configured source epo
       ],
     }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const api = await startDataverseApi({ organization });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   const tokenResponse = await fetch(api.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({

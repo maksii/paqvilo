@@ -57,7 +57,7 @@ async function fixture(
     allowLiveWrites,
     watch: false,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });
   });

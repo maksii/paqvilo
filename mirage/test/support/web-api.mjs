@@ -1,4 +1,85 @@
 // Shared invented-client helpers for tests that call a running local Dataverse Web API.
+import { dataverseSettings } from '../../lib/dataverse-settings.mjs';
+import { startDataverseApi } from '../../lib/dataverse-api.mjs';
+import { ownedFixture } from '../../testing/owned-fixture.mjs';
+
+const ADMIN_APP = '55555555-5555-4555-8555-555555555555';
+
+/** Metadata request bodies: a label in language 1033, a text column and an organization-owned table named fx_Name. */
+export const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
+export const stringColumn = (schema, extra = {}) => ({
+  '@odata.type': '#Microsoft.Dynamics.CRM.StringAttributeMetadata',
+  SchemaName: schema,
+  DisplayName: label(schema),
+  FormatName: { Value: 'Text' },
+  ...extra,
+});
+export const tableBody = (schema) => ({
+  '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
+  SchemaName: schema,
+  DisplayName: label(schema),
+  DisplayCollectionName: label(schema + 's'),
+  Description: label(''),
+  OwnershipType: 'OrganizationOwned',
+  IsActivity: false,
+  HasActivities: false,
+  HasNotes: false,
+  Attributes: [stringColumn('fx_Name', { IsPrimaryName: true, MaxLength: 100 })],
+});
+let secrets = 0;
+
+/**
+ * Starts a local Dataverse Web API over `store` with one invented System Administrator application, released with the
+ * test `owner`, and signs that application in. `extensions` replaces the API's extension list. Answers `{ api, request }`.
+ */
+export async function startAdminApi(owner, store, { extensions } = {}) {
+  const variable = `PAQ_ADMIN_APP_SECRET_${process.pid}_${++secrets}`;
+  process.env[variable] = 'invented-secret';
+  const settings = dataverseSettings({
+    enabled: true,
+    tds: { enabled: false },
+    applications: [
+      {
+        appId: ADMIN_APP,
+        displayName: 'Invented',
+        secretEnvironmentVariable: variable,
+        roles: ['System Administrator'],
+      },
+    ],
+  });
+  const api = await startDataverseApi({ store, settings, extensions, log: () => {} });
+  ownedFixture(owner).add(async () => {
+    delete process.env[variable];
+    await api.close();
+  });
+  return { api, request: await signedInRequester(api, ADMIN_APP, 'invented-secret') };
+}
+
+/**
+ * Serves the Web API of an organization runtime, releasing the API and then the runtime with the test `owner`, and signs
+ * application `appId` in with `secret`. Answers `{ transport, token }`, the access token.
+ */
+export async function serveOrganization(owner, runtime, appId, secret) {
+  const transport = await startDataverseApi({ organization: runtime });
+  ownedFixture(owner).add(async () => {
+    await transport.close();
+    await runtime.close();
+  });
+  const token = (
+    await (
+      await fetch(transport.authority + '/oauth2/v2.0/token', {
+        method: 'POST',
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: appId,
+          client_secret: secret,
+          scope: transport.origin + '/.default',
+        }),
+      })
+    ).json()
+  ).access_token;
+  return { transport, token };
+}
 
 /** JSON request bound to a bearer header; answers `{ status, headers, json }`. */
 export function jsonRequester(base, authorization) {

@@ -16,7 +16,7 @@ import { createTraceStore } from '../lib/trace-store.mjs';
 import { createAzuriteStorage } from '../lib/storage-azurite.mjs';
 import { createSharePointFixtureServer } from '../lib/sharepoint-contract.mjs';
 import { startAzuriteFake, FAKE_ACCOUNT_KEY } from '../testing/azurite-fake.mjs';
-import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { personaFixture } from './fixtures/persona-catalog.mjs';
 import { endedTree as ended } from './support/trace-scenario.mjs';
 
@@ -934,7 +934,7 @@ test('Power Pages: a staff-session write without the simulator CSRF token is a r
 test('Azurite Blob requests are http-out spans of the current trace without their bytes; a refused key names the Azure code', async (t) => {
   const traces = createTraceStore({ settings: { level: 'full' } });
   const fake = await startAzuriteFake();
-  t.after(() => fake.close());
+  ownedFixture(t).add(() => fake.close());
   const storage = (key = FAKE_ACCOUNT_KEY) =>
     createAzuriteStorage({
       id: 'fxblob',
@@ -980,7 +980,7 @@ test('the SharePoint fixture server opens a root per request joined to its calle
       items: [{ driveId: 'drive-a', path: 'x_case/notes.txt', content: 'hello', contentType: 'text/plain' }],
     },
   });
-  t.after(() => fixture.close());
+  ownedFixture(t).add(() => fixture.close());
   const caller = traces.start({ kind: 'http-out', name: 'GET children' });
   const listed = await fetch(`${fixture.url}/v1.0/sites/site-a/drives/drive-a/root:/x_case:/children`, {
     headers: traces.headers(caller),

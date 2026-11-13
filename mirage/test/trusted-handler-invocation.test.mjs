@@ -56,111 +56,107 @@ test('a live working target retains store identity equivalence and expires after
 
 for (const mode of ['on-demand', 'real-time trigger', 'background trigger'])
   for (const failure of [false, true])
-    test(
-      `classic ${mode} detaches information and fences retained capabilities after ${failure ? 'failure' : 'success'}`,
-      { timeout: 30000 },
-      async (t) => {
-        const entered = deferred(),
-          release = deferred();
-        t.after(() => release.resolve());
-        let retained, retainedRows, sdk, original, callerId;
-        const f = await contractModuleFixture(t, {
-          mappings,
-          tables: { child: [{ childid: targetId, title: 'Original target' }] },
-          extension: workflowExtension({
-            facts: [
-              {
-                id: workflowId,
-                name: 'Invented lifetime',
-                category: 0,
-                type: 1,
-                mode: mode === 'background trigger' ? 0 : 1,
-                scope: 4,
-                ondemand: mode === 'on-demand',
-                triggeroncreate: mode !== 'on-demand',
-                primaryentity: 'child',
-                state: 1,
-                xaml: '<Activity />',
-                clientdata: null,
+    test(`classic ${mode} detaches information and fences retained capabilities after ${failure ? 'failure' : 'success'}`, async (t) => {
+      const entered = deferred(),
+        release = deferred();
+      t.after(() => release.resolve());
+      let retained, retainedRows, sdk, original, callerId;
+      const f = await contractModuleFixture(t, {
+        mappings,
+        tables: { child: [{ childid: targetId, title: 'Original target' }] },
+        extension: workflowExtension({
+          facts: [
+            {
+              id: workflowId,
+              name: 'Invented lifetime',
+              category: 0,
+              type: 1,
+              mode: mode === 'background trigger' ? 0 : 1,
+              scope: 4,
+              ondemand: mode === 'on-demand',
+              triggeroncreate: mode !== 'on-demand',
+              primaryentity: 'child',
+              state: 1,
+              xaml: '<Activity />',
+              clientdata: null,
+            },
+          ],
+          handlers: new Map([
+            [
+              workflowId,
+              async (ctx) => {
+                retained = ctx;
+                callerId = ctx.caller.systemuserid;
+                assert.notEqual(ctx.caller, original);
+                ctx.caller.fullname = 'Informational caller';
+                ctx.caller.isdisabled = true;
+                ctx.workflow.activeworkflowid.id = targetId;
+                ctx.target.row.title = 'Target view edit';
+                retainedRows = ctx.api.store.tableRows('child');
+                retainedRows.push({ childid: effectId, title: 'Active API effect' });
+                sdk = localOrganizationService(ctx.api.store, {
+                  userId: original.systemuserid,
+                  evidence: 'Invented workflow scoped service',
+                  grants: [{ entity: 'child', operations: ['create'] }],
+                });
+                entered.resolve();
+                await release.promise;
+                if (failure) throw new Error('Controlled workflow rollback');
+                return { message: 'Completed' };
               },
             ],
-            handlers: new Map([
-              [
-                workflowId,
-                async (ctx) => {
-                  retained = ctx;
-                  callerId = ctx.caller.systemuserid;
-                  assert.notEqual(ctx.caller, original);
-                  ctx.caller.fullname = 'Informational caller';
-                  ctx.caller.isdisabled = true;
-                  ctx.workflow.activeworkflowid.id = targetId;
-                  ctx.target.row.title = 'Target view edit';
-                  retainedRows = ctx.api.store.tableRows('child');
-                  retainedRows.push({ childid: effectId, title: 'Active API effect' });
-                  sdk = localOrganizationService(ctx.api.store, {
-                    userId: original.systemuserid,
-                    evidence: 'Invented workflow scoped service',
-                    grants: [{ entity: 'child', operations: ['create'] }],
-                  });
-                  entered.resolve();
-                  await release.promise;
-                  if (failure) throw new Error('Controlled workflow rollback');
-                  return { message: 'Completed' };
-                },
-              ],
-            ]),
-          }),
-        });
-        original = actor(f);
-        const originalName = original.fullname;
-        const pending =
-          mode === 'on-demand'
-            ? f.request('POST', `/workflows(${workflowId})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, {
-                EntityId: targetId,
-              })
-            : f.request('POST', '/children', { title: 'Triggering row' });
-        await entered.promise;
-        release.resolve();
-        const response = await pending;
-        if (mode === 'background trigger') {
-          assert.equal(response.status, 201);
-          await committedJobs(f.store).drain();
-          const jobs = f.store.tableRows('asyncoperation').filter((row) => row.operationtype === 10);
-          assert.equal(jobs.length, 1);
-          assert.equal(jobs[0].statuscode, failure ? 31 : 30);
-        } else assert.equal(response.status >= 400, failure, await response.text());
-        assert.equal(actor(f).fullname, originalName);
-        assert.equal(actor(f).isdisabled, false);
-        assert.notEqual(
-          f.store.tableRows('workflow').find((row) => row.workflowid === workflowId).activeworkflowid.id,
-          targetId,
-        );
+          ]),
+        }),
+      });
+      original = actor(f);
+      const originalName = original.fullname;
+      const pending =
+        mode === 'on-demand'
+          ? f.request('POST', `/workflows(${workflowId})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, {
+              EntityId: targetId,
+            })
+          : f.request('POST', '/children', { title: 'Triggering row' });
+      await entered.promise;
+      release.resolve();
+      const response = await pending;
+      if (mode === 'background trigger') {
+        assert.equal(response.status, 201);
+        await committedJobs(f.store).drain();
+        const jobs = f.store.tableRows('asyncoperation').filter((row) => row.operationtype === 10);
+        assert.equal(jobs.length, 1);
+        assert.equal(jobs[0].statuscode, failure ? 31 : 30);
+      } else assert.equal(response.status >= 400, failure, await response.text());
+      assert.equal(actor(f).fullname, originalName);
+      assert.equal(actor(f).isdisabled, false);
+      assert.notEqual(
+        f.store.tableRows('workflow').find((row) => row.workflowid === workflowId).activeworkflowid.id,
+        targetId,
+      );
+      assert.equal(
+        f.store.tableRows('child').some((row) => row.childid === effectId),
+        !failure,
+      );
+      if (!failure) {
+        const target = f.store.tableRows('child').find((row) => row.childid === retained.target.id);
         assert.equal(
-          f.store.tableRows('child').some((row) => row.childid === effectId),
-          !failure,
+          target.title,
+          mode === 'real-time trigger'
+            ? 'Target view edit'
+            : mode === 'background trigger'
+              ? 'Triggering row'
+              : 'Original target',
         );
-        if (!failure) {
-          const target = f.store.tableRows('child').find((row) => row.childid === retained.target.id);
-          assert.equal(
-            target.title,
-            mode === 'real-time trigger'
-              ? 'Target view edit'
-              : mode === 'background trigger'
-                ? 'Triggering row'
-                : 'Original target',
-          );
-        }
-        retained.caller.fullname = 'Late passive caller edit';
-        retained.workflow.activeworkflowid.id = targetId;
-        assert.equal(retained.caller.systemuserid, callerId);
-        assert.ok(f.store.tableRows('systemuser').some((row) => row.systemuserid === callerId));
-        expired(() => retained.api.store.tableRows('systemuser'));
-        expired(() => retainedRows.push({ childid: targetId, title: 'Late row' }));
-        expired(() => sdk.create('child', { title: 'Late service write' }));
-        assert.equal(actor(f).fullname, originalName);
-        assert.equal(actor(f).isdisabled, false);
-      },
-    );
+      }
+      retained.caller.fullname = 'Late passive caller edit';
+      retained.workflow.activeworkflowid.id = targetId;
+      assert.equal(retained.caller.systemuserid, callerId);
+      assert.ok(f.store.tableRows('systemuser').some((row) => row.systemuserid === callerId));
+      expired(() => retained.api.store.tableRows('systemuser'));
+      expired(() => retainedRows.push({ childid: targetId, title: 'Late row' }));
+      expired(() => sdk.create('child', { title: 'Late service write' }));
+      assert.equal(actor(f).fullname, originalName);
+      assert.equal(actor(f).isdisabled, false);
+    });
 
 async function batch(f, name) {
   const token = await (
@@ -204,72 +200,68 @@ async function batch(f, name) {
 }
 
 for (const mode of ['standalone success', 'changeset success', 'changeset failure'])
-  test(
-    `trusted addon ${mode} retains passive information without exposing committed aliases or stale APIs`,
-    { timeout: 30000 },
-    async (t) => {
-      const entered = deferred(),
-        release = deferred();
-      t.after(() => release.resolve());
-      let retained, original, rows;
-      const name = 'invented_Override';
-      const f = await contractModuleFixture(t, {
-        mappings,
-        tables: { child: [] },
-        extension: {
-          name: 'invented-lifetime',
-          install(api) {
-            registerAddon(api, {
+  test(`trusted addon ${mode} retains passive information without exposing committed aliases or stale APIs`, async (t) => {
+    const entered = deferred(),
+      release = deferred();
+    t.after(() => release.resolve());
+    let retained, original, rows;
+    const name = 'invented_Override';
+    const f = await contractModuleFixture(t, {
+      mappings,
+      tables: { child: [] },
+      extension: {
+        name: 'invented-lifetime',
+        install(api) {
+          registerAddon(api, {
+            name,
+            kind: 'action',
+            binding: 'unbound',
+            signature: {},
+            fallback: () => new Error('Missing handler'),
+          });
+          api.addonHandlers = new Map([
+            [
               name,
-              kind: 'action',
-              binding: 'unbound',
-              signature: {},
-              fallback: () => new Error('Missing handler'),
-            });
-            api.addonHandlers = new Map([
-              [
-                name,
-                {
-                  handler: async (ctx) => {
-                    retained = ctx;
-                    assert.notEqual(ctx.caller, original);
-                    assert.notEqual(ctx.user, original);
-                    ctx.caller.fullname = 'Informational caller';
-                    ctx.user.isdisabled = true;
-                    ctx.args.Meta.title = 'Informational input';
-                    rows = ctx.api.store.tableRows('child');
-                    rows.push({ childid: effectId, title: 'Active addon effect' });
-                    entered.resolve();
-                    await release.promise;
-                    if (mode === 'changeset failure') throw new Error('Controlled addon rollback');
-                    return { Child: rows[0] };
-                  },
+              {
+                handler: async (ctx) => {
+                  retained = ctx;
+                  assert.notEqual(ctx.caller, original);
+                  assert.notEqual(ctx.user, original);
+                  ctx.caller.fullname = 'Informational caller';
+                  ctx.user.isdisabled = true;
+                  ctx.args.Meta.title = 'Informational input';
+                  rows = ctx.api.store.tableRows('child');
+                  rows.push({ childid: effectId, title: 'Active addon effect' });
+                  entered.resolve();
+                  await release.promise;
+                  if (mode === 'changeset failure') throw new Error('Controlled addon rollback');
+                  return { Child: rows[0] };
                 },
-              ],
-            ]);
-          },
+              },
+            ],
+          ]);
         },
-      });
-      original = actor(f);
-      const originalName = original.fullname;
-      const pending = mode.startsWith('changeset')
-        ? batch(f, name)
-        : f.request('POST', '/' + name, { Meta: { title: 'Original input' } });
-      await entered.promise;
-      release.resolve();
-      const response = await pending;
-      const body = await response.text();
-      assert.equal(response.status >= 400, mode === 'changeset failure', body);
-      if (mode !== 'changeset failure')
-        assert.match(body, /Active addon effect/, 'returned guarded rows are detached before response serialization');
-      assert.equal(f.store.tableRows('child').length, mode === 'changeset failure' ? 0 : 1);
-      assert.equal(actor(f).fullname, originalName);
-      assert.equal(actor(f).isdisabled, false);
-      retained.caller.fullname = 'Late passive addon edit';
-      retained.args.Meta.title = 'Late passive input';
-      assert.equal(retained.caller.systemuserid, original.systemuserid);
-      expired(() => retained.api.store.tableRows('systemuser'));
-      expired(() => rows.push({ childid: targetId, title: 'Late addon row' }));
-      assert.equal(actor(f).fullname, originalName);
-    },
-  );
+      },
+    });
+    original = actor(f);
+    const originalName = original.fullname;
+    const pending = mode.startsWith('changeset')
+      ? batch(f, name)
+      : f.request('POST', '/' + name, { Meta: { title: 'Original input' } });
+    await entered.promise;
+    release.resolve();
+    const response = await pending;
+    const body = await response.text();
+    assert.equal(response.status >= 400, mode === 'changeset failure', body);
+    if (mode !== 'changeset failure')
+      assert.match(body, /Active addon effect/, 'returned guarded rows are detached before response serialization');
+    assert.equal(f.store.tableRows('child').length, mode === 'changeset failure' ? 0 : 1);
+    assert.equal(actor(f).fullname, originalName);
+    assert.equal(actor(f).isdisabled, false);
+    retained.caller.fullname = 'Late passive addon edit';
+    retained.args.Meta.title = 'Late passive input';
+    assert.equal(retained.caller.systemuserid, original.systemuserid);
+    expired(() => retained.api.store.tableRows('systemuser'));
+    expired(() => rows.push({ childid: targetId, title: 'Late addon row' }));
+    assert.equal(actor(f).fullname, originalName);
+  });

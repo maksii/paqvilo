@@ -1,4 +1,5 @@
 // @test-kind observation: two published native Code Apps player captures in fixtures/code-apps-context-native.json (raw sha256 2d70c507..., 2026-11-08) bind 13 typed context rows and four cache rows; the authored query string and identities are typed in this test rather than recorded, so it is not a replay case.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -50,7 +51,7 @@ test('local context reproduces native required fields, authored query decoding a
     if (!(await handler(req, res))) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const search =
     '?' +

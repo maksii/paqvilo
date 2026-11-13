@@ -1,4 +1,5 @@
 // @test-kind contract: standalone Mirage projects and catalogues start, reuse and stop only the profile they select.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -30,6 +32,11 @@ const toolkit = async (args, options = {}) =>
       )
     ).stdout,
   );
+/** Hands the runtime a start answer reports to the test's owner, which ends it after the test if it is still running. */
+const own = (t) => (session) => {
+  ownStartedRuntimes(t, session);
+  return session;
+};
 /** Awaits every independent command before reporting the first failure, so cleanup never races a pending start. */
 const settled = async (...promises) => {
   const results = await Promise.allSettled(promises);
@@ -76,12 +83,12 @@ test('public project inspect/start/reuse/stop works without any portal or catalo
   await fs.writeFile(project, text);
   const run = (...args) => toolkit(['mirage', ...args, '--project', project, '--json'], { cwd: directory });
   let running = true;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (running) await run('stop').catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
   });
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   // Offline inspection does not depend on the runtime, so it runs while the runtime starts.
-  const [inspected, started] = await settled(run('inspect'), run('start', '--port', '0'));
+  const [inspected, started] = await settled(run('inspect'), run('start', '--port', '0').then(own(t)));
   assert.equal(inspected.runtime.kind, 'model-driven');
   assert.deepEqual(inspected.portals, []);
   assert.equal(started.started, true);
@@ -102,7 +109,7 @@ test('public project inspect/start/reuse/stop works without any portal or catalo
   const state = await (await fetch(started.url + '/_sim/api/status')).json();
   assert.equal(state.runtime.kind, 'model-driven');
   assert.equal(state.simulation.level, 'dry-run');
-  const reused = await run('start', '--port', '0');
+  const reused = own(t)(await run('start', '--port', '0'));
   assert.equal(reused.started, false);
   assert.equal(reused.pid, started.pid);
   // Execute the exact advertised selection, including from the toolkit checkout
@@ -126,14 +133,14 @@ test('catalogue standalone lifecycle needs no source or environment and stops on
   const run = (site, command, ...args) =>
     toolkit(['mirage', command, '--config', config, '--site', site, '--json', ...args], { cwd: directory });
   const running = new Set(['first', 'second']);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const site of running) await run(site, 'stop').catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
   });
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const [inspected, first, second] = await settled(
     run('first', 'inspect'),
-    run('first', 'start', '--port', '0'),
-    run('second', 'start', '--port', '0'),
+    run('first', 'start', '--port', '0').then(own(t)),
+    run('second', 'start', '--port', '0').then(own(t)),
   );
   assert.equal(inspected.runtime.kind, 'model-driven');
   assert.equal(first.started, true);
@@ -157,7 +164,7 @@ test('catalogue standalone lifecycle needs no source or environment and stops on
   ]);
   assert.equal(second.started, true);
   assert.notEqual(first.pid, second.pid);
-  assert.equal((await run('first', 'start', '--port', '0')).pid, first.pid);
+  assert.equal(own(t)(await run('first', 'start', '--port', '0')).pid, first.pid);
   const status = await (await fetch(first.url + '/_setup/api/status')).json();
   assert.equal(status.layers.shared.file, config);
   const stopped = await run('first', 'stop');
@@ -178,14 +185,14 @@ test('projectless stop hints retain runtime, Solution and state selectors withou
   const run = (...args) => toolkit(['mirage', ...args, '--json'], { cwd: directory });
   const replay = (hint) => toolkit([...stopArguments(hint), '--json'], { cwd: directory });
   const start = async (...args) => {
-    const session = await run('start', ...args);
+    const session = own(t)(await run('start', ...args));
     running.set(session.pid, session.stop);
     return session;
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const hint of running.values()) await replay(hint).catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
   });
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   // The two runtimes have their own Solution root and state file, so they start concurrently.
   const [first, sibling] = await settled(
     ...['first', 'sibling'].map(async (name) => {
@@ -260,17 +267,17 @@ test('project and catalogue stop hints replay explicit runtime overrides instead
   );
   const running = new Map();
   const run = (args) => toolkit([...args, '--json'], { cwd: directory });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const hint of running.values()) await run(stopArguments(hint)).catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
   });
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   // Both selections run at once and share this directory's Mirage records: each replayed stop must stop only its own.
   await settled(
     ...[
       ['--project', project],
       ['--config', catalogue, '--site', 'invented'],
     ].map(async (selection) => {
-      const active = await run(['mirage', 'start', ...selection, '--runtime', 'dataverse-api', '--port', '0']);
+      const active = own(t)(await run(['mirage', 'start', ...selection, '--runtime', 'dataverse-api', '--port', '0']));
       running.set(active.pid, active.stop);
       assert.ok(stopArguments(active.stop).includes('dataverse-api'));
       const stopped = await run(stopArguments(active.stop));

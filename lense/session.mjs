@@ -81,7 +81,9 @@ export class OverlaySession extends EventEmitter {
         sourceMaps: Boolean(cfg.sourceMaps),
         disabled,
       }),
-      gitHead(cfg.sourceDir),
+      // HEAD is shown, never used to serve sources: a Git that does not answer leaves it unknown (null) and the
+      // source watcher's next HEAD check fills it in once Git answers. The baseline keeps its own state.
+      gitHead(cfg.sourceDir).catch(() => null),
     ]);
     const session = new OverlaySession(cfg, { model, baseline, changedFiles, disabled, rewriter });
     // Nothing can listen yet, so the first HEAD needs no 'head' event.

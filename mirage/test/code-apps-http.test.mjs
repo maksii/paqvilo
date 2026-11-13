@@ -1,11 +1,12 @@
 // @test-kind unproven: mixed local host policies and native SDK/context shapes require per-guarantee proof; the exact reused native assertion below is scoped separately.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { assertNoElements } from './assert-markup.mjs';
 import http from 'node:http';
-import { createCodeAppsHandler, authorityTokenIssuer } from '../lib/code-apps-http.mjs';
+import { codeAppProbe, createCodeAppsHandler, authorityTokenIssuer } from '../lib/code-apps-http.mjs';
 import { createAuthority } from '../lib/dataverse-auth.mjs';
 import { sequentialIds } from '../lib/runtime-clock.mjs';
 import { captureCodeAppContextContract } from '../testing/code-apps-contract.mjs';
@@ -84,7 +85,7 @@ async function fixture(t, { apps, connectors, ids } = {}) {
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const url = `http://127.0.0.1:${server.address().port}`;
   const request = (path, { method = 'GET', staff = STAFF, csrf, body, headers = {} } = {}) =>
     fetch(url + path, {
@@ -189,7 +190,14 @@ test('per-load session IDs and app settings refresh without exposing settings in
   assert.doesNotMatch(JSON.stringify(inventory), /changed-private-value/);
 });
 
+// hang guard only: the probe's own 1.5 s limit is not what this test is about, and a loaded machine can stall that long
+const PROBE_HANG_GUARD_MS = 170_000;
 test('workbench serves bounded assets, sanitized inventory and redirect-free reachability probes', async (t) => {
+  const { timeoutMs } = codeAppProbe;
+  codeAppProbe.timeoutMs = PROBE_HANG_GUARD_MS;
+  t.after(() => {
+    codeAppProbe.timeoutMs = timeoutMs;
+  });
   let probes = 0;
   const target = http.createServer((req, res) => {
     assert.equal(req.method, 'HEAD');
@@ -198,7 +206,7 @@ test('workbench serves bounded assets, sanitized inventory and redirect-free rea
     res.end();
   });
   await new Promise((resolve) => target.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => target.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => target.close(resolve)));
   const origin = `http://127.0.0.1:${target.address().port}`;
   const { request } = await fixture(t, {
     apps: [

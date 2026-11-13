@@ -1,5 +1,6 @@
 // @test-kind parity: native recorder corpus webApiNamed, soapMessages and mergeAccount (native and native-r2): a named message no plug-in issued owns the request's changes in its PostOperation SharedVariables (sync and asynchronous): sharing lists principalobjectaccess then the table with POADistributionChanged 10760, Merge principalobjectaccess and the table with 1; PreValidation, PreOperation and access reads list none
 // Invented tables, identities and messages only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -67,7 +68,7 @@ async function fixture(t, steps) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 

@@ -1,4 +1,5 @@
 // @test-kind contract: a refused local state read names its HTTP status and JSON error code, never the body, and keeps a fetch failure as its cause; the local runtime is a fake loopback server
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -10,7 +11,7 @@ async function fakeRuntime(t, respond) {
   const server = http.createServer(respond);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
@@ -60,7 +61,7 @@ test('a failed connection to the local runtime keeps its own error as the cause,
   dropping.on('connection', (socket) => socket.destroy());
   dropping.listen(0, '127.0.0.1');
   await once(dropping, 'listening');
-  t.after(() => new Promise((resolve) => dropping.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => dropping.close(resolve)));
   const localUrl = `http://127.0.0.1:${dropping.address().port}`;
   await assert.rejects(compareReferenceContracts(options(localUrl)), (error) => {
     assert.equal(error.message, `Local runtime state request to ${localUrl} failed.`);

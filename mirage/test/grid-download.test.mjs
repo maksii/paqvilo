@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { model, parentId } from './fixtures/subgrid.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { readSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { createMappedTables, createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 
@@ -163,7 +163,7 @@ async function downloadFixture(t, { rows, maximumResults, anonymousReadable, typ
     initial: state,
     watch: false,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });
   });

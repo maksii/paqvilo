@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo project configuration parses invented power.config.json inputs read-only and reports its own diagnostics, overrides, reference bindings and inventory records.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -399,7 +400,7 @@ async function loopbackServer(t, handler) {
     connections += 1;
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();

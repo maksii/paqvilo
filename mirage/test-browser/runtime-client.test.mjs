@@ -11,7 +11,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime } from '../testing.mjs';
 import { captureShell } from '../capture-shell.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('running-runtime client signs a Playwright context in and out with the configured persona', async () => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-client-'));
@@ -62,7 +62,7 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     );
   });
   await new Promise((resolve) => echo.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         echo.closeAllConnections();

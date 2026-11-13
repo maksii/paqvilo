@@ -9,7 +9,7 @@ import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const user = '10000000-0000-4000-8000-000000000001';
@@ -37,7 +37,7 @@ async function fixture(t) {
   const sdk = clrSdk(),
     source = path.join(root, 'Retry.cs'),
     assembly = path.join(root, 'Retry.dll');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const runner of runners) await runner.close();
     if (runtime) await closeClrHostPool({ runtime });
     for (const store of stores) store.close();
@@ -116,7 +116,7 @@ if(mode=="always"||attempt<3)throw new InvalidPluginExecutionException(Operation
 // @test-kind parity: native asyncRetry (one capture, two concurrent runs): an always-Retry step executes five times and ends Failed with retrycount 4; coded and plain exceptions execute once; every failure has errorcode 0x80040265 and the authored text as friendlymessage; failed attempts' writes persist
 test(
   'original CLR async Retry has five independent executions, fresh contexts and preserved completed SDK effects',
-  { skip: CLR_SKIP, timeout: 180000 },
+  { skip: CLR_SKIP },
   async (t) => {
     const f = await fixture(t);
     for (const mode of ['always', 'eventual', 'failed', 'ordinary'])

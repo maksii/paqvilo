@@ -48,7 +48,7 @@ declarations; those were also removed. Supported API names remain unchanged.
 | A10     | Legacy operator contract documented and tested through DataStore.                                                                          |
 | A11–A15 | Reviewed all 199 export candidates; further unused facades/modifiers cleaned up on rerun.                                                  |
 | A16     | Shared ordered mapper with strict/clamped adapters; adjacent static prefetch pools included.                                               |
-| A17     | Shared traversal mechanics with explicit import-order and fingerprint policies.                                                            |
+| A17     | Shared traversal lists in code-unit name order; import order and the fingerprints use that one order.                                      |
 | A18     | Shared bounded XML decoder; invalid numeric references remain text instead of throwing.                                                    |
 | A19     | Shared synthetic metadata-version hash/cache.                                                                                              |
 | A20–A21 | Shared message context/read dispatch and security reader with explicit effective principal.                                                |

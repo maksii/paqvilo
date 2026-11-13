@@ -1,6 +1,7 @@
 // @test-kind compatibility: Microsoft Learn Web service error code 0x8004418d SandboxWorkerNotAvailable for a crashed sandbox worker process
 // Invented C# plug-in. The pooled host is terminated while it is idle, as when a thread the plug-in left running kills it after
 // Execute returned. The next step must run on a fresh host, never wait for its deadline as a timeout.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -18,7 +19,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-idle-crash-'));
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await closeClrHostPool();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

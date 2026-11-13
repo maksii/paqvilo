@@ -1,3 +1,4 @@
+import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import { sdkMessages } from '../pack/dataverse-plugins.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +31,7 @@ test('account demo renders source metadata, enforces sign-in and supports relate
     port: 0,
     watch: false,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await sim.applyPreset('example-demo');
   const contact = 'a4300000-0000-4000-8000-000000002001',
     account = 'a4300000-0000-4000-8000-000000001001';

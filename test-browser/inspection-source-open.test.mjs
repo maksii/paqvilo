@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -9,7 +10,7 @@ test('guarded opening reads a retained control before paint instead of trusting 
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   let context;
   // t.after hooks run in registration order: close the context before its browser.
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context?.close();
     await browser.close();
   });

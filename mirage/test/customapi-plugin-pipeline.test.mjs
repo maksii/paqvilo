@@ -1,4 +1,5 @@
 // @test-kind unproven: local model of custom API stages, bypass, Power Fx fencing and depth (cap 12: native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182)
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -29,7 +30,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-entity-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'EntityMain.cs'),
       assembly = path.join(root, 'OriginalMain.dll');
@@ -86,7 +87,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-main-child-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Child.cs'),
       assembly = path.join(root, 'Child.dll');
@@ -255,7 +256,7 @@ async function fixture(
     scheduler,
     diagnostic: (entry) => diagnostics.push(entry),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const call = (Text = 'Authored', headers = {}) =>
     operations
       .find((op) => op.name === name)
@@ -436,7 +437,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-bound-main-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Bound.cs'),
       assembly = path.join(root, 'OriginalMain.dll');
@@ -656,7 +657,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-typed-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'TypedBridge.cs'),
       assembly = path.join(root, 'TypedBridge.dll');
@@ -903,7 +904,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-stages-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Registered.cs'),
       assembly = path.join(root, 'Registered.dll');
@@ -933,7 +934,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-main-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'OriginalMain.cs'),
       assembly = path.join(root, 'OriginalMain.dll');
@@ -1041,7 +1042,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-caller-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Caller.cs'),
       assembly = path.join(root, 'Caller.dll');
@@ -1162,7 +1163,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-subclass-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Subclass.cs'),
       assembly = path.join(root, 'Subclass.dll');

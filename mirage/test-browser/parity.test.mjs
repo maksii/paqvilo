@@ -6,10 +6,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { verifyParity } from '../verify.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { devToolsActivePort } from './shared-browser.mjs';
 
 // Pinned Playwright exposes its in-process implementation to tests. Gate the
@@ -203,14 +204,14 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   const liveOrigin = await serve(false);
   const localOrigin = await serve(true);
   let context;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context?.close();
     for (const server of servers) {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
     // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   const profile = path.join(directory, 'profile');
   context = await chromium.launchPersistentContext(
@@ -409,13 +410,13 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
   const origin = `http://127.0.0.1:${server.address().port}`;
   let context;
   let owned;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await owned?.close();
     await context?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   const profile = path.join(directory, 'profile');
   context = await chromium.launchPersistentContext(
@@ -543,13 +544,15 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
   );
   assert.equal(facts.powerPages, null);
   await anonymous.close();
-  let pageTargets = [];
-  for (let attempt = 0; attempt < 50; attempt++) {
+  // The browser drops closed tabs from its target list on its own schedule: poll until one page is left. The test's
+  // own timeout is the only bound.
+  let pageTargets;
+  for (;;) {
     pageTargets = (await (await fetch(`http://127.0.0.1:${port}/json/list`, { redirect: 'error' })).json()).filter(
       (target) => target.type === 'page',
     );
     if (pageTargets.length === 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await delay(100, undefined, { signal: t.signal });
   }
   assert.deepEqual(
     pageTargets.map((target) => new URL(target.url).pathname),

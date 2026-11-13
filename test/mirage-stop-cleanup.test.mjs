@@ -1,6 +1,7 @@
 // @test-kind tooling: test-harness workspace reaper never leaves Mirage runtimes behind
 // The stop-scope workspace never leaves a runtime behind: not when a test fails or times out while
 // a CLI is still starting one, and not when the test process itself ends abruptly.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -232,7 +233,7 @@ test('a stop removes the start-up log of a ready runtime that acknowledged its s
     response.end(JSON.stringify({ csrf: 'invented-csrf' }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     server.close();
   });

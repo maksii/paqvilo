@@ -11,7 +11,7 @@ import { queryExpressionToFetch } from '../lib/plugin-sdk-query.mjs';
 import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = (number) => `20000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 const identity = {
@@ -200,7 +200,7 @@ test(
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-crm-negation-'));
     let runtime, backend;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await backend?.close();
       if (runtime) closeClrHostPool({ runtime });
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });

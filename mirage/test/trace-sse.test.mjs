@@ -3,6 +3,7 @@
 // nothing (the write that returns false waits for drain instead of counting towards a drop), the trace channel delivers
 // every frame of a burst to connectRuntime().trace.subscribe, and traces.flush() settles only once the frames reached the
 // socket. Every step waits on stream events or promises, never on time.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -18,7 +19,7 @@ const CSRF = 'invented-csrf';
 async function serve(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

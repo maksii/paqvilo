@@ -11,8 +11,9 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createOwnedPageBindings } from '../lense/owned-page-binding.mjs';
 import { comparison } from '../lense/panel.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
 import { drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
@@ -42,7 +43,7 @@ const OWNED_CALL_CAPACITY = 32;
 async function fixture(t) {
   const context = await browser.newContext();
   const owned = [];
-  t.after(() => drainFixture([...owned.toReversed(), () => context.close()]));
+  ownedFixture(t).add(() => drainFixture([...owned.toReversed(), () => context.close()]));
   const page = await context.newPage();
   await page.goto(origin);
   return { context, page, origin, own: (close) => owned.push(close) };
@@ -63,16 +64,16 @@ const rejectionOf = (page, value) =>
 async function persistentFixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'owned-binding-test-'))),
     owner = ownedFixture(t);
-  owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const port = await freeDebugPort();
+  owner.remove(() => fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const context = await chromium.launchPersistentContext(
     root,
     browserLaunchOptions({
       headless: true,
-      args: ['--remote-debugging-port=' + port],
+      args: ANY_DEBUG_PORT_ARGS,
     }),
   );
   owner.add(() => context.close());
+  const port = await devToolsPort(root);
   const page = context.pages()[0];
   await page.goto(origin);
   return { context, page, origin, port };
@@ -101,7 +102,7 @@ test('persistent binding fixture releases its browser and profile after initial 
   let context, profile;
   const owner = ownedFixture(t);
   owner.add(() => context?.close());
-  owner.remove(() => profile && fs.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  owner.remove(() => profile && fs.rm(profile, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   t.mock.method(chromium, 'launchPersistentContext', async (directory, ...args) => {
     profile = directory;
     context = await launch(directory, ...args);

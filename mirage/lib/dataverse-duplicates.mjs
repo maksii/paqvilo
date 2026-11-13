@@ -549,7 +549,9 @@ export function parseDuplicateRuleXml(text) {
 /** Reads a solution's duplicaterules folder (one folder per rule) into rows keyed by table. */
 export async function readDuplicateRuleSolution(folder) {
   const rows = { duplicaterule: [], duplicaterulecondition: [] };
-  for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
+  // Code-unit order: the rows keep the folder order, which differs between file systems.
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     if (!entry.isDirectory()) continue;
     const text = await readFile(join(folder, entry.name, 'duplicaterule.xml'), 'utf8').catch(() => null);
     if (text === null) continue;

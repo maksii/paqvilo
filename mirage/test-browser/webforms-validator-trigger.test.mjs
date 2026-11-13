@@ -1,17 +1,17 @@
 // @test-kind compatibility: WebUIValidation hooks the control's inline on<event> property, which jQuery's trigger calls
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { closeServer } from './shared-browser.mjs';
+import { loopbackServer } from './shared-browser.mjs';
 
 const webForms = await fs.readFile(new URL('../lib/webforms-compat.js', import.meta.url), 'utf8');
 const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.js', import.meta.url), 'utf8');
 
 test('a required field shown invalid after a submit attempt is re-validated by a jQuery change trigger', async (t) => {
-  const server = http.createServer((_request, response) => {
+  const { server } = await loopbackServer(t, (_request, response) => {
     response.setHeader('Content-Type', 'text/html');
     response.end(`<!doctype html><html><head></head><body>
       <form>
@@ -21,12 +21,10 @@ test('a required field shown invalid after a submit attempt is re-validated by a
       </form>
     </body></html>`);
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

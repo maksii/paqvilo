@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own flow expression diagnostics (400 for bad data, 501 for unimplemented functions)
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -181,7 +182,7 @@ test('Power Pages condition false remains a valid HTTP acknowledgement with and 
     const runs = tracked ? createHostFlowRuns({ store }) : null;
     if (runs) {
       runs.attach({ store });
-      t.after(() => runs.close());
+      ownedFixture(t).add(() => runs.close());
     }
     const id = '10000000-0000-4000-8000-000000000001';
     const d = definition([{ expression: '@false' }]);

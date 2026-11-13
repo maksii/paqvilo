@@ -1,4 +1,5 @@
 // @test-kind contract: the code app proxy confines request targets, rebases only trusted browser origins and closes or cancels upstream exchanges it cannot finish.
+import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -18,7 +19,7 @@ test('code app proxy confines request targets and rebases only trusted browser o
     res.end('{}');
   });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         upstream.closeAllConnections();
@@ -79,7 +80,7 @@ test('code app proxy closes a truncated upstream response', async (t) => {
     res.write('{"partial":');
   });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         upstream.closeAllConnections();
@@ -114,7 +115,7 @@ test('code app proxy cancels upstream when the client disconnects before headers
     arrived();
   });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         upstream.closeAllConnections();

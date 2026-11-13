@@ -10,7 +10,7 @@ import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { applyPortalOverrides } from '../lib/portal-overrides.mjs';
 import { applyExperiment, validateExperimentPresets } from '../lib/experiment-presets.mjs';
 import { id, xml, initial, fixture } from './fixtures/platform-experiments.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('platform budgets are per-store, preserve aggregate semantics and validate values', async () => {
   const a = new DataStore({ state: initial() }),
@@ -139,7 +139,7 @@ test('two runtimes share sources but isolate configuration, presets, reload, res
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiments-'));
   await fixture(root);
   let a, b;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await a?.close();
     await b?.close();
     await fs.rm(root, { recursive: true, force: true });

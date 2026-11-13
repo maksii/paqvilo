@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,7 +61,7 @@ test('form-only overlays retain the trusted Xrm CRUD/query round trip with bound
     },
   };
   const sim = await fixture.start({ stateFile: null, initial, modelDriven: { trustedExtensions: true } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t),
     paths = [],
     errors = [];

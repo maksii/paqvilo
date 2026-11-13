@@ -1,6 +1,7 @@
 // @test-kind unproven: local Web API record handler models; a test with native evidence carries its own tag
 // Simulated Dataverse record handlers: collections, single rows, properties,
 // navigation, $ref, paging, writes and bound actions.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -184,7 +185,7 @@ test('wide single-record reads reuse metadata during projection and observe late
     },
     metadataFields: () => fields,
   });
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   const id = randomUUID();
   runtime.store.state.tables.widget.push({
     widgetid: id,
@@ -206,7 +207,7 @@ test('wide single-record reads reuse metadata during projection and observe late
 
 test('a single-record read checks only its own row for a stored currency, not every row of the table', async (t) => {
   const runtime = await setup();
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   let currencyReads = 0;
   const counted = (row) =>
     Object.defineProperty(row, 'transactioncurrencyid', {
@@ -244,7 +245,7 @@ test('wide FetchXML pages derive record metadata per table and refresh it on the
     },
     metadataFields: () => fields,
   });
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   runtime.store.state.tables.widget.push(
     ...Array.from({ length: 25 }, (_, i) => ({
       widgetid: randomUUID(),
@@ -290,7 +291,7 @@ test('wide read definitions resolve original metadata once per list and retain o
       return fields;
     },
   });
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   const id = randomUUID();
   runtime.store.state.tables.widget.push({
     widgetid: id,
@@ -2450,7 +2451,7 @@ test('DateOnly values imply the time-zone rule stamp without a UserLocal value',
 
 test('organization date writes persist their rule version across clearing every date and later unrelated patches', async (t) => {
   const runtime = await setup();
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   Object.assign(runtime.store.state.mappings.widget.fields, {
     timezoneruleversionnumber: { dataverseType: 'int' },
     independenton: { dataverseType: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' },
@@ -2497,7 +2498,7 @@ test('organization date writes persist their rule version across clearing every 
 
 test('legacy date rows acquire history only on organization writes and portal storage does not stamp it', async (t) => {
   const runtime = await setup();
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   runtime.store.state.mappings.widget.fields.localon = { dataverseType: 'datetime', dateTimeBehavior: 'UserLocal' };
   const legacyId = randomUUID(),
     unknownId = randomUUID();

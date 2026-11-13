@@ -19,7 +19,7 @@ import { writeActivityBundle } from '../lib/sim-activity.mjs';
 import { captureObservedStylesheets } from '../lib/observed-stylesheets.mjs';
 import { routingApi } from './storage-routing-fixture.mjs';
 import { collectRecordGarbage } from '../lib/record-file-lease.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-777777777777';
 const initial = () => ({
@@ -179,7 +179,7 @@ async function fixture(t, options = {}) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const runs = createFlowRunStore({ store, scheduler, ...options });
   return { store, runs };
 }

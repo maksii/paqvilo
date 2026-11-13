@@ -326,6 +326,13 @@ export async function startFakeBroker({
   function pump() {
     for (const link of receivers) deliver(link);
   }
+  // Delivers when Date.now() reaches dueAt, the clock deliver() reads visibility from. A timer can fire before that
+  // clock reaches its due time; it then waits again for the remainder.
+  function pumpWhenDue(dueAt) {
+    const remaining = dueAt - Date.now();
+    if (remaining > 0) setTimeout(pumpWhenDue, remaining, dueAt).unref();
+    else pump();
+  }
 
   function deliver(link) {
     const items = entities.get(link.address),
@@ -583,8 +590,7 @@ export async function startFakeBroker({
       const message = sectionsOf(completePayload),
         now = Date.now();
       const scheduled = message.annotations['x-opt-scheduled-enqueue-time'];
-      if (scheduled instanceof Date && scheduled.getTime() > now)
-        setTimeout(pump, scheduled.getTime() - now + 1).unref();
+      if (scheduled instanceof Date && scheduled.getTime() > now) pumpWhenDue(scheduled.getTime());
       for (const target of targetsOf(link.address)) {
         entities.get(target).push({
           sequence: ++sequence,

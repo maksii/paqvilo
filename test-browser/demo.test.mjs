@@ -1,5 +1,5 @@
 // @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Exercise the newcomer command itself, including browser launch and owned runtime cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,34 +13,16 @@ import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
 import { DEV_READY } from '../lense/dev-messages.mjs';
 
 test('demo command opens a populated browser, supports the walkthrough and stops its Mirage', async (t) => {
   const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
   const directory = path.join(work, 'example');
-  const debugPort = await freeDebugPort();
   const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
-  const child = spawn(
-    process.execPath,
-    [
-      cli,
-      'mirage',
-      'demo',
-      '--dir',
-      directory,
-      '--headless',
-      '--debug-port',
-      String(debugPort),
-      '--browser',
-      process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-    ],
-    { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-  );
-  const output = childOutput(child);
-  let browser, releaseDemoRuntime;
-  const exited = once(child, 'exit');
+  // The command of the latest start; a start that lost its debugging port has already exited.
+  let child, output, exited, browser, releaseDemoRuntime;
   const closeOwnedBrowser = async () => {
     if (!browser?.isConnected()) return;
     const cdp = await browser.newBrowserCDPSession();
@@ -49,15 +31,15 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     await Promise.race([cdp.send('Browser.close').catch(() => {}), disconnected]);
     await disconnected;
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await releaseDemoRuntime?.();
     await closeOwnedBrowser().catch(() => {});
     await browser?.close().catch(() => {});
-    if (child.exitCode === null) child.kill('SIGTERM');
+    if (child?.exitCode === null) child.kill('SIGTERM');
     await exited;
     // A failed launch can leave a runtime below the wrapper that Windows terminated.
     // Stop only this test's project-owned runtime before removing its ownership records.
-    if (child.exitCode !== 0) {
+    if (child && child.exitCode !== 0) {
       const cleanup = spawn(
         process.execPath,
         [cli, 'mirage', 'stop', '--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example', '--json'],
@@ -67,9 +49,30 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     }
     await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
-  // dev prints its debugger port once the owned browser is listening on it.
-  await output.waitFor(new RegExp(`debugger\\s+port ${debugPort}\\b`), {
-    label: 'Demo opening its browser',
+  const debugPort = await startOnFreePort(async (port) => {
+    child = spawn(
+      process.execPath,
+      [
+        cli,
+        'mirage',
+        'demo',
+        '--dir',
+        directory,
+        '--headless',
+        '--debug-port',
+        String(port),
+        '--browser',
+        process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
+      ],
+      { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+    );
+    output = childOutput(child);
+    exited = once(child, 'exit');
+    // dev prints its debugger port once the owned browser is listening on it.
+    await output.waitFor(new RegExp(`debugger\\s+port ${port}\\b`), {
+      label: 'Demo opening its browser',
+    });
+    return port;
   });
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   const context = browser.contexts()[0];

@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own model-driven requirement-level presentation and local form validation feedback.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -29,7 +30,7 @@ test('attribute requirement levels retain recommended and update every bound con
     .replace('</tabs>', otherTab + '</tabs>');
   await fs.writeFile(formFile, xml);
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -102,7 +103,7 @@ test('header-only attributes retain requirement state without claiming a rendere
     );
   await fs.writeFile(formFile, xml);
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   await page.goto(
     sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -189,7 +190,7 @@ test('a refused save with a business-required duration keeps the duration error 
     ),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   await page.goto(
     sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',

@@ -16,8 +16,29 @@ import { workspace, fixtureStatusURL, alive, stopped, portalProject } from './mi
 
 const execute = promisify(execFile);
 
+// One test per native shell, so the per-test limit covers a bounded number of runtimes. pwsh is optional on Windows.
+const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe', 'pwsh.exe'] : ['/bin/sh'];
+async function shellInstalled(shell) {
+  if (shell !== 'pwsh.exe') return true;
+  try {
+    await execute(shell, ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
+      windowsHide: true,
+    });
+    return true;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return false;
+  }
+}
+
 // @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories and shells
-test('plain project stop hints stay readable and stop only the advertised runtime from other directories and shells', async (t) => {
+for (const shell of nativeShells)
+  test(`plain project stop hints stay readable and stop only the advertised runtime from other directories and shells: ${shell}`, async (t) => {
+    if (!(await shellInstalled(shell))) return t.skip(`${shell} is not installed`);
+    await plainProjectHints(t, shell);
+  });
+
+async function plainProjectHints(t, shell) {
   const work = await workspace(t);
   const project = path.join(work.directory, 'plain project', 'organization.json');
   await fs.mkdir(path.dirname(project));
@@ -39,55 +60,39 @@ test('plain project stop hints stay readable and stop only the advertised runtim
   );
   await fs.mkdir(path.dirname(literalProject));
   await fs.copyFile(project, literalProject);
-  const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe'] : ['/bin/sh'];
-  if (process.platform === 'win32') {
-    try {
-      await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
-        windowsHide: true,
-      });
-      nativeShells.push('pwsh.exe');
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
   const started = (file, state) => work.start(['--project', file, '--state', state, '--port', '0']);
   // Every runtime starts up front and concurrently. Each replay must then stop exactly its own
   // runtime while the sibling and every runtime not replayed yet keep answering.
-  const [sibling, ...sessions] = await Promise.all([
+  const [sibling, session, literal] = await Promise.all([
     started(project, path.join(work.directory, 'sibling.json')),
-    ...nativeShells.flatMap((_, index) => [
-      started(project, path.join(work.directory, 'selected-' + index + '.json')),
-      started(literalProject, path.join(work.directory, 'literal-' + index + '.json')),
-    ]),
+    started(project, path.join(work.directory, 'selected.json')),
+    started(literalProject, path.join(work.directory, 'literal.json')),
   ]);
-  const running = new Set(sessions);
-  const replayStops = async (session, shell) => {
-    await work.replay(session.stop, false, elsewhere, shell);
-    await stopped(session);
-    running.delete(session);
+  const running = new Set([session, literal]);
+  const replayStops = async (selected) => {
+    await work.replay(selected.stop, false, elsewhere, shell);
+    await stopped(selected);
+    running.delete(selected);
     await Promise.all([sibling, ...running].map(alive));
   };
-  for (const [index, shell] of nativeShells.entries()) {
-    const [session, literal] = sessions.slice(index * 2, index * 2 + 2);
-    assert.match(
-      session.stop,
-      /^npx paqvilo mirage stop --project /,
-      'plain absolute project anchors ownership without an encoded cwd wrapper',
+  assert.match(
+    session.stop,
+    /^npx paqvilo mirage stop --project /,
+    'plain absolute project anchors ownership without an encoded cwd wrapper',
+  );
+  assert.ok(session.stop.includes(project), 'the selected project is directly reviewable');
+  await replayStops(session);
+  if (process.platform === 'win32')
+    assert.match(literal.stop, /^node -e /, 'Windows shell-active project paths retain fixed encoded argv');
+  else {
+    assert.match(literal.stop, /^npx paqvilo mirage stop --project '/, 'POSIX literal quoting remains readable');
+    assert.ok(
+      literal.stop.includes("'" + literalProject + "'"),
+      'the complete project path is one literal POSIX argument',
     );
-    assert.ok(session.stop.includes(project), 'the selected project is directly reviewable');
-    await replayStops(session, shell);
-    if (process.platform === 'win32')
-      assert.match(literal.stop, /^node -e /, 'Windows shell-active project paths retain fixed encoded argv');
-    else {
-      assert.match(literal.stop, /^npx paqvilo mirage stop --project '/, 'POSIX literal quoting remains readable');
-      assert.ok(
-        literal.stop.includes("'" + literalProject + "'"),
-        'the complete project path is one literal POSIX argument',
-      );
-    }
-    await replayStops(literal, shell);
   }
-});
+  await replayStops(literal);
+}
 
 // @test-kind security+contract: owned status probes admit only a numeric port on the fixed HTTP loopback endpoint
 test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {
@@ -144,8 +149,14 @@ test('standalone settings-only catalogues keep editor settings without claiming 
   );
 });
 
+// One test per project edit, so the per-test limit covers a bounded number of runtimes.
 // @test-kind security+contract: project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling
-test('project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling', async (t) => {
+for (const edit of ['path-remap', 'portal-rename', 'portal-remove'])
+  test(`project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling: ${edit}`, async (t) => {
+    await editedProjectHint(t, edit);
+  });
+
+async function editedProjectHint(t, edit) {
   const work = await workspace(t);
   const config = path.join(work.directory, 'catalogue controls', 'selected.json');
   const other = path.join(path.dirname(config), 'unrelated.json');
@@ -169,34 +180,32 @@ test('project stop hints survive valid path remaps, portal renames and removals 
     '--port',
     '0',
   ]);
-  for (const edit of ['path-remap', 'portal-rename', 'portal-remove']) {
-    await fs.writeFile(project, JSON.stringify(before));
-    const selected = await work.start([
-      '--config',
-      config,
-      '--project',
-      project,
-      '--portal',
-      'first',
-      '--state',
-      path.join(work.directory, edit + '.json'),
-      '--port',
-      '0',
-    ]);
-    const after = structuredClone(before);
-    if (edit === 'path-remap') after.portals[0].path = path.join(work.defaults, 'portal');
-    else if (edit === 'portal-rename') {
-      after.portals[0].id = 'renamed';
-      after.defaultPortal = 'renamed';
-    } else {
-      after.portals.shift();
-      after.defaultPortal = 'second';
-    }
-    await fs.writeFile(project, JSON.stringify(after));
-    await work.replay(selected.stop, false, elsewhere);
-    await stopped(selected);
-    await alive(sibling);
+  const selected = await work.start([
+    '--config',
+    config,
+    '--project',
+    project,
+    '--portal',
+    'first',
+    '--state',
+    path.join(work.directory, edit + '.json'),
+    '--port',
+    '0',
+  ]);
+  const after = structuredClone(before);
+  if (edit === 'path-remap') after.portals[0].path = path.join(work.defaults, 'portal');
+  else if (edit === 'portal-rename') {
+    after.portals[0].id = 'renamed';
+    after.defaultPortal = 'renamed';
+  } else {
+    after.portals.shift();
+    after.defaultPortal = 'second';
   }
+  await fs.writeFile(project, JSON.stringify(after));
+  await work.replay(selected.stop, false, elsewhere);
+  await stopped(selected);
+  await alive(sibling);
+  if (edit !== 'portal-remove') return;
   // The project now lacks portal 'first': every action refuses it. They read the same files
   // and start nothing, so they run together.
   await Promise.all(
@@ -220,10 +229,16 @@ test('project stop hints survive valid path remaps, portal renames and removals 
       );
     }),
   );
-});
+}
 
+// One test per mapping size, so the per-test limit covers a bounded number of runtimes.
 // @test-kind contract: a project stop without a portal selector includes recorded portals absent from current multi- and single-portal mappings
-test('unqualified project stop includes recorded portals absent from current multi- and single-portal mappings', async (t) => {
+for (const count of [2, 1])
+  test(`unqualified project stop includes recorded portals absent from current multi- and single-portal mappings: ${count} portal(s)`, async (t) => {
+    await unqualifiedProjectStop(t, count);
+  });
+
+async function unqualifiedProjectStop(t, count) {
   const work = await workspace(t);
   const config = path.join(work.directory, 'catalogue controls', 'selected.json');
   const other = path.join(path.dirname(config), 'unrelated.json');
@@ -246,32 +261,29 @@ test('unqualified project stop includes recorded portals absent from current mul
     '--port',
     '0',
   ]);
-  for (const count of [2, 1]) {
-    await fs.writeFile(project, JSON.stringify(before));
-    const group = await work.start(['--config', config, '--project', project, '--port', '0']);
-    await fs.writeFile(
-      project,
-      JSON.stringify({
-        ...before,
-        defaultPortal: 'replacement',
-        portals: Array.from({ length: count }, (_, index) => ({
-          id: index ? 'another' : 'replacement',
-          path: path.join(work.defaults, 'portal'),
-        })),
-      }),
-    );
-    const report = await work.run(['mirage', 'stop', '--config', config, '--project', project, '--json']);
-    assert.equal(report.status, 0, report.stdout + report.stderr);
-    assert.deepEqual(
-      JSON.parse(report.stdout)
-        .stopped.map(({ pid }) => pid)
-        .sort(),
-      group.portals.map(({ pid }) => pid).sort(),
-    );
-    for (const session of group.portals) await stopped(session);
-    await alive(sibling);
-  }
-});
+  const group = await work.start(['--config', config, '--project', project, '--port', '0']);
+  await fs.writeFile(
+    project,
+    JSON.stringify({
+      ...before,
+      defaultPortal: 'replacement',
+      portals: Array.from({ length: count }, (_, index) => ({
+        id: index ? 'another' : 'replacement',
+        path: path.join(work.defaults, 'portal'),
+      })),
+    }),
+  );
+  const report = await work.run(['mirage', 'stop', '--config', config, '--project', project, '--json']);
+  assert.equal(report.status, 0, report.stdout + report.stderr);
+  assert.deepEqual(
+    JSON.parse(report.stdout)
+      .stopped.map(({ pid }) => pid)
+      .sort(),
+    group.portals.map(({ pid }) => pid).sort(),
+  );
+  for (const session of group.portals) await stopped(session);
+  await alive(sibling);
+}
 
 // @test-kind contract: listener selectors normalize default ports without binding privileged listeners
 test('listener selectors normalize default ports without binding privileged listeners', () => {

@@ -1,4 +1,5 @@
 // Builds a small paportal extract inside a temporary git repository.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -151,7 +152,7 @@ export async function loopbackServer(t, handle) {
     }),
   );
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     if (failures.length) throw failures[0];

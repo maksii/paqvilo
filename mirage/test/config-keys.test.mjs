@@ -33,7 +33,7 @@ import { contentPolicyDefaults } from '../lib/content-policy-defaults.mjs';
 import { validateLocalOverrides } from '../lib/local-overrides.mjs';
 import { validateCatalogue } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const NEW_KEYS = [
@@ -436,31 +436,24 @@ function serve(t, args, cwd) {
   child.stdin.on('error', () => {});
   const closed = new Promise((resolve) => child.once('close', resolve));
   child.once('error', () => {});
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (child.exitCode === null) child.stdin.end('stop\n');
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
     await closed;
     clearTimeout(timer);
   });
+  // No start deadline: the child is spawned with the test's signal, so the runner's --test-timeout ends a CLI that
+  // never starts, and its exit rejects here.
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`CLI did not start.\nstdout: ${stdout}\nstderr: ${stderr}`)),
-      60_000,
-    );
     const check = () => {
       try {
-        const value = JSON.parse(stdout);
-        clearTimeout(timer);
-        resolve(value);
+        resolve(JSON.parse(stdout));
       } catch {
         /* wait for complete JSON */
       }
     };
     child.stdout.on('data', check);
-    closed.then(() => {
-      clearTimeout(timer);
-      reject(new Error(`CLI exited.\nstdout: ${stdout}\nstderr: ${stderr}`));
-    });
+    closed.then(() => reject(new Error(`CLI exited.\nstdout: ${stdout}\nstderr: ${stderr}`)));
   });
 }
 

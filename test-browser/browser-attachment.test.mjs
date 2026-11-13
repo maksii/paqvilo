@@ -1,5 +1,5 @@
 // @test-kind contract+security: Owned loopback browser interception preserves user drafts and user-owned browser state.
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,7 +12,7 @@ import { openBrowser } from '../lense/browser.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
 
 // Late-inspection tests share one browser; each test owns its contexts and loopback server.
 let sharedBrowser;
@@ -61,7 +61,7 @@ test('CDP debugger conflicts leave the intended browser untouched and disconnect
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
   });
   let owner, attachment;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await Promise.allSettled([attachment?.close(), owner?.close()]);
     fixture.closeAllConnections();
     await new Promise((resolve) => fixture.close(resolve));
@@ -70,7 +70,6 @@ test('CDP debugger conflicts leave the intended browser untouched and disconnect
   fixture.listen(0, '127.0.0.1');
   await once(fixture, 'listening');
   const origin = `http://127.0.0.1:${fixture.address().port}`;
-  const debugPort = await freeDebugPort();
   const launch = chromium.launchPersistentContext;
   t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
     return launch.call(this, profile, {
@@ -85,19 +84,22 @@ test('CDP debugger conflicts leave the intended browser untouched and disconnect
       ],
     });
   });
-  owner = await openBrowser(
-    {
-      configDir: directory,
-      siteName: 'fixture',
-      envName: 'local',
-      browser: {
-        channel: process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-        profileDir: 'profiles',
-        headless: true,
+  owner = await startOnFreePort((debugPort) =>
+    openBrowser(
+      {
+        configDir: directory,
+        siteName: 'fixture',
+        envName: 'local',
+        browser: {
+          channel: process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
+          profileDir: 'profiles',
+          headless: true,
+        },
       },
-    },
-    { debugPort },
+      { debugPort },
+    ),
   );
+  const { debugPort } = owner;
   const page = owner.context.pages()[0];
   await page.goto(origin);
   const cfg = { browser: { cdpUrl: `http://127.0.0.1:${debugPort}`, debugPort } };

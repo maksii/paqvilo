@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
@@ -192,7 +193,7 @@ test('PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways'
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   const sockets = [];
-  t.after(() => {
+  ownedFixture(t).add(() => {
     for (const socket of sockets) socket.destroy();
     server.close();
   });
@@ -248,7 +249,7 @@ test('TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside T
     ca: cert,
     ALPNProtocols: ['tds/8.0'],
   });
-  t.after(() => {
+  ownedFixture(t).add(() => {
     client.destroy();
     server.close();
   });

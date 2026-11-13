@@ -3,6 +3,7 @@
 // the pipeline's transaction state, Mode from the delivery. A PreValidation step outside an existing transaction does not
 // participate, PreOperation and PostOperation steps participate, asynchronous steps never do. An asynchronous PostOperation
 // step has Mode 1; RemoteExecutionContext.IsExecutingOffline is true only for the offline Outlook client.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -31,7 +32,7 @@ test('IsInTransaction and Mode follow the pipeline stage, its transaction and th
   });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
   // after hooks run in registration order, so this one runs while the API may still hold keep-alive sockets to it.
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         receiver.close(resolve);
@@ -72,7 +73,7 @@ test('IsInTransaction and Mode follow the pipeline stage, its transaction and th
   }
   const webhooks = webhookDelivery(store);
   const runner = wireRegisteredSteps(store, webhooks);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await api.close();
   });

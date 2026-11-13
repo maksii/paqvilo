@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's page lifecycle observer: listener cleanup, attachment failures and its settle deadline
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -54,7 +55,7 @@ test('a failed future page attachment stays visible after its asynchronous setup
   assert.equal(listeners(page).length, 0);
 });
 
-test('context settling bounds pending attachment by the same deadline as page work', { timeout: 2000 }, async (t) => {
+test('context settling bounds pending attachment by the same deadline as page work', async (t) => {
   // A mocked clock makes the deadline exact: a wall-clock bound fails whenever a busy runner stalls the event loop.
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const context = new EventEmitter();

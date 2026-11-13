@@ -22,7 +22,7 @@ import {
   prepareRequest,
   evaluateAssertions,
 } from '../dataverse-parity.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const response = (json, status = 200, headers = {}) => ({
   status,
@@ -40,7 +40,7 @@ test('lowercase header overrides are sent once with their requested values', asy
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const input = plan([
     {
       ...readCase(),
@@ -72,7 +72,7 @@ test('loopback record and replay preserve bytes, errors, stateful captures and e
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const transport = createFetchTransport({ baseUrl: `http://127.0.0.1:${server.address().port}/api/data/v9.2/` });
   const input = plan([
     { ...readCase(), capture: { tag: '/headers/etag' } },

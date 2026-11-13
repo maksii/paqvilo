@@ -1,4 +1,5 @@
 // @test-kind contract: provenance traversal keeps using indexed array access when pages override prototype methods.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -9,7 +10,7 @@ import { installDomProvenance } from '../lense/dom-provenance.mjs';
 // @test-kind contract: page reassignment of globalThis cannot redirect the captured-native provenance capabilities.
 test('provenance initializers retain the browser WindowProxy when globalThis is reassigned', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent('<main>Invented</main>');
   await page.exposeBinding('__inventedAliasBinding', () => {});
@@ -41,7 +42,7 @@ test('provenance initializers retain the browser WindowProxy when globalThis is 
 
 test('DOM provenance cloning does not invoke a page override of Array.prototype.at', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent('<main><section><span>Invented</span></section></main>');
   await page.exposeBinding('__inventedProvenanceBinding', () => {});
@@ -69,7 +70,7 @@ test('DOM provenance cloning does not invoke a page override of Array.prototype.
 
 test('portal provenance mutation records do not invoke a page override of the array iterator', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent('<main>Invented</main>');
   await page.evaluate(installPortalProvenanceRegistry, {

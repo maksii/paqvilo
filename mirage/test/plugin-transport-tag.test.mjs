@@ -11,6 +11,7 @@ import { envelope, encodeValue } from '../lib/dataverse-soap-xml.mjs';
 import { prepareClrRuntime, closeClrHostPool, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { drainFixture, ownedFixture } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -132,7 +133,7 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
       persistentHost: true,
-      timeoutMs: 8000,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: {
         userId: user,
         evidence: 'Invented transport tag source',

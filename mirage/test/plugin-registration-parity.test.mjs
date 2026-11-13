@@ -2,6 +2,7 @@
 // @parity-evidence: audit round 2 (REG-n7): the registration probes exist in one native capture (corpus/native only), the custom API message lifecycle and the Upsert inert rule have no native capture, so those tests are tagged observation or unproven per test; the team, task and systemuser sets follow native-filters-2.json
 // Registration catalogue, validation and execution admission that match native Dataverse (registration probes and
 // sdkmessagefilter rows recorded on a dev environment; the data here is invented).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -569,7 +570,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
   ]);
   const items = handlerPipeline(f, handlers);
   const runner = createAsyncPluginRunner({ store: f.store, items, handlers });
-  t.after(() => runner.close());
+  ownedFixture(t).add(() => runner.close());
   const created = await f.request('POST', '/x_shareds', { x_name: 'one' });
   assert.equal(created.status, 201, await created.clone().text());
   assert.deepEqual(

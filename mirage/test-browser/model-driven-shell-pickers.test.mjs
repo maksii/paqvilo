@@ -143,7 +143,7 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
     ),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -557,7 +557,7 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
     (await fs.readFile(entityFile, 'utf8')).replace('</attributes>', attributes + '</attributes>'),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   for (const [x_name, x_available, x_stage, x_quantity] of [
     ['Literal %_[box]', false, 3, 3],
@@ -677,7 +677,7 @@ test('new required owner controls default to the active organization staff princ
     '<Entity><Name>systemuser</Name><EntityInfo><entity Name="systemuser"><EntitySetName>systemusers</EntitySetName><PrimaryIdAttribute>systemuserid</PrimaryIdAttribute><PrimaryNameAttribute>fullname</PrimaryNameAttribute><attributes><attribute PhysicalName="systemuserid"><Name>systemuserid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="fullname"><Name>fullname</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
   );
   const sim = await initial.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
@@ -823,7 +823,7 @@ test('subgrid exported view picker preserves its named parent relationship acros
       .replace('description="Children"', 'description="Excluded children"'),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url,
     parent = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     otherParent = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -913,7 +913,7 @@ test('populated grids preserve source widths, numeric alignment, compact rows an
     ),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const session = await (await fetch(origin + '/_sim/api/dataverse/session')).json(),
     userId = session.current.principalId ?? session.current.id,
@@ -996,7 +996,7 @@ test('a view without its primary-name column opens the selected record by double
   const view = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   await fs.writeFile(view, (await fs.readFile(view, 'utf8')).replace('<cell name="x_name" width="200"/>', ''));
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const diagnostics = { responses: [], failures: [], pageErrors: [] };
   const relevant = (url) => /\/_apps\/api\/(?:metadata\/x_item|tables\/x_item)(?:[/?]|$)/.test(url);
@@ -1092,7 +1092,7 @@ test('authored app areas isolate their groups and 137 records paginate through s
     ),
   );
   const sim = await fixture.start({ initial });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = [];
@@ -1311,7 +1311,7 @@ test('source infinite grid fetches additional server chunks and rejects stale ch
     ),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const scroll = page.locator('.grid-scroll');

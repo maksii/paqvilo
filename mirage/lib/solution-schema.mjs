@@ -251,11 +251,16 @@ async function manifestOf(dir) {
   } catch {
     return null;
   }
-  const other = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^other$/i.test(e.name));
+  // Sorted, so a case-sensitive file system with two spellings resolves the same one on every listing.
+  const other = entries
+    .sort((a, b) => compare(a.name, b.name))
+    .find((e) => e.isDirectory() && !e.isSymbolicLink() && /^other$/i.test(e.name));
   if (!other) return null;
   try {
     const files = await fs.readdir(path.join(dir, other.name), { withFileTypes: true });
-    const solution = files.find((e) => e.isFile() && /^solution\.xml$/i.test(e.name));
+    const solution = files
+      .sort((a, b) => compare(a.name, b.name))
+      .find((e) => e.isFile() && /^solution\.xml$/i.test(e.name));
     return solution ? path.join(dir, other.name, solution.name) : null;
   } catch {
     return null;
@@ -274,7 +279,9 @@ async function yamlManifestsOf(dir) {
   } catch {
     return [];
   }
-  const folder = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
+  const folder = entries
+    .sort((a, b) => compare(a.name, b.name))
+    .find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
   if (!folder) return [];
   const manifests = [];
   let solutions;
@@ -292,7 +299,9 @@ async function yamlManifestsOf(dir) {
     } catch {
       continue;
     }
-    const manifest = files.find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
+    const manifest = files
+      .sort((a, b) => compare(a.name, b.name))
+      .find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
     if (manifest)
       manifests.push({ name: solution.name, file: path.join(dir, folder.name, solution.name, manifest.name) });
   }

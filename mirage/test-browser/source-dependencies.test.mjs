@@ -6,12 +6,12 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('source-only page JavaScript receives local jQuery, Moment and plugin compatibility before execution', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-only-dependencies-'));
   let app, browser;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser?.close();
     await app?.close();
     await fs.rm(root, { recursive: true, force: true });

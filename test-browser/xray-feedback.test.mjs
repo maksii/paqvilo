@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -30,7 +31,7 @@ const sourceRefs = columns.map(({ entity, name }) => ({
 }));
 async function fixture(t, html) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await context.route('http://127.0.0.1:11942/**', (route) => {
     const url = new URL(route.request().url());
     return route.fulfill({

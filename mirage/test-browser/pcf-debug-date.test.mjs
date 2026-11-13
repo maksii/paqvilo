@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 test('PCF debugger updates typed instances, native timestamp wires and contains lifecycle failures', async (t) => {
   const runtime = await fs.readFile(new URL('../lib/code-components-client.js', import.meta.url), 'utf8');
@@ -14,7 +14,7 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   let browser, context;
-  t.after(() =>
+  ownedFixture(t).add(() =>
     drainFixture([
       () => context?.close(),
       () => browser?.close(),

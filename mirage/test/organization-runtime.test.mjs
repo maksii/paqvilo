@@ -16,7 +16,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { organizationPrincipalContext } from '../lib/dataverse-principal-context.mjs';
 import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ids = [
   '31111111-1111-4111-8111-111111111111',
@@ -70,7 +70,7 @@ async function fixture(t, options = {}) {
     extensions: await sourceOrganizationExtensions(),
     ...options,
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   const service = createModelDrivenRecordService({ organization: core });
   const users = ids.map((id) => core.principals.byObjectId(id));
   return { store, core, service, users, actor: (index) => ({ principalId: users[index].systemuserid }) };

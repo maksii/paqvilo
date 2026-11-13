@@ -1,6 +1,7 @@
 // @test-kind unproven: local model of business process flow instances and messages; no native capture cited
 // Business process flows (lib/dataverse-bpf.mjs): category-4 inventory, instance rows through createInstance, the existing BPF
 // messages and the SetProcess 501 with its pack override.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, createInstance } from '../lib/dataverse-bpf.mjs';
@@ -363,7 +364,7 @@ async function secureApi(t, { mappings = {}, tables = {} } = {}) {
     ],
   });
   const server = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const tokens = {
     admin: await bearer(server, ADMIN_APP, 'bpf-admin-secret'),
     basic: await bearer(server, BASIC_APP, 'bpf-basic-secret'),

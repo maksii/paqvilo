@@ -261,7 +261,7 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
 
 test('background X-ray refresh shows progress while retaining source details, and retires accepted progress', async (t) => {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
   await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });

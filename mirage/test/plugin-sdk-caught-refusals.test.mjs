@@ -1,4 +1,5 @@
 // @test-kind parity: native recorder corpus runAsSecond (trial, two captures) and sdkSurface (dev, two captures): a caught SDK Create refused for a missing privilege still fails the operation with 0x8009000c, a caught Update refusal and a caught unknown-column Create (0x80041103) do not
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -48,7 +49,7 @@ async function caught(t, request) {
       },
     }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const users = {
     system: store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid,
     plain: store.tableRows('systemuser').find((row) => row.fullname === 'Invented plain').systemuserid,

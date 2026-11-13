@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
 import { pluginFailure, SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
@@ -121,15 +122,8 @@ function unverifiedHostRemains(directory) {
 }
 // Numbers each pooled session as it is created, so a host that replaces another one is a different session.
 let pooledSessionCount = 0;
-process.once('exit', () => {
-  for (const session of pooledHosts.values())
-    if (session.pid)
-      try {
-        process.kill(session.pid);
-      } catch {
-        /* Best-effort diagnostics and teardown must not mask the primary plugin result. */
-      }
-});
+// Pooled hosts are not signalled when this process exits: a host exits by itself when its input closes, and only this
+// process holds the input's write end (plugin-clr-host.cs).
 // One Depth per synchronous execution chain, shared by CLR steps and JavaScript handlers (exported-plugins.mjs), so an
 // alternating JS/CLR chain is capped at PLUGIN_MAX_DEPTH in total and each side reports the same contiguous Depth. Both paths run
 // synchronously (CLR waits with Atomics.wait), so the counter is balanced within one call stack.
@@ -431,26 +425,75 @@ function snapshotKeptNote(directory) {
     message: 'CLR host not verified stopped; snapshot kept: ' + path.basename(directory),
   };
 }
-function removeClrSnapshot(directory, files) {
-  // Process absence may precede Windows releasing the owning worker's file handles.
+// The codes a removal fails with while another process still holds a file in the directory.
+const HELD_FILE_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+// Process absence may precede Windows releasing the owning worker's file handles: a removal a held file refuses is
+// tried again until CLR_SNAPSHOT_RELEASE_GUARD_MS has passed. Snapshots are removed on the synchronous execution path.
+function removeWhileReleased(remove) {
   const deadline = Date.now() + CLR_SNAPSHOT_RELEASE_GUARD_MS,
     signal = new Int32Array(new SharedArrayBuffer(4));
   for (;;) {
     try {
-      for (const file of files) {
-        try {
-          syncFs.unlinkSync(path.join(directory, file.name));
-        } catch (cause) {
-          if (cause.code !== 'ENOENT') throw cause;
-        }
-      }
-      syncFs.rmdirSync(directory);
-      return;
+      return remove();
     } catch (cause) {
-      if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(cause.code) || Date.now() >= deadline) throw cause;
+      if (!HELD_FILE_CODES.has(cause.code) || Date.now() >= deadline) throw cause;
       Atomics.wait(signal, 0, 0, 25);
     }
   }
+}
+// Informational only: a removal refused continuously for this long is reported once as held by another process. It
+// changes no result; the removal goes on until CLR_SNAPSHOT_RELEASE_GUARD_MS.
+const CLR_RELEASE_HELD_NOTICE_MS = 2000;
+// The same retry for a released runtime directory, without holding the event loop: other work runs between attempts.
+// `remove` is one attempt and `now` the clock; `held` is called once when the refusals have lasted the notice interval.
+async function removeReleasedDirectory(directory, { remove, now, held }) {
+  const start = now(),
+    deadline = start + CLR_SNAPSHOT_RELEASE_GUARD_MS;
+  let firstRefusal = null;
+  for (;;) {
+    try {
+      return await remove(directory);
+    } catch (cause) {
+      const at = now();
+      if (!HELD_FILE_CODES.has(cause.code) || at >= deadline) throw cause;
+      firstRefusal ??= at;
+      if (held && at - firstRefusal >= CLR_RELEASE_HELD_NOTICE_MS) {
+        held();
+        held = null;
+      }
+      await delay(25);
+    }
+  }
+}
+// A diagnostic callback that throws is reported as a process warning, so a release never rejects because of it.
+function reportSafely(diagnostic, note) {
+  try {
+    diagnostic(note);
+  } catch (error) {
+    process.emitWarning('A CLR release diagnostic callback failed: ' + (error?.message ?? error), 'PluginClrWarning');
+  }
+}
+// The unsettled releases started for each owner (the runtime map a release was taken out of): its close awaits them.
+const ownedReleases = new WeakMap();
+/** Settles once every release started for `owner` (releaseClrRuntime's `owner`) has settled; never rejects. */
+export function settleClrReleases(owner) {
+  return Promise.all(ownedReleases.get(owner) ?? []).then(() => {});
+}
+const removeDirectoryOnce = (directory) => fs.rm(directory, { recursive: true, force: true });
+// Released runtime directories whose removal is pending or failed, with the release that removes them. A shared preparer
+// never returns a runtime on one of them, and a second release of one waits for the first.
+const releasedDirectories = new Map();
+function removeClrSnapshot(directory, files) {
+  removeWhileReleased(() => {
+    for (const file of files) {
+      try {
+        syncFs.unlinkSync(path.join(directory, file.name));
+      } catch (cause) {
+        if (cause.code !== 'ENOENT') throw cause;
+      }
+    }
+    syncFs.rmdirSync(directory);
+  });
 }
 /** A trusted project descriptor names its original assembly on disk; its bytes are read and checked here. Registered
  * uploaded assembly bytes take the synchronous route instead (plugin-uploaded.mjs, buildClrRuntime). */
@@ -503,6 +546,7 @@ async function prepareSharedClrRuntime(sharedRuntimes, descriptor, options) {
   try {
     current =
       Boolean(base) &&
+      !releasedDirectories.has(base.directory) &&
       syncFs.existsSync(base.directory) &&
       base.files.every((file) => !file.sourcePath || sha(readClrFileSync(file.sourcePath)) === file.sha256);
   } catch {
@@ -2025,13 +2069,8 @@ function stopClrHost(session, diagnostic = () => {}, { failed = false, guardMs =
     }
   };
   pooledHosts.delete(session.key);
-  if (session.pid)
-    try {
-      process.kill(session.pid);
-    } catch (cause) {
-      if (cause.code !== 'ESRCH')
-        report({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR process cleanup failed: ' + cause.code });
-    }
+  // The worker kills its host through the process handle it holds; a process id may name another process once the host
+  // has exited, so it is never signalled from here.
   session.port1.postMessage({ kind: 'cancel' });
   const absent = awaitHostProcessExit(session, guardMs);
   if (!absent) rememberUnverifiedHost(session);
@@ -2107,26 +2146,65 @@ export function closeClrHostPool({ runtime, diagnostic = () => {}, hostExitGuard
  * A directory any of them shares (a shared preparer returns copies of one runtime) is kept, and its hosts with it, until
  * the last of them is released. A directory is removed only when it is a clr- child of the canonical cache root, and only
  * when its pooled hosts are verified stopped: otherwise the directory is kept and PLUGIN_CLR_CLEANUP is reported.
+ * The hosts stop before this returns (a busy host throws); the returned promise settles once the directory is removed or
+ * its removal failed (reported as PLUGIN_CLR_CLEANUP), and never rejects. A removal a held file refuses is retried while
+ * other work runs; refusals lasting CLR_RELEASE_HELD_NOTICE_MS are reported once as PLUGIN_CLR_CLEANUP_HELD. A caller that
+ * must not wait (a request) passes `owner`, the runtime map the runtime left; the owner's close awaits settleClrReleases.
+ * `removeDirectory` is one removal attempt and `now` the clock.
  */
 export function releaseClrRuntime(
   runtime,
-  { liveRuntimes = [], diagnostic = () => {}, closeHostPool = closeClrHostPool } = {},
+  {
+    liveRuntimes = [],
+    diagnostic = () => {},
+    closeHostPool = closeClrHostPool,
+    removeDirectory = removeDirectoryOnce,
+    now = Date.now,
+    owner,
+  } = {},
 ) {
-  if (liveRuntimes.some((other) => other.directory === runtime.directory)) return;
+  const release = startRelease(runtime, { liveRuntimes, diagnostic, closeHostPool, removeDirectory, now });
+  if (owner) {
+    if (!ownedReleases.has(owner)) ownedReleases.set(owner, new Set());
+    const pending = ownedReleases.get(owner);
+    pending.add(release);
+    release.then(() => pending.delete(release));
+  }
+  return release;
+}
+function startRelease(runtime, { liveRuntimes, diagnostic, closeHostPool, removeDirectory, now }) {
+  if (liveRuntimes.some((other) => other.directory === runtime.directory)) return Promise.resolve();
+  const directory = runtime.directory;
+  if (releasedDirectories.has(directory)) return releasedDirectories.get(directory);
   const { allAbsenceVerified } = closeHostPool({ runtime, diagnostic });
   if (!allAbsenceVerified) {
     diagnostic({
       code: 'PLUGIN_CLR_CLEANUP',
-      message: 'CLR host not verified stopped; runtime cache directory kept: ' + path.basename(runtime.directory),
+      message: 'CLR host not verified stopped; runtime cache directory kept: ' + path.basename(directory),
     });
-    return;
+    return Promise.resolve();
   }
-  if (!isOwnedCacheDirectory(runtime)) return;
-  try {
-    syncFs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-  } catch (error) {
-    diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'CLR runtime cache cleanup failed: ' + error.code });
-  }
+  if (!isOwnedCacheDirectory(runtime)) return Promise.resolve();
+  // A directory whose removal failed stays listed, so it is never used again.
+  const held = () =>
+    reportSafely(diagnostic, {
+      code: 'PLUGIN_CLR_CLEANUP_HELD',
+      message:
+        'CLR runtime cache directory held by another process; removal is retried until the guard: ' +
+        path.basename(directory),
+    });
+  const removal = removeReleasedDirectory(directory, { remove: removeDirectory, now, held }).then(
+    () => {
+      releasedDirectories.delete(directory);
+    },
+    (error) =>
+      reportSafely(diagnostic, {
+        code: 'PLUGIN_CLR_CLEANUP',
+        message: 'CLR runtime cache cleanup failed: ' + error.code,
+      }),
+  );
+  releasedDirectories.set(directory, removal);
+  return removal;
 }
 function isOwnedCacheDirectory(runtime) {
   try {
@@ -2461,13 +2539,7 @@ function executePooledClr(runtime, input, options, verified) {
       session.backlog.delete(invocationId);
       if (!completed && !answered && !session.dead) stopClrHost(session, diagnostic, { failed: true });
     } else {
-      if (ownedPid)
-        try {
-          process.kill(ownedPid);
-        } catch (cause) {
-          if (cause.code !== 'ESRCH')
-            diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR process cleanup failed: ' + cause.code });
-        }
+      // The worker kills its host through the process handle it holds, as for a pooled host.
       port1.postMessage({ kind: 'cancel' });
       snapshot.hostStopped = closeFreshHostPort({ port1, flags, ownedPid, diagnostic, guardMs: hostExitGuardMs });
       // The host runs from the runtime's own executable: its runtime is kept while it may still run.

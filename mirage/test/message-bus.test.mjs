@@ -1,7 +1,9 @@
 // @test-kind contract: the local message bus behaviour Paqvilo designs for queues, locks, dead-letters and restarts.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { DataStore } from '../lib/data.mjs';
 import {
   createLocalMessageBus,
@@ -247,7 +249,7 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
     response.end('ok');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
@@ -258,14 +260,15 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
   assert.equal(healthy.reachable, true);
   assert.equal(healthy.endpoint, 'sb://127.0.0.1');
   assert.doesNotMatch(JSON.stringify(healthy), /invented-key-value/);
-  const closedPort = await new Promise((resolve) => {
-    const probe = http.createServer();
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
+  // A port this test owns that closes every connection unanswered.
+  const refusing = net.createServer((socket) => socket.destroy());
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => new Promise((resolve) => refusing.close(resolve)));
+  const down = await serviceBusEmulatorPreflight({
+    connectionString,
+    healthPort: refusing.address().port,
+    timeoutMs: 1000,
   });
-  const down = await serviceBusEmulatorPreflight({ connectionString, healthPort: closedPort, timeoutMs: 1000 });
   assert.equal(down.ready, false);
   assert.ok(down.diagnostics.some((item) => item.code === 'SERVICEBUS_EMULATOR_UNREACHABLE'));
 });

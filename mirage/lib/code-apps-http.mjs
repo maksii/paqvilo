@@ -73,6 +73,11 @@ const publicApp = (app) => ({
   appSettingNames: Object.keys(app.appSettings ?? {}),
   features: FEATURES,
 });
+/**
+ * The dev server probe's time limit. The workbench inventory waits for every probe, so a dev server that does not answer
+ * within it is reported unavailable rather than holding the page. Tests that are not about the limit replace it.
+ */
+export const codeAppProbe = { timeoutMs: 1500 };
 // The dev server probe is an http-out span of the request (tracedFetch) whose connection is pinned to the checked loopback
 // address (pinnedLocalFetch); redirects are reported with their status, never followed.
 async function serverStatus(app, traces) {
@@ -82,7 +87,7 @@ async function serverStatus(app, traces) {
       module: 'code-apps',
       operation: 'probe',
       url: app.localAppUrl,
-      init: { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1500) },
+      init: { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(codeAppProbe.timeoutMs) },
       fetch: pinnedLocalFetch,
     });
     await response.body?.cancel();

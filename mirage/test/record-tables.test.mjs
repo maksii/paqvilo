@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -415,7 +416,7 @@ test('published tables reopen, widen new locators, retain old snapshots and veri
   assert.equal(changed.files.length, 2, 'Restoration creates a new owned writer instead of appending to an old file.');
   assert.ok(pagedRecordsOf(current).chunks[0].ids instanceof Float64Array);
   const final = new RecordPageSession(store.directory);
-  t.after(() => final.close());
+  ownedFixture(t).add(() => final.close());
   const [again] = await final.restoreMany([changed]);
   assert.equal(again[0].value, 12);
   assert.equal(again[4299].value, 4299);
@@ -423,7 +424,7 @@ test('published tables reopen, widen new locators, retain old snapshots and veri
   assert.equal(changed.records, 4299);
   assert.ok(resumed.info().rawBytes <= 65536);
   const invalid = new RecordPageSession(store.directory);
-  t.after(() => invalid.close());
+  ownedFixture(t).add(() => invalid.close());
   await assert.rejects(invalid.restoreMany([{ ...changed, records: 4300 }]), /count disagrees/);
 });
 
@@ -441,7 +442,7 @@ test('a sparse table stores only ordinal holes and cannot masquerade as generate
   assert.equal(again.length, 100000);
   assert.equal(99999 in again, false);
   const invalid = new RecordPageSession(store.directory);
-  t.after(() => invalid.close());
+  ownedFixture(t).add(() => invalid.close());
   await assert.rejects(invalid.restoreMany([{ ...descriptor, records: 100000 }]), /count disagrees/);
 });
 
@@ -476,7 +477,7 @@ test('restarting after edits keeps distinct records unaliased and a real alias a
   restored.push(restored[0]);
   assert.equal(data.aliases, true);
   const second = new RecordPageSession(store.directory);
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   const [again] = await second.restoreMany([first.describe(restored)]);
   assert.equal(pagedRecordsOf(again).aliases, true);
   again[0].value = 'shared';
@@ -628,14 +629,14 @@ test('a table changed after its compacted copy was made keeps its live versions 
     rows = keyed(store, 100),
     state = { tables: { item: rows } };
   const stale = await compactRecordGraph(state, store.directory, store.ownerKey);
-  t.after(() => stale.session.close());
+  ownedFixture(t).add(() => stale.session.close());
   // A write lands while the compacted checkpoint is being saved.
   rows[5].value = 'written during the save';
   assert.equal(stale.publish(), false);
   assert.equal(pagedRecordsOf(rows).session, store);
   assert.equal(rows[5].value, 'written during the save');
   const current = await compactRecordGraph(state, store.directory, store.ownerKey);
-  t.after(() => current.session.close());
+  ownedFixture(t).add(() => current.session.close());
   assert.equal(current.publish(), true);
   assert.equal(pagedRecordsOf(rows).session, current.session);
   assert.equal(rows[5].value, 'written during the save');

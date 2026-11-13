@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
@@ -183,7 +184,7 @@ test('Explicit mock/disabled choices do not require original activation or backe
       }),
     diagnostic: (n) => notes.push(n),
   });
-  t.after(() => manual.close());
+  ownedFixture(t).add(() => manual.close());
   await store.create('widget', { title: 'Explicit local activation' }, { admin: true });
   await manual.drain();
   assert.equal(store.snapshot().tables.audit.length, 1);

@@ -6,6 +6,7 @@ import { adminServes, appsPath } from '../../mirage/lib/admin-origin.mjs';
 import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -309,73 +310,483 @@ const executeFile = promisify(execFile);
   return null;
 }
 
-// ---- ownership records
-export async function ownedSessions(paths = DEFAULT_PATHS) {
+const UNIX_EPOCH_TICKS = 621_355_968_000_000_000n; // .NET ticks (100 ns since 0001-01-01) at 1970-01-01
+// Candidate kernel clock tick rates (USER_HZ); the one used is confirmed against this process's own start time.
+const CLOCK_TICK_RATES = [100, 1000, 250, 300];
+const START_TIME_AGREEMENT_MS = 2000;
+const LSTART_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const localFields = (ms) => {
+  const date = new Date(ms);
+  return [date.getFullYear(), date.getMonth(), date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds()];
+};
+const sameFields = (left, right) => left.every((value, index) => value === right[index]);
+
+/** `ps -o lstart=` in the C locale ("Thu Nov 13 18:03:05 2026", local time), or null when it is not unambiguous. */
+function lstartMs(text) {
+  const match = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ([A-Z][a-z]{2}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(
+    text,
+  );
+  const month = match ? LSTART_MONTHS.indexOf(match[1]) : -1;
+  if (month < 0) return null;
+  const fields = [Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])];
+  const ms = new Date(fields[0], month, fields[2], fields[3], fields[4], fields[5]).getTime();
+  // A time that does not exist (a skipped hour) or exists twice (a repeated hour) is ambiguous.
+  if (!sameFields(localFields(ms), fields)) return null;
+  if (sameFields(localFields(ms - 3_600_000), fields) || sameFields(localFields(ms + 3_600_000), fields)) return null;
+  return ms;
+}
+
+/**
+ * The start time of process `pid` in milliseconds since the Unix epoch, derived from what processIdentityAsync()
+ * reads, or null when it cannot be read or converted. Windows: StartTime ticks. Linux: field 22 of /proc/<pid>/stat
+ * (clock ticks since boot) with `btime` from /proc/stat, at the tick rate that gives this process's own start time.
+ * Elsewhere: `ps -o lstart=`, read only in the C locale's form.
+ */
+export async function processStartTimeMs(
+  pid,
+  {
+    identityOf = processIdentityAsync,
+    readText = (file) => fs.readFile(file, 'utf8'),
+    platform = process.platform,
+    now = Date.now,
+    uptimeMs = () => process.uptime() * 1000,
+    signal,
+  } = {},
+) {
+  const identity = await identityOf(pid, { signal });
+  if (typeof identity !== 'string') return null;
+  if (platform === 'win32')
+    return /^\d+$/.test(identity) ? Number((BigInt(identity) - UNIX_EPOCH_TICKS) / 10_000n) : null;
+  if (!/^\d+$/.test(identity)) return lstartMs(identity);
   try {
-    const value = JSON.parse(await fs.readFile(paths.ownershipFile, 'utf8'));
-    return Array.isArray(value.sessions) ? value.sessions.filter((item) => item && Number.isInteger(item.pid)) : [];
+    const bootSeconds = /^btime (\d+)$/m.exec(await readText('/proc/stat'))?.[1];
+    const self = await readText('/proc/self/stat');
+    const selfTicks = Number(self.slice(self.lastIndexOf(')') + 2).split(' ')[19]);
+    if (!bootSeconds || !Number.isFinite(selfTicks)) return null;
+    const boot = Number(bootSeconds) * 1000;
+    const selfStart = now() - uptimeMs();
+    const rate = CLOCK_TICK_RATES.find(
+      (hz) => Math.abs(boot + (selfTicks * 1000) / hz - selfStart) <= START_TIME_AGREEMENT_MS,
+    );
+    return rate ? boot + (Number(identity) * 1000) / rate : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function saveOwnedSessions(paths, sessions) {
+// ---- ownership records
+/**
+ * Only a missing records file means "no sessions"; any other read failure is surfaced, never taken as empty, and
+ * says what the user can do about it.
+ */
+export async function ownedSessions(paths = DEFAULT_PATHS) {
+  const sessionFolder = paths.discoveryRoot ? ' in ' + paths.discoveryRoot : '';
+  const remedy = () =>
+    ` Inspect or remove ${paths.ownershipFile} and run the command again. Without that file Paqvilo no longer` +
+    ` recognises the Mirages it listed, so "paqvilo mirage stop" cannot stop them; end them by` +
+    ` their process IDs, which the session-<pid>.json files${sessionFolder} name.`;
+  let text;
+  try {
+    text = await fs.readFile(paths.ownershipFile, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw new Error(
+      `Could not read the Mirage ownership records ${paths.ownershipFile}: ${error.message}.${remedy()}`,
+      {
+        cause: error,
+      },
+    );
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `The Mirage ownership records ${paths.ownershipFile} are not valid JSON: ${error.message}.${remedy()}`,
+      { cause: error },
+    );
+  }
+  return Array.isArray(value?.sessions) ? value.sessions.filter((item) => item && Number.isInteger(item.pid)) : [];
+}
+
+/** Windows refuses to replace a file while another process has it open; such a refusal lasts only as long as the read. */
+const REPLACE_REFUSED = new Set(['EPERM', 'EBUSY', 'EACCES']);
+/**
+ * Hang guard for the records and their lock: a read-modify-write takes milliseconds and a reader holds the file for
+ * as long as one read, so a refusal or a held lock that lasts this long is not going to end by itself.
+ */
+const OWNERSHIP_LOCK_HANG_GUARD = 30_000;
+
+/**
+ * The records file is only ever replaced whole by a rename, so a reader sees the previous or the next complete
+ * content. A refused rename is retried until it succeeds, `signal` aborts, or the hang guard ends it with the refusal.
+ */
+async function saveOwnedSessions(paths, sessions, { signal } = {}) {
   await fs.mkdir(path.dirname(paths.ownershipFile), { recursive: true });
   const temporary = `${paths.ownershipFile}.${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`; // NOSONAR: pseudo-random value for simulation, not a secret
-  const body = JSON.stringify({ version: 1, sessions }, null, 2);
-  await fs.writeFile(temporary, body);
+  await fs.writeFile(temporary, JSON.stringify({ version: 1, sessions }, null, 2));
+  const deadline = performance.now() + OWNERSHIP_LOCK_HANG_GUARD;
   try {
-    await fs.rename(temporary, paths.ownershipFile);
-  } catch {
-    // A reader holding the file open on Windows can refuse the replacement; write in place instead.
-    await fs.writeFile(paths.ownershipFile, body);
-    await fs.rm(temporary, { force: true });
+    for (;;) {
+      try {
+        await fs.rename(temporary, paths.ownershipFile);
+        return;
+      } catch (error) {
+        if (!REPLACE_REFUSED.has(error.code)) throw error;
+        if (performance.now() > deadline)
+          throw new Error(
+            `Could not replace the Mirage ownership records ${paths.ownershipFile} (${error.code}): the file is read-only or another program keeps it open. Make it writable or close that program, then run the command again.`,
+            { cause: error },
+          );
+      }
+      await delay(10, undefined, { signal });
+    }
+  } catch (error) {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+    throw error;
   }
 }
 
-/** A lock file is stale after this long: a read-modify-write of the records takes milliseconds. */
-const OWNERSHIP_LOCK_STALE = 10_000;
+// ---- lock files (the ownership lock here and the setup save lock in lense/setup/store.mjs)
 /**
- * Runs `action` holding the ownership lock (`<sessions file>.lock`, created exclusively), so
- * toolkit commands in other processes cannot interleave their read-modify-write with this one.
+ * A lock records its holder as JSON `{pid, at, ticks}`, and a waiter decides from it whether the live process with
+ * that number is still the holder:
+ * - Linux: `ticks` is the holder's start in clock ticks since boot (field 22 of /proc/<pid>/stat), read by the holder
+ *   itself. A waiter reads the same field of the live process and compares for equality: equal is the holder, a
+ *   different value is another program with the reused number. No clock is compared, so no clock step can make a live
+ *   holder look reused.
+ * - Windows and `ps` platforms report a start time fixed at process creation. `at` is the wall clock as it stood at
+ *   the holder's own start, advanced monotonically (`lockStamp`), so no clock step after the holder started can put
+ *   `at` before that start: a process that started more than this margin after `at` is another program. The margin
+ *   covers the granularity of the start times read (one second for `ps`).
+ * - A lock without `ticks` (an older toolkit's lock: the PID alone, its file time standing for `at`, or `{pid, at}`
+ *   with the wall clock at the take; or a Linux holder that could not read its own ticks) is judged by the time rule
+ *   above. For it, a clock stepped back by more than the margin between the holder's start and its take (Windows,
+ *   `ps`), or forward by more than the margin after the take (Linux, whose start times follow the current clock),
+ *   could make a live holder look reused.
+ * - `host` names the operating system and machine the lock was taken on (`lockHost`). Process numbers mean nothing in
+ *   another process namespace (Windows and WSL, or a host and a container, sharing one workspace), so a lock from
+ *   another host is held: its holder is never judged here. A lock without `host` (an older toolkit's) counts as local.
  */
-/* NOSONAR */ async function withOwnershipLock(paths, action, { signal } = {}) {
+const REUSED_AFTER_MS = 2000;
+
+const lockStamp = (platform) => (platform === 'linux' ? Date.now() : performance.timeOrigin + performance.now());
+/** Where this process takes its locks: its operating system and machine name. */
+const lockHost = () => `${process.platform}/${os.hostname()}`;
+
+/** Field 22 of /proc/<pid>/stat (`self`: this process): the start in clock ticks since boot, or null when unread. */
+async function procStartTicks(pid) {
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null;
+  } catch {
+    return null;
+  }
+}
+/** This process's own start ticks per reader: read once, at its first lock (once per process for the default reader). */
+const ownStartTicks = new WeakMap();
+/** The record of each lock this process holds, and of each it released but could not remove (its leftovers). */
+const heldLocks = new Map();
+const leftLocks = new Map();
+
+/** The holder a lock text records, or null: the PID alone (an older Mirage lock) or JSON `{pid, at, ticks, host}`. */
+function lockRecord(text) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (Number.isInteger(value) && value > 0) return { pid: value, at: null, ticks: null, host: null };
+  if (!Number.isInteger(value?.pid) || value.pid <= 0) return null;
+  const ticks = typeof value.ticks === 'string' && /^\d+$/.test(value.ticks) ? value.ticks : null;
+  const host = typeof value.host === 'string' ? value.host : null;
+  return { pid: value.pid, at: Number.isFinite(value.at) ? value.at : null, ticks, host };
+}
+
+/**
+ * Who holds a lock file. `missing`: it is gone. `unreadable`: it cannot be read, and counts as held. Otherwise `pid`,
+ * `at`, `ticks` and `host` from its record (`pid` null when it records none: its creator may still be writing it, or
+ * ended before it did; `at` the file time when the record has none), `foreign` when it was taken on another `host`
+ * than this one, `stale` when it is local and the recorded process has exited, `ageMs` since the file was last
+ * written, measured from the file system's time, and `key`, which changes whenever the lock is replaced or rewritten.
+ */
+export async function lockHolder(file, { host = lockHost() } = {}) {
+  let text, stat;
+  try {
+    [text, stat] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { missing: true, key: 'missing' };
+    return { unreadable: true, pid: null, stale: false, ageMs: 0, key: 'unreadable' };
+  }
+  const record = lockRecord(text) ?? { pid: null, at: null, ticks: null, host: null };
+  const foreign = record.host !== null && record.host !== host;
+  return {
+    ...record,
+    at: record.at ?? stat.mtimeMs,
+    foreign,
+    stale: record.pid !== null && !foreign && !isAlive(record.pid),
+    ageMs: Date.now() - stat.mtimeMs,
+    key: JSON.stringify([stat.ino, stat.birthtimeMs, stat.mtimeMs, text]),
+  };
+}
+
+/**
+ * `reused` when the live process with a lock's PID is not its holder (the holder has gone), `held` when it is, `unread`
+ * when its start could not be read (the lock is kept). Reading another process's start may start a helper process.
+ */
+async function lockOwnership(
+  holder,
+  { startTimeOf = processStartTimeMs, readTicks = procStartTicks, platform = process.platform, signal } = {},
+) {
+  if (holder.ticks && platform === 'linux') {
+    const ticks = await readTicks(holder.pid);
+    if (ticks == null) return 'unread';
+    return ticks === holder.ticks ? 'held' : 'reused';
+  }
+  const started = await startTimeOf(holder.pid, { signal });
+  if (!Number.isFinite(started) || !Number.isFinite(holder.at)) return 'unread';
+  return started > holder.at + REUSED_AFTER_MS ? 'reused' : 'held';
+}
+
+/**
+ * Whether a lock's holder is `gone` (it has exited, its live number now names another program, or the lock records no
+ * holder), `held`, or `unread` (alive, its start unreadable: kept). The start of a live holder is read, and a lock
+ * that records no holder is given up, only when `longHeld`: the caller has seen this lock unchanged for its guard. A
+ * lock taken on another host is held: its holder can only be judged there.
+ */
+export async function lockVerdict(holder, longHeld, options = {}) {
+  if (holder.missing || holder.stale) return 'gone';
+  if (!longHeld || holder.unreadable || holder.foreign) return 'held';
+  if (!holder.pid) return 'gone';
+  const ownership = await lockOwnership(holder, options);
+  return ownership === 'reused' ? 'gone' : ownership;
+}
+
+/** What a busy lock message adds for a holder on another host, or one whose start time was asked. */
+export const lockOwnershipNote = (verdict, holder = {}) => {
+  if (holder.foreign)
+    return ` It was taken on ${holder.host} and can only be judged there: if no Paqvilo command is running there, remove the lock file.`;
+  return verdict === 'unread' ? ' Its start time could not be read, so the lock is kept.' : '';
+};
+
+/** Takes this process's own leftover lock again when it still holds exactly the record this process wrote. */
+async function retakeLeftover(file) {
+  const text = leftLocks.get(file);
+  if (text === undefined) return false;
+  let current;
+  try {
+    current = await fs.readFile(file, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' && leftLocks.get(file) === text) leftLocks.delete(file);
+    return false;
+  }
+  // Another call in this process may have taken it while this one read it.
+  if (leftLocks.get(file) !== text) return false;
+  leftLocks.delete(file);
+  if (current !== text) return false;
+  heldLocks.set(file, text);
+  return true;
+}
+
+/**
+ * Creates the lock `file` exclusively, holding this process's record; false when it exists (or Windows refuses it:
+ * `refused` receives that error). A lock this process left behind because its removal failed is its own and nobody is
+ * inside it, so it is taken again as it stands. A file whose record cannot be written is removed before the error is
+ * thrown, so it cannot block anyone.
+ */
+export async function createHeld(
+  file,
+  { platform = process.platform, readTicks = procStartTicks, host = lockHost(), refused } = {},
+) {
+  const key = path.resolve(file);
+  const record = { pid: process.pid, at: lockStamp(platform) };
+  if (platform === 'linux') {
+    if (!ownStartTicks.has(readTicks)) ownStartTicks.set(readTicks, readTicks('self'));
+    const ticks = await ownStartTicks.get(readTicks);
+    if (ticks) record.ticks = ticks;
+  }
+  record.host = host;
+  const text = JSON.stringify(record);
+  let handle;
+  try {
+    handle = await fs.open(file, 'wx');
+  } catch (error) {
+    if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
+    refused?.(error);
+    return retakeLeftover(key);
+  }
+  try {
+    await handle.writeFile(text).finally(() => handle.close());
+  } catch (error) {
+    await fs.rm(file, { force: true }).catch(() => {});
+    throw error;
+  }
+  // A leftover removed by someone else is no longer this process's: only the record it holds now is.
+  leftLocks.delete(key);
+  heldLocks.set(key, text);
+  return true;
+}
+
+/** Removals of a lock that Windows refuses while another program has the file open, tried before giving up. */
+const RELEASE_ATTEMPTS = 10;
+
+/**
+ * Removes a lock this process holds. A removal refused while another program has the file open is retried a bounded
+ * number of times. One that still fails is reported once through `warn`, never thrown, so it cannot replace the result
+ * or the error of the locked work; the lock is then this process's leftover, which its next `createHeld` takes again.
+ */
+export async function releaseHeld(file, warn) {
+  const key = path.resolve(file);
+  const text = heldLocks.get(key);
+  heldLocks.delete(key);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fs.rm(file, { force: true });
+      return;
+    } catch (error) {
+      if (REPLACE_REFUSED.has(error.code) && attempt < RELEASE_ATTEMPTS) {
+        await delay(20 * attempt);
+        continue;
+      }
+      if (text !== undefined) leftLocks.set(key, text);
+      warn(
+        `Could not remove the lock file ${file} (${error.code ?? error.message}). This process takes it again for its next update; if no Paqvilo command is running, remove that file by hand.`,
+      );
+      return;
+    }
+  }
+}
+
+/**
+ * Removes `lock` if it is still the lock judged gone (the same `key`). One breaker at a time holds `<lock>.breaking`,
+ * created like a lock, so a lock another waiter has taken in the meantime is never removed and nothing is ever put
+ * back. Returns `{removed: true}` when this call removed it (the caller then competes for the lock as usual), `{}` when
+ * the lock has changed, `{refused}` when Windows refused its removal, or `{busy, verdict, refused}` for a breaker
+ * another call holds: `breakerVerdict(busy)` judges it, and a breaker judged gone is removed when it is still
+ * unchanged (`refused` when Windows refused that). A refusal is returned, not thrown: the caller tries again under its
+ * guard.
+ */
+export async function breakStaleLock(lock, key, { breakerVerdict, warn, ...options } = {}) {
+  const breaker = `${lock}.breaking`;
+  if (!(await createHeld(breaker, options))) {
+    const busy = await lockHolder(breaker, options);
+    const verdict = await breakerVerdict(busy);
+    const remove = verdict === 'gone' && !busy.missing && (await lockHolder(breaker, options)).key === busy.key;
+    return { busy, verdict, refused: remove ? await refusedRemoval(breaker) : null };
+  }
+  try {
+    if ((await lockHolder(lock, options)).key !== key) return {};
+    const refused = await refusedRemoval(lock);
+    return refused ? { refused } : { removed: true };
+  } finally {
+    await releaseHeld(breaker, warn);
+  }
+}
+
+/** Removes `file`; null when it is gone, or the error when Windows refused it while another program has it open. */
+async function refusedRemoval(file) {
+  try {
+    await fs.rm(file, { force: true });
+    return null;
+  } catch (error) {
+    if (!REPLACE_REFUSED.has(error.code)) throw error;
+    return error;
+  }
+}
+
+/** Why a waiter gives up on `<lock>.breaking` at its guard, from what `breakStaleLock` returned. */
+function breakerStuck(lock, { busy, verdict, refused }) {
+  const breaker = `${lock}.breaking`;
+  if (busy.missing)
+    return `Could not create ${breaker}, which is needed to remove the abandoned Mirage ownership lock ${lock}: the folder refuses new files. Make the folder writable, or remove ${lock} if no Paqvilo command is running, and run the command again.`;
+  if (refused)
+    return `Could not remove ${breaker}, left by process ${busy.pid ?? 'unknown'}, which has ended (${refused.code}): another program keeps it open. Close that program, or remove both files if no Paqvilo command is running, and run the command again.`;
+  return `The Mirage ownership lock ${lock} is being removed by process ${busy.pid ?? 'unknown'}, which has not finished for ${OWNERSHIP_LOCK_HANG_GUARD / 1000} s: ${breaker}.${lockOwnershipNote(verdict, busy)} If no Paqvilo command is running, remove both files and run the command again.`;
+}
+
+/** True once this waiter has seen the same lock (`key`) for the hang guard on its own monotonic `clock`. */
+function lockWatch(clock) {
+  let watched, since;
+  return (key) => {
+    if (key !== watched) [watched, since] = [key, clock()];
+    return clock() - since > OWNERSHIP_LOCK_HANG_GUARD;
+  };
+}
+
+const reportLockWarning = (message) => console.error(`mirage   ${message}`);
+
+/**
+ * Runs `action` holding the ownership lock (`<sessions file>.lock`, created exclusively), so toolkit commands in other
+ * processes cannot interleave their read-modify-write with this one. A lock whose holder has exited is taken over at
+ * once; a live holder's lock never is. The hang guard is this waiter's own: once it has seen the same lock unchanged
+ * for the guard on its monotonic `clock`, it takes the lock if it is free at that moment, takes it over when its live
+ * number now names another program or it records no holder, and otherwise ends with an error naming the holder. A
+ * lock taken by another waiter restarts the guard, so the wait ends when this waiter takes the lock or one lock has
+ * stayed for the whole guard. While another waiter removes a lock, this one waits for that under the same guard for
+ * `<lock>.breaking`; that guard also ends a breaker the folder refuses to create, or an ended breaker's file Windows
+ * refuses to remove. A lock whose removal Windows refuses is tried again until the lock's own guard ends.
+ */
+/* NOSONAR */ async function withOwnershipLock(
+  paths,
+  action,
+  { signal, clock = () => performance.now(), warn = reportLockWarning, ...options } = {},
+) {
   const lock = `${paths.ownershipFile}.lock`;
   await fs.mkdir(path.dirname(lock), { recursive: true });
-  const deadline = Date.now() + 3 * OWNERSHIP_LOCK_STALE;
+  const lockOptions = { ...options, signal, warn };
+  const lockWatched = lockWatch(clock),
+    breakerWatched = lockWatch(clock);
+  const breakerVerdict = (busy) => lockVerdict(busy, breakerWatched(busy.key), lockOptions);
+  let judged = {};
   for (;;) {
     signal?.throwIfAborted();
-    try {
-      const handle = await fs.open(lock, 'wx');
-      await handle.writeFile(String(process.pid)).finally(() => handle.close());
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
-      try {
-        if (Date.now() - (await fs.stat(lock)).mtimeMs > OWNERSHIP_LOCK_STALE) await fs.rm(lock, { force: true });
-      } catch {
-        /* released meanwhile */
-      }
-      if (Date.now() > deadline)
-        throw new Error(`The Mirage ownership records stayed locked: ${lock}`, { cause: error });
-      await delay(20 + Math.floor(Math.random() * 40), undefined, { signal }); // NOSONAR: pseudo-random value for simulation, not a secret
-    }
+    if (await createHeld(lock, lockOptions)) break;
+    const holder = await lockHolder(lock, lockOptions);
+    const longHeld = lockWatched(holder.key);
+    // A lock that is free at the moment the guard ends is taken, not reported.
+    if (longHeld && (await createHeld(lock, lockOptions))) break;
+    if (judged.key !== holder.key || judged.longHeld !== longHeld)
+      judged = { key: holder.key, longHeld, verdict: await lockVerdict(holder, longHeld, lockOptions) };
+    if (holder.missing) {
+      if (longHeld)
+        throw new Error(
+          `Could not create the Mirage ownership lock in ${path.dirname(lock)}: the folder refuses new files. Make it writable and run the command again.`,
+        );
+    } else if (judged.verdict === 'gone') {
+      const broken = await breakStaleLock(lock, holder.key, { ...lockOptions, breakerVerdict });
+      if (broken.removed) continue;
+      // A breaker that is not removing the lock (held, missing although its create was refused, or ended but not
+      // removable) counts against the breaker guard; a refused removal of the lock itself against the lock's guard.
+      const stuck = broken.busy && (broken.verdict !== 'gone' || broken.busy.missing || broken.refused);
+      if (stuck && breakerWatched(broken.busy.key)) throw new Error(breakerStuck(lock, broken));
+      if (!broken.busy && broken.refused && longHeld)
+        throw new Error(
+          `Could not remove the abandoned Mirage ownership lock ${lock} (${broken.refused.code}): another program keeps it open. Close that program, or remove that lock file, and run the command again.`,
+          { cause: broken.refused },
+        );
+    } else if (longHeld)
+      throw new Error(
+        `The Mirage ownership records stayed locked by process ${holder.pid ?? 'unknown'} for ${OWNERSHIP_LOCK_HANG_GUARD / 1000} s: ${lock}.${lockOwnershipNote(judged.verdict, holder)} If no Paqvilo command is running, remove that lock file and run the command again.`,
+      );
+    await delay(20 + Math.floor(Math.random() * 40), undefined, { signal }); // NOSONAR: pseudo-random value for simulation, not a secret
   }
   try {
     signal?.throwIfAborted();
     return await action();
   } finally {
-    await fs.rm(lock, { force: true }).catch(() => {});
+    await releaseHeld(lock, warn);
   }
 }
 
 /**
  * Read-modify-write, so entries added meanwhile by another toolkit command are retained. Updates
  * are queued within this process and locked across processes: Mirages starting at once, from
- * one command or several, must not lose a record.
+ * one command or several, must not lose a record. The remaining options reach the lock: `clock` (monotonic, for its
+ * guard), `warn` (a lock that could not be removed), `startTimeOf`, `readTicks` and `platform` (whose lock it is).
  */
 const ownershipUpdates = new Map();
-export async function updateOwnedSessions(paths, change, { signal } = {}) {
+export async function updateOwnedSessions(paths, change, { signal, ...lockOptions } = {}) {
   const key = path.resolve(paths.ownershipFile);
   const previous = ownershipUpdates.get(key) ?? Promise.resolve();
   const run = abortable(previous, signal).then(() =>
@@ -383,10 +794,10 @@ export async function updateOwnedSessions(paths, change, { signal } = {}) {
       paths,
       async () => {
         const next = await change(await ownedSessions(paths));
-        await saveOwnedSessions(paths, next);
+        await saveOwnedSessions(paths, next, { signal });
         return next;
       },
-      { signal },
+      { signal, ...lockOptions },
     ),
   );
   // A cancelled queued caller returns promptly, but later updates must still
@@ -424,7 +835,7 @@ async function discoveryRecords(paths, { signal } = {}) {
   return records;
 }
 
-async function readRuntime(url, fallbackSite = null, { signal } = {}) {
+async function readRuntime(url, fallbackSite = null, { signal, timeout = 2500 } = {}) {
   signal?.throwIfAborted();
   if (!url || !loopbackUrl(url)) return null;
   // The light status endpoint first; older runtimes answer 404 there and expose the state summary.
@@ -432,7 +843,7 @@ async function readRuntime(url, fallbackSite = null, { signal } = {}) {
     let response;
     try {
       response = await fetch(new URL(pathname, url), {
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2500)]) : AbortSignal.timeout(2500),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
       });
     } catch {
       signal?.throwIfAborted();
@@ -1304,8 +1715,7 @@ export async function start(
           identityMatches(item.identity, identity),
       );
     if (owner) {
-      const runtime = await readRuntime(session.url, session.id ?? null, { signal: startup.signal });
-      startup.check();
+      const runtime = await ownedRuntime(session, owner, { started, timeout, startup });
       if (runtime) {
         existing = { ...session, log: owner.log, ready: true, runtime };
         break;
@@ -1523,6 +1933,41 @@ async function exitedBeforeReady(log, logRoot) {
   return new Error(`Mirage exited before it became ready. See startup log: ${log}${details}`);
 }
 
+/**
+ * The status of a runtime this toolkit started with the same settings. While its process lives with the recorded
+ * identity it is this launch's runtime, however late it answers: the probe is repeated within the start-up silence
+ * bound, and a runtime still silent then refuses the start instead of a second runtime sharing its state file.
+ * Null once the process has exited, so the caller launches a new one.
+ */
+async function ownedRuntime(session, owner, { started, timeout, startup }) {
+  for (;;) {
+    // The CLI reports a fractional elapsed time; a fetch deadline is whole milliseconds.
+    const remaining = Math.ceil(started + timeout - startup.now());
+    const runtime =
+      remaining > 0
+        ? await readRuntime(session.url, session.id ?? null, { signal: startup.signal, timeout: remaining })
+        : null;
+    startup.check();
+    if (runtime) return runtime;
+    if (
+      !startup.alive(session.pid) ||
+      (await startup.identityOf(session.pid, { signal: startup.signal })) !== owner.processIdentity
+    )
+      return null;
+    startup.check();
+    if (startup.now() >= started + timeout) {
+      const stop = mirageStopCommand(
+        ['--runtime', owner.identity?.runtime?.kind ?? 'power-pages', '--state', owner.identity?.stateFile],
+        { cli: TOOLKIT_CLI },
+      );
+      throw new Error(
+        `Mirage pid ${session.pid} runs with these settings but its status at ${session.url} did not answer within ${timeout} ms (--startup-timeout); wait for it or stop it with ${stop}.`,
+      );
+    }
+    await startup.sleep(150, { signal: startup.signal });
+  }
+}
+
 function validateProjectLaunchArguments(projectInfo, args) {
   if (args['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
   if (args.portal && !projectInfo.portals.some((item) => item.id === args.portal))
@@ -1563,7 +2008,7 @@ async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive
 
 /**
  * Identities of the live records on this state file, read before the ownership lock: one read (PowerShell on
- * Windows) can outlast the lock's staleness limit, and a takeover of the lock would then let two writers interleave.
+ * Windows) takes far longer than a read-modify-write, and other commands would wait on the lock meanwhile.
  */
 async function rivalIdentities(paths, { childPid, identity, startup }) {
   const identities = new Map();

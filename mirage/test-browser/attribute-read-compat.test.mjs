@@ -1,4 +1,5 @@
 // @test-kind contract: local compatibility adapters read actual markup even when DOMStringMap has inherited values.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -8,7 +9,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
 test('Bootstrap compatibility uses actual data attributes rather than inherited dataset values', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent(
     '<div id="dropdown"><button type="button" id="toggle" data-toggle="dropdown">Menu</button><div class="dropdown-menu"></div></div><a id="expand" data-toggle="collapse" href="#panel">Expand</a><div id="panel" hidden>Panel</div><div id="other" hidden>Other</div>',
@@ -36,7 +37,7 @@ test('Bootstrap compatibility uses actual data attributes rather than inherited 
 // @test-kind contract: client API choice updates preserve the checked radio as the change event target.
 test('Pages client API picklist updates dispatch change on the chosen radio', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent(
     '<div class="crmEntityFormView" data-form-name="Example"><div class="control" data-logical-name="x_choice"><span id="x_choice" class="picklist"><input id="first" type="radio" name="choice" value="1" checked><input id="second" type="radio" name="choice" value="2"></span></div></div>',
@@ -61,7 +62,7 @@ test('Pages client API picklist updates dispatch change on the chosen radio', as
 // @test-kind contract: composite editability uses actual attribute presence, including empty values.
 test('address composite editability ignores inherited dataset values and preserves empty attributes', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent(
     '<div class="crmEntityFormView" data-form-name="Example">' +
@@ -99,7 +100,7 @@ test('address composite editability ignores inherited dataset values and preserv
 // @test-kind contract: the no-jQuery portal helper retains concat spreading of caller-supplied collections.
 test('portal checkbox label helper accepts a concat-spreadable collection without jQuery', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent('<label id="label">Choice</label>');
   await page.addScriptTag({ path: fileURLToPath(new URL('../lib/platform-app-compat.js', import.meta.url)) });

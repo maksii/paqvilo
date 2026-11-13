@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { captureScenario, pageRunner } from '../baseline-capture.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:15153';
 // The static fixture settles as soon as it is quiet. The bound is longer than the runner's hang guard, so it never
@@ -19,7 +19,7 @@ before(async () => {
 after(() => browser?.close());
 async function fixture(t) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await context.route(origin + '/**', (route) =>
     route.fulfill({
       contentType: 'text/html',

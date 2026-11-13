@@ -125,6 +125,7 @@ import { serverLogicName, serverLogicUnsupported } from './lib/server-logic.mjs'
 import {
   assertOperationRole,
   assertServerLogicEnabled,
+  assertServerLogicTimeout,
   runExportedServerLogic,
   runExportedCloudFlow,
   importOperationWorkflows,
@@ -740,6 +741,8 @@ export async function createSimulator(options = {}) {
   allowLiveWrites = false,
   // Idle time without body bytes after which close() ends a request whose body stopped arriving (SHUTDOWN_BODY_IDLE_MS).
   shutdownBodyIdleMs = SHUTDOWN_BODY_IDLE_MS,
+  // Local time limit (ms) of one exported server-logic run, default 5 s, at most ServerLogic/TimeoutInSeconds.
+  serverLogicTimeoutMs,
   // The site's data model for a YAML source ("standard" or "enhanced"; lib/importer.mjs): a
   // .powerpages-site export does not record it and defaults to enhanced.
   dataModel,
@@ -750,6 +753,7 @@ export async function createSimulator(options = {}) {
   // Registered settings this host does not read itself (mirage/lib/config-keys.mjs); persona instances inherit them.
   ...settingOptionsRest
 } = {}) {
+  assertServerLogicTimeout(serverLogicTimeoutMs, 'serverLogicTimeoutMs');
   const startedAt = performance.now(),
     bootstrapTimings = {};
   // The runtime log stream (D-M-4): every line goes to a bounded ring (mirage.logs.retain, default 2000; 0 keeps none) that
@@ -2103,6 +2107,7 @@ export async function createSimulator(options = {}) {
       body,
       input,
       query,
+      timeout: serverLogicTimeoutMs,
       environmentVariables: environmentVariablePayload(store.state),
       services: serverLogicServices(),
     };
@@ -2998,6 +3003,8 @@ export async function createSimulator(options = {}) {
         render: renderOption,
         platform: platformOption,
         dataModel,
+        serverLogicTimeoutMs,
+        shutdownBodyIdleMs,
         personaInstance: { ...definition, ownerOrigin: localOrigin },
         [SHARED_TRACES]: organizationHost.traces,
         preset: definition.preset,
@@ -7143,7 +7150,7 @@ export async function createSimulator(options = {}) {
         res.end();
         return;
       }
-      json(res, 500, { error: { code: 'SIMULATOR_ERROR', message: 'Simulator request failed.' } });
+      void json(res, 500, { error: { code: 'SIMULATOR_ERROR', message: 'Simulator request failed.' } });
     }
   };
   const classifyPortalRequest = (method, url, cfg) => {

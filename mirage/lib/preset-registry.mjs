@@ -295,7 +295,7 @@ export async function builtinPackModules(root = PACKS_ROOT) {
   const modules = [];
   for (const entry of entries
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-    .sort((a, b) => a.name.localeCompare(b.name))) {
+    .sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     const file = path.join(root, entry.name, 'pack.mjs');
     try {
       if ((await fs.stat(file)).isFile()) modules.push(file);

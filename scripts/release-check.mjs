@@ -320,6 +320,8 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/plugin-clr-worker.mjs',
   'mirage/lib/sync-io-bridge.mjs',
   'mirage/lib/sync-io-worker.mjs',
+  'mirage/lib/sync-io-worker-entry.mjs',
+  'mirage/lib/work-counter.mjs',
   'mirage/lib/plugin-clr-host.cs',
   'mirage/lib/plugin-async.mjs',
   'mirage/lib/plugin-query.mjs',

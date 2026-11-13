@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo message buses keep exact decimals and finite Double values on local and AMQP transports; out-of-range JSON refused
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -22,7 +23,7 @@ test('local and AMQP JSON messages retain finite Double range and plain properti
         'Endpoint=sb://127.0.0.1;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=invented-range-key;UseDevelopmentEmulator=true;',
     },
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await emulator.close();
     await broker.close();
   });

@@ -1,4 +1,5 @@
 // @test-kind compatibility: attribute checks ignore properties inherited by DOMStringMap
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -13,7 +14,7 @@ after(() => browser?.close());
 test('persona actions ignore inherited dataset properties', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.goto(app.url + '/_sim/#identity');
   const picker = page.locator('#browser-persona-picker');

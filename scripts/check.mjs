@@ -17,15 +17,19 @@ function walk(dir) {
 }
 for (const dir of ['bin', 'lense', 'scripts', 'test', 'test-browser', 'mirage', 'examples']) walk(path.join(root, dir));
 // One `node --check` per file keeps Node's own format detection; run them on every core, report in file order.
+// A hang guard only: a check that never ends is reported as such, never as a syntax error.
+const CHECK_HANG_GUARD_MS = 170_000;
 const check = (file) =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
       ['--check', file],
-      { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+      { encoding: 'utf8', windowsHide: true, timeout: CHECK_HANG_GUARD_MS },
       (error, _, stderr) => {
         if (!error) return resolve(null);
-        const detail = typeof error.code === 'string' || error.killed ? error.message : stderr;
+        let detail = stderr;
+        if (error.killed) detail = `node --check did not finish within ${CHECK_HANG_GUARD_MS / 1000} s`;
+        else if (typeof error.code === 'string') detail = error.message;
         resolve(`${path.relative(root, file)}: ${detail}`);
       },
     );

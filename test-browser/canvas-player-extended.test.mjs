@@ -750,7 +750,7 @@ test('player fixture drains accepted idle sockets before browser cleanup', async
     (cleanup ??= (async () => {
       for (const hook of hooks) await hook();
     })());
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     socket?.destroy();
     await close();
   });

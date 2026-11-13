@@ -1,5 +1,6 @@
 // @test-kind unproven: local model of service endpoint (web hook) delivery; no native capture cited
 // Service endpoint contracts 2 (Queue), 5 (Topic) and 6 (Queue Persistent) delivered to the local message bus.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -118,7 +119,7 @@ async function world(
   };
   const webhooks = withBus ? serviceEndpointDelivery(store, { messaging }) : webhookDelivery(store);
   const runner = wireRegisteredSteps(store, webhooks, diagnostic);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await api.close();
   });

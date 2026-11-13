@@ -1,6 +1,7 @@
 // Shared fixture for the Dataverse contract-module tests (dataverse-calculated, dataverse-business-rules, ...): starts a
 // loopback Dataverse API over an invented state with the default EXTENSIONS plus the module under test, installed
 // explicitly, and returns an authenticated Web API caller.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
@@ -54,7 +55,7 @@ export async function contractModuleFixture(
   // providers (api.providers, frozen before any extension installs) need an organization runtime built with them.
   const organization = providers ? await createOrganizationRuntime({ store, settings, extensions, providers }) : null;
   const server = await startDataverseApi({ store, settings, log: () => {}, extensions, organization });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await server.close();
     await organization?.close();
   });

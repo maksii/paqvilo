@@ -4,6 +4,7 @@
 // (body, query options, answer-changing headers) and its answer (id, row count, total count, more records, status) at level
 // full and the row count, page number and query kind at summary; a bypass header is one bypass event; and the Dataverse
 // security decision never reads the current span at level off. Invented schemas and loopback only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -43,7 +44,7 @@ async function listener(t, level) {
     }),
     log: () => {},
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await api.close();
   });

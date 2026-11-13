@@ -3,6 +3,7 @@
 // AMQP bus (dataverse-webhooks.mjs serviceEndpointDelivery → bus.send) to the loopback fake broker.
 // A synchronous step runs inside its operation on the asynchronous pipeline (data.mjs createRecordAsync): the send is awaited and
 // a failed send fails the operation.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -106,6 +107,9 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
     settings: settings.sb,
     entities: mappedEntities(settings, 'sb'),
     env,
+    // No wall-clock bound: the in-process broker answers every request, and a missing answer is ended by the runner's
+    // --test-timeout.
+    timeoutMs: null,
   });
   const messaging = {
     bus: createLocalMessageBus({ store }),
@@ -115,7 +119,7 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
   };
   const webhooks = serviceEndpointDelivery(store, { messaging });
   const runner = wireRegisteredSteps(store, webhooks, diagnostic);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await runner.close();
     await api.close();

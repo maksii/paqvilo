@@ -2,6 +2,7 @@
 // The servicebus-emulator bus (message-bus.mjs createServiceBusEmulatorBus over amqp-client.mjs) against the test-only loopback
 // fake broker (mirage/testing/amqp-fake-broker.mjs): the same send/receive/complete/abandon/deadLetter contract as the local bus.
 // A run against the real emulator is a manual check (mirage/docs/messaging-and-outbox.md), not part of CI.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import diagnosticsChannel from 'node:diagnostics_channel';
@@ -18,6 +19,8 @@ import { providerRequirements } from '../lib/organization-host.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
 
 const KEY = 'invented-key-7f3a9c';
+// hang guard only: a receive window that waits for a message already being sent to the in-process broker
+const WAIT_HANG_GUARD_MS = 170_000;
 const env = (key = KEY, host = '127.0.0.1') => ({
   FX_SB: `Endpoint=sb://${host};SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=${key};UseDevelopmentEmulator=true;`,
 });
@@ -34,10 +37,12 @@ async function fixture(t, { broker: brokerOptions = {}, bus: busOptions = {} } =
     id: 'emulator',
     settings: { connectionString: 'env:FX_SB', amqpPort: broker.port },
     env: env(),
-    timeoutMs: 30_000,
+    // No wall-clock bound: the in-process broker answers every request, and a missing answer is ended by the runner's
+    // --test-timeout.
+    timeoutMs: null,
     ...busOptions,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await bus.close();
     await broker.close();
   });
@@ -94,12 +99,15 @@ test('abandon redelivers with a higher delivery count and the broker dead-letter
   await bus.send('fx-orders', { n: 1 });
   const [first] = await bus.receive('fx-orders');
   await bus.abandon(first.lockToken);
-  const [second] = await bus.receive('fx-orders', { waitMs: 30_000 });
+  const [second] = await bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
   assert.equal(second.deliveryCount, 2);
   assert.notEqual(second.lockToken, first.lockToken);
   await bus.abandon(second.lockToken);
   assert.deepEqual(await bus.receive('fx-orders'), []);
-  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { mode: 'receiveAndDelete', waitMs: 30_000 });
+  const [dead] = await bus.receive('fx-orders/$deadletterqueue', {
+    mode: 'receiveAndDelete',
+    waitMs: WAIT_HANG_GUARD_MS,
+  });
   assert.equal(dead.state, 'deadLettered');
   assert.equal(dead.deadLetterReason, 'MaxDeliveryCountExceeded');
   assert.equal(dead.lockToken, null);
@@ -111,7 +119,7 @@ test('an explicit dead-letter keeps reason and description; a dead-lettered mess
   await bus.send('fx-orders', { n: 2 });
   const [message] = await bus.receive('fx-orders');
   await bus.deadLetter(message.lockToken, { reason: 'x_invalid', description: 'Invented failure' });
-  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { waitMs: 30_000 });
+  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { waitMs: WAIT_HANG_GUARD_MS });
   assert.equal(dead.deadLetterReason, 'x_invalid');
   assert.equal(dead.deadLetterDescription, 'Invented failure');
   assert.deepEqual(dead.properties, {}, 'reason fields are not application properties of the view');
@@ -122,22 +130,26 @@ test('an explicit dead-letter keeps reason and description; a dead-lettered mess
 test('a topic send reaches its subscription; receive-and-delete removes on delivery', async (t) => {
   const { broker, bus } = await fixture(t);
   await bus.send('fx-events', { n: 3 });
-  const [message] = await bus.receive('fx-events/subscriptions/fx-audit', { mode: 'receiveAndDelete', waitMs: 30_000 });
+  const [message] = await bus.receive('fx-events/subscriptions/fx-audit', {
+    mode: 'receiveAndDelete',
+    waitMs: WAIT_HANG_GUARD_MS,
+  });
   assert.deepEqual(message.body, { n: 3 });
   assert.equal(message.lockToken, null);
   assert.equal(broker.count('fx-events/subscriptions/fx-audit'), 0);
 });
 
 test('receive waits up to waitMs for a message sent later, and drains when nothing is available', async (t) => {
-  // The client bound is far beyond a loopback round trip, so an answer inside half of it can only be the drain answer.
-  const timeoutMs = 30_000;
-  const { bus } = await fixture(t, { bus: { timeoutMs } });
-  const started = Date.now();
+  // The bus waits without a wall-clock bound, so an answer to waitMs 0 can only follow the broker's drain answer.
+  const { broker, bus } = await fixture(t);
   assert.deepEqual(await bus.receive('fx-orders', { maxMessages: 5 }), []);
-  assert.ok(Date.now() - started < timeoutMs / 2, 'waitMs 0 answers after a drain, not after a timeout');
+  assert.ok(
+    broker.frames.some((item) => item.code === 0x13 && item.fields[8] === true),
+    'waitMs 0 drains the link (flow with drain set)',
+  );
   // The receiver link is attached, so this receive writes its credit at once; the send's transfer follows its sender
   // attach round trip, so the message reaches the broker only while the receive waits.
-  const waiting = bus.receive('fx-orders', { waitMs: timeoutMs });
+  const waiting = bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
   await bus.send('fx-orders', { n: 4 });
   const [message] = await waiting;
   assert.deepEqual(message.body, { n: 4 });
@@ -147,7 +159,7 @@ test('a message larger than the broker frame size crosses as a multi-frame trans
   const { bus } = await fixture(t, { broker: { maxFrameSize: 1024 } });
   const text = 'x'.repeat(10_000);
   await bus.send('fx-orders', { text });
-  const [message] = await bus.receive('fx-orders', { waitMs: 30_000 });
+  const [message] = await bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
   assert.equal(message.body.text, text);
   await assert.rejects(bus.send('fx-orders', { text: 'x'.repeat(300_000) }), { code: 'TooLarge' });
 });
@@ -161,7 +173,7 @@ test('a scheduled message carries x-opt-scheduled-enqueue-time and stays invisib
   assert.deepEqual(await bus.receive('fx-orders'), []);
   const soon = new Date(Date.now() + 200);
   await bus.send('fx-orders', { n: 6 }, { scheduledEnqueueTime: soon });
-  const [message] = await bus.receive('fx-orders', { waitMs: 30_000 });
+  const [message] = await bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
   assert.ok(Date.now() >= soon.getTime(), 'not delivered before its scheduled enqueue time');
   assert.deepEqual(message.body, { n: 6 });
   assert.equal(message.scheduledEnqueueTime, soon.toISOString());
@@ -221,7 +233,7 @@ test('preflight against a silent port answers not ready when the shared idle win
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const silent = net.createServer((socket) => socket.resume()); // accepts TCP and never answers the protocol header
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         silent.close(resolve);
@@ -253,7 +265,7 @@ test('closing the bus waits for a preflight probe that is still in flight', asyn
   const order = [];
   const probe = bus.preflight().then(() => order.push('probe'));
   const [socket] = await accepted;
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         socket.destroy();
@@ -302,7 +314,7 @@ async function holdingRelay(t, brokerPort, { silent = false } = {}) {
     client.on('close', () => upstream.end());
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
   });
@@ -312,7 +324,7 @@ async function holdingRelay(t, brokerPort, { silent = false } = {}) {
 // The bus probe as the host runs it (providerRequirements), with the bus reaching the fake broker through the relay.
 async function probeThroughRelay(t, { silent = false } = {}) {
   const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], topics: { 'fx-events': ['fx-audit'] } });
-  t.after(() => broker.close());
+  ownedFixture(t).add(() => broker.close());
   const relay = await holdingRelay(t, broker.port, { silent });
   const bus = createServiceBusEmulatorBus({
     id: 'emulator',
@@ -320,7 +332,7 @@ async function probeThroughRelay(t, { silent = false } = {}) {
     entities: ['fx-orders', 'fx-events'],
     env: env(),
   });
-  t.after(() => bus.close());
+  ownedFixture(t).add(() => bus.close());
   const providers = {
     messaging: {
       settings: { emulator: { kind: 'servicebus-emulator', connectionString: 'env:FX_SB' } },
@@ -378,7 +390,7 @@ test('the emulator health probe with the default is ended by the idle window at 
   const sockets = new Set();
   const silent = net.createServer((socket) => sockets.add(socket)); // accepts, never answers
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => silent.close(resolve));
   });
@@ -433,7 +445,7 @@ test("the client puts attach, flow, transfer and disposition fields at their spe
   await bus.send('fx-orders', { n: 1 });
   const [message] = await bus.receive('fx-orders');
   await bus.abandon(message.lockToken);
-  const [again] = await bus.receive('fx-orders', { waitMs: 30_000 });
+  const [again] = await bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
   await bus.complete(again.lockToken);
   await settled(bus);
   assert.equal(broker.count('fx-orders'), 0);
@@ -470,6 +482,33 @@ test("the client puts attach, flow, transfer and disposition fields at their spe
     'abandon: modified with delivery-failed true, undeliverable-here false',
   );
   assert.equal(again.deliveryCount, 2, 'the abandon raised the delivery count');
+});
+
+test('a scheduled message whose broker timer fires before the clock reaches its due time is delivered once due', async (t) => {
+  const { broker, bus } = await fixture(t);
+  assert.deepEqual(await bus.receive('fx-orders'), [], 'the receiver link is attached');
+  // Only setTimeout is mocked: a tick fires the broker's timer while Date.now() has not moved, the losing order.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let credited;
+  const credit = new Promise((resolve) => (credited = resolve));
+  const originalPush = broker.frames.push;
+  broker.frames.push = function (...frames) {
+    if (frames.some((frame) => frame.code === 0x13 && frame.fields[6] > 0 && frame.fields[8] !== true)) credited();
+    return originalPush.apply(this, frames);
+  };
+  t.after(() => {
+    broker.frames.push = originalPush;
+  });
+  const waiting = bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
+  await credit;
+  const due = Date.now() + 1000;
+  await bus.send('fx-orders', { n: 7 }, { scheduledEnqueueTime: new Date(due) });
+  t.mock.timers.tick(1001);
+  while (Date.now() <= due) await new Promise((resolve) => setImmediate(resolve));
+  // The broker waits for the remainder and delivers to the waiting receive, before its window ends.
+  t.mock.timers.tick(1001);
+  const [message] = await waiting;
+  assert.deepEqual(message.body, { n: 7 });
 });
 
 test('a connection reset while a message is in flight fails that send naming the closed connection; the next send reconnects', async (t) => {
@@ -556,7 +595,7 @@ function rawClient(port) {
 
 test('a client frame larger than the broker max-frame-size is refused with framing-error and the connection closes', async (t) => {
   const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], maxFrameSize: 1024 });
-  t.after(() => broker.close());
+  ownedFixture(t).add(() => broker.close());
   const client = rawClient(broker.port);
   client.socket.write(Buffer.concat([SASL_HEADER_BYTES, saslInit(KEY), AMQP_HEADER_BYTES, rawFrame(0, OPEN_EMPTY)]));
   await client.until('fake-broker');
@@ -574,7 +613,7 @@ test('a client frame larger than the broker max-frame-size is refused with frami
 
 test('an undecodable frame closes its connection with amqp:decode-error and the test process survives', async (t) => {
   const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], maxFrameSize: 1024 });
-  t.after(() => broker.close());
+  ownedFixture(t).add(() => broker.close());
   const client = rawClient(broker.port);
   // sasl-init whose initial-response is a value code no AMQP 1.0 type uses.
   client.socket.write(
@@ -628,7 +667,7 @@ async function emulatorListener(t) {
     });
   });
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => listener.close(resolve)));
   return {
     port: listener.address().port,
     firstBytes,

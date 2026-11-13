@@ -20,6 +20,7 @@ import { createFixture, HOME_ID } from '../test/fixture.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { ownDrainedServers } from './helpers/owned-server.mjs';
+import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 
 const APP = 'web-files/app.js';
 const CSS = 'web-files/theme.css';
@@ -489,10 +490,12 @@ test('one catalogue browser isolates lazy portal sessions, environments, panels,
     'online-alpha-dev',
     'detached pages use server resources again',
   );
-  const evidence = new URL('../.paqvilo/multi-portal-round/', import.meta.url);
-  fs.mkdirSync(evidence, { recursive: true });
   fs.writeFileSync(
-    new URL('acceptance.json', evidence),
+    syntheticEvidencePath(
+      fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+      'multi-portal-round',
+      'acceptance.json',
+    ),
     JSON.stringify(
       {
         configuredOrigins: selection.targets.length,
@@ -650,7 +653,7 @@ test('actual dev CLI activates catalogue navigation and agent stop tears down th
     }
     throw new Error(`${message}: ${output}`);
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (child && child.exitCode === null) {
       if (lastDiscovery)
         await fetch(lastDiscovery.endpoint + '/v1/stop', {
@@ -788,10 +791,12 @@ test('actual dev CLI activates catalogue navigation and agent stop tears down th
       server.requests.every((request) => request.method === 'GET' && !request.pathname.startsWith('/__paqvilo/')),
     ),
   );
-  const evidence = new URL('../.paqvilo/multi-portal-round/', import.meta.url);
-  fs.mkdirSync(evidence, { recursive: true });
   fs.writeFileSync(
-    new URL('cli-smoke.json', evidence),
+    syntheticEvidencePath(
+      fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+      'multi-portal-round',
+      'cli-smoke.json',
+    ),
     JSON.stringify(
       {
         exitCode: finished.code,

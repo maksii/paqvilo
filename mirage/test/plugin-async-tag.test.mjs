@@ -10,7 +10,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -21,7 +21,7 @@ test(
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-tag-'));
     let backend;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await backend?.close();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

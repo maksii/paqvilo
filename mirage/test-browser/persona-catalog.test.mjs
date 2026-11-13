@@ -1,4 +1,5 @@
 // @test-kind contract: persona pickers of the sign-in and admin pages, their shared routes, contact role picker and local metadata editor
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -15,7 +16,7 @@ after(() => browser?.close());
 test('persona pickers: search/facets, pinning, shared routes, contact role picker and local metadata editor', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -79,7 +80,7 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
 test('native grouped sign-in remains usable without JS; browser automation applies context options', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext({ javaScriptEnabled: false });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.goto(app.url + '/SignIn');
   await page.locator('[data-persona-group="group-0"]').waitFor();
@@ -95,7 +96,7 @@ test('native grouped sign-in remains usable without JS; browser automation appli
   });
   assert.notEqual(opened.origin, app.url);
   assert.deepEqual(opened.context.pages(), []);
-  t.after(() => opened.context.close());
+  ownedFixture(t).add(() => opened.context.close());
   const childPage = await opened.context.newPage();
   assert.deepEqual(childPage.viewportSize(), { width: 1100, height: 750 });
   await childPage.goto(opened.url);
@@ -107,7 +108,7 @@ test('native grouped sign-in remains usable without JS; browser automation appli
 test('a pending persona launch keeps the picker and its caption bound to the submitted persona', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.goto(app.url + '/_sim/#identity');
   const picker = page.locator('#browser-persona-picker');

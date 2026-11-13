@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -8,7 +9,7 @@ import { signInContext } from '../testing/session.mjs';
 test('native grid form dialogs save, retain parent edits and refresh authored handlers; Delete requires confirmation', async (t) => {
   const app = await simulatorFixture(t),
     browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   // Portal requests are signed in explicitly as the fixture's Editor persona.
   const context = await browser.newContext();
   await signInContext(context, app, 'editor', { roles: ['Editor'] });

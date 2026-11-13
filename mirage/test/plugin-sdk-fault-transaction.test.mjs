@@ -1,4 +1,5 @@
 // @test-kind parity: native dev-environment recorder corpus (sdkSurface): a synchronous step that catches the 0x80040217 fault of an SDK Update on a missing row keeps its transaction, and the triggering operation succeeds
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -18,7 +19,7 @@ test('a caught missing-row fault does not abort the step transaction', async (t)
   state.tables.x_log = [];
   const store = await new DataStore({ state }).init();
   const organization = await createOrganizationRuntime({ store, settings: dataverseSettings({ enabled: true }) });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
   const profile = { userId: system, evidence: 'Invented fault-tolerant step', grants: [] };
   const call = (method, args) =>

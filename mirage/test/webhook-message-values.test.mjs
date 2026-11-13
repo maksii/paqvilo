@@ -14,8 +14,11 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 const id = '20000000-0000-0000-0000-000000000001';
 const target = { $type: 'Entity', logicalName: 'x_item', id, attributes: { x_name: 'Invented' } };
@@ -56,7 +59,7 @@ async function webhookReceiver(t, endpointOptions = {}, onReceive = () => {}) {
     });
   });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         receiver.close(resolve);
@@ -110,7 +113,7 @@ test('webhook-only stages share one known operation identity and time independen
       }));
       const items = pluginCatalogue({ plugins: { steps } }),
         backend = await createOrganizationBackend({ store, items: () => items });
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         await backend.close();
         store.close();
       });
@@ -153,7 +156,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-webhook-message-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => removeFixtureDirectory(root));
     const sdk = clrSdk(),
       source = path.join(root, 'Serializer.cs'),
       executable = path.join(root, 'Serializer.exe');
@@ -179,7 +182,7 @@ var serializer = new DataContractJsonSerializer(typeof(RemoteExecutionContext));
 } }`,
     );
     compileClr(source, executable, { target: 'exe', references: [sdk, 'System.Runtime.Serialization.dll'] });
-    const result = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    const result = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
     assert.equal(result.status, 0, result.stderr);
     const native = JSON.parse(result.stdout),
       expected = parameters(native),
@@ -398,7 +401,7 @@ test(
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-webhook-early-'));
     let backend;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await backend?.close();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

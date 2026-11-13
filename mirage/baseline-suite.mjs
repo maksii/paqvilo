@@ -193,7 +193,7 @@ const NO_CDP_NET_DIAGNOSTIC = 'live.cdpUrl is not set: writes are guarded per pa
 
 // The browser-level net adopts the capture page only when that page opened in the browser of live.cdpUrl.
 function requireAdoptedPage(net) {
-  if (net && net.adopted() === 0)
+  if (net?.adopted() === 0)
     throw new Error(
       'live.cdpUrl is not the bridge browser: the capture page did not open there, so the browser-level write net did not cover it.',
     );

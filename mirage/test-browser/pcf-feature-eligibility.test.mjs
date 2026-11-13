@@ -6,12 +6,12 @@ import path from 'node:path';
 import http from 'node:http';
 import { observedPage } from './shared-browser.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('PCF required declarations never load a constructor while optional features retain host APIs', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-features-'));
   let server, browser;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser?.close();
     server?.closeAllConnections();
     if (server?.listening) await new Promise((resolve) => server.close(resolve));

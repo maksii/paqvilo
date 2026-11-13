@@ -2,50 +2,15 @@
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { stringColumn as column, tableBody, startAdminApi } from './support/web-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { readSolutionZip } from '../lib/solution-schema.mjs';
 import { zipOf, solutionImportJob } from '../lib/dataverse-solutions.mjs';
 
-const APP = '55555555-5555-4555-8555-555555555555';
-const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
-const column = (schema, extra = {}) => ({
-  '@odata.type': '#Microsoft.Dynamics.CRM.StringAttributeMetadata',
-  SchemaName: schema,
-  DisplayName: label(schema),
-  FormatName: { Value: 'Text' },
-  ...extra,
-});
-const tableBody = (schema) => ({
-  '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
-  SchemaName: schema,
-  DisplayName: label(schema),
-  DisplayCollectionName: label(schema + 's'),
-  Description: label(''),
-  OwnershipType: 'OrganizationOwned',
-  IsActivity: false,
-  HasActivities: false,
-  HasNotes: false,
-  Attributes: [column('fx_Name', { IsPrimaryName: true, MaxLength: 100 })],
-});
-
-let counter = 0;
 async function server(owner) {
-  const variable = `PAQ_LAYER_SECRET_${process.pid}_${++counter}`;
-  process.env[variable] = 'invented-secret';
   const store = await new DataStore({ state: emptyState() }).init();
-  const settings = dataverseSettings({
-    enabled: true,
-    tds: { enabled: false },
-    applications: [
-      { appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
-    ],
-  });
   const captured = {};
-  const api = await startDataverseApi({
-    store,
-    settings,
+  const { request } = await startAdminApi(owner, store, {
     extensions: [
       ...EXTENSIONS,
       {
@@ -55,34 +20,7 @@ async function server(owner) {
         },
       },
     ],
-    log: () => {},
   });
-  owner.after(async () => {
-    delete process.env[variable];
-    await api.close();
-  });
-  const token = (
-    await (
-      await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-        method: 'POST',
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: APP,
-          client_secret: 'invented-secret',
-          scope: `${api.origin}/.default`,
-        }),
-      })
-    ).json()
-  ).access_token;
-  const request = async (method, path, body, headers = {}) => {
-    const response = await fetch(`${api.origin}/api/data/v9.2${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    return { status: response.status, json: text ? JSON.parse(text) : null };
-  };
   return { store, request, api: captured.api };
 }
 

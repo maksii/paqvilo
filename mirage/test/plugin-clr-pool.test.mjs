@@ -25,7 +25,7 @@ import {
   PLUGIN_MAX_DEPTH,
 } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
@@ -35,15 +35,46 @@ const CLI_HANG_GUARD_MS = 170_000;
 // Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
 // run, as a passing run stops polling when the host is gone.
 const HOST_EXIT_LIMIT_MS = 30_000;
-async function processAbsent(pid, limitMs) {
-  for (const deadline = Date.now() + limitMs; Date.now() < deadline; await delay(20))
+// The start time (UTC ticks) of process `pid`, read by a CLR host executable's --process-start mode; null when it
+// cannot be read (no such process, or no access).
+function processStart(executable, pid) {
+  const result = spawnSync(executable, ['--process-start', String(pid)], {
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  return result.status === 0 && /^\d+$/.test(result.stdout) ? result.stdout : null;
+}
+// Whether the process with this id and start time is gone: its id names no process, or names a process started at
+// another time (the id was reused). A start time that cannot be read decides nothing; polling goes on.
+async function incarnationAbsent(executable, pid, start, limitMs) {
+  for (const deadline = Date.now() + limitMs; Date.now() < deadline; await delay(20)) {
     try {
       process.kill(pid, 0);
     } catch (cause) {
       if (cause.code === 'ESRCH') return true;
       throw cause;
     }
+    const now = processStart(executable, pid);
+    if (now !== null && now !== start) return true;
+  }
   return false;
+}
+// The process ids that own a listening TCP socket on a loopback port, read from the system's own table (netstat), so no
+// connection is made and another process that takes the freed port is told apart by its id. A listening row has the
+// foreign address 0.0.0.0:0, whatever the system language.
+function loopbackListeners(port) {
+  const { status, stdout } = spawnSync('netstat', ['-ano', '-p', 'TCP'], {
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  assert.equal(status, 0, 'netstat lists the TCP table');
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((columns) => columns[1] === '127.0.0.1:' + port && columns[2] === '0.0.0.0:0')
+    .map((columns) => Number(columns.at(-1)));
 }
 
 test('a CLR host gets its parent PID alone; no parent probe process starts', { skip: CLR_SKIP }, async (t) => {
@@ -199,38 +230,51 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
       for (const mode of ['null', 'array', 'pending', 'startup-gate', ...(pooled ? ['invalid-timeout'] : [])])
         await t.test(`${pooled ? 'pooled' : 'fresh'} ${mode}`, async (sub) => {
           const { port1, port2 } = new MessageChannel(),
+            clock = new MessageChannel(),
             signal = new SharedArrayBuffer(4),
             input = { mode };
-          const worker = new Worker(
-            new URL(pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs', import.meta.url),
-            {
-              workerData: { port: port2, signal, executable, input, timeout: mode === 'startup-gate' ? 2_000 : 10_000 },
-              transferList: [port2],
+          // The worker's timers run on a clock this test owns: the step deadline fires only when the test posts on it.
+          const worker = new Worker(new URL('./fixtures/clr-clock-worker.mjs', import.meta.url), {
+            workerData: {
+              workerUrl: new URL(
+                pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs',
+                import.meta.url,
+              ).href,
+              clock: clock.port2,
+              port: port2,
+              signal,
+              executable,
+              input,
+              timeout: 10_000,
             },
-          );
+            transferList: [port2, clock.port2],
+          });
           const exited = new Promise((resolve) => worker.once('exit', resolve));
           let pid,
             waitingBeforeDispatch = false,
-            completed = false;
-          sub.after(async () => {
-            if (pid)
-              try {
-                process.kill(pid);
-              } catch {
-                /* The owned child may already have exited. */
-              }
-            port1.close();
-            // Aborted while still running: terminated. Otherwise the worker ends by itself after its child exits.
-            // A failed terminate of an ended worker leaves nothing to stop.
-            if (sub.signal.aborted) worker.terminate().catch(() => {});
-            await exited;
+            completed = false,
+            hostExited;
+          const hostGone = new Promise((resolve) => {
+            hostExited = resolve;
           });
-          // The worker always answers: a protocol failure, or its own timeout failure if the host never writes.
+          sub.after(async () => {
+            // The worker owns the host's process handle: a cancel makes it kill the host it still runs, and the worker
+            // ends by itself once that host has exited (terminating the worker would leave the host running). A worker
+            // that has already ended drops the message, and its exit has already been seen.
+            port1.postMessage({ kind: 'cancel' });
+            await exited;
+            port1.close();
+            clock.port1.close();
+          });
+          // The worker always answers: a protocol failure, or its own timeout failure once the test fires its clock.
           const failure = await new Promise((resolve, reject) => {
             worker.once('error', reject);
             port1.on('message', (message) => {
-              if (message.kind === 'trace' && message.message === 'Host waiting before plugin dispatch')
+              if (message.kind === 'host-process-exited') hostExited();
+              if (message.kind === 'trace' && message.message === 'Host waiting before plugin dispatch') {
                 waitingBeforeDispatch = true;
+                clock.port1.postMessage('fire');
+              }
               if (message.kind === 'result') completed = true;
               if (message.kind === 'owned-child') {
                 pid = message.pid;
@@ -242,12 +286,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
               if (message.kind === 'failure' || (mode === 'pending' && message.kind === 'result')) resolve(message);
             });
             if (pooled && mode !== 'invalid-timeout')
-              port1.postMessage({
-                kind: 'invoke',
-                invocationId: 'invented-invocation',
-                input,
-                timeout: mode === 'startup-gate' ? 2_000 : 10_000,
-              });
+              port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10_000 });
           });
           if (mode === 'pending') assert.equal(failure.kind, 'result');
           else
@@ -262,10 +301,9 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
           }
           if (pooled) assert.equal(failure.invocationId, 'invented-invocation');
           assert.ok(pid > 0);
-          // Malformed hosts stay alive and the startup gate waits for input the
-          // driver never sends, so only the worker's kill makes either absent.
-          if (!(pooled && mode === 'pending'))
-            assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
+          // Malformed hosts stay alive and the startup gate waits for input the driver never sends, so only the
+          // worker's kill ends either; the worker reports the exit of the process it owns.
+          if (!(pooled && mode === 'pending')) await hostGone;
         });
   },
 );
@@ -276,7 +314,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-isolation-')));
-    t.after(() => closeClrHostPool());
+    ownedFixture(t).add(() => closeClrHostPool());
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const source = path.join(root, 'Protocol.cs'),
       executable = path.join(root, 'Protocol.exe');
@@ -400,6 +438,7 @@ test(
         });
         let hostPid,
           port,
+          hostAbsent = false,
           buffer = '',
           error = '';
         child.stdout.setEncoding('utf8');
@@ -425,18 +464,31 @@ test(
             });
           });
           assert.ok(hostPid > 0);
-          const exited = new Promise((resolve) => child.once('exit', resolve));
+          assert.ok(port > 0);
+          // The host's own identity: its id and the time it started, read while it runs its CPU loop.
+          const hostStart = processStart(runtime.executable, hostPid);
+          assert.ok(hostStart, 'the running host has a readable start time');
+          assert.deepEqual(loopbackListeners(port), [child.pid], 'the parent listens on its port before the kill');
+          const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve(signal)));
           child.kill('SIGKILL');
-          await exited;
+          assert.equal(await exited, 'SIGKILL', 'the parent, and the server it listened with, ended by the kill');
+          hostAbsent = await incarnationAbsent(runtime.executable, hostPid, hostStart, HOST_EXIT_LIMIT_MS);
           assert.equal(
-            await processAbsent(hostPid, HOST_EXIT_LIMIT_MS),
+            hostAbsent,
             true,
             'Only the recorded orphan host must terminate, even while plugin code never returns.',
           );
-          await assert.rejects(fetch('http://127.0.0.1:' + port));
+          // Neither the parent's socket nor one of the host still listens there; another process that took the freed
+          // port has another id.
+          assert.deepEqual(
+            loopbackListeners(port).filter((pid) => pid === child.pid || pid === hostPid),
+            [],
+            'nothing of the parent or its host still listens on the parent port',
+          );
         } finally {
           child.kill();
-          if (hostPid)
+          // Once the host is absent its process id may name another process, so only a host still seen is signalled.
+          if (hostPid && !hostAbsent)
             try {
               process.kill(hostPid);
             } catch {
@@ -454,10 +506,10 @@ test(
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
       sdk = clrSdk(),
       notes = [];
-    t.after(() => {
+    ownedFixture(t).add(() => {
       closeClrHostPool({ diagnostic: (note) => notes.push(note) });
     });
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => removeFixtureDirectory(root));
     const source = path.join(root, 'Original.cs'),
       assembly = path.join(root, 'Original.dll');
     await fs.writeFile(
@@ -633,14 +685,73 @@ test(
   },
 );
 
+// @test-kind contract: a process id is signalled only while its owning worker has not reported the process gone
+test(
+  'a pooled host whose exit was reported leaves the pool without a signal to its process id',
+  { skip: CLR_SKIP },
+  async (t) => {
+    t.after(() => closeClrHostPool());
+    const runtime = await protocolRuntime(t, { persistentHost: true });
+    assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'pooled-fresh-instance');
+    const [{ pid }] = clrHostPoolStatus();
+    // The worker still holds the host's process handle, so this number still names the host.
+    process.kill(pid);
+    const kill = t.mock.method(process, 'kill', () => true);
+    // A status read stops a session only after its worker reported the exit: the stop always follows the report.
+    while (clrHostPoolStatus().length > 0) {
+      if (t.signal.aborted) throw new Error('the test was cancelled before the pooled host reported its exit');
+      await new Promise(setImmediate);
+    }
+    assert.deepEqual(
+      kill.mock.calls.filter((call) => call.arguments[0] === pid).map((call) => call.arguments),
+      [],
+      'the exited host is never signalled by its process id',
+    );
+  },
+);
+
+// @test-kind contract: a process id is signalled only while its owning worker has not reported the process gone
+test('a pooled host that exited is not signalled when its parent exits', { skip: CLR_SKIP }, async (t) => {
+  const runtime = await protocolRuntime(t, { persistentHost: true });
+  const root = path.dirname(runtime.directory),
+    runtimeFile = path.join(root, 'runtime.json'),
+    script = path.join(root, 'exit.mjs');
+  await fs.writeFile(runtimeFile, JSON.stringify(runtime));
+  // The parent kills its idle host while the worker still holds it, waits for the worker to end after reporting the
+  // exit, and leaves the report unread in the pool. Every signal sent while it exits is printed instead of sent.
+  await fs.writeFile(
+    script,
+    `import fs from'node:fs';import{executeClrPlugin,clrHostPoolStatus}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
+const runtime=JSON.parse(fs.readFileSync(process.argv[2]));const workers=[];process.on('worker',(worker)=>workers.push(worker));
+executeClrPlugin(runtime,{},{store:{}});const[{pid}]=clrHostPoolStatus();await new Promise(setImmediate);const alive=setInterval(()=>{},1000);
+const ended=new Promise((resolve)=>workers[0].once('exit',resolve));process.kill(pid);await ended;clearInterval(alive);
+process.kill=(target,signal)=>{fs.writeSync(1,JSON.stringify({target,signal})+'\\n');return true;};
+fs.writeSync(1,JSON.stringify({host:pid})+'\\n');`,
+  );
+  const result = spawnSync(process.execPath, [script, runtimeFile], {
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  const rows = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.ok(rows[0].host > 0, 'the parent ran its pooled host');
+  assert.deepEqual(rows.slice(1), [], 'no process id is signalled after the host exit was reported');
+});
+
 test(
   'a runtime whose host an earlier close could not verify keeps its cache directory at release',
   { skip: CLR_SKIP },
   async (t) => {
-    let pid = 0;
+    let pid = 0,
+      killed = false;
     t.after(() => {
       t.mock.restoreAll();
-      if (pid === 0) return;
+      // Its worker still holds the host until the test kills it; after that the process id is never used again.
+      if (pid === 0 || killed) return;
       try {
         process.kill(pid);
       } catch (error) {
@@ -674,6 +785,7 @@ test(
     assert.match(kept[0].message, /^CLR host not verified stopped; snapshot kept: clr-pool-/);
     await assert.doesNotReject(fs.access(path.join(path.dirname(runtime.directory), kept[0].message.split(': ')[1])));
     t.mock.restoreAll();
+    killed = true;
     process.kill(pid);
     // The system still reports the killed pid, so the release keeps the directory and reports it.
     const kill = process.kill;
@@ -708,16 +820,6 @@ test(
 
 test('a fresh snapshot whose host is not verified stopped is kept and reported', { skip: CLR_SKIP }, async (t) => {
   const runtime = await protocolRuntime(t, {});
-  let pid = 0;
-  t.after(() => {
-    t.mock.restoreAll();
-    if (pid === 0) return;
-    try {
-      process.kill(pid);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-    }
-  });
   const notes = [];
   const receive = workerThreads.receiveMessageOnPort;
   // The worker kills its host after the answer; hiding its exit report keeps the host unverified on every schedule.
@@ -737,7 +839,8 @@ test('a fresh snapshot whose host is not verified stopped is kept and reported',
   const stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
   assert.equal(stopped.length, 1, 'one stop is reported for the one fresh host');
   assert.equal(stopped[0].absenceVerified, false, 'the live host never reported its exit');
-  pid = stopped[0].pid;
+  // The worker killed its host through its own handle after the answer; this number is only matched, never signalled.
+  const pid = stopped[0].pid;
   const kept = notes.filter((note) => note.code === 'PLUGIN_CLR_CLEANUP');
   assert.equal(kept.length, 1, 'the kept snapshot is reported once');
   const prefix = 'CLR host not verified stopped; snapshot kept: ';

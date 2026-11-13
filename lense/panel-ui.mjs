@@ -1882,7 +1882,7 @@ function panelBrowserImpl(data) {
                   String(a.persona.label ?? a.persona.name ?? a.key),
                   String(b.persona.label ?? b.persona.name ?? b.key),
                 ) ||
-                a.key.localeCompare(b.key),
+                a.key.localeCompare(b.key, 'en'),
             ),
         };
       return personaOrderCache.ordered.filter(

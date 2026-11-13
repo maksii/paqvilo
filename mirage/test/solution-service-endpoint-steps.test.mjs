@@ -1,6 +1,7 @@
 // A Solution's SdkMessageProcessingStep whose <EventHandler> is a service endpoint (eventhandler targets plugintype and
 // serviceendpoint) is delivered like a registered one: a contract 2 queue through the core Service Bus emulator
 // bus to the fake broker, a contract 8 web hook to a loopback receiver.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -140,7 +141,7 @@ async function world(t, documents) {
     diagnostic: (entry) => diagnostics.push(entry),
     systemJobs: () => true,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await api.close();
     await emulator.close();

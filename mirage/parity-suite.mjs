@@ -2146,6 +2146,22 @@ const REMAINING_ROUTES_HANG_GUARD_MS = 120_000;
  * Attached-browser driver over raw CDP. It creates and attaches only to its own tabs in the
  * browser's default context, so foreign tabs (including stalled ones) never block it.
  */
+/**
+ * The messages that say a page read lost its document because the page navigated, reloaded or closed. Chromium's
+ * DevTools protocol and Playwright report this only as message text (no error code or class), so the retry decision of
+ * both page drivers rests on these exact texts, here only. Playwright prefixes the protocol text with the call
+ * ("page.evaluate: Execution context was destroyed, most likely because of a navigation").
+ */
+const PAGE_CONTEXT_LOST_MESSAGES = Object.freeze([
+  'Execution context was destroyed',
+  'Cannot find context with specified id',
+  'Inspected target navigated or closed',
+]);
+function pageContextLost(error) {
+  const message = String(error?.message ?? '');
+  return PAGE_CONTEXT_LOST_MESSAGES.some((text) => message.includes(text));
+}
+
 export async function openCdpTabDriver({
   cdpUrl,
   origin,
@@ -2208,7 +2224,7 @@ export async function openCdpTabDriver({
       const id = ++nextId;
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error(`CDP ${method} timed out.`));
+        reject(Object.assign(new Error(`CDP ${method} timed out.`), { code: 'CDP_TIMEOUT' }));
       }, ms);
       pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
@@ -2351,7 +2367,7 @@ export async function openCdpTabDriver({
           ms + 5000,
         );
       } catch (error) {
-        if (/timed out/i.test(error.message))
+        if (error.code === 'CDP_TIMEOUT')
           throw Object.assign(
             new Error(`Page evaluation did not finish within ${Math.round(ms / 1000)} s (renderer busy or blocked).`),
             { code: 'PAGE_UNRESPONSIVE' },
@@ -2456,7 +2472,7 @@ export async function openCdpTabDriver({
             extracted = { unresponsive: error.message, snapshot: null };
             break;
           }
-          if (!/context was destroyed|cannot find context|navigat/i.test(error.message) || attempt >= 2) throw error;
+          if (!pageContextLost(error) || attempt >= 2) throw error;
           base.navigatedDuringCapture = (base.navigatedDuringCapture ?? 0) + 1;
           const deadline = Date.now() + 15000;
           while (
@@ -2487,7 +2503,7 @@ export async function openCdpTabDriver({
         result = await (await apiTabReady()).evaluate(expression);
       } catch (error) {
         // The API tab's own document can still be committing when the first read runs; reopen it once.
-        if (!/navigated or closed|context was destroyed/i.test(String(error.message))) throw error;
+        if (!pageContextLost(error)) throw error;
         await apiTab?.close().catch(() => {});
         apiTab = null;
         await sleep(1000);
@@ -3260,7 +3276,7 @@ function handleOwnedResponse(response, state, base, origins, page) {
 
 function ownedCaptureError(error, attempt) {
   if (error.code === 'PAGE_UNRESPONSIVE') return { unresponsive: error.message, snapshot: null };
-  if (!/context was destroyed|navigat/i.test(error.message) || attempt >= 2) throw error;
+  if (!pageContextLost(error) || attempt >= 2) throw error;
   return null;
 }
 
@@ -5731,6 +5747,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
 export const __testing = {
   pageFetch,
+  pageContextLost,
+  PAGE_CONTEXT_LOST_MESSAGES,
   signInObserved,
   discoverTarget,
   pagingCookieOf,

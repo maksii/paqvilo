@@ -27,8 +27,9 @@ const STALE_AFTER_EDIT = new Set([
   'expires',
 ]);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-// A DevTools command sent while a tab swaps documents can go unanswered; setup and release must still end.
-const CDP_SETUP_MS = 10_000;
+// Setup waits for each DevTools answer until its page closes or interception stops. This guard only ends a setup
+// whose live renderer never answers; it is long compared with starting a renderer for a new tab on a loaded host.
+const CDP_SETUP_HANG_MS = 30_000;
 const CDP_RELEASE_MS = 5_000;
 
 // Composed input events also cover controls inside closed shadow roots. Keep
@@ -169,8 +170,8 @@ function installLateDraftTracker(slot, origins, binding) {
   return 'reloading';
 }
 
-/** Resolves with true when `promise` settles within `ms`, or false when it does not. */
-function settlesWithin(promise, ms) {
+/** Resolves with true when `promise` settles within `ms` on `clock`, or false when it does not. */
+function settlesWithin(promise, ms, clock) {
   let timer;
   return Promise.race([
     Promise.resolve(promise).then(
@@ -178,9 +179,9 @@ function settlesWithin(promise, ms) {
       () => true,
     ),
     new Promise((resolve) => {
-      timer = setTimeout(resolve, ms, false);
+      timer = clock.setTimeout(resolve, ms, false);
     }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => clock.clearTimeout(timer));
 }
 
 /**
@@ -189,7 +190,7 @@ function settlesWithin(promise, ms) {
  * @param {import('playwright-core').BrowserContext} context
  * @param {string} origin only requests to this origin are intercepted
  * @param {(route: object) => Promise<void>} handler
- * @param {{bypassCSP?: boolean, ownsPage?: (page: object) => boolean, onError?: (error: Error) => void}} [options] report failures on later tabs; ownership is checked before changing browser settings
+ * @param {{bypassCSP?: boolean, ownsPage?: (page: object) => boolean, onError?: (error: Error) => void, clock?: {setTimeout: Function, clearTimeout: Function}}} [options] report failures on later tabs; ownership is checked before changing browser settings; clock arms the guards that end a setup (30 s) or release (5 s) command that never answers (default: the global timers)
  * @returns {Promise<() => Promise<void>>} releases this overlay's interception sessions
  */
 export async function interceptOrigin(context, origin, handler, options = {}) {
@@ -207,6 +208,7 @@ export async function interceptOrigins(
     onError = (error) => console.error(error.message),
     onTargetError,
     onAttach,
+    clock = globalThis,
   } = {},
 ) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
@@ -218,22 +220,35 @@ export async function interceptOrigins(
       return false;
     }
   };
-  const reloadRequired = () => {
+  const diagnose = (error) => {
     try {
-      Promise.resolve(
-        onError(
-          Object.assign(
-            new Error(
-              'The initial document opened before local interception was ready. Its draft was preserved; reload this tab when ready to apply local sources.',
-            ),
-            { code: 'reload_required', scope: 'target', phase: 'initial document' },
-          ),
-        ),
-      ).catch(() => {});
+      Promise.resolve(onError(error)).catch(() => {});
     } catch {
       /* A diagnostic callback cannot replace or close this document. */
     }
   };
+  const reloadRequired = () =>
+    diagnose(
+      Object.assign(
+        new Error(
+          'The initial document opened before local interception was ready. Its draft was preserved; reload this tab when ready to apply local sources.',
+        ),
+        { code: 'reload_required', scope: 'target', phase: 'initial document' },
+      ),
+    );
+  // An attachment reports evidence it could not deliver to its document; a reload delivers it again.
+  const provenanceIncomplete = (error) =>
+    diagnose(
+      Object.assign(
+        new Error(
+          `Local provenance for this tab is incomplete: ${error.message}. Reload this tab to deliver it again.`,
+          {
+            cause: error,
+          },
+        ),
+        { code: 'reload_required', scope: 'target', phase: 'provenance' },
+      ),
+    );
   const attached = new WeakSet();
   const sessions = new Map();
   const pendingAttachments = new Set();
@@ -244,6 +259,7 @@ export async function interceptOrigins(
   const release = (record) => {
     if (record.closing) return record.closing;
     record.closed = true;
+    record.ending.abort();
     sessions.delete(record.cdp);
     record.page.off('close', record.onClose);
     if (record.late) record.page.off('domcontentloaded', record.late);
@@ -252,7 +268,7 @@ export async function interceptOrigins(
     record.closing = (async () => {
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
-        if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS)))
+        if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS, clock)))
           onError(
             Object.assign(
               new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`),
@@ -317,7 +333,8 @@ export async function interceptOrigins(
       await cdp.detach?.().catch(() => {});
       return;
     }
-    const record = { page, cdp, routes: new Set(), closed: false };
+    // `ending` aborts when the page closes or interception stops, which ends every wait of this setup at once.
+    const record = { page, cdp, routes: new Set(), closed: false, ending: new AbortController() };
     sessions.set(cdp, record);
     let mainFrameId = null;
     let sawDocument = false;
@@ -356,26 +373,29 @@ export async function interceptOrigins(
       release(record).catch(() => {});
     };
     page.once('close', record.onClose);
-    const configure = async (method, params) => {
+    // Waits for `work` until the page closes or interception stops; the hang guard names a renderer that never answers.
+    const setupStep = async (phase, work) => {
       if (stopped || record.closed) throw new Error('Browser page closed during interception setup');
-      let timer;
+      let timer, onEnd;
       try {
         return await Promise.race([
-          cdp.send(method, params),
+          work(),
           new Promise((_, reject) => {
-            timer = setTimeout(
+            onEnd = () => reject(new Error('Browser page closed during interception setup'));
+            record.ending.signal.addEventListener('abort', onEnd, { once: true });
+            timer = clock.setTimeout(
               () =>
-                reject(
-                  Object.assign(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`), { phase: method }),
-                ),
-              CDP_SETUP_MS,
+                reject(Object.assign(new Error(`${phase} did not answer within ${CDP_SETUP_HANG_MS} ms`), { phase })),
+              CDP_SETUP_HANG_MS,
             );
           }),
         ]);
       } finally {
-        clearTimeout(timer);
+        clock.clearTimeout(timer);
+        record.ending.signal.removeEventListener('abort', onEnd);
       }
     };
+    const configure = (method, params) => setupStep(method, () => cdp.send(method, params));
     try {
       mainFrameId = (await configure('Page.getFrameTree')).frameTree.frame.id;
       record.draftSlot = '__paqviloLateDraft_' + randomUUID().replaceAll('-', '');
@@ -416,8 +436,10 @@ export async function interceptOrigins(
       // Fetch sees them. Bypass it only in this admitted target; never unregister it.
       await configure('Network.setBypassServiceWorker', { bypass: true });
       if (onAttach) {
-        let timer;
-        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure }));
+        const report = (error) => {
+          if (!stopped && !record.closed) provenanceIncomplete(error);
+        };
+        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure, report }));
         opening
           .then((attachment) => {
             if (record.closed)
@@ -427,19 +449,7 @@ export async function interceptOrigins(
             else record.attachment = attachment;
           })
           .catch(() => {});
-        try {
-          await Promise.race([
-            opening,
-            new Promise((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error('Interception attachment did not finish within its setup deadline')),
-                CDP_SETUP_MS,
-              );
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
+        await setupStep('interception attachment', () => opening);
       }
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
     } catch (error) {
@@ -564,6 +574,7 @@ export async function interceptOrigins(
   const dispose = () => {
     if (disposal) return disposal;
     stopped = true;
+    for (const record of sessions.values()) record.ending.abort();
     context.off('page', onPage);
     disposal = (async () => {
       await Promise.allSettled(pendingAttachments);

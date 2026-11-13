@@ -86,7 +86,8 @@ function sampleRecords(dir, limit = 5) {
     } catch {
       return;
     }
-    for (const entry of entries) {
+    // Code-unit order: the sample is the first records found, and listing order differs between file systems.
+    for (const entry of entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
       if (found.length >= limit) return;
       const file = path.join(folder, entry.name);
       if (entry.isDirectory()) visit(file, depth + 1);

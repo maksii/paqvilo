@@ -1,6 +1,7 @@
 // Virtual table writes that roll back: an asynchronous provider in a synchronous SDK write,
 // upsert-create keys, changeset rollback without a transaction contract and a nested standard parent.
 // @test-kind contract: the rollback notes of a provider without a transaction contract describe the Dataverse write path this file drives
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-virtual-providers.mjs';
@@ -95,7 +96,7 @@ async function setup(t, overrides = {}) {
     log: () => {},
     extensions: [...EXTENSIONS.filter((e) => e.name !== EXTENSION.name), installed],
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await server.close();
   });

@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { startSetupServer } from '../../lense/setup/server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -38,7 +38,7 @@ async function work(t) {
   const root = path.join(container, 'workspace');
   await fs.mkdir(root);
   const resources = [];
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     try {
       for (const close of resources.reverse()) await close();
     } finally {

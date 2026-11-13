@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { OverlaySession } from '../lense/session.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { createFixture, SITE, ONLINE_HOME, HOME_ID } from './fixture.mjs';
@@ -747,9 +749,12 @@ test('committing a local edit removes its changed-scope override without another
       });
     });
     local.commit();
-    await changed;
+    const event = await changed;
     assert.equal(s.resolver.resolve('/scripts/app.js'), null);
-    assert.equal(tab.page.reloads, 1);
+    // The baseline refresh itself reloaded the open tab. A file-system event from the real watchers can start a
+    // separate refresh with its own reload, so the tab's total reload count is not this refresh's result.
+    assert.equal(event.pageResults.get(tab.page)?.how, 'reload');
+    assert.ok(tab.page.reloads >= 1);
   } finally {
     clearTimeout(timer);
     await watcher.close();
@@ -788,6 +793,28 @@ test('startup reconciles markup and URL metadata saved during async source prefe
   assert.match(s.rewriter.rewrite(ONLINE_HOME, '/').html, /All rights reserved by the local team\./);
   assert.equal(s.resolver.resolve('/scripts/app.js'), null);
   assert.equal(s.resolver.resolve('/updated-scripts/app.js')?.file, local.file('web-files/app.js'));
+});
+
+// @test-kind contract: a session whose HEAD Git does not answer starts with HEAD unknown and its baseline intact
+test('a session starts with HEAD unknown when Git does not answer the HEAD read', async (t) => {
+  const local = createFixture();
+  t.after(() => local.cleanup());
+  const original = childProcess.execFile;
+  // Only the HEAD read (rev-parse HEAD --abbrev-ref HEAD) gets no answer; the baseline reads run the real Git.
+  const replaced = t.mock.method(childProcess, 'execFile', function (file, args, options, callback) {
+    if (!args.includes('--abbrev-ref')) return original.call(this, file, args, options, callback);
+    queueMicrotask(() => callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null })));
+    return {};
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const s = await OverlaySession.create({ origin: ORIGIN, sourceDir: local.dir, site: SITE });
+  assert.equal(s.head, null);
+  assert.equal(s.baseline.available, true, 'the baseline was answered and stays usable');
+  assert.equal(replaced.mock.calls.filter((call) => call.arguments[1].includes('--abbrev-ref')).length, 1);
 });
 
 // @test-kind contract: a baseline discovered during an unrelated save rebuilds every markup patch

@@ -1,5 +1,6 @@
 // @test-kind compatibility: .NET Framework SDK SOAP Organization service contracts and SDK docs; some request bodies captured from the real ServiceClient
 // SOAP Organization service over the record handlers.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -585,7 +586,7 @@ test('SOAP association messages retain the full related collection in one pipeli
     }
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   for (const message of ['Associate', 'Disassociate']) {
     const result = await f.send(associationRequest(message, widget, tags));
     assert.equal(result.status, 200, result.body);
@@ -2155,7 +2156,7 @@ for (const message of ['Assign', 'SetState']) {
     );
     const items = pluginCatalogue({ plugins: { steps }, handlers });
     const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-    t.after(() => backend.close());
+    ownedFixture(t).add(() => backend.close());
     const result = await f.send(specializedRequest(message, f.logical, f.id, f.basic.systemuserid));
     assert.equal(result.status, 200, result.body);
     await backend.settle();

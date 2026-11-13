@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -33,7 +34,7 @@ test('record title and tabs stay pinned while long exported sections and their c
     `<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Information" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><labels><label description="General" languagecode="1033"/></labels><columns><column><sections>${section('Opening section', ['x_name', ...names.slice(0, 12)])}${section('Numbers and dates', ['x_quantity', 'x_due'])}${section('Closing section', names.slice(12))}</sections></column></columns></tab></tabs></form></systemform>`,
   );
   const sim = await source.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   for (const viewport of [
     { width: 1582, height: 1000 },

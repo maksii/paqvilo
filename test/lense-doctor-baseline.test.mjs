@@ -37,9 +37,18 @@ test('doctor baseline readiness: a non-repository is blocked, an unborn reposito
     });
   const baselineNote = (report) => report.warnings.filter((warning) => /Baseline "HEAD"/.test(warning));
 
-  // (a) not a Git repository, markup enabled: the baseline is unavailable and blocks readiness.
+  // (a) not a Git repository, markup enabled: the baseline is unavailable and blocks readiness. The ceiling stops
+  // Git at the folder itself, so a repository that holds the temporary directory is not found instead.
   assert.equal(SITE.markup.enabled, true);
-  const outsideGit = check();
+  const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = fs.realpathSync.native(path.dirname(dir));
+  let outsideGit;
+  try {
+    outsideGit = check();
+  } finally {
+    if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = ceiling;
+  }
   assert.equal(outsideGit.ready, false);
   assert.ok(
     outsideGit.errors.some((error) => /Baseline "HEAD" is unavailable/.test(error)),

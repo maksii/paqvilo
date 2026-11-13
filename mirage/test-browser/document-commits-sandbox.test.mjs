@@ -16,8 +16,8 @@ test('script-disabled frames retain distinct identities through insertion, movem
   });
   const page = await browser.page(t),
     cdp = await page.context().newCDPSession(page);
-  const ready = eventLog(),
-    commits = eventLog(),
+  const ready = eventLog(t),
+    commits = eventLog(t),
     errors = [],
     frames = new Map();
   page.on('console', (message) => {
@@ -92,9 +92,9 @@ test('CDP restores a cached document identity without a pageshow listener', asyn
   ownedFixture(t).add(() => owned.close());
   const page = await owned.newPage(),
     cdp = await page.context().newCDPSession(page);
-  const ready = eventLog(),
+  const ready = eventLog(t),
     commits = [],
-    navigation = eventLog();
+    navigation = eventLog(t);
   cdp.on('Page.frameNavigated', (event) => navigation.push(event));
   const stop = await observeDocumentCommits(page, cdp, {
     document: () => {},

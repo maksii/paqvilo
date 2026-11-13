@@ -164,7 +164,7 @@ test('readiness does not follow a configured loopback listener redirect', async 
     res.end();
   });
   await listen(listener);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     listener.closeAllConnections();
     destination.closeAllConnections();
     await Promise.all([close(listener), close(destination)]);
@@ -197,7 +197,7 @@ test('readiness probing releases a response whose body does not finish', async (
     res.write('ongoing');
   });
   await listen(server);
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -718,7 +718,7 @@ test(
     const exited = new Promise((resolve) => wrapper.once('exit', resolve));
     const closed = new Promise((resolve) => wrapper.once('close', resolve));
     // Only a failed assertion leaves the wrapper running here; the product's own stop then ends its tree.
-    t.after(() => {
+    ownedFixture(t).add(() => {
       if (wrapper.exitCode === null && wrapper.signalCode === null) return stopCodeAppDevServer(wrapper, closed);
     });
     wrapper.stderr.resume();
@@ -750,7 +750,7 @@ test('the wrapper runs its launch when started through a linked path', async (t)
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
   const exited = new Promise((resolve) => wrapper.once('exit', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (wrapper.connected) wrapper.disconnect();
     await exited;
     await fs.rm(link, { force: true });

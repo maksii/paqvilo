@@ -1,4 +1,5 @@
 // @test-kind contract: the capability inventory classifies bulk message availability by evidence source and reports a diagnostic for entries without native evidence.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bulkMessageAvailabilityRecord } from '../lib/bulk-message-availability.mjs';
@@ -60,7 +61,7 @@ test('the existing host capability inventory reports unqualified table/message a
     store,
     sources: { plugins: () => ({ assemblies: [], types: [], steps: [] }), workflows: () => [], layers: () => [] },
   });
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   const record = host
     .capabilities()
     .list()

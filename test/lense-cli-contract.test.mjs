@@ -5,12 +5,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import childProcess, { execFile } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { FILES } from './fixture.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { cliArgs } from '../lense/commands/mirage.mjs';
+import { discoverExtracts } from '../lense/commands/list.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -146,6 +148,48 @@ test('parse errors respect the option terminator when choosing output format', a
   assert.equal(json.status, 1);
   assert.equal(json.stderr, '');
   assert.equal(JSON.parse(json.stdout).error.code, 'unsupported_option');
+});
+
+test('extract discovery searches from the repository root Git reports and fails when Git gives no answer', (t) => {
+  const start = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-discover-'));
+  t.after(() => fs.rmSync(start, { recursive: true, force: true }));
+  const root = path.join(start, 'checkout');
+  for (const [name, content] of Object.entries(FILES)) {
+    const file = path.join(root, 'portal', name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+  const below = path.join(start, 'below');
+  fs.mkdirSync(below);
+  let answer;
+  // The product imports execFileSync by name; syncBuiltinESMExports carries the replacement to that binding.
+  const replaced = t.mock.method(childProcess, 'execFileSync', (command, args) => {
+    assert.deepEqual([command, ...args], ['git', 'rev-parse', '--show-toplevel']);
+    if (answer instanceof Error) throw answer;
+    return `${answer}\n`;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  answer = root;
+  assert.deepEqual(discoverExtracts(below), [path.join(root, 'portal')]);
+  // Exit 128: not a repository, so only the start folder is searched.
+  answer = Object.assign(new Error('git exited 128'), { status: 128, signal: null });
+  assert.deepEqual(discoverExtracts(below), []);
+  // Killed at its hang guard: the root is unknown and nothing is guessed.
+  answer = Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM' });
+  assert.throws(() => discoverExtracts(below), /Git did not answer where the repository/);
+  // Not started because no git program was found: the message says so, as asking again cannot help.
+  answer = Object.assign(new Error('spawnSync git ENOENT'), { code: 'ENOENT', status: null, signal: null });
+  assert.throws(() => discoverExtracts(below), /^Error: Git was not found\. Install Git or add it to PATH/);
+});
+
+test('extract discovery finds nothing in a checkout folder that does not exist', (t) => {
+  const start = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-discover-'));
+  t.after(() => fs.rmSync(start, { recursive: true, force: true }));
+  assert.deepEqual(discoverExtracts(path.join(start, 'not cloned yet')), []);
 });
 
 test('list reports a successfully written optional Solution cache', async (t) => {

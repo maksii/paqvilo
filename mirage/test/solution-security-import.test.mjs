@@ -13,7 +13,7 @@ import { ensureSecurityModel, createPrincipals } from '../lib/dataverse-security
 import { scanSolutionSources, buildSolutionSchema, readSolutionZip } from '../lib/solution-schema.mjs';
 import { securityDefinitions, inventoryEntry } from '../lib/solution-inventory.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ROLE = '77777777-7777-4777-8777-777777777781';
 const FSP = '77777777-7777-4777-8777-777777777782';
@@ -204,7 +204,7 @@ test('ImportSolution imports a managed role and profile; a role changed after im
       ],
     });
     const api = await startDataverseApi({ store, settings, log: () => {} });
-    t.after(() => api.close());
+    ownedFixture(t).add(() => api.close());
     const token = (
       await (
         await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {

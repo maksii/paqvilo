@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFixture } from './fixture.mjs';
 
 import { startReaper, stopRecordedRuntimes } from './mirage-reaper.mjs';
+import { endProcessTree, ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 
 export const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 // The grace the product's own stop gives a runtime before SIGKILL (STOP_DEADLINE).
@@ -23,7 +24,7 @@ const TERMINATE_GRACE_MS = 5_000;
 const portal = createFixture();
 after(() => portal.cleanup());
 
-export async function availablePair() {
+async function availablePair() {
   for (let attempt = 0; attempt < 10; attempt++) {
     const servers = [net.createServer(), net.createServer()];
     try {
@@ -40,7 +41,8 @@ export async function availablePair() {
       await listen(servers[1], base + 1);
       return base;
     } catch (error) {
-      if (error.code !== 'EADDRINUSE') throw error;
+      // EACCES: Windows reserves port ranges (Hyper-V, WSL) that refuse a bind; such a pair is skipped like a used one.
+      if (error.code !== 'EADDRINUSE' && error.code !== 'EACCES') throw error;
     } finally {
       await Promise.all(
         servers.filter((server) => server.listening).map((server) => new Promise((resolve) => server.close(resolve))),
@@ -50,27 +52,42 @@ export async function availablePair() {
   throw new Error('The loopback fixture could not reserve consecutive ports.');
 }
 
+// A start that lost its pair is repeated once on another pair. A second loss in the same start needs two independent
+// races; a third start would only delay a real failure's report past the test's own hang guard.
+const PAIR_STARTS = 2;
+
+/**
+ * Starts a two-portal group with `mirage start <selectors(base)>` on a free consecutive pair and returns the base port
+ * and the start's JSON. Nothing can hold the pair for the runtimes, so another process may take a port before they
+ * bind it: Mirage then reports that port in use, or the runtime's listen fails with EADDRINUSE. A start that reports a
+ * port of this pair that way is stopped with the same selectors (the portal that did start keeps its state file and
+ * would refuse the next start) and the group starts again on another pair.
+ */
+export async function startOnPair(work, selectors) {
+  for (let attempt = 1; ; attempt++) {
+    const base = String(await availablePair());
+    try {
+      return { base, started: await work.start(selectors(base)) };
+    } catch (error) {
+      const ports = `(?:${base}|${Number(base) + 1})`;
+      const taken = new RegExp(`Port ${ports} is already in use|EADDRINUSE[^\\n]*:${ports}\\b`);
+      if (attempt >= PAIR_STARTS || !taken.test(String(error?.message))) throw error;
+      const released = await work.run(['mirage', 'stop', ...selectors(base), '--json']);
+      assert.equal(released.status, 0, released.stdout + released.stderr);
+    }
+  }
+}
+
 /** Ends a CLI or shell process and every process it started that is still attached to it. */
 async function stopProcessTree(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const closed = once(child, 'close');
-  if (process.platform === 'win32')
-    // Windows keeps the parent link of a detached runtime, so /t also ends a runtime still starting.
-    await new Promise((resolve) =>
-      execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, resolve),
-    );
-  else {
-    // POSIX children run in their own process group; the CLI's SIGTERM handler stops a starting runtime.
-    // The group can already be gone while the CLI's exit is still unreported (ESRCH): signal the CLI itself.
-    const signal = (name) => {
-      try {
-        process.kill(-child.pid, name);
-      } catch (error) {
-        if (error.code !== 'ESRCH') throw error;
-        child.kill(name);
-      }
-    };
-    signal('SIGTERM');
+  // Windows keeps the parent link of a detached runtime, so /t also ends a runtime still starting.
+  // POSIX children run in their own process group; the CLI's SIGTERM handler stops a starting runtime.
+  // The group can already be gone while the CLI's exit is still unreported (ESRCH): signal the CLI itself.
+  const signal = (name) => endProcessTree(child.pid, { signal: name, missingGroup: (missed) => child.kill(missed) });
+  await signal('SIGTERM');
+  if (process.platform !== 'win32') {
     const timer = setTimeout(() => signal('SIGKILL'), TERMINATE_GRACE_MS);
     await closed;
     clearTimeout(timer);
@@ -158,6 +175,8 @@ export async function workspace(t) {
   const run = (args, extraEnvironment, from) => launchCli(args, extraEnvironment, from).result;
   const start = async (args) => {
     const result = await run(['mirage', 'start', ...args, '--json']);
+    // A runtime this start reports is ended after the test even when the workspace's own stop leaves it running.
+    ownStartedRuntimes(t, result.stdout);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return JSON.parse(result.stdout);
   };

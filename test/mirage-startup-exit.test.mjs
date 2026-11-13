@@ -1,4 +1,5 @@
 // @test-kind contract+security: terminal child errors survive identity lookup races; live unverified children cannot become owned sessions.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,11 +12,11 @@ import { tempDir } from './fixture.mjs';
 for (const exitsBeforeIdentity of [true, false])
   test(`startup preserves terminal diagnostics without admitting a live unverified child (${exitsBeforeIdentity})`, async (t) => {
     const root = await tempDir('paq-startup-exit-');
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const cfg = { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' };
     const paths = miragePaths(cfg);
     let child, closed;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       if (child?.exitCode === null) child.kill('SIGTERM');
       await closed;
     });

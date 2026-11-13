@@ -1,4 +1,4 @@
-import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 // @test-kind contract: verify is Paqvilo's own CLI behaviour, checked end to end against disposable loopback fixtures.
 // Exercises the real verify command against disposable fixtures.
 import { test } from 'node:test';
@@ -9,10 +9,13 @@ import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { createFixture, HOME_ID, SITE } from '../test/fixture.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const PAGE_JS = 'window.fixturePage = "original";\n';
@@ -209,14 +212,14 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     if (classic) {
       fs.unlinkSync(path.join(sourceDir, 'linked-outside'));
       classic.cleanup();
     }
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   return {
     work,
@@ -321,11 +324,13 @@ for (const layout of ['classic', 'enhanced'])
       } finally {
         chromium.launchPersistentContext = launch;
         console.log = log;
-        const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
         const report = reportFor(fx.cfg).report;
-        fs.mkdirSync(evidenceDir, { recursive: true });
         fs.writeFileSync(
-          new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
+          syntheticEvidencePath(
+            fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+            'extended-round',
+            `verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`,
+          ),
           JSON.stringify(report, null, 2),
         );
       }
@@ -512,7 +517,7 @@ test(
     const fx = await fixture(t, 'classic');
     const launch = chromium.launchPersistentContext;
     let temporaryWork, holder;
-    t.after(() => holder?.kill());
+    ownedFixture(t).add(() => holder?.kill());
     chromium.launchPersistentContext = async (profileDir) => {
       temporaryWork = path.dirname(profileDir);
       const busy = path.join(profileDir, 'Default', 'chrome_debug.log');

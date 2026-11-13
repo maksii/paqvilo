@@ -1,3 +1,4 @@
+// @test-kind compatibility+contract: OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749), PKCE (RFC 7636) and the Power Pages OpenID Connect site settings on Microsoft Learn; diagnostics and options are Paqvilo's design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -144,7 +145,7 @@ async function provider(t, registration) {
     ...registration,
   };
   const idp = await startIdentityProvider({ providers: () => [client], users: async () => USERS });
-  t.after(() => idp.close());
+  ownedFixture(t).add(() => idp.close());
   const authority = idp.authority(client);
   const discovery = await (await fetch(`${authority}.well-known/openid-configuration`)).json();
   const base = {
@@ -173,6 +174,66 @@ async function provider(t, registration) {
     );
   return { idp, authority, discovery, authorize, tokenRequest };
 }
+
+// @test-kind contract: the provider generates its signing key off the event loop on the first request that needs it.
+test('the identity provider generates its signing key once, on the first request that needs it, and retries a failed generation', async (t) => {
+  const generated = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const generations = [];
+  const waiters = { arrivals: () => {}, generations: () => {} };
+  let arrivals = 0;
+  const client = { slug: 'held-key', key: 'Held', caption: 'Held', clientId: 'held-client', redirectUri: `${PORTAL}/` };
+  const idp = await startIdentityProvider({
+    // Every request reads the provider list first, so each call marks one request reaching the provider.
+    providers: () => {
+      arrivals++;
+      waiters.arrivals();
+      return [client];
+    },
+    users: async () => USERS,
+    generateSigningKeyPair: (...args) =>
+      new Promise((resolve, reject) => {
+        generations.push({ args, resolve, reject });
+        waiters.generations();
+      }),
+  });
+  ownedFixture(t).add(() => idp.close());
+  // Resolves once `read()` reaches `count`; the matching waiter is called on every change.
+  const reach = (name, read, count) =>
+    new Promise((resolve) => {
+      waiters[name] = () => read() >= count && resolve();
+      waiters[name]();
+    });
+  const authority = idp.authority(client);
+  const keys = () =>
+    fetch(`${authority}discovery/keys`).then(async (response) => ({
+      status: response.status,
+      body: await response.json().catch(() => null),
+    }));
+  // Start and a request that does not need the key generate nothing.
+  assert.equal((await fetch(`${authority}.well-known/openid-configuration`)).status, 200);
+  assert.equal(generations.length, 0);
+  // Two concurrent first key requests share one generation; its failure fails both.
+  const first = [keys(), keys()];
+  await reach('arrivals', () => arrivals, 3);
+  await reach('generations', () => generations.length, 1);
+  assert.equal(generations.length, 1);
+  assert.deepEqual(generations[0].args, ['rsa', { modulusLength: 2048 }]);
+  generations[0].reject(new Error('Invented generation failure'));
+  assert.deepEqual(
+    (await Promise.all(first)).map((answer) => answer.status),
+    [500, 500],
+  );
+  // The next request generates again; later requests reuse the key.
+  const retried = keys();
+  await reach('generations', () => generations.length, 2);
+  generations[1].resolve(generated);
+  const expected = generated.publicKey.export({ format: 'jwk' }).n;
+  for (const answer of [await retried, await keys()]) {
+    assert.equal(answer.status, 200);
+    assert.equal(answer.body.keys[0].n, expected);
+  }
+  assert.equal(generations.length, 2);
+});
 
 test('the identity provider redeems authorization codes with client_secret_post and PKCE, and serves UserInfo', async (t) => {
   const { authority, discovery, authorize, tokenRequest } = await provider(t, { clientSecret: 's3cret' });

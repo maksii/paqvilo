@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { warmState } from './shared-browser.mjs';
-import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 test('admin: record and configuration CRUD, routing, identity, presets, errors, safe diagnostics, responsive layout', async (t) => {
   const workspace = {
@@ -189,7 +189,7 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
   });
   let browser;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -625,7 +625,7 @@ test('admin integrates with the simulator CSRF, persistence, plugin validation, 
     },
   });
   let browser;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser?.close();
     await simulator.close();
     fs.rmSync(directory, { recursive: true, force: true });

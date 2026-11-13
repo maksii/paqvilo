@@ -108,16 +108,18 @@ export async function readLookupView(fetchXml, readProvider, identity) {
 // Walk each attribute once. A global whitespace/backreference expression can
 // repeatedly rescan a long missing quote or whitespace run. Quoted values also
 // must stay opaque: text such as ` page='2'` inside another value is not paging.
-function tagEnd(source, start) {
-  let quote = '';
-  for (let end = start; end < source.length; end++) {
+function tagEnd(source, start, stats) {
+  let quote = '',
+    end = start;
+  for (; end < source.length; end++) {
     const char = source[end];
     if (quote) {
       if (char === quote) quote = '';
     } else if (char === '"' || char === "'") quote = char;
-    else if (char === '>') return end;
+    else if (char === '>') break;
   }
-  return source.length;
+  if (stats) stats.positions += end - start;
+  return end;
 }
 
 /* NOSONAR: single-pass routine, splitting it would change shared state */ function fetchAttribute(attributes, at) {
@@ -169,8 +171,11 @@ function lookupFetchRoot(xml) {
   return { start, end: end + 1, tag: match[0], initialPage: initialPage ?? 1, baseAttributes: parts.join('') };
 }
 
-/** Power Pages view controls substitute context-marked conditions at any depth. */
-export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
+/**
+ * Power Pages view controls substitute context-marked conditions at any depth. `stats`, when a caller passes one, gets
+ * `positions`: the characters the tag, attribute and delimiter scans step over (tests use it to bound the work).
+ */
+export function contextualViewFetchXml(xml, { user, identity, website } = {}, stats = undefined) {
   const contact = user ?? identity;
   const ids = {
     contact: contact?.contactId ?? contact?.id,
@@ -182,15 +187,16 @@ export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
     position = 0;
   while (position < xml.length) {
     const start = xml.indexOf('<', position);
+    if (stats) stats.positions += (start < 0 ? xml.length : start + 1) - position;
     if (start < 0) break;
     position = start + 1;
     if (xml.slice(start + 1, start + 10).toLowerCase() !== 'condition' || /\w/.test(xml[start + 10] ?? '')) continue;
-    const end = tagEnd(xml, start + 10);
+    const end = tagEnd(xml, start + 10, stats);
     // An unterminated tag/attribute is left as authored; do not rescan each
     // nested '<condition' prefix in its suffix.
     if (end === xml.length) break;
     const tag = xml.slice(start, end + 1);
-    const replacement = contextualConditionTag(tag, ids);
+    const replacement = contextualConditionTag(tag, ids, stats);
     parts.push(xml.slice(copied, start), replacement);
     copied = end + 1;
     position = end + 1;
@@ -199,8 +205,8 @@ export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
   return parts.join('');
 }
 
-function contextualConditionTag(tag, ids) {
-  const attributes = conditionAttributes(tag);
+function contextualConditionTag(tag, ids, stats) {
+  const attributes = conditionAttributes(tag, stats);
   const type = attributes.type?.toLowerCase();
   if (!Object.hasOwn(ids, type)) return tag;
   const value = escape(ids[type] || '00000000-0000-0000-0000-000000000000');
@@ -208,18 +214,22 @@ function contextualConditionTag(tag, ids) {
     return tag.slice(0, attributes.value.start) + `value="${value}"` + tag.slice(attributes.value.end);
   if (attributes.hasValue) return tag;
   let close = tag.length - 1;
-  while (close > 0 && /\s/.test(tag[close - 1])) close--;
+  while (close > 0 && /\s/.test(tag[close - 1])) {
+    close--;
+    if (stats) stats.positions++;
+  }
   if (tag[close - 1] === '/') close--;
   return tag.slice(0, close) + ` value="${value}"` + tag.slice(close);
 }
 
 // Read only the two contextual attributes, preserving all authored spacing,
 // quoting and unknown attributes outside the replaced value span.
-function conditionAttributes(tag) {
+function conditionAttributes(tag, stats) {
   const result = { hasValue: false };
   let at = 10;
   while (at < tag.length - 1) {
     const parsed = readConditionAttribute(tag, at);
+    if (stats) stats.positions += parsed.at - at;
     at = parsed.at;
     if (parsed.hasValue) result.hasValue = true;
     if (parsed.done) break;
@@ -1143,14 +1153,19 @@ function nativeModal({
 // An attribute value whose line breaks are CRLF: the HTML parser folds raw CR LF into LF, so the
 // platform's indented JSON attributes keep their CR as character references.
 const crlfAttr = (value) => attr(value).replaceAll('\n', '&#13;&#10;');
-function plainText(html) {
+/**
+ * Label markup as plain text. `stats`, when a caller passes one, gets `positions`: the characters the delimiter
+ * searches step over (tests use it to bound the work).
+ */
+export function plainText(html, stats) {
   const text = String(html ?? ''),
     parts = [];
   let position = 0;
   while (position < text.length) {
     const start = text.indexOf('<', position);
+    const end = start < 0 ? -1 : text.indexOf('>', start + 1);
+    if (stats) stats.positions += (end < 0 ? text.length : end + 1) - position;
     if (start < 0) break;
-    const end = text.indexOf('>', start + 1);
     if (end < 0) break;
     parts.push(text.slice(position, start));
     position = end + 1;

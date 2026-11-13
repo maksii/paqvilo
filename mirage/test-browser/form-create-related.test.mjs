@@ -4,14 +4,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { parse } from 'parse5';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { closeServer } from './shared-browser.mjs';
+import { loopbackServer } from './shared-browser.mjs';
 
 // A record form with a Create related record action whose target form opens
 // in a modal, and the record state hiding the inapplicable state action.
@@ -225,7 +224,7 @@ async function openAndCancelCreate(page) {
 test('a cancelled lookup create dialog leaves no success listener behind, so one create refreshes the lookup once', async (t) => {
   const grid = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
   const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
-  const server = http.createServer((request, response) => {
+  const { server } = await loopbackServer(t, (request, response) => {
     if (request.url === '/jquery.js' || request.url === '/grid.js') {
       response.setHeader('content-type', 'text/javascript');
       response.end(request.url === '/grid.js' ? grid : jquery);
@@ -242,12 +241,10 @@ test('a cancelled lookup create dialog leaves no success listener behind, so one
       request.url.startsWith('/form') ? '<form id="EntityFormControl"><input aria-label="Name"></form>' : LOOKUP_PAGE,
     );
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   // Counts the grid's own POSTs in the page. jQuery sends them through XMLHttpRequest, so the count is final once the
   // refresh's request event has been delivered: the listeners of one message dispatch run synchronously.
   await context.addInitScript(() => {

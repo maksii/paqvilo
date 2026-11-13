@@ -551,7 +551,8 @@ export async function createModelDrivenPanelSources(imported) {
     }
     setUnrootedAssetFacts(current.assets, native, state.facts);
     const first = [...baselines.entries()][0],
-      head = first ? await gitHead(first[0]) : null;
+      // A HEAD read Git does not answer leaves the Git state unknown; the next update asks again.
+      head = first ? await gitHead(first[0]).catch(() => null) : null;
     state.git = head
       ? {
           ...head,

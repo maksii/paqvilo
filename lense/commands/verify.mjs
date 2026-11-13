@@ -14,7 +14,7 @@ import { enablePanel } from '../panel.mjs';
 import { watchSources } from './dev.mjs';
 import { pageKey } from '../html-rewriter.mjs';
 import { PortalModel, sourceText, urlKey } from '../portal-model.mjs';
-import { GitBaseline } from '../git.mjs';
+import { GIT_HANG_GUARD_MS, GitBaseline } from '../git.mjs';
 import { editSource } from '../source-edit.mjs';
 import { portalResourceUrl } from '../online.mjs';
 import { replaceDelimitedAlternatives } from '../../mirage/lib/text-scanning.mjs';
@@ -39,8 +39,6 @@ const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const DIAGNOSTIC_LIMITS = { entriesPerCategory: 200, textCharacters: 1000 };
 // Hang guard for the evidence screenshot, which waits for the page's web fonts; matches the 120 s navigation guard.
 const EVIDENCE_SCREENSHOT_GUARD_MS = 120_000;
-// Hang guard for one git command on the temporary copy.
-const GIT_HANG_GUARD_MS = 120_000;
 // Hang guard for opening the start page of the portal under verification.
 const START_PAGE_NAVIGATION_GUARD_MS = 120_000;
 const diagnosticText = (value) => (typeof value === 'string' ? value.slice(0, DIAGNOSTIC_LIMITS.textCharacters) : '');

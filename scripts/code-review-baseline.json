@@ -1018,6 +1018,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/code-apps-http.mjs:codeAppProbe",
+      "file": "mirage/lib/code-apps-http.mjs",
+      "type": "exports",
+      "name": "codeAppProbe",
+      "reason": "Full unit/trace graph consumes this exported test seam: trace-code-apps.test.mjs replaces the dev-server probe limit inside a whole simulator, where no option reaches it; runtime-only traversal excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/lib/code-components.mjs:pcfAdmission",
       "file": "mirage/lib/code-components.mjs",
       "type": "exports",
@@ -2143,6 +2150,13 @@
       "type": "exports",
       "name": "multiSelectValues",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/platform.mjs:plainText",
+      "file": "mirage/lib/platform.mjs",
+      "type": "exports",
+      "name": "plainText",
+      "reason": "Full unit graph consumes this exported test seam: platform-bounded-markup.test.mjs counts the stripper's delimiter work through its `stats` argument, which no rendering path passes; runtime-only traversal excludes those consumers."
     },
     {
       "key": "runtime:exports:mirage/lib/platform.mjs:readLookupView",
@@ -3436,11 +3450,11 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test-browser/admin-dashboard.test.mjs|mirage/test-browser/admin-views.test.mjs:f52bba1d31bb267f564dc865887dd99b3f5691baa72c03f473daf2a83dd5f9da",
+      "key": "tests:clone:mirage/test-browser/admin-dashboard.test.mjs|mirage/test-browser/admin-views.test.mjs:2a1bef34993a5f721240bbe70bbdb49ff224d90e6ca6b3da454ef734f5e18831",
       "files": ["mirage/test-browser/admin-dashboard.test.mjs", "mirage/test-browser/admin-views.test.mjs"],
-      "lines": 29,
+      "lines": 18,
       "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+      "reason": "Each suite's invented admin API ends in the shared serveAdminFile and its own error answer, then launches its file's browser; the routes and assertions before it differ per suite."
     },
     {
       "key": "tests:clone:mirage/test-browser/admin-services.test.mjs|mirage/test-browser/admin-views.test.mjs:8e339020bfcc3479c6404f32617abcc441df058aa44ea9ba5bcfb2f19d21dcee",
@@ -3453,33 +3467,6 @@
       "key": "tests:clone:mirage/test-browser/boolean-postback.test.mjs|mirage/test-browser/native-form-actions.test.mjs:5d976cdd07171dd167910186c28aa18447a3a901cedd94e91c1d98fed050e74d",
       "files": ["mirage/test-browser/boolean-postback.test.mjs", "mirage/test-browser/native-form-actions.test.mjs"],
       "lines": 11,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test-browser/bootstrap-plugins-defaults.test.mjs|mirage/test-browser/entity-grid-view-trigger.test.mjs:bd681e1384f622a1b5d2e9e135656571dfb67fc89c64e1cb325eb621821ffd52",
-      "files": [
-        "mirage/test-browser/bootstrap-plugins-defaults.test.mjs",
-        "mirage/test-browser/entity-grid-view-trigger.test.mjs"
-      ],
-      "lines": 16,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test-browser/entity-grid-announcer.test.mjs|mirage/test-browser/frame-url-safety.test.mjs:7e86c08204207ec66bed72d4ef4a08ea8e10c77149c50a4c62d08d46b32a351b",
-      "files": ["mirage/test-browser/entity-grid-announcer.test.mjs", "mirage/test-browser/frame-url-safety.test.mjs"],
-      "lines": 11,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test-browser/entity-grid-view-trigger.test.mjs|mirage/test-browser/entity-grid-view-trigger.test.mjs:aa78c46cf27153c1bb2016dd29da18f8f4b30bf9012655a796fe0748e443e81e",
-      "files": [
-        "mirage/test-browser/entity-grid-view-trigger.test.mjs",
-        "mirage/test-browser/entity-grid-view-trigger.test.mjs"
-      ],
-      "lines": 17,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
@@ -3515,29 +3502,9 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test-browser/platform-app-equivalents.test.mjs|mirage/test-browser/runtime-compatibility.test.mjs:c55668559a0411187aba5fe0d2a4e215e45a767a00ad17629da205a4bdfb980f",
-      "files": [
-        "mirage/test-browser/platform-app-equivalents.test.mjs",
-        "mirage/test-browser/runtime-compatibility.test.mjs"
-      ],
-      "lines": 14,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
       "key": "tests:clone:mirage/test-browser/portal-documents-folders.test.mjs|mirage/test/portal-host-surfaces.test.mjs:daef39a2d7f47f3ddef7e7fa131c69b48ec400c7fd9508fd83b3beeb2b0ab7bd",
       "files": ["mirage/test-browser/portal-documents-folders.test.mjs", "mirage/test/portal-host-surfaces.test.mjs"],
       "lines": 31,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test-browser/runtime-compatibility.test.mjs|mirage/test-browser/runtime-compatibility.test.mjs:f3cc58e9492cf434504c79268f8c9aeca714ba6843cf695bfa511778bbe76414",
-      "files": [
-        "mirage/test-browser/runtime-compatibility.test.mjs",
-        "mirage/test-browser/runtime-compatibility.test.mjs"
-      ],
-      "lines": 15,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
@@ -3556,20 +3523,6 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test/alternate-key-activation.test.mjs|mirage/test/managed-layers.test.mjs:20ef9687368fda20209d6c923752fe6700797a1e9bc8348cddeff0f2207e3bf8",
-      "files": ["mirage/test/alternate-key-activation.test.mjs", "mirage/test/managed-layers.test.mjs"],
-      "lines": 27,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test/alternate-key-activation.test.mjs|mirage/test/managed-ownership.test.mjs:2e74487e2db87f38bec875bd814e13f41b525e24f32152da041bd153fa7e17fe",
-      "files": ["mirage/test/alternate-key-activation.test.mjs", "mirage/test/managed-ownership.test.mjs"],
-      "lines": 11,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
       "key": "tests:clone:mirage/test/baseline-admin-cleanup.test.mjs|mirage/test/baseline-hook-uncertainty.test.mjs:4bb7ce75deb61390f6f6d87c4032b6d5591cbbfa93c722717a32c27663c19efb",
       "files": ["mirage/test/baseline-admin-cleanup.test.mjs", "mirage/test/baseline-hook-uncertainty.test.mjs"],
       "lines": 16,
@@ -3584,23 +3537,9 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test/canvas-runtime-connectors.test.mjs|mirage/test/canvas-runtime.test.mjs:e72189572e8b8e5b112bd7fde582f77ef7c9a915e05f0daf2f12536ebefebc14",
-      "files": ["mirage/test/canvas-runtime-connectors.test.mjs", "mirage/test/canvas-runtime.test.mjs"],
-      "lines": 11,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
       "key": "tests:clone:mirage/test/committed-work-backlog.test.mjs|mirage/test/durable-async-jobs.test.mjs:89928de186faa374f576408d46aa42a22ce0d77d8db7da46d3ebd4644583c7e3",
       "files": ["mirage/test/committed-work-backlog.test.mjs", "mirage/test/durable-async-jobs.test.mjs"],
       "lines": 37,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test/connector-retry-async.test.mjs|mirage/test/trace-connectors.test.mjs:82270173f9df256ceb0acb6f665ce34dd9816b93cd973394927b829e0b67cdec",
-      "files": ["mirage/test/connector-retry-async.test.mjs", "mirage/test/trace-connectors.test.mjs"],
-      "lines": 11,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
@@ -3813,20 +3752,6 @@
       "key": "tests:clone:mirage/test/list-masked-search.test.mjs|mirage/test/portal-read-masking.test.mjs:90ffced0a0db1130d0eec3d311539dff6490dd08deec862a28ecf6a47ebc31d1",
       "files": ["mirage/test/list-masked-search.test.mjs", "mirage/test/portal-read-masking.test.mjs"],
       "lines": 22,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test/managed-layers.test.mjs|mirage/test/managed-ownership.test.mjs:b7261df7f29b1147ee39ee445762172c655e55c758ef19d7d96e016aba1a1be6",
-      "files": ["mirage/test/managed-layers.test.mjs", "mirage/test/managed-ownership.test.mjs"],
-      "lines": 29,
-      "type": "clone",
-      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
-    },
-    {
-      "key": "tests:clone:mirage/test/managed-layers.test.mjs|mirage/test/managed-ownership.test.mjs:f436b611daad3b5741d9a0fc260be200137d049c70c6cc4649d593aca5b20467",
-      "files": ["mirage/test/managed-layers.test.mjs", "mirage/test/managed-ownership.test.mjs"],
-      "lines": 28,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },

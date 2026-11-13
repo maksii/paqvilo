@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A pack whose storage provider owns a resource; each close is recorded (or fails, when failClose is set).
 function storagePack(calls, { failClose = false } = {}) {
@@ -127,14 +127,14 @@ test('a startup that fails after the listener opens closes the listener and the 
 // A started runtime over a website with one home page, closed and cleaned up when the test ends.
 async function startHomeSimulator(t) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-startup-cleanup-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented');
   await fs.writeFile(
     path.join(dir, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
   );
   const sim = await createSimulator({ sourceDir: dir, port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 

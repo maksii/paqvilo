@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { parse } from 'espree';
@@ -1163,8 +1164,14 @@ test('workflow tools pin every supported platform and an unsupported platform na
     const [os, arch] = platform.split('-');
     assert.equal(workflowTools(os, arch), assets[platform], platform);
     for (const tool of ['actionlint', 'shellcheck']) {
-      const [version, , digest, , archiveName] = assets[platform][tool];
+      const [version, url, digest, , archiveName] = assets[platform][tool];
       assert.equal(version, versions[tool], `${tool} ${platform} version`);
+      // Only the API asset form receives the token, so every platform downloads through it.
+      assert.match(
+        url,
+        /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\/assets\/\d+$/,
+        `${tool} ${platform}`,
+      );
       assert.match(digest, /^[a-f0-9]{64}$/, `${tool} ${platform} digest`);
       assert.equal(archiveName, expectedNames[tool][platform], `${tool} ${platform} asset`);
     }
@@ -1173,6 +1180,396 @@ test('workflow tools pin every supported platform and an unsupported platform na
     () => workflowTools('freebsd', 'x64'),
     (error) => platforms.every((platform) => error.message.includes(platform)) && !/container/.test(error.message),
   );
+});
+
+// An invented tool in a temporary cache: its archive bytes are the pin, so nothing here is an upstream release.
+function inventedTool(t) {
+  const cache = tempDirSync('paqvilo-tool-cache-');
+  t.after(() => fs.rmSync(cache, { recursive: true, force: true }));
+  const bytes = Buffer.from('invented workflow tool archive');
+  const pin = createHash('sha256').update(bytes).digest('hex');
+  const specification = ['1.0.0', 'https://api.github.com/repos/owner/tool/releases/assets/1', pin, 'tool', 'tool.zip'];
+  const directory = path.join(cache, `tool-1.0.0-${process.platform}-${process.arch}`);
+  const calls = [];
+  const replying = (status) => async (url, init) => {
+    calls.push({ url, authorization: new Headers(init.headers).get('authorization') });
+    return new Response(null, { status });
+  };
+  return { cache, bytes, specification, directory, calls, replying };
+}
+
+test('a provisioned tool with a verified archive and receipt is served without a request', async (t) => {
+  const { provision } = await import('../scripts/check-workflows.mjs');
+  const { cache, bytes, specification, directory, calls, replying } = inventedTool(t);
+  const target = path.join(directory, 'unpacked', 'tool');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'tool.zip'), bytes);
+  fs.writeFileSync(target, 'invented executable');
+  const binary = createHash('sha256').update('invented executable').digest('hex');
+  fs.writeFileSync(path.join(directory, 'verified.json'), JSON.stringify({ archive: specification[2], binary }));
+  assert.equal(await provision('tool', specification, { cache, fetchImpl: replying(500) }), target);
+  assert.deepEqual(calls, []);
+});
+
+// A restored archive is re-verified before any receipt is trusted; one that fails its pin is removed and downloaded once.
+test('a cached archive that fails its pin is replaced by a verified download before the tool is served', async (t) => {
+  const { provision } = await import('../scripts/check-workflows.mjs');
+  const { cache, bytes, specification, directory, calls } = inventedTool(t);
+  const target = path.join(directory, 'unpacked', 'tool');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'tool.zip'), 'tampered archive');
+  fs.writeFileSync(target, 'invented executable');
+  const binary = createHash('sha256').update('invented executable').digest('hex');
+  fs.writeFileSync(path.join(directory, 'verified.json'), JSON.stringify({ archive: specification[2], binary }));
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, authorization: new Headers(init.headers).get('authorization') });
+    return new Response(bytes);
+  };
+  assert.equal(await provision('tool', specification, { cache, fetchImpl }), target);
+  assert.deepEqual(fs.readFileSync(path.join(directory, 'tool.zip')), bytes);
+  assert.deepEqual(calls, [{ url: specification[1], authorization: null }]);
+});
+
+test('a tampered cached archive and a tampered download fail before extraction and leave no archive', async (t) => {
+  const { provision } = await import('../scripts/check-workflows.mjs');
+  const { cache, specification, directory, calls, replying } = inventedTool(t);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'tool.zip'), 'tampered archive');
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, authorization: new Headers(init.headers).get('authorization') });
+    return new Response('tampered download');
+  };
+  await assert.rejects(provision('tool', specification, { cache, fetchImpl }), {
+    message: 'Archive digest mismatch; no unverified content was saved.',
+  });
+  // Neither the tampered archive nor anything unpacked from it remains.
+  assert.deepEqual(fs.readdirSync(directory), []);
+  assert.equal(calls.length, 1);
+  // A later run finds nothing to trust and downloads again.
+  await assert.rejects(provision('tool', specification, { cache, fetchImpl: replying(403) }), {
+    message: 'Archive download failed from api.github.com: HTTP 403 (attempt 1).',
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(fs.readdirSync(directory), []);
+});
+
+test('--provision provisions and verifies both tools and runs neither of them', async () => {
+  const { checkWorkflows, workflowTools } = await import('../scripts/check-workflows.mjs');
+  const tools = workflowTools();
+  const record = (argv) => {
+    const provisioned = [];
+    const ran = [];
+    const options = {
+      argv,
+      env: { GITHUB_TOKEN: 'invented-test-token' },
+      provisionTool: async (name, specification, settings) => {
+        provisioned.push([name, specification, settings]);
+        return `/invented/${name}`;
+      },
+      run: (command) => ran.push(command),
+    };
+    return { provisioned, ran, options };
+  };
+  const expected = [
+    ['actionlint', tools.actionlint, { token: 'invented-test-token' }],
+    ['shellcheck', tools.shellcheck, { token: 'invented-test-token' }],
+  ];
+  const provisionOnly = record(['node', 'scripts/check-workflows.mjs', '--provision']);
+  await checkWorkflows(provisionOnly.options);
+  assert.deepEqual(provisionOnly.provisioned, expected);
+  assert.deepEqual(provisionOnly.ran, []);
+  const check = record(['node', 'scripts/check-workflows.mjs']);
+  await checkWorkflows(check.options);
+  assert.deepEqual(check.provisioned, expected);
+  assert.deepEqual(check.ran, ['/invented/actionlint', '/invented/shellcheck']);
+});
+
+test('every pinned archive restore goes through the one verified-cache helper', () => {
+  for (const [file, count] of [
+    ['ci.mjs', 2],
+    ['check-workflows.mjs', 1],
+  ]) {
+    const source = fs.readFileSync(new URL(`../scripts/${file}`, import.meta.url), 'utf8');
+    assert.equal(source.match(/\bensureVerifiedArchive\(/g)?.length, count, file);
+    assert.doesNotMatch(source, /downloadVerifiedArchive/, file);
+  }
+});
+
+test('an absent archive is requested from the API with the token and a 403 stops provisioning', async (t) => {
+  const { provision } = await import('../scripts/check-workflows.mjs');
+  const { cache, specification, directory, calls, replying } = inventedTool(t);
+  await assert.rejects(
+    provision('tool', specification, { cache, token: 'invented-test-token', fetchImpl: replying(403) }),
+    { message: 'Archive download failed from api.github.com: HTTP 403 (attempt 1).' },
+  );
+  assert.deepEqual(calls, [{ url: specification[1], authorization: 'Bearer invented-test-token' }]);
+  assert.deepEqual(fs.readdirSync(directory), []);
+});
+
+// A pinned cache is restored before the step that produces it and saved by the step right after it (only saves
+// between), on a miss of that restore and only when the files exist, with the same path and a key from step outputs.
+const CACHE_PIN = /^actions\/cache(?:\/(restore|save))?@([0-9a-f]{40})$/;
+function cachePair(label, steps, path, producer, enabled) {
+  const restores = steps.filter(
+    (step) => CACHE_PIN.exec(step.uses ?? '')?.[1] === 'restore' && step.with?.path === path,
+  );
+  const saves = steps.filter((step) => CACHE_PIN.exec(step.uses ?? '')?.[1] === 'save' && step.with?.path === path);
+  assert.equal(restores.length, 1, `${label}: one restore of ${path}`);
+  assert.equal(saves.length, 1, `${label}: one save of ${path}`);
+  const [restore] = restores,
+    [save] = saves;
+  const restoreAt = steps.indexOf(restore),
+    saveAt = steps.indexOf(save);
+  assert.ok(restoreAt < producer, `${label}: restores before the producing step`);
+  assert.ok(saveAt > producer, `${label}: saves after the producing step`);
+  for (const step of steps.slice(producer + 1, saveAt))
+    assert.equal(CACHE_PIN.exec(step.uses ?? '')?.[1], 'save', `${label}: only saves between producing and saving`);
+  assert.ok(restore.id, `${label}: the restore has an id for its cache-hit output`);
+  assert.equal(restore.if, enabled, `${label}: restore condition`);
+  assert.equal(
+    save.if,
+    `${enabled} && steps.${restore.id}.outputs.cache-hit != 'true' && hashFiles('${path}') != ''`,
+    `${label}: saved only on a miss, when the files exist`,
+  );
+  assert.deepEqual(save.with, restore.with, `${label}: the save uses the restore's path and key`);
+  assert.deepEqual(Object.keys(restore.with).sort(), ['key', 'path'], `${label}: no restore-keys`);
+  assert.doesNotMatch(restore.with.key, /hashFiles/, `${label}: the key does not hash a whole script`);
+  assert.match(
+    restore.with.key,
+    /\$\{\{ steps\.[\w-]+\.outputs\.\w+ \}\}$/,
+    `${label}: the key comes from a step output`,
+  );
+  return { restore, save };
+}
+
+test('the workflow token reaches only the step that provisions the pinned workflow tools', async () => {
+  const source = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const ci = YAML.parse(source);
+  const carriesToken = (env) =>
+    Object.entries(env ?? {}).some(
+      ([name, value]) => /^(GITHUB|GH)_TOKEN$/.test(name) || /github\.token|secrets\.GITHUB_TOKEN/.test(String(value)),
+    );
+  assert.equal(carriesToken(ci.env), false, 'workflow env');
+  const holders = [];
+  for (const [job, definition] of Object.entries(ci.jobs)) {
+    assert.equal(carriesToken(definition.env), false, `${job} env`);
+    for (const step of definition.steps) if (carriesToken(step.env)) holders.push({ job, step });
+  }
+  assert.deepEqual(
+    holders.map(({ job, step }) => [job, step.name, step.run, step.env]),
+    [
+      [
+        'checks',
+        'Provision the pinned workflow tools',
+        'node scripts/check-workflows.mjs --provision',
+        { GITHUB_TOKEN: '${{ github.token }}' },
+      ],
+    ],
+  );
+  const steps = ci.jobs.checks.steps;
+  const quality = steps.findIndex((step) => step.run === 'npm run quality');
+  const provisioning = steps.indexOf(holders[0].step);
+  const restore = steps.findIndex((step) => step.name === 'Restore the pinned workflow tool archives');
+  const named = steps.findIndex((step) => step.id === 'tools');
+  assert.ok(named >= 0 && named < restore, 'the key is printed before the restore');
+  assert.equal(steps[named].run, 'node scripts/check-workflows.mjs --cache-key');
+  assert.ok(restore >= 0 && restore < provisioning && provisioning < quality, 'restore, provision, then check');
+  const pair = cachePair('ci/checks tools', steps, '.paqvilo/tools/*/*.tar.gz', provisioning, steps[quality].if);
+  assert.ok(steps.indexOf(pair.save) < quality, 'saved before the checks that may fail');
+  assert.ok(
+    Object.values(ci.jobs).every((job) =>
+      job.steps.every((step) => !step.run?.includes('npm run quality') || !step.env),
+    ),
+    'no step that runs npm run quality has an env of its own',
+  );
+  for (const index of [named, restore, provisioning]) assert.equal(steps[index].if, steps[quality].if);
+  const cacheAction = [...new Set(source.match(/actions\/cache(?:\/restore|\/save)?@[0-9a-f]{40}\b/g))].map(
+    (reference) => reference.split('@')[1],
+  );
+  assert.equal(new Set(cacheAction).size, 1, 'one pinned actions/cache commit');
+  assert.equal(steps[restore].uses, `actions/cache/restore@${cacheAction[0]}`);
+  // The job runs on Linux x64 only, where both pinned tool archives are .tar.gz files.
+  assert.equal(ci.jobs.checks['runs-on'], 'ubuntu-24.04');
+  const { assets } = await import('../scripts/check-workflows.mjs');
+  for (const [, , , , archive] of Object.values(assets['linux-x64'])) assert.match(archive, /\.tar\.gz$/);
+  assert.deepEqual(steps[restore].with, {
+    path: '.paqvilo/tools/*/*.tar.gz',
+    key: 'workflow-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.key }}',
+  });
+});
+
+test('the workflow tool cache key is a digest of the platform pins alone and reads nothing else', async (t) => {
+  const { assets, workflowToolsCacheKey } = await import('../scripts/check-workflows.mjs');
+  const keys = Object.keys(assets).map((platform) => workflowToolsCacheKey(...platform.split('-')));
+  for (const key of keys) assert.match(key, /^[0-9a-f]{64}$/);
+  assert.equal(new Set(keys).size, keys.length, 'each platform has its own key');
+  const directory = tempDirSync('paqvilo-tools-key-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const output = path.join(directory, 'output');
+  fs.writeFileSync(output, 'earlier=kept\n');
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../scripts/check-workflows.mjs', import.meta.url)), '--cache-key'],
+    {
+      // An unreadable tool cache proves the key is computed without touching it.
+      env: { ...process.env, GITHUB_OUTPUT: output, PAQVILO_TOOL_CACHE: path.join(directory, 'absent', 'cache') },
+      encoding: 'utf8',
+      windowsHide: true,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `key=${workflowToolsCacheKey()}\n`);
+  assert.equal(fs.readFileSync(output, 'utf8'), `earlier=kept\nkey=${workflowToolsCacheKey()}\n`);
+  assert.equal(fs.existsSync(path.join(directory, 'absent')), false);
+});
+
+test('every job that prepares fixtures restores the verified fixture archives before preparing', () => {
+  const fixtureCaches = {
+    ecosystem: {
+      path: '.paqvilo/ci/ecosystem/*.tar.gz',
+      key: 'ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}',
+      output: 'ecosystem',
+    },
+    sdk: {
+      path: '.paqvilo/ci/sdk-reference/sdk.zip',
+      key: 'sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}',
+      output: 'sdk_reference',
+    },
+  };
+  // Ecosystem archives serve the Linux and Windows unit lanes; the CLR SDK reference serves every Windows lane.
+  // `ci:prepare --quality` downloads neither, so the static job needs no fixture cache.
+  const expected = {
+    'ci/test': ['ecosystem'],
+    'ci/browser': ['sdk'],
+    'ci/windows': ['ecosystem', 'sdk'],
+    'sonarqube/coverage': ['ecosystem'],
+  };
+  const pins = new Set();
+  const found = {};
+  for (const name of ['ci', 'security', 'sonarqube']) {
+    const source = fs.readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
+    for (const reference of source.match(/actions\/cache(?:\/restore|\/save)?@[0-9a-f]{40}\b/g) ?? [])
+      pins.add(reference.split('@')[1]);
+    for (const [job, definition] of Object.entries(YAML.parse(source).jobs)) {
+      const prepare = definition.steps.findIndex(
+        (step) => step.run?.includes('ci:prepare') && !step.run.includes('--quality'),
+      );
+      if (prepare < 0) continue;
+      // `ci.mjs fixtures` answers for exactly the arguments the prepare step passes, so each cache follows its answer.
+      const select = definition.steps.findIndex((step) => step.id === 'fixtures');
+      found[`${name}/${job}`] = definition.steps.flatMap((step, index) => {
+        const cache = Object.entries(fixtureCaches).find(([, value]) => value.path === step.with?.path?.trim());
+        if (!cache || CACHE_PIN.exec(step.uses)?.[1] === 'save') return [];
+        assert.equal(CACHE_PIN.exec(step.uses)?.[1], 'restore', `${name}/${job} ${cache[0]} restores only`);
+        cachePair(`${name}/${job} ${cache[0]}`, definition.steps, cache[1].path, prepare, step.if);
+        assert.ok(index < prepare, `${name}/${job} restores ${cache[0]} before preparing`);
+        assert.equal(step.with.key, cache[1].key, `${name}/${job} ${cache[0]} key`);
+        assert.ok(select >= 0 && select < index, `${name}/${job} selects its fixtures before restoring ${cache[0]}`);
+        assert.equal(step.if, `steps.fixtures.outputs.${cache[1].output} == 'true'`, `${name}/${job} ${cache[0]} if`);
+        assert.equal(
+          definition.steps[select].run,
+          definition.steps[prepare].run.replace('npm run ci:prepare -- ', 'node scripts/ci.mjs fixtures '),
+          `${name}/${job} selects fixtures with the prepare arguments`,
+        );
+        assert.equal(definition.steps[select].if, undefined, `${name}/${job} always selects its fixtures`);
+        return [{ fixture: cache[0], uses: step.uses.split('@')[1] }];
+      });
+    }
+  }
+  assert.equal(pins.size, 1, 'every actions/cache step uses the one pinned commit');
+  const [pin] = pins;
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(found).map(([job, caches]) => [job, caches.map((cache) => cache.fixture)])),
+    expected,
+  );
+  for (const caches of Object.values(found)) for (const cache of caches) assert.equal(cache.uses, pin);
+});
+
+test('ci.mjs fixtures answers for every CI lane what prepare with the same arguments downloads', async () => {
+  const { laneFixtures, needsEcosystem, requiresClrFixture } = await import('../scripts/ci.mjs');
+  const { ciLanes, browserLanes } = await import('../.github/scripts/change-scope.mjs');
+  const suites = ['lense', 'mirage', 'examples'];
+  const lanes = [
+    ...ciLanes('unit', suites).flatMap((lane) =>
+      ['linux', 'win32'].map((platform) => ({ ...lane, kind: 'unit', platform })),
+    ),
+    ...browserLanes(suites).map((lane) => ({
+      ...lane,
+      kind: 'browser',
+      platform: lane.os.startsWith('windows') ? 'win32' : 'linux',
+    })),
+  ];
+  for (const { suite, shard, kind, platform } of lanes) {
+    const args = ['--suite', suite, `--${kind}`, ...(shard ? ['--shard', shard] : [])];
+    assert.deepEqual(
+      laneFixtures(args, platform),
+      {
+        ecosystem: needsEcosystem(suite, kind === 'unit', shard ?? null),
+        sdk_reference: requiresClrFixture(suite, platform),
+      },
+      `${args.join(' ')} on ${platform}`,
+    );
+  }
+  const shardsWithEcosystem = ciLanes('unit', ['mirage']).filter(
+    (lane) => laneFixtures(['--suite', 'mirage', '--unit', '--shard', lane.shard], 'linux').ecosystem,
+  );
+  assert.equal(shardsWithEcosystem.length, 1, 'exactly one Mirage unit shard runs the ecosystem import checks');
+  assert.deepEqual(laneFixtures(['--suite', 'mirage', '--unit'], 'linux'), { ecosystem: true, sdk_reference: false });
+  assert.deepEqual(laneFixtures(['--suite', 'mirage', '--browser', '--shard', '1/2'], 'win32'), {
+    ecosystem: false,
+    sdk_reference: true,
+  });
+  // Arguments prepare refuses are refused here too.
+  assert.throws(() => laneFixtures(['--suite', 'examples', '--unit', '--shard', '1/2'], 'linux'), /--shard/);
+  assert.throws(() => laneFixtures(['--suite', 'none', '--unit'], 'linux'), /^Error: Unknown CI suite: none$/);
+  // prepare decides its downloads with the same two functions and the same argument mapping.
+  const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /if \(requiresClrFixture\(suite\)\) await clrFixture\(\);\n\s+if \(needsEcosystem\(suite, unit, shard\)\) await ecosystemFixtures\(\);/,
+  );
+  assert.match(
+    source,
+    /if \(command === 'prepare'\) return \{ handled: true, result: prepareLane\(\.\.\.prepareSelection\(values\)\) \};/,
+  );
+});
+
+test('ci.mjs fixtures appends its answer to the step outputs', async (t) => {
+  const directory = tempDirSync('paqvilo-fixtures-output-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const output = path.join(directory, 'output');
+  fs.writeFileSync(output, 'earlier=kept\n');
+  const script = fileURLToPath(new URL('../scripts/ci.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [script, 'fixtures', '--suite', 'lense', '--browser'], {
+    env: { ...process.env, GITHUB_OUTPUT: output },
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const { fixtureCacheKeys } = await import('../scripts/ci.mjs');
+  const { ecosystem_key: ecosystem, sdk_reference_key: sdk } = fixtureCacheKeys();
+  const answer = `ecosystem=false\nsdk_reference=false\necosystem_key=${ecosystem}\nsdk_reference_key=${sdk}\n`;
+  assert.equal(result.stdout, answer);
+  assert.equal(fs.readFileSync(output, 'utf8'), 'earlier=kept\n' + answer);
+});
+
+test('fixture cache keys are digests of the pinned archive URLs and digests alone', async () => {
+  const { fixtureCacheKeys } = await import('../scripts/ci.mjs');
+  const keys = fixtureCacheKeys();
+  assert.deepEqual(Object.keys(keys), ['ecosystem_key', 'sdk_reference_key']);
+  for (const key of Object.values(keys)) assert.match(key, /^[0-9a-f]{64}$/);
+  // Rebuilt from the pins as written in ci.mjs: the archive URLs and their SHA-256 digests, nothing else.
+  const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
+  const sha = (pins) => createHash('sha256').update(JSON.stringify(pins)).digest('hex');
+  const ecosystem = [
+    ...source.matchAll(/^ {4}'([\w-]+\/[\w-]+)',\n {4}'([0-9a-f]{40})',\n {4}'([0-9a-f]{64})',$/gm),
+  ].map(([, repository, commit, digest]) => [`https://codeload.github.com/${repository}/tar.gz/${commit}`, digest]);
+  assert.equal(ecosystem.length, 5);
+  assert.equal(keys.ecosystem_key, sha(ecosystem));
+  const version = /const SDK_VERSION = '([\d.]+)'/.exec(source)[1],
+    digest = /const SDK_SHA256 = '([0-9a-f]{64})'/.exec(source)[1];
+  const url = `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${version}/microsoft.crmsdk.coreassemblies.${version}.nupkg`;
+  assert.equal(keys.sdk_reference_key, sha([[url, digest]]));
 });
 
 test('every third-party workflow action is allowed by the repository admin policy', async () => {

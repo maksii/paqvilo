@@ -1,4 +1,5 @@
 // @test-kind security: a CLR host given only its parent PID binds the live process that created it and refuses another live process or an exited one (exit 74)
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -74,7 +75,7 @@ test('a CLR host bound by PID alone refuses a live process that did not create i
   // Started and alive before the host, so it is older than the host, but the host is created by this process.
   const sleeper = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e9)'], { windowsHide: true, stdio: 'ignore' });
   const exited = once(sleeper, 'exit');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     sleeper.kill();
     await exited;
   });

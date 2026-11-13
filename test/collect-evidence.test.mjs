@@ -1,12 +1,27 @@
+// @test-kind security: the CI collector publishes only allowlisted synthetic files and refuses substituted sources, parents and staging
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
+import { spawn } from 'node:child_process';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { collectSyntheticEvidence, syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 
 const name = `${'a'.repeat(32)}-diagnostic.json`;
 const marker = 'invented-private-marker-must-not-be-collected-or-overwritten';
+
+/** A live process other than this one, owned by the test: a node child that exits when its stdin ends. */
+function liveChild(t) {
+  const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { stdio: ['pipe', 'ignore', 'ignore'] });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  ownedFixture(t).add(() => {
+    child.stdin.end();
+    return closed;
+  });
+  assert.ok(Number.isInteger(child.pid), 'the other run started');
+  return child.pid;
+}
 
 function fixture(t) {
   const parent = fs.realpathSync.native(os.tmpdir());
@@ -246,4 +261,55 @@ test('synthetic collection refuses a replaced private staging directory without 
     fs.readdirSync(files.state).filter((file) => /^ci-evidence-/.test(file)),
     [],
   );
+});
+
+// @test-kind contract: browser tests write round evidence only through syntheticEvidencePath, which the collector publishes
+test('the collector publishes every round evidence file a browser test writes, one file per run', (t) => {
+  const files = fixture(t);
+  const written = {
+    'extended-round': [
+      'multipart.json',
+      'classic-workflows.json',
+      'classic-workflows.png',
+      'enhanced-workflows.json',
+      'enhanced-workflows.png',
+      'verify-classic-baseline.json',
+      'verify-classic-working-copy.json',
+      'verify-enhanced-baseline.json',
+      'verify-enhanced-working-copy.json',
+    ],
+    'multi-portal-round': ['acceptance.json', 'cli-smoke.json'],
+  };
+  const expected = [];
+  // Two runs at once (this process and another live one) write the same evidence to different files.
+  for (const pid of [process.pid, liveChild(t)])
+    for (const [round, names] of Object.entries(written))
+      for (const name of names) {
+        const file = syntheticEvidencePath(files.state, round, name, pid);
+        fs.writeFileSync(file, `${pid}\n`);
+        expected.push(path.relative(files.state, file).replaceAll('\\', '/'));
+      }
+  assert.equal(new Set(expected).size, expected.length, 'two runs never share an evidence file');
+  const collected = collectSyntheticEvidence(files.state);
+  assert.deepEqual(collected.files.filter((file) => !file.startsWith('synthetic-navigation/')).sort(), expected.sort());
+  assert.throws(
+    () => syntheticEvidencePath(files.state, 'extended-round', 'unlisted.json'),
+    /does not publish extended-round\/unlisted\.run-\d+\.json/,
+  );
+});
+
+// @test-kind contract: a developer's state directory keeps round evidence only for the latest and the running lanes
+test('writing round evidence removes the same evidence of ended runs and keeps running ones', (t) => {
+  const files = fixture(t);
+  // A number no process can have: Windows process numbers are multiples of 4 and Linux caps pid_max at 2^22.
+  const ended = 2 ** 31 - 1;
+  const endedFile = syntheticEvidencePath(files.state, 'multi-portal-round', 'acceptance.json', ended);
+  const runningFile = syntheticEvidencePath(files.state, 'multi-portal-round', 'acceptance.json', liveChild(t));
+  const otherFile = syntheticEvidencePath(files.state, 'multi-portal-round', 'cli-smoke.json', ended);
+  for (const file of [endedFile, runningFile, otherFile]) fs.writeFileSync(file, '{}\n');
+  const current = syntheticEvidencePath(files.state, 'multi-portal-round', 'acceptance.json');
+  assert.equal(fs.existsSync(endedFile), false, 'an ended run’s file of the same evidence is removed');
+  assert.equal(fs.existsSync(runningFile), true, 'a running lane keeps its file');
+  assert.equal(fs.existsSync(otherFile), true, 'other evidence is removed only when it is written again');
+  assert.equal(path.basename(current), `acceptance.run-${process.pid}.json`);
 });

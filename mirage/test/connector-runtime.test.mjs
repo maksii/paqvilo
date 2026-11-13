@@ -10,6 +10,8 @@ import {
 } from '../lib/connector-runtime.mjs';
 import { MAX_TIMER_DELAY } from '../lib/runtime-clock.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { calledFrom } from './support/timer-origin.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const USER = '77777777-7777-4777-8777-777777777777';
 const profile = {
@@ -23,9 +25,10 @@ const references = {
 };
 
 async function listen(t, handler) {
+  const owner = ownedFixture(t);
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  owner.add(() => new Promise((resolve) => server.close(resolve)));
   return `http://127.0.0.1:${server.address().port}`;
 }
 const rejectsWith = (promise, code, status) =>
@@ -401,7 +404,7 @@ test('an asynchronous operation polls under a finite budget for a non-finite or 
     const arrived = new Promise((resolve) => (arrive = resolve));
     const gate = new Promise((resolve) => (release = resolve));
     current = { arrive, gate };
-    t.after(() => release());
+    ownedFixture(t).add(() => release());
     const call = runtime.invoke({ connectorId: 'x_async', operationId: 'Go', context: { timeoutMs } });
     await arrived;
     const budget = budgets.at(-1);
@@ -419,13 +422,17 @@ test('an asynchronous operation polls under a finite budget for a non-finite or 
 // A budget longer than the timer limit: the deadline is armed in steps of at most MAX_TIMER_DELAY.
 const OVERSIZED_BUDGET = MAX_TIMER_DELAY + 5000;
 // Records the delays, armed handles and cleared handles of the timers a test uses (the mocked timers are enabled first).
+// Only timers armed by Mirage's own code are recorded: a fetch connection of an earlier test also arms global timers.
+const MIRAGE_LIB = new URL('../lib/', import.meta.url).href;
 function recordTimers(t) {
   const timers = { delays: [], armed: [], cleared: [] };
   const { setTimeout: schedule, clearTimeout: cancel } = globalThis;
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
-    timers.delays.push(delay);
     const handle = schedule(callback, delay, ...rest);
-    timers.armed.push(handle);
+    if (calledFrom(MIRAGE_LIB, import.meta.url)) {
+      timers.delays.push(delay);
+      timers.armed.push(handle);
+    }
     return handle;
   });
   t.mock.method(globalThis, 'clearTimeout', (handle) => {

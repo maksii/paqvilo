@@ -1,6 +1,7 @@
 // Native write-pipeline data semantics (Dataverse recorder parity corpus, crud/upsert/pipelineEffects): which columns
 // each stage's Target carries, how the Web API's empty text reaches it, when the platform derives exchange rates and
 // base amounts, and the Upsert main operation a bare PATCH runs under. Invented tables and identities only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -80,7 +81,7 @@ async function fixture(t, edit = () => {}, { fields = {}, extraSteps = [] } = {}
   );
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 
@@ -422,7 +423,7 @@ test('a $ref association of a 1:N child sends a lookup-only Update 10 Target and
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   await f.json(
     await f.request('POST', `/x_parents(${parent})/x_parent_children/$ref`, {
       '@odata.id': `${f.server.origin}/api/data/v9.2/x_children(${child})`,

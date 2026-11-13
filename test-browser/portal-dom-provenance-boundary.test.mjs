@@ -1,5 +1,5 @@
 // @test-kind contract: Paqvilo's own portal provenance boundary, including the origin gate's refusal of page-script administration requests.
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -55,7 +55,7 @@ async function fixture(t, source, { scriptFor } = {}) {
     result.writeHead(200, { 'content-type': 'text/html' }).end(response.html);
   });
   let context, detach;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await detach?.();
     await context?.close();
     server.closeAllConnections();
@@ -231,8 +231,18 @@ attackStatus.status=request.status;attackStatus.descriptorExposed=request.respon
   app.server.removeAllListeners('request');
   app.server.on('request', (request, response) => {
     const deliver = () => handlers.forEach((handler) => handler.call(app.server, request, response));
-    // Keep the parser at a real exported script while CDP admits the earlier document proof.
-    if (new URL(request.url, 'http://fixture.invalid').pathname === '/attack.js') setTimeout(deliver, 1200);
+    // Keep the parser at a real exported script until CDP has admitted the earlier document proof, as observed by the
+    // same query the script makes.
+    if (new URL(request.url, 'http://fixture.invalid').pathname === '/attack.js')
+      page
+        .waitForFunction(
+          (slot) =>
+            window[slot]?.query(document.getElementById('earlier'), { scope: {}, anchorGeneration: 1 }).facts.length ===
+            1,
+          transport.slot,
+          { polling: 50 },
+        )
+        .then(deliver, deliver);
     else deliver();
   });
   context = await browser.newContext();

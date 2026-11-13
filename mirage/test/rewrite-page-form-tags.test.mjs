@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const COPY = "<p>Before the form</p>{% entityform name: 'Other' %}";
 const ATTACHED = 'a1000000-0000-4000-8000-000000000001';
@@ -58,7 +58,7 @@ async function fixture(t) {
       },
     },
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(root, { recursive: true, force: true });
   });

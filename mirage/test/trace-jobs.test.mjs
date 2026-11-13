@@ -3,6 +3,7 @@
 // the trace store remembered for its id (never the context the scheduler inherited), staging is a job-staged event,
 // retries are events, and web hook posts are http-out spans that forward the trace to the loopback receiver. Invented
 // schemas only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -285,7 +286,7 @@ async function webhookWorld(t, { mode, url }) {
   );
   const webhooks = webhookDelivery(store);
   const runner = wireRegisteredSteps(store, webhooks);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await api.close();
   });
@@ -305,7 +306,7 @@ async function receiver(t, status = 200) {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return { received, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
@@ -420,7 +421,7 @@ test('a background classic workflow runs as a job span with its workflow span in
       }),
     ],
   });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   store.traces = createTraceStore({ settings: { level: 'summary' } });
   const traces = store.traces;
   const request = traces.start({ kind: 'http', name: 'POST /invented' });

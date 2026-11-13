@@ -59,7 +59,8 @@ export function chooserReport(report, users) {
   }
   return remember({ ...report, personas: join(report.personas ?? []), other: join(report.other ?? []) });
 }
-export function chooserSelection(report, parameters = new URLSearchParams(), { limit = 50 } = {}) {
+/** work (optional, { compared, scanned }) counts the index sort and the entries the filters examine. */
+export function chooserSelection(report, parameters = new URLSearchParams(), { limit = 50, work = null } = {}) {
   let index = indexes.get(report);
   if (!index) {
     // Runtime revisions can rebuild a report after an unrelated row write. Keep
@@ -69,14 +70,14 @@ export function chooserSelection(report, parameters = new URLSearchParams(), { l
       .digest('hex');
     index = orderedCatalogues.get(digest);
     if (!index) {
-      index = indexPersonaCatalog(report);
+      index = indexPersonaCatalog(report, work);
       orderedCatalogues.set(digest, index);
       if (orderedCatalogues.size > 4) orderedCatalogues.delete(orderedCatalogues.keys().next().value);
     }
     indexes.set(report, index);
   }
   const filters = personaFilters(parameters),
-    matching = filterPersonaIndex(index, filters);
+    matching = filterPersonaIndex(index, filters, work);
   limit = Math.max(1, Math.min(200, limit));
   const offset = Math.min(bounded(parameters.get('offset')), Math.max(0, matching.length - 1));
   return { index, matching, rows: matching.slice(offset, offset + limit), filters, offset, limit, total: index.length };
@@ -97,8 +98,8 @@ function chooserCard(persona, contexts = new Map()) {
     context = contexts.get(persona.context);
   return `<li class="paqvilo-mirage-idp-user chooser-card" data-subject="${h(persona.subject)}" data-contact-id="${h(persona.contactId)}" data-chooser-key="${h(key)}"><div><strong>${h(label)}</strong>${persona.default ? '<span class="chooser-badge">Default</span>' : ''}<p class="chooser-contact">${h(persona.name ?? persona.contactId)}${accountMarkup(persona)}</p>${descriptionMarkup(persona)}<p class="chooser-meta">${h((persona.roles ?? []).join(', ') || 'No web roles')}</p>${persona.tags?.length ? '<p class="chooser-tags">' + tagsMarkup(persona) + '</p>' : ''}<details><summary>Details and effects</summary><p>${h(persona.description ?? '')}</p><dl><dt>Contact</dt><dd>${h(persona.contactId)}</dd><dt>Source</dt><dd>${h(persona.source ?? 'contact')}</dd><dt>Session effect</dt><dd>Sign in this browser as this contact. Runtime configuration stays unchanged.</dd>${setupMarkup(context)}</dl></details></div><div class="chooser-actions"><button type="submit" form="idp-choose" formnovalidate name="subject" value="${h(persona.subject)}">Continue as ${h(label)}</button><button type="button" data-chooser-pin="${h(key)}" aria-label="Pin ${h(label)}" aria-pressed="false" hidden>☆</button></div></li>`;
 }
-export function chooserResults(report, params, action) {
-  const selection = chooserSelection(report, params),
+export function chooserResults(report, params, action, work = null) {
+  const selection = chooserSelection(report, params, { work }),
     { rows, matching, offset, limit, total } = selection,
     contexts = new Map((report.contexts ?? []).map((c) => [c.id, c]));
   const cards = (items) =>
@@ -160,8 +161,8 @@ const groupMatchesLink = (length, action, params, label) =>
     : ' · <a data-chooser-group-link href="' + h(action + '?' + params) + '">View ' + h(label) + ' matches</a>';
 const preferredSection = (preferred, cards) =>
   preferred ? '<section><h2>Default</h2>' + cards([preferred]) + '</section>' : '';
-export function chooserSearch(report, params, action, hidden) {
-  const { index } = chooserSelection(report),
+export function chooserSearch(report, params, action, hidden, work = null) {
+  const { index } = chooserSelection(report, undefined, { work }),
     selected = personaFilters(params);
   const groups = [
     ...(report.groups ?? []).filter((group) => index.some((row) => row.persona.group === group.id)),

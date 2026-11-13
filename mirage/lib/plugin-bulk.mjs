@@ -680,6 +680,7 @@ function recordBulkEvents({
   holder,
   finalBulkFrame,
 }) {
+  const written = new Set(writeIndexes);
   for (const [index, row] of rows.entries()) {
     store.recordCommittedEvent(mapping.logicalName, single, row, Object.keys(targets[index].attributes), {
       target: sdkValueToRecord(targets[index]),
@@ -689,7 +690,7 @@ function recordBulkEvents({
       bypassCustomAsync,
       bypassStepIds,
       fromBulk: true,
-      messageEvent: !writeIndexes.includes(index),
+      messageEvent: !written.has(index),
     });
   }
   store.recordCommittedEvent(

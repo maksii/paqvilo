@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, moduleGraph } from './shared-browser.mjs';
-import { drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
 const controlsModule = new URL('../lib/model-driven/controls.mjs', import.meta.url);
@@ -99,7 +99,7 @@ async function fixture(t, { isolateFramework = true, moduleTransport = null } = 
   const browserCleanup = [];
   // A browser can retain speculative or partial HTTP connections. Close its
   // context before the server, and drain remaining connections even on failure.
-  t.after(() =>
+  ownedFixture(t).add(() =>
     drainFixture([
       ...browserCleanup,
       () =>
@@ -199,15 +199,14 @@ test('PCF fixture teardown closes speculative HTTP connections after its browser
   await once(socket, 'connect');
   // No HTTP request is sent: this models a browser's speculative connection,
   // which bare server.close() cannot finish while the socket remains open.
-  let deadlineExpired = false;
-  const deadline = setTimeout(() => {
-    deadlineExpired = true;
-    socket.destroy(); // Release a broken teardown so the regression fails promptly.
-  }, 5000);
+  // After hooks run in registration order, so this one runs once the fixture's own teardown (registered first) has
+  // finished: its server.close() resolves only after the server has ended this connection. A teardown that cannot end
+  // it never reaches this hook, and the runner's --test-timeout reports the test. The test's signal aborts only after
+  // its hooks have run or when that timeout ends it; the socket is released then, so a broken teardown cannot keep the
+  // process alive.
+  t.signal.addEventListener('abort', () => socket.destroy(), { once: true });
   t.after(async () => {
     await closed;
-    clearTimeout(deadline);
-    assert.equal(deadlineExpired, false, 'fixture teardown must drain the socket before its cleanup deadline');
     assert.equal(page.isClosed(), true);
     assert.equal(socket.destroyed, true);
   });
@@ -627,7 +626,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
     );
   await fs.writeFile(formFile, xml);
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   const errors = [];

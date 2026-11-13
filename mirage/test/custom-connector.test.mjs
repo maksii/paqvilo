@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
-import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 // A Solution custom connector compiles into a contract-level connector provider.
 const NAME = 'x_5ffxapi',
@@ -152,7 +152,7 @@ test('a flow action on an imported custom connector reaches a loopback service t
     res.end('{"x_name":"found"}');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   process.env.INVENTED_FX_KEY = 'invented-key';
   t.after(() => {
     delete process.env.INVENTED_FX_KEY;

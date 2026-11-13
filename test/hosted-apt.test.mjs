@@ -1,4 +1,5 @@
 // @test-kind tooling: hosted browser preparation replaces the failed mirror precisely and bounds real apt index transport failures without masking errors.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -104,7 +105,7 @@ test(
   },
   async (t) => {
     const directory = tempDirSync('paq-apt-timeout-');
-    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rmSync(directory, { recursive: true, force: true }));
     const parts = path.join(directory, 'apt.conf.d');
     fs.mkdirSync(parts);
     // The image's late-sorting configuration must not override our actual bounds.
@@ -120,7 +121,7 @@ test(
       '/usr/bin/apt-config',
       ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout'],
       {
-        env: { ...process.env, APT_CONFIG: bootstrap },
+        env: { ...process.env, APT_CONFIG: bootstrap, LC_ALL: 'C' },
         encoding: 'utf8',
       },
     );
@@ -133,7 +134,7 @@ test(
       requests++;
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => {
+    ownedFixture(t).add(() => {
       server.closeAllConnections();
       server.close();
     });
@@ -151,9 +152,10 @@ test(
         `Dir::Etc::sourcelist "${source}";\nDir::Etc::sourceparts "-";\nDir::State::lists "${directory}/lists";\nDir::Cache "${directory}/cache";\nDebug::NoLocking "true";\n`,
     );
     const child = spawn('/usr/bin/apt-get', ['-c', configuration, 'update'], {
-      env: { ...process.env, APT_CONFIG: bootstrap },
+      // apt's messages are matched below, so they must be in the untranslated C locale.
+      env: { ...process.env, APT_CONFIG: bootstrap, LC_ALL: 'C' },
     });
-    t.after(() => child.kill());
+    ownedFixture(t).add(() => child.kill());
     let output = '';
     child.stdout.on('data', (chunk) => {
       output += chunk;

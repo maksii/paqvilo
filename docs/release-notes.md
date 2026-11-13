@@ -249,6 +249,14 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
   the plug-in assembly, its dependencies and symbols, but not the SDK.
 - A CLR host compile that fails at the Windows path limit (`CS1619`) names the length of the runtime cache path and
   asks for a shorter project or cache path.
+- The simulator option `serverLogicTimeoutMs`, like the `timeout` of `runExportedServerLogic`, replaces the local 5 s
+  server-logic limit with a value from 100 ms up to the site's `ServerLogic/TimeoutInSeconds` (default 120 s, at
+  most 240 s); a smaller value becomes 100 ms and a larger one is capped at the site setting. A value that is not a
+  finite number greater than 0 is refused with a `TypeError`, by `createSimulator` at start-up for the option.
+- When exported server logic runs past its local time limit and the host stops it, the 504 message names the limit it
+  applied, for example `Server-logic execution exceeded its local time limit of 1000 ms.`
+- The local identity provider generates its signing key off the event loop when a request first needs it, so a
+  runtime start does not wait for it.
 
 ### Fixed
 
@@ -348,10 +356,98 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 - Trace spans are dated by the wall clock and timed by a monotonic clock. After a system clock step (time sync in a
   virtual machine or WSL, a laptop resume) the Health timeline and the Activity filters still find the requests in the
   window in which they happened; they were dated by process start plus uptime and could fall outside it.
+- Interception setup for a new tab or popup waits for each DevTools answer until the tab closes or the session
+  stops, so a tab whose renderer starts slowly still gets local sources. Only a renderer that gives no answer for
+  30 s ends the setup.
+- Element provenance (markup and script) waits up to 30 s for each answer from the browser or the local Mirage. A
+  DOM node's source stays pending until every proof read for its document has settled, and is marked unmapped at once
+  when no read can still prove it; a script file that a page reads with `fetch` or XHR no longer keeps it pending.
+- When provenance for a tab cannot be delivered, the event log shows one warning:
+  `Local provenance for this tab is incomplete: … Reload this tab to deliver it again.` Closing the browser, its
+  context or a tab while a provenance read is in flight logs no warning.
+- Removing the development panel completes once the panel is gone from every open tab, including a tab that loads
+  several documents in a row during the removal. A tab whose debugger is paused is given up after 30 s and a crashed
+  tab at once; removal then fails with
+  `The development panel could not be confirmed removed from <n> tab(s): …`, naming each tab's reason.
+- A Git command that gives no answer within 120 s is reported as such, never read as "not a repository", "no commits"
+  or "not tracked": the setup save answers 503 and asks to retry, `lense list` stops with
+  `Git did not answer where the repository of <folder> starts`, and the project check of `lense doctor`,
+  `init --check` and `init --ready` stops with `Git did not answer which project files to check` or reports a
+  `PRIVATE_IGNORE_REVIEW` finding for its ignore check. When Git is not installed or not on PATH, they say
+  `Git was not found. Install Git or add it to PATH, then try again.` The setup page shows a Git that does not answer
+  its source status as timed out.
+- `lense dev` keeps watching sources while Git does not answer: it warns once per outage
+  (`Git did not answer (…); asking again on the next repository check`), keeps polling HEAD and the baseline, sets up
+  the repository watcher once Git answers, and stops polling Git in a folder that is not a repository. A session
+  whose HEAD read gets no answer starts with HEAD unknown and fills it in once Git answers; the model-driven panel
+  shows no Git state meanwhile. A baseline file read that Git does not answer makes the baseline unavailable until
+  Git answers again, instead of showing the file as new.
+- `lense list` lists the configured sites when a checkout folder does not exist yet. `lense doctor`,
+  `init --check` and `init --ready` work in repositories whose Git file list is larger than 4 MiB.
+- A setup save keeps its lock for as long as it runs, so a second save cannot run beside a slow one. It asks Git
+  whether the personal configuration is tracked before it takes the lock, and its busy message names the lock file.
+- A Mirage ownership lock or setup save lock left by a killed process no longer blocks for ever when its process
+  number is reused. After 30 s, a waiter checks whether the process now using that number is the one that took the
+  lock, and takes the lock over when it is not. A lock held by a running Paqvilo command is never taken over,
+  whatever the system clock does: on Linux the holder is recognised by its process start in kernel ticks, on Windows
+  and macOS by a lock time that cannot fall before the holder's own start. Both locks record the operating system
+  and machine they were taken on: a lock taken elsewhere (for example in WSL while the command runs on Windows) is
+  never taken over, and the waiting command or the busy answer of a setup save names where it was taken.
+- When a folder refuses the file used to remove an abandoned Mirage ownership lock, or Windows keeps refusing to
+  remove the abandoned lock file, the command ends after 30 s with a message naming the files, instead of waiting
+  until it is interrupted or failing with a bare `EBUSY` error.
+- A Mirage ownership lock that names no process is taken over only after the waiting command has itself seen it
+  unchanged for 30 s, so a file server whose clock is behind cannot cause a live command's lock to be removed. When
+  several Mirage commands wait on the same abandoned lock, each takes it in turn.
+- When a lock file cannot be removed after its work, the command reports it once and keeps its result, and the same
+  process reuses that lock the next time it needs it.
+- A setup save in a folder that refuses new files says so, and a save lock whose record could not be written is
+  removed at once.
+- The Mirage ownership records are replaced whole by a rename, so a command reading them sees the old or the new
+  records. A records file that cannot be read or is not valid JSON stops the command with an error that names the
+  file and says how to recover; it is no longer read as empty.
+- A Mirage ownership lock is taken over as soon as the process it names has exited, and never while that process
+  runs under it. A lock still held after 30 s ends the command with
+  `The Mirage ownership records stayed locked by process <pid> for 30 s: <lock>. … If no Paqvilo command is running, remove that lock file and run the command again.`
+  A records file that stays read-only or open in another program, or a lock folder that refuses new files, also ends
+  the command after 30 s with a message that says what to change.
+- `mirage start` reuses the runtime it started with the same settings while that runtime's process lives, even when
+  its status answers late. It refuses the start, naming the PID and a stop command, when the status stays silent past
+  `--startup-timeout`, and launches a new runtime when the process has exited.
+- A baseline hook counts as finished when its output closes, so output written by a process the hook started is not
+  lost.
+- Changing operation modes or a custom API's registration no longer waits for the old plug-in runtime's cache folder
+  to be removed; closing the simulator waits for it. When another program keeps a file in that folder open,
+  `PLUGIN_CLR_CLEANUP_HELD` is reported after about two seconds and the removal is retried for up to 120 s.
+- An uploaded assembly's CLR runtime is released like any other: its folder is kept and reported when its host is not
+  verified stopped, and a failed removal is reported as `CLR runtime cache cleanup failed: <code>`.
+- CreateMultiple and UpsertMultiple no longer scan the written targets once per row, so their work stays linear in
+  the number of targets.
+- Source files are read in code-unit name order on every file system and in every locale. For names that differ only
+  in case or punctuation, which control or record wins can change.
+- Lense sorts names with English collation whatever the system locale: agent session lists, `lense doctor`
+  diagnostics, the setup preview, the panel and Dataverse provisioning and data output keep one order on every
+  machine.
+- Lense's Git commands honour `GIT_CEILING_DIRECTORIES`.
+- Persona runtimes use the simulator's own `shutdownBodyIdleMs`, so closing a simulator with a stalled request body on
+  a persona runtime waits only as long as that option says.
+- A server-logic run whose answer is already on its way when its time limit falls due returns that answer; the limit
+  ends only a run that has not answered.
+- A synchronous webhook post or Service Bus send made from the plug-in pipeline counts its time limit from when the
+  synchronous I/O worker has started, so a slow worker start no longer fails the call. A worker whose code cannot load
+  fails the call at once with 502 `SyncIoWorkerFailed`; a worker that never reports its start fails it after 120 s.
+- Mirage ends a CLR host only through the process it started, never by process ID, so a process that later reuses a
+  host's ID is never signalled.
+- Parity captures retry a step only when the browser reports that the page's execution context was lost (destroyed,
+  not found, or its target navigated or closed). A crashed page or another navigation failure fails the step. A page
+  evaluation that does not finish is reported as `PAGE_UNRESPONSIVE`.
 
 ### Upgrade notes
 
 - Tracing is on at `summary`. Set `mirage.trace.level: off` to turn it off.
+- Source and implementation fingerprints change once, because source files are read in code-unit name order. Saved
+  native network baseline observations report `NATIVE_BASELINE_SOURCE_CHANGED` and must be captured again; saved
+  verify and acceptance evidence shows as stale, as after any upgrade.
 - The old `_sim` addresses `#dashboard`, `#logs`, `#audit`, `#trace` and `#evidence` redirect to Monitor with their
   filters; `#overview` opens Home.
 - The CLI now rejects extra or misplaced arguments that it used to ignore. Check scripts that call it.
@@ -389,9 +485,9 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 ### Contributor validation
 
 - `npm run validate` and pre-push reproduce the hosted checks: CodeQL with the pinned bundle, Windows browser
-  lanes in both Chromium and Edge, the hosted runner's `TEMP` alias and an empty npm cache, and the test-kind check
-  against the default branch. Lanes run concurrently (`paqvilo.ci.jobs` or `PAQ_CI_JOBS`), and changed test files run
-  twice more.
+  lanes in both Chromium and Edge, the hosted runner's `TEMP` alias and an empty npm cache, the test-kind check
+  against the default branch, and the unit lanes under Node coverage as the SonarQube lanes run them. Lanes run
+  concurrently (`paqvilo.ci.jobs` or `PAQ_CI_JOBS`), and changed test files run twice more.
 - Every new or changed test declares its kind with `// @test-kind`. See [test kinds](test-kinds.md).
 - SonarQube analyzes branches and pull requests. It is not a required check.
 - The test suite was audited: sleeps and wall-clock assertions were replaced by real signals, and slow hosts no
@@ -406,6 +502,23 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
   inside a `parity` test body as a change to it, reads runner modules that call `test(`, and runs from the staged
   snapshot. Pre-push accepts annotated tags, and `check:workflows` has pinned actionlint and ShellCheck assets
   for macOS and Linux arm64.
+- `check:workflows` downloads actionlint and ShellCheck through the GitHub releases API. In CI the step that
+  provisions them is the only `run` step whose environment receives the job token (actions with a `token` input
+  receive it through that input's default); the token is sent to `api.github.com` only, and the verified
+  archives are cached under a key derived from their pins alone and saved right after provisioning, so a run whose
+  checks fail still keeps them. A throttled download honours a `retry-after` in seconds and waits for an exhausted
+  rate limit to reset, a 429 with neither waits one minute, and any other 403 fails at once; a wait over 60 s or a
+  third throttled reply fails naming the host, status and rate-limit headers. CI caches the public ecosystem fixture
+  and CLR SDK reference archives the same way, keyed by their pins and saved right after preparation, in the lanes
+  that use them; preparation re-verifies each restored archive before it extracts it and downloads one that fails
+  verification again. A download that GitHub rejects with 401 because of the token is repeated once without it.
+- Local unit lanes write their coverage data under `.paqvilo/ci/runs/` and remove it when each command ends; a lane
+  needs about 2 GB of free disk space while it runs.
+- Local validation approximates the SonarQube rule profile on changed JavaScript files (`npm run check:sonar-rules`)
+  and fails only on findings a change adds. Rules whose ESLint version reports what the server does not, such as
+  `assertions-in-tests` on a test that asserts through a helper function, are left out.
+- `scripts/runtime-performance.mjs` aborts a request at its budget only in strict mode; recording mode measures each
+  request to its end and reports a missed budget as a finding.
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

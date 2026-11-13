@@ -4,7 +4,8 @@
 // own entries); one test uses a receiver in the test's own process, which the asynchronous pipeline (store.create) awaits.
 import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import http, { createServer } from 'node:http';
+import https from 'node:https';
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -566,7 +567,10 @@ describe('loopback guard by resolved address', () => {
 
   // @test-kind contract+security: the loopback restriction checks the resolved address.
   it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
+    // Each refusal settles in microtasks only (the injected lookup answers at once), so no other test's I/O can run
+    // between these spies and their assertions. A DNS-checked name connects through http.request, not fetch.
     const fetchSpy = mock.method(globalThis, 'fetch');
+    const requestSpies = [mock.method(http, 'request'), mock.method(https, 'request')];
     const lookups = [];
     const lookup = async (host, options) => {
       lookups.push([host, options]);
@@ -584,6 +588,11 @@ describe('loopback guard by resolved address', () => {
     ];
     await assert.rejects(loopbackFetch('http://fx.localhost:1/', { lookup: mixed }), /Endpoint unavailable/);
     assert.equal(fetchSpy.mock.callCount(), 0);
+    assert.deepEqual(
+      requestSpies.map((spy) => spy.mock.callCount()),
+      [0, 0],
+      'no connection was opened',
+    );
   });
 });
 

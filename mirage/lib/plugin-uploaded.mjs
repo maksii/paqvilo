@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data-error.mjs';
 import { inspectPackage } from './clr-assembly-reader.mjs';
-import { buildClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { buildClrRuntime, releaseClrRuntime } from './plugin-clr.mjs';
 import { organizationRecord } from './organization-context.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
@@ -149,6 +149,7 @@ export function uploadedClrRuntime({ store, item, runtimes, uploads = {}, diagno
       current.descriptor.typeName === item.typeName
     )
       return current;
+    // The plug-in pipeline runs synchronously: the old directory's removal continues; the map's owner awaits it at close.
     if (current?.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
     const shared = [...runtimes.values()].find(
       (runtime) => runtime.uploaded && sameSource(runtime, assembly, source.packageContent),
@@ -223,22 +224,23 @@ function prepareUploaded({ store, item, assembly, packageContent, uploads }) {
   return runtime;
 }
 
-/** Closes a step's uploaded runtime; its prepared directory goes once no other step shares it. */
-export function releaseUploadedRuntime(runtimes, stepId, diagnostic = () => {}) {
+/** Closes a step's uploaded runtime as releaseClrRuntime closes any prepared runtime: its prepared directory goes once no
+ * other step shares it and its hosts are verified stopped; otherwise it is kept and PLUGIN_CLR_CLEANUP is reported.
+ * Returns releaseClrRuntime's promise; `runtimes` owns it, so its owner's close awaits it (plugin-clr.mjs settleClrReleases). */
+export function releaseUploadedRuntime(runtimes, stepId, diagnostic = () => {}, { closeHostPool } = {}) {
   const runtime = runtimes.get(stepId);
-  if (!runtime?.uploaded) return;
+  if (!runtime?.uploaded) return Promise.resolve();
   runtimes.delete(stepId);
-  if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) return;
-  closeClrHostPool({ runtime, diagnostic });
-  try {
-    fs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-  } catch (cause) {
-    diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'Uploaded assembly cache cleanup failed: ' + cause.code });
-  }
+  return releaseClrRuntime(runtime, {
+    liveRuntimes: [...runtimes.values()],
+    diagnostic,
+    closeHostPool,
+    owner: runtimes,
+  });
 }
 
 /** Closes the uploaded runtimes whose step (or custom API main operation) is gone, no longer uploaded, or whose stored
- * content changed. */
+ * content changed. Synchronous (the plug-in catalogue calls it): the removals continue (settleClrReleases). */
 export function releaseStaleUploadedRuntimes(store, runtimes, steps, diagnostic = () => {}) {
   const byId = new Map(steps.map((step) => [step.id, step]));
   /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const [id, runtime] of [...runtimes]) {

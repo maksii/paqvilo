@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -17,7 +18,7 @@ async function unit(t, definition) {
   const clock = fixedClock(),
     store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store, scheduler, clock });
   const runs = createHostFlowRuns({
     store,
@@ -27,7 +28,7 @@ async function unit(t, definition) {
     flowOf: (id) => (id === FLOW ? { definition, mode: 'exported', connectors } : null),
   });
   runs.attach({});
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   return {
     runs,
     scheduler,

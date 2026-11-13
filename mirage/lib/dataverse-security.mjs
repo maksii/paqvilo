@@ -3,6 +3,7 @@ import { organizationRecord } from './organization-context.mjs';
 // and the depth-based checks the Dataverse layer runs before it calls the store.
 import { hash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { countWork } from './work-counter.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { guidKey } from './dataverse-values.mjs';
@@ -1408,8 +1409,10 @@ const revisionOf = (store, tables) =>
     : store.dataRevision();
 
 function buildShares(store) {
-  const shares = new Map();
-  for (const s of store.tableRows('principalobjectaccess')) {
+  const shares = new Map(),
+    rows = store.tableRows('principalobjectaccess');
+  countWork(store, 'rowsVisited', rows.length);
+  for (const s of rows) {
     const k = key(s.objectid);
     if (!shares.has(k)) shares.set(k, []);
     // Inherited (cascaded) access counts beside the direct share.

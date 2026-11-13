@@ -1,5 +1,6 @@
 // Host-level regressions for the portal surfaces: document uploads against the organization's
 // blocked extensions, the ServerLogic/* site settings and the InvokeCustomApi principal, through a running simulator.
+// @test-kind unproven: local model of the portal host surfaces (blocked attachments, ServerLogic settings, custom API principal); no native capture backs these assertions
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -28,7 +29,11 @@ const siteSettings = (settings) =>
     .map(([name, value], index) => `- adx_sitesettingid: s${index}\n  adx_name: ${name}\n  adx_value: "${value}"`)
     .join('\n') || '[]';
 
-async function host(t, { files = {}, settings = [], initial = {}, authorization = 0 }) {
+// The default of ServerLogic/TimeoutInSeconds: a server-logic run here is bound by the site's platform limit, not the
+// 5 s local default, so host load never decides a result.
+const PLATFORM_SERVER_LOGIC_LIMIT_MS = 120_000;
+
+async function host(t, { files = {}, settings = [], initial = {}, authorization = 0, options = {} }) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
@@ -98,6 +103,8 @@ async function host(t, { files = {}, settings = [], initial = {}, authorization 
     port: 0,
     watch: false,
     initial: state,
+    serverLogicTimeoutMs: PLATFORM_SERVER_LOGIC_LIMIT_MS,
+    ...options,
   });
   ownedFixture(t).add(() => sim.close());
   return sim;
@@ -136,11 +143,13 @@ async function serverLogicHost(
     permissions = [],
     files = {},
     authorization = 0,
+    options = {},
   } = {},
 ) {
   const sim = await host(t, {
     settings,
     authorization,
+    options,
     files: {
       'portal/sample.serverlogic.yml': `adx_serverlogicid: sample\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${ROLE}`,
       'portal/sample.js': logic,
@@ -171,7 +180,7 @@ async function serverLogicHost(
   const body = await response.json();
   const codes = (sim.state().diagnostics ?? []).map((entry) => entry.code);
   const details = JSON.stringify({ body, codes });
-  assert.equal(response.status, expectedStatus, details);
+  if (expectedStatus !== null) assert.equal(response.status, expectedStatus, details);
   if (expectedStatus === 200) assert.equal(typeof body.data, 'string', details);
   return {
     sim,
@@ -236,6 +245,50 @@ test('the site application user is provisioned before exported server logic runs
   );
 });
 
+// @test-kind contract: the simulator option serverLogicTimeoutMs sets the local server-logic limit up to ServerLogic/TimeoutInSeconds; unset it is 5 s
+test('serverLogicTimeoutMs raises the local server-logic limit up to ServerLogic/TimeoutInSeconds', async (t) => {
+  const bound = async (serverLogicTimeoutMs) => {
+    const { codes, sim } = await serverLogicHost(t, {
+      settings: [['ServerLogic/TimeoutInSeconds', '30']],
+      logic: "function get(){ return '{}'; }",
+      options: { serverLogicTimeoutMs },
+    });
+    assert.equal(codes.includes('SERVER_LOGIC_TIMEOUT_LOCAL'), serverLogicTimeoutMs === undefined);
+    return sim.state().diagnostics.find((entry) => entry.code === 'SERVER_LOGIC_TIMEOUT_LOCAL')?.message ?? null;
+  };
+  assert.match(await bound(undefined), /ServerLogic\/TimeoutInSeconds is 30 s; the local run is bounded at 5000 ms\./);
+  assert.equal(await bound(30_000), null);
+  assert.equal(await bound(PLATFORM_SERVER_LOGIC_LIMIT_MS), null, 'a larger limit is capped at the site setting');
+});
+
+// @test-kind contract: the applied server-logic limit is the option capped at ServerLogic/TimeoutInSeconds
+test('a serverLogicTimeoutMs above ServerLogic/TimeoutInSeconds runs exported code under the site limit', async (t) => {
+  // Either limit may end the run: the worker's script limit (501), or the host's limit (504) when the worker thread is
+  // descheduled past its own. Both name the bound they applied, so the cap is read from the answer, not from a clock.
+  const { status, body } = await serverLogicHost(t, {
+    settings: [['ServerLogic/TimeoutInSeconds', '1']],
+    logic: 'function get(){ for(;;){} }',
+    options: { serverLogicTimeoutMs: 10_000 },
+    expectedStatus: null,
+  });
+  const capped = {
+    501: 'Script execution timed out after 1000ms',
+    504: 'Server-logic execution exceeded its local time limit of 1000 ms.',
+  };
+  assert.ok(Object.hasOwn(capped, status), `unexpected status ${status}: ${JSON.stringify(body)}`);
+  assert.equal(body.error.message, capped[status]);
+});
+
+// @test-kind contract: createSimulator refuses a serverLogicTimeoutMs that is not a finite number greater than 0
+test('createSimulator refuses a serverLogicTimeoutMs that is not a finite number greater than 0', async () => {
+  for (const serverLogicTimeoutMs of [0, -1, Number.NaN, Infinity, '5000', null])
+    await assert.rejects(
+      createSimulator({ serverLogicTimeoutMs, watch: false }),
+      { name: 'TypeError', message: /^serverLogicTimeoutMs must be a finite number/ },
+      String(serverLogicTimeoutMs),
+    );
+});
+
 // Under enhanced authorization Dataverse operations run on behalf of the site user by impersonation, not as the
 // application user. x_Gated needs a privilege only System Administrator holds.
 test('under enhanced authorization InvokeCustomApi runs as the mapped site user and the bound row needs table-permission read', async (t) => {
@@ -256,6 +309,7 @@ test('under enhanced authorization InvokeCustomApi runs as the mapped site user 
   assert.equal((await run(3, false))[1], 403);
 });
 
+// @test-kind contract: the MODERN_LIST_FEATURES_UNSERVED requirement row is a Paqvilo diagnostic
 test('a modern list with actions the local list does not serve is a blocking modern-list requirement row', () => {
   const lists = [
     {

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +32,7 @@ const report = {
 };
 async function fixture(t, withPanel = false) {
   const context = await browser.newContext({ viewport: { width: 1420, height: 1050 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [],
     opened = [];
@@ -67,7 +68,7 @@ async function fixture(t, withPanel = false) {
     });
     const controller = enablePanel(fake.context, session);
     state = { ...controller.stateFor(tab.page), inspection: state.inspection, ui: state.ui };
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await controller.dispose();
       source.cleanup();
     });

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -45,7 +46,7 @@ async function organization(t) {
     }),
     extensions: await sourceOrganizationExtensions(),
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   const principal = organizationPrincipalContext(store, core.principals.byObjectId(ADMIN));
   const webApi = (method, suffix, body) => {
     const url = new URL(`http://organization.example.test/api/data/v9.2/${suffix}`);
@@ -80,7 +81,7 @@ test('the organization clock and ids reach the store, the API and the scheduler'
     settings: dataverseSettings({ enabled: false }),
     extensions: [],
   });
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   assert.equal(second.api.scheduler, manual);
   assert.equal(other.scheduler, manual);
 });

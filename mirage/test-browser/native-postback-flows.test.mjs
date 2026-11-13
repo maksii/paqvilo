@@ -9,7 +9,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ID = '00000000-0000-4000-8000-000000000001';
 
@@ -107,7 +107,7 @@ async function fixture(t) {
     },
   });
   const context = await browser.newContext();
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context.close();
     await app.close();
     await fs.rm(root, { recursive: true, force: true });

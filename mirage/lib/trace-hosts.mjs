@@ -298,18 +298,21 @@ function recordBody(traces, span, response, limit) {
   function cancelled() {
     return finish(capturedBody(chunks, size, limit, type), 'cancelled');
   }
+  // Both handlers return the clone's release, so it joins the read chain that pump() ends with a catch.
   function onRead({ done, value }) {
-    if (settled) return;
+    if (settled) return undefined;
     if (!done) {
       chunks.push(value);
       size += value.byteLength;
     }
-    if (done || size > limit) finish(capturedBody(chunks, size, limit, type));
-    else pump();
+    if (done || size > limit) return finish(capturedBody(chunks, size, limit, type));
+    pump();
+    return undefined;
   }
   function onFailure(error) {
-    if (error?.name === 'AbortError') cancelled();
-    else finish({ body: `[unreadable body: ${auditText(error?.message ?? error, 200)}]` });
+    return error?.name === 'AbortError'
+      ? cancelled()
+      : finish({ body: `[unreadable body: ${auditText(error?.message ?? error, 200)}]` });
   }
   // A recording failure never reaches the caller, and never escapes as an unhandled rejection.
   function pump() {

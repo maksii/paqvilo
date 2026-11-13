@@ -1,12 +1,17 @@
 // @test-kind contract: the source watcher and its reloads are Paqvilo CLI runtime behaviour, checked from their events.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { watchSources, trackOnlineState } from '../lense/commands/dev.mjs';
-import { trackArmedTimers } from './helpers/startup-page.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
+
+const DEV_MODULE = new URL('../lense/commands/dev.mjs', import.meta.url).href;
 
 // OS file-system events and watcher readiness have no latency bound on a loaded machine. This only reports a hung
 // watcher; ordering and counts are asserted from the events themselves.
@@ -132,7 +137,7 @@ test('saves during a reload are shown by one following reload, never an overlapp
   const seen = [];
   session.on('refreshed', ({ files }) => seen.push(files));
   const watcher = watchSources(session, { pages: () => [page] }, { log: () => {} });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     releases.forEach((release) => release());
     await watcher.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -689,11 +694,45 @@ test('the 200 ms quiet period after the last refresh still applies', async (t) =
   assert.equal(settled, true);
 });
 
+// Records the timers whenIdle's own poll (`check` in dev.mjs) arms, until they fire or are cleared. The real file
+// watcher, and the save flush a file-system event starts, arm timers through the same global; they are not counted.
+// Call it after t.mock.timers.enable, which replaces the global it wraps.
+function trackIdlePollTimers() {
+  const armed = new Set();
+  let seen = 0;
+  const schedule = globalThis.setTimeout,
+    cancel = globalThis.clearTimeout;
+  globalThis.setTimeout = function recordIdlePoll(callback, ms, ...args) {
+    if (callback?.name !== 'check' || !calledFrom(DEV_MODULE, import.meta.url)) return schedule(callback, ms, ...args);
+    seen++;
+    const handle = schedule(() => {
+      armed.delete(handle);
+      callback(...args);
+    }, ms);
+    armed.add(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    armed.delete(handle);
+    cancel(handle);
+  };
+  return {
+    armed,
+    get seen() {
+      return seen;
+    },
+    restore() {
+      globalThis.setTimeout = schedule;
+      globalThis.clearTimeout = cancel;
+    },
+  };
+}
+
 test('whenIdle leaves no timer armed after it resolves, rejects, or the watcher closes', async (t) => {
   const { file, releases, watcher } = watcherWithHeldReloads(t);
   await watcher.ready;
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
-  const timers = trackArmedTimers();
+  const timers = trackIdlePollTimers();
   try {
     watcher.emit('all', 'change', file);
     await advanceMock(t, 120);
@@ -712,6 +751,7 @@ test('whenIdle leaves no timer armed after it resolves, rejects, or the watcher 
     await advanceMock(t, 60_100);
     await rejected;
     assert.ok(failure, 'the silence guard rejects');
+    assert.ok(timers.seen > 0, 'the recorder saw the poll timers whenIdle armed while it waited');
     assert.equal(timers.armed.size, 0, 'reject leaves no timer');
 
     watcher.emit('all', 'change', file);
@@ -724,4 +764,96 @@ test('whenIdle leaves no timer armed after it resolves, rejects, or the watcher 
   } finally {
     timers.restore();
   }
+});
+
+/**
+ * Git answers the repository lookup (`rev-parse --git-dir …`) with `answers` in order; the fallback poll is recorded
+ * instead of armed, so the test runs each repository check itself.
+ */
+function scriptedRepository(t, answers) {
+  const lookups = [];
+  const replaced = t.mock.method(childProcess, 'execFile', (_file, args, _options, callback) => {
+    assert.ok(args.includes('--git-dir'), args.join(' '));
+    const answer = answers[lookups.length];
+    lookups.push(answer);
+    queueMicrotask(() => (answer instanceof Error ? callback(answer) : callback(null, answer)));
+    return {};
+  });
+  syncBuiltinESMExports();
+  ownedFixture(t).add(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const polls = [];
+  const arm = globalThis.setInterval,
+    disarm = globalThis.clearInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, delay, ...rest) => {
+    if (!calledFrom(DEV_MODULE, import.meta.url)) return arm(callback, delay, ...rest);
+    const poll = { callback, delay, cleared: false, unref: () => poll };
+    polls.push(poll);
+    return poll;
+  });
+  t.mock.method(globalThis, 'clearInterval', (handle) => {
+    if (polls.includes(handle)) handle.cleared = true;
+    else disarm(handle);
+  });
+  return { lookups, polls };
+}
+
+const silentGit = () => Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null });
+const settled = async (done) => {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setImmediate(resolve));
+};
+
+test('a folder Git first does not answer for and then answers is no repository stops polling HEAD', async (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-norepo-')));
+  ownedFixture(t).remove(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { lookups, polls } = scriptedRepository(t, [silentGit(), Object.assign(new Error('exit 128'), { code: 128 })]);
+  let heads = 0;
+  const session = Object.assign(new EventEmitter(), {
+    cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
+    refreshHead: async () => {
+      heads++;
+      return null;
+    },
+  });
+  const logs = [];
+  const watcher = watchSources(session, { pages: () => [] }, { log: (line) => logs.push(line) });
+  ownedFixture(t).add(() => watcher.close());
+  await settled(() => polls.length === 1);
+  assert.equal(polls[0]?.delay, 2000, 'without an answer HEAD is polled');
+  polls[0].callback();
+  await settled(() => polls[0].cleared);
+  assert.equal(lookups.length, 2, 'the repository check asked where the repository lives again');
+  assert.equal(polls[0].cleared, true, 'nothing is left to poll outside a repository');
+  assert.equal(polls.length, 1);
+  assert.equal(heads, 0, 'HEAD is not asked for outside a repository');
+  assert.equal(logs.filter((line) => /WARN {3}Git did not answer/.test(line)).length, 1, logs.join('\n'));
+});
+
+test('a repository Git first does not answer for is watched once Git answers where it lives', async (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-late-')));
+  ownedFixture(t).remove(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, '.git'));
+  const { lookups, polls } = scriptedRepository(t, [silentGit(), `.git\n.git\n${dir}\n`]);
+  let heads = 0;
+  const session = Object.assign(new EventEmitter(), {
+    cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
+    refreshHead: async () => {
+      heads++;
+      return null;
+    },
+  });
+  const watcher = watchSources(session, { pages: () => [] }, { log: () => {} });
+  ownedFixture(t).add(() => watcher.close());
+  await settled(() => polls.length === 1);
+  polls[0].callback();
+  await settled(() => polls.length === 2);
+  assert.equal(lookups.length, 2);
+  assert.equal(polls[0].cleared, true);
+  assert.equal(polls[1].delay, 15_000, 'the watched repository is polled only as a fallback');
+  await settled(() => heads > 0);
+  assert.ok(heads > 0, 'HEAD is followed in the repository');
+  await watcher.close();
+  assert.equal(polls[1].cleared, true, 'close cancels the fallback poll');
 });

@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
-import { downloadVerifiedArchive } from './verified-download.mjs';
+import { ensureVerifiedArchive } from './verified-download.mjs';
 import { acquireCiWorkspaceLease, assertOwnedCiState } from './ci-workspace-lease.mjs';
 import { npmCliPath } from './npm-cli.mjs';
 
@@ -17,6 +17,7 @@ const SDK_VERSION = '9.0.2.60'; // NOSONAR: version string or loopback address, 
 const SDK_SHA256 = '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f';
 // SHA-256 of lib/net462/Microsoft.Xrm.Sdk.dll inside that verified public archive.
 const SDK_DLL_SHA256 = 'f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9';
+const SDK_URL = `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${SDK_VERSION}/microsoft.crmsdk.coreassemblies.${SDK_VERSION}.nupkg`;
 const defaults = { cwd: root, stdio: 'inherit', windowsHide: true };
 const seconds = (start) => `${((performance.now() - start) / 1000).toFixed(1)} s`;
 function execute(command, args, options = {}) {
@@ -76,15 +77,7 @@ async function clrFixture() {
   // Re-verify the archive even on a warm local run; the fixture is never taken from a portal export.
   fs.mkdirSync(directory, { recursive: true });
   const archive = path.join(directory, 'sdk.zip');
-  if (!fs.existsSync(archive)) {
-    await downloadVerifiedArchive(
-      `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${SDK_VERSION}/microsoft.crmsdk.coreassemblies.${SDK_VERSION}.nupkg`,
-      archive,
-      SDK_SHA256,
-    );
-  }
-  if (createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== SDK_SHA256)
-    throw new Error('SDK fixture archive digest mismatch.');
+  await ensureVerifiedArchive(SDK_URL, archive, SDK_SHA256);
   let validSdk = false;
   try {
     verifyClrSdk(sdk);
@@ -152,6 +145,17 @@ const ECOSYSTEM = [
   ],
 ];
 const ecosystemRoot = () => path.join(root, '.paqvilo/ci/ecosystem');
+const ecosystemUrl = (repository, commit) => `https://codeload.github.com/${repository}/tar.gz/${commit}`;
+
+/** CI cache keys of the pinned fixture archives: a SHA-256 over each set's URLs and digests, so only a pin change
+ * changes a key, and any other edit of this script keeps the caches. */
+export function fixtureCacheKeys() {
+  const key = (pins) => createHash('sha256').update(JSON.stringify(pins)).digest('hex');
+  return {
+    ecosystem_key: key(ECOSYSTEM.map(([repository, commit, digest]) => [ecosystemUrl(repository, commit), digest])),
+    sdk_reference_key: key([[SDK_URL, SDK_SHA256]]),
+  };
+}
 // Windows ships bsdtar in System32; another tar earlier on PATH (such as MSYS) misreads drive paths.
 const tar = () =>
   process.platform === 'win32'
@@ -164,13 +168,10 @@ async function ecosystemFixtures() {
   for (const [repository, commit, digest, members] of ECOSYSTEM) {
     const name = repository.replace('/', '__');
     const archive = path.join(directory, name + '.tar.gz');
-    // A persistent runner keeps the archive; a changed pin replaces it.
-    if (fs.existsSync(archive) && createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== digest)
-      fs.rmSync(archive);
-    if (!fs.existsSync(archive))
-      await downloadVerifiedArchive(`https://codeload.github.com/${repository}/tar.gz/${commit}`, archive, digest, {
-        maxBytes: 256 * 1024 * 1024,
-      });
+    // A persistent runner or a restored cache keeps the archive; one that does not match its pin is downloaded again.
+    await ensureVerifiedArchive(ecosystemUrl(repository, commit), archive, digest, {
+      maxBytes: 256 * 1024 * 1024,
+    });
     // Extract afresh from the verified archive so no earlier run's edits survive.
     const target = path.join(directory, name);
     fs.rmSync(target, { recursive: true, force: true });
@@ -224,7 +225,7 @@ function runPackageTests(directory, script, shard) {
   execute(process.execPath, ['--test', ...flags, ...shardFiles(files, shard)], { cwd: path.join(root, directory) });
 }
 
-const needsEcosystem = (suite, unit, shard) =>
+export const needsEcosystem = (suite, unit, shard) =>
   unit &&
   ['mirage', 'all'].includes(suite) &&
   (!shard || shardFiles(packageTests('mirage', 'test').files, shard).includes(path.normalize(ECOSYSTEM_TEST)));
@@ -289,12 +290,12 @@ export function requireExampleBrowserDependency(project, checkout = root) {
     );
 }
 
+const PREPARE_SUITES = new Set(['lense', 'mirage', 'examples', 'all', 'quality', 'sdk']);
 export async function prepareLane(
   suite,
   { browser = false, unit = true, quality = false, sdk = false, shard = null } = {},
 ) {
-  if (!['lense', 'mirage', 'examples', 'all', 'quality', 'sdk'].includes(suite))
-    throw new Error(`Unknown CI suite: ${suite}`);
+  if (!PREPARE_SUITES.has(suite)) throw new Error(`Unknown CI suite: ${suite}`);
   if (!['lense', 'quality'].includes(suite)) requireDotnet();
   quality ||= suite === 'quality';
   for (const project of [
@@ -641,7 +642,9 @@ function verifyBrowserLane(suite, shard) {
 
 /**
  * The independent steps of a scoped or full run, longest first so a parallel run ends on short steps. Each lane is
- * its own `ci.mjs verify --suite` process, so it runs exactly as the matching hosted job does.
+ * its own `ci.mjs verify --suite` process, so it runs exactly as the matching hosted job does. Local unit lanes also
+ * run under Node coverage, as the hosted SonarQube lanes do (`coverage: true`: runSteps gives each such command its own
+ * NODE_V8_COVERAGE directory); hosted lanes keep the plain mode.
  */
 export function validationSteps(
   scope,
@@ -650,9 +653,11 @@ export function validationSteps(
   platform = process.platform,
 ) {
   const npmRun = (script) => [npmCliPath(), 'run', script];
+  const coverage = env.GITHUB_ACTIONS !== 'true';
   const verify = (suite, kind, channel = 'chromium') => ({
-    args: ['scripts/ci.mjs', 'verify', '--suite', suite, ...(kind ? [`--${kind}`] : []), '--prepared'],
+    args: ['scripts/ci.mjs', 'verify', '--suite', suite, `--${kind}`, '--prepared'],
     env: { PAQ_CI_BROWSER: channel },
+    ...(kind === 'unit' && coverage ? { coverage } : {}),
   });
   const channels = browser ? localBrowserChannels(platform) : [];
   const steps = [];
@@ -664,8 +669,12 @@ export function validationSteps(
   // request targets the default branch, so local validation compares with it, not only with the staged index.
   if (env.GITHUB_ACTIONS !== 'true')
     steps.push({ label: 'test kinds', commands: [['scripts/check-test-tags.mjs', '--base', base]] });
+  // The hosted SonarQube gate is a server that local validation cannot reach. Its rule profile is approximated on the
+  // files that differ from the same base, so new findings appear before a push; hosted CI keeps the server only.
+  if (env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'sonar rules', commands: [['scripts/sonar-rules.mjs', '--base', base]] });
   for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
-    appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify });
+    appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify, coverage });
   }
   // Example unit and browser tests share one installed project, so they stay in one ordered step.
   if (suites.includes('examples')) appendExampleSteps(steps, { unit, browser, channels, verify });
@@ -673,11 +682,14 @@ export function validationSteps(
   return steps;
 }
 
-function appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify }) {
+function appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify, coverage }) {
   if (unit)
     steps.push({
       label: `${suite} unit`,
-      commands: [verify(suite, 'unit'), ...changedTests(changed, repeat, suite)],
+      commands: [
+        verify(suite, 'unit'),
+        ...changedTests(changed, repeat, suite).map((command) => (coverage ? { ...command, coverage } : command)),
+      ],
     });
   for (const channel of channels)
     steps.push({
@@ -690,19 +702,14 @@ function appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verif
 }
 
 function appendExampleSteps(steps, { unit, browser, channels, verify }) {
-  let examplesLabel;
-  if (unit && browser) examplesLabel = 'examples';
-  else if (unit) examplesLabel = 'examples unit';
-  else examplesLabel = 'examples browser';
-  let examplesLane;
-  if (unit && browser) examplesLane = null;
-  else if (unit) examplesLane = 'unit';
-  else examplesLane = 'browser';
+  let label = 'examples';
+  if (!browser) label = 'examples unit';
+  else if (!unit) label = 'examples browser';
   steps.push({
-    label: examplesLabel,
+    label,
     commands: [
-      verify('examples', examplesLane),
-      ...channels.slice(1).map((channel) => verify('examples', 'browser', channel)),
+      ...(unit ? [verify('examples', 'unit')] : []),
+      ...channels.map((channel) => verify('examples', 'browser', channel)),
     ],
   });
 }
@@ -798,14 +805,21 @@ export function validationJobs(env = process.env, configured = gitConfig('paqvil
  * Runs every step, at most `jobs` at a time, so one pass reports every failure. With one job the output streams as
  * before; otherwise each step writes its own log, and a failed step's log tail is printed when it ends.
  */
-export async function runSteps(steps, jobs, { cwd = root, logs, cpus = availableParallelism() } = {}) {
+export async function runSteps(
+  steps,
+  jobs,
+  { cwd = root, logs, cpus = availableParallelism(), removeDirectory = removeCoverageDirectory } = {},
+) {
   const parallel = jobs > 1 && steps.length > 1;
+  const coverage = steps.some((step) => step.commands.some((command) => command.coverage));
+  if (coverage) removeLeftoverCoverage(assertOwnedCiState(cwd, 'runs'), removeDirectory);
   if (!logs) {
-    if (parallel) {
+    if (parallel || coverage) {
       const parent = assertOwnedCiState(cwd, 'runs');
       logs = path.join(fs.mkdtempSync(path.join(parent, `run-${process.pid}-`)), 'logs');
     } else logs = path.join(cwd, '.paqvilo/ci/runs/serial-logs');
   }
+  const run = path.dirname(logs);
   if (parallel) {
     fs.mkdirSync(logs, { recursive: true });
     console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
@@ -825,7 +839,7 @@ export async function runSteps(steps, jobs, { cwd = root, logs, cpus = available
       ...step,
       env: { PAQ_TEST_PROCESS_SLOTS: String(budget), ...step.env },
     };
-    const code = await executeStepCommands(boundedStep, output, cwd, logError);
+    const code = await executeStepCommands(boundedStep, output, cwd, logError, run, removeDirectory);
     reportStepResult(step, code, start, log, parallel, failed, timings);
   });
   if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);
@@ -868,13 +882,19 @@ function openStepLog(parallel, log) {
   return { output, logError };
 }
 
-async function executeStepCommands(step, output, cwd, logError) {
+async function executeStepCommands(step, output, cwd, logError, run, removeDirectory) {
   let code = 0;
   try {
     for (const command of step.commands) {
-      // A command is node arguments, or { args, env, cwd } for one lane's browser channel or package directory.
+      // A command is node arguments, or { args, env, cwd, coverage } for one lane's browser channel, package
+      // directory or coverage mode.
       const { args, env = {}, cwd: directory = cwd } = Array.isArray(command) ? { args: command } : command;
-      code = await spawnStepCommand(args, directory, { ...process.env, ...step.env, ...env }, output);
+      const environment = { ...process.env, ...step.env, ...env };
+      code = command.coverage
+        ? await withCoverageDirectory(run, environment, removeDirectory, () =>
+            spawnStepCommand(args, directory, environment, output),
+          )
+        : await spawnStepCommand(args, directory, environment, output);
       if (code !== 0) break;
     }
   } catch (error) {
@@ -891,6 +911,46 @@ async function executeStepCommands(step, output, cwd, logError) {
   }
   if (code === 0 && logError) code = logError.code ?? 'log error';
   return code;
+}
+
+/** Runs a command with NODE_V8_COVERAGE set to a new directory of its own under the run folder, never the caller's
+ * value, and removes that directory when the command ends, whatever its result. */
+async function withCoverageDirectory(run, environment, removeDirectory, command) {
+  fs.mkdirSync(run, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(run, 'v8-coverage-'));
+  try {
+    environment.NODE_V8_COVERAGE = directory;
+    return await command();
+  } finally {
+    removeCoverage(directory, removeDirectory);
+  }
+}
+
+function removeCoverageDirectory(directory) {
+  fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
+}
+
+/** A failed removal is reported and left to the next run; it never replaces the command's result. */
+function removeCoverage(directory, removeDirectory) {
+  try {
+    removeDirectory(directory);
+  } catch (error) {
+    console.log(
+      `[ci] Could not remove ${directory} (${error.code ?? error.message}); the next coverage run removes it.`,
+    );
+  }
+}
+
+/** Coverage directories of earlier runs under .paqvilo/ci/runs/<run>/: an interrupted run leaves its own, and a
+ * process that outlives its lane writes one again when it exits. The caller holds the checkout's validation lease,
+ * so no other run of this checkout is writing them. */
+function removeLeftoverCoverage(runs, removeDirectory) {
+  for (const run of fs.readdirSync(runs, { withFileTypes: true })) {
+    if (!run.isDirectory()) continue;
+    for (const entry of fs.readdirSync(path.join(runs, run.name), { withFileTypes: true }))
+      if (entry.isDirectory() && entry.name.startsWith('v8-coverage-'))
+        removeCoverage(path.join(runs, run.name, entry.name), removeDirectory);
+  }
 }
 
 function spawnStepCommand(args, cwd, env, output) {
@@ -1111,17 +1171,51 @@ function dispatchSpecialCommand(command, values) {
     installChromium();
     return { handled: true };
   }
-  if (command === 'prepare')
-    return {
-      handled: true,
-      result: prepareLane(values.quality ? 'quality' : (values.suite ?? 'all'), {
-        browser: values.quality ? false : !values.unit,
-        unit: values.quality ? false : !values.browser,
-        sdk: values.sdk,
-        shard: values.shard,
-      }),
-    };
+  if (command === 'prepare') return { handled: true, result: prepareLane(...prepareSelection(values)) };
   return { handled: false };
+}
+
+// The suite and lane options `prepare` runs for its parsed arguments.
+function prepareSelection(values) {
+  return [
+    values.quality ? 'quality' : (values.suite ?? 'all'),
+    {
+      browser: values.quality ? false : !values.unit,
+      unit: values.quality ? false : !values.browser,
+      sdk: values.sdk,
+      shard: values.shard,
+    },
+  ];
+}
+
+/**
+ * Which pinned fixture archives `prepare` downloads for the same arguments, decided by the same functions prepare
+ * uses. CI writes the answer to the step outputs so a lane restores and saves only the fixture caches it uses.
+ */
+export function laneFixtures(args, platform = process.platform) {
+  const values = parseRunArgs(args);
+  validateRunOptions('prepare', values);
+  const [suite, { unit, shard }] = prepareSelection(values);
+  if (!PREPARE_SUITES.has(suite)) throw new Error(`Unknown CI suite: ${suite}`);
+  return { ecosystem: needsEcosystem(suite, unit, shard), sdk_reference: requiresClrFixture(suite, platform) };
+}
+
+function parseRunArgs(args) {
+  return parseArgs({
+    args,
+    options: {
+      full: { type: 'boolean' },
+      suite: { type: 'string' },
+      base: { type: 'string' },
+      browser: { type: 'boolean' },
+      unit: { type: 'boolean' },
+      prepared: { type: 'boolean' },
+      quality: { type: 'boolean' },
+      sdk: { type: 'boolean' },
+      shard: { type: 'string' },
+    },
+    strict: true,
+  }).values;
 }
 
 function selectVerificationScope(suite, full, values) {
@@ -1306,21 +1400,7 @@ async function runMain() {
   const [command, ...args] = process.argv.slice(2);
   const receiptFile = path.join(assertOwnedCiState(root, 'runs'), 'verification.json');
   const receipt = ['verify', 'sdk'].includes(command) ? consumeVerificationReceipt(receiptFile) : undefined;
-  const { values } = parseArgs({
-    args,
-    options: {
-      full: { type: 'boolean' },
-      suite: { type: 'string' },
-      base: { type: 'string' },
-      browser: { type: 'boolean' },
-      unit: { type: 'boolean' },
-      prepared: { type: 'boolean' },
-      quality: { type: 'boolean' },
-      sdk: { type: 'boolean' },
-      shard: { type: 'string' },
-    },
-    strict: true,
-  });
+  const values = parseRunArgs(args);
   validateRunOptions(command, values);
   if (['sdk', 'sdk-prepare', 'browser'].includes(command) && Object.values(values).some(Boolean)) {
     if (command === 'sdk') throw new Error('The SDK gate command takes no options.');
@@ -1344,6 +1424,15 @@ async function runMain() {
 }
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  // Read-only: answers without the workspace lease, before any dependency is installed.
+  if (command === 'fixtures') {
+    const lines = Object.entries({ ...laneFixtures(args), ...fixtureCacheKeys() })
+      .map(([name, value]) => `${name}=${value}\n`)
+      .join('');
+    process.stdout.write(lines);
+    if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, lines);
+    return;
+  }
   const inherit =
     command === 'sdk' || (command === 'verify' && args.includes('--prepared') && !args.includes('--full'));
   const release = await acquireCiWorkspaceLease(root, process.env, { inherit });

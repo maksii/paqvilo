@@ -3,7 +3,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
-import { drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } from '../acceptance-api.mjs';
 
 // These settles are expected to succeed. The bound is longer than the runner's hang guard, so it never decides a
@@ -56,7 +56,7 @@ after(() =>
 
 async function fixture(t) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   return { origin, context, page };
 }
@@ -93,7 +93,7 @@ function observerClock() {
 test('a detached iframe read needs lifecycle evidence at failure time', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   const childRead = page.waitForRequest((request) => request.url().endsWith('/pending-child'));
   await page.evaluate(() => {
@@ -120,7 +120,7 @@ test('a detached iframe read needs lifecycle evidence at failure time', async (t
 test('a replaced postback document separates still-pending reads without claiming completion', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   const read = page.waitForRequest((request) => request.url().endsWith('/pending-read'));
   await page.evaluate(() => {
@@ -144,7 +144,7 @@ test('a replaced postback document separates still-pending reads without claimin
 test('same-document history and fragments leave pending reads visible and bounded', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   await page.evaluate(() => {
     fetch('/pending?token=secret').catch(() => {});
@@ -163,7 +163,7 @@ test('same-document history and fragments leave pending reads visible and bounde
 test('failed live reads and authored aborts stay failed after unrelated navigation', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   const failed = ['/reset', '/pending-abort'].map((path) =>
     page.waitForEvent('requestfailed', (request) => request.url().endsWith(path)),
@@ -190,7 +190,7 @@ test('failed live reads and authored aborts stay failed after unrelated navigati
 test('cancelled and failed writes remain failures, including owned-background lookalikes', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   const observed = [
     page.waitForEvent('requestfailed', (request) => request.url().endsWith('/reset')),
@@ -214,7 +214,7 @@ test('cancelled and failed writes remain failures, including owned-background lo
 test('context observer attaches new pages, excludes only owned reads and disposes without closing pages', async (t) => {
   const { origin, context, page } = await fixture(t);
   const observer = await observeContextLifecycle(context, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   const second = await context.newPage();
   await observer.ready();
   await Promise.all([page.goto(origin), second.goto(origin)]);
@@ -233,7 +233,7 @@ test('context observer attaches new pages, excludes only owned reads and dispose
 test('observation overflow fails closed and disposing cannot report successful settling', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin, maxRecords: 1 });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   await page.evaluate(async () => {
     await fetch('/other');
@@ -248,7 +248,7 @@ test('observation overflow fails closed and disposing cannot report successful s
 test('a streaming HTTP error stays failed when its document is replaced', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   await page.evaluate(async () => {
     await fetch('/stream-error').catch(() => {});
@@ -265,7 +265,7 @@ test('a page created during context settling joins the same bounded observation'
   const { origin, context, page } = await fixture(t);
   const clock = observerClock();
   const observer = await observeContextLifecycle(context, { origin, clock });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   t.after(releaseHeldReads);
   await page.goto(origin);
   const held = page.waitForRequest((request) => request.url().endsWith('/held-read'));
@@ -308,7 +308,7 @@ test('a page created during context settling joins the same bounded observation'
 test('nested frame replacement retires predecessor reads and preserves replacement work', async (t) => {
   const { origin, page } = await fixture(t);
   const observer = await observePageLifecycle(page, { origin });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
   const parentRead = page.waitForRequest((request) => request.url().endsWith('/pending-parent'));
   const childRead = page.waitForRequest((request) => request.url().endsWith('/pending-child'));
@@ -353,7 +353,7 @@ test('context settling refreshes an earlier quiet page after another page finish
   const { origin, context, page } = await fixture(t);
   const clock = observerClock();
   const observer = await observeContextLifecycle(context, { origin, clock });
-  t.after(() => observer.dispose());
+  ownedFixture(t).add(() => observer.dispose());
   const other = await context.newPage();
   await observer.ready();
   await Promise.all([page.goto(origin), other.goto(origin)]);

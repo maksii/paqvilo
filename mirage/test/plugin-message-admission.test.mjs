@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo refuses named messages without an implemented plug-in pipeline (501) before any write
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPluginMessageAdmission } from '../lib/plugin-message-admission.mjs';
@@ -141,7 +142,7 @@ async function fixture(t, message, extra = {}) {
   ]);
   const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, calls: () => calls };
 }
 

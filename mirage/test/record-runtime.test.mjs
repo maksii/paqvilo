@@ -8,7 +8,7 @@ import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
 import { defineLazyPreset } from '../lib/preset-registry.mjs';
 import { pagedRecordsOf, RecordPageSession } from '../lib/record-tables.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { exactNumeric } from '../lib/exact-numeric.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
@@ -70,11 +70,11 @@ const library = () => {
 
 test('streamed presets retain CRUD, query, FetchXML, isolated rollback, checkpoint and restart', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-runtime-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     presets = library();
   const store = new DataStore({ file, presetLibrary: presets });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   assert.ok(pagedRecordsOf(store.state.tables.item));
@@ -111,7 +111,7 @@ test('streamed presets retain CRUD, query, FetchXML, isolated rollback, checkpoi
   await store.remove('items', 'row-2', admin);
   await store.compact();
   const restarted = new DataStore({ file, presetLibrary: presets });
-  t.after(() => restarted.closeRecordStorage());
+  ownedFixture(t).add(() => restarted.closeRecordStorage());
   await restarted.init();
   assert.ok(pagedRecordsOf(restarted.state.tables.item));
   assert.equal(restarted.state.tables.item.length, 6000);
@@ -127,10 +127,10 @@ test('streamed presets retain CRUD, query, FetchXML, isolated rollback, checkpoi
 
 test('failed compaction retains held rows and durable state and removes unpublished page files', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-compact-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   const rows = store.state.tables.item,
@@ -160,10 +160,10 @@ test('failed compaction retains held rows and durable state and removes unpublis
 
 test('failed writes roll back without further page writes and preserve the key index while the disk remains unwritable', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-failure-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   const held = store.state.tables.item[100],
@@ -195,9 +195,9 @@ test('failed writes roll back without further page writes and preserve the key i
 
 test('an in-memory streamed store can bind a persistence file without leaving references to its temporary directory', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-binding-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const store = new DataStore({ presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.applyPreset('invented', { returnSnapshot: false });
   const held = store.state.tables.item[50],
     file = path.join(root, 'bound.json');
@@ -206,20 +206,20 @@ test('an in-memory streamed store can bind a persistence file without leaving re
   assert.equal(store.state.tables.item[50], held);
   assert.equal(store.recordSession.directory, await fs.realpath(file + '.records'));
   const reopened = new DataStore({ file });
-  t.after(() => reopened.closeRecordStorage());
+  ownedFixture(t).add(() => reopened.closeRecordStorage());
   await reopened.init();
   assert.equal(reopened.get('items', 'row-50', admin).name, 'Invented 50');
 });
 
 test('a foreign record directory cannot be committed as an unreadable local state', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-owner-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const source = new DataStore({ presetLibrary: library() });
-  t.after(() => source.closeRecordStorage());
+  ownedFixture(t).add(() => source.closeRecordStorage());
   await source.applyPreset('invented', { returnSnapshot: false });
   const file = path.join(root, 'state.json'),
     destination = new DataStore({ file });
-  t.after(() => destination.closeRecordStorage());
+  ownedFixture(t).add(() => destination.closeRecordStorage());
   await destination.init();
   const before = await fs.readFile(file);
   await assert.rejects(destination.replaceState(source.state), { code: 'InvalidRecordStorage' });
@@ -230,9 +230,9 @@ test('a foreign record directory cannot be committed as an unreadable local stat
 
 test('saved record presets fork privately without decoding every saved row during unrelated writes or reapplication', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-presets-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const store = new DataStore({ file: path.join(root, 'state.json'), presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   store.state.presets.saved = {
@@ -305,7 +305,7 @@ test('related reads and lookup labels use bounded primary-key subsets with secur
 
 test('public preset previews stay ordinary arrays and loopback startup keeps streamed storage', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-server-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented stream');
   const entry = Object.getOwnPropertyDescriptor(library(), 'invented').get;
   assert.equal(pagedRecordsOf(entry().tables.item), undefined);
@@ -339,7 +339,7 @@ test('public preset previews stay ordinary arrays and loopback startup keeps str
     packs: [pack],
     preset: 'invented',
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.ok(pagedRecordsOf(sim.store.state.tables.item));
   assert.equal(sim.store.get('items', 'one', admin).name, 'Invented');
   const status = await fetch(sim.url + '/_sim/api/status');
@@ -354,7 +354,7 @@ test('public preset previews stay ordinary arrays and loopback startup keeps str
 
 test('a project folder moved with its state and record directory restarts with its records', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-relocation-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.mkdir(path.join(root, 'before'));
   const store = new DataStore({ file: path.join(root, 'before', 'state.json'), presetLibrary: library() });
   await store.init();
@@ -363,7 +363,7 @@ test('a project folder moved with its state and record directory restarts with i
   store.closeRecordStorage();
   await fs.rename(path.join(root, 'before'), path.join(root, 'after'));
   const moved = new DataStore({ file: path.join(root, 'after', 'state.json'), presetLibrary: library() });
-  t.after(() => moved.closeRecordStorage());
+  ownedFixture(t).add(() => moved.closeRecordStorage());
   await moved.init();
   assert.equal(moved.get('items', 'row-10', admin).name, 'Before moving');
   await moved.update('items', 'row-11', { name: 'After moving' }, admin);
@@ -374,10 +374,10 @@ test('a project folder moved with its state and record directory restarts with i
 
 test('a write made while the compacted checkpoint is saved survives in memory and on disk', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-compaction-race-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   const prepare = store.storage.prepareCheckpoint.bind(store.storage);
@@ -393,17 +393,17 @@ test('a write made while the compacted checkpoint is saved survives in memory an
   assert.equal(raced, true);
   assert.equal(store.get('items', 'row-300', admin).name, 'Written during compaction');
   const restarted = new DataStore({ file, presetLibrary: library() });
-  t.after(() => restarted.closeRecordStorage());
+  ownedFixture(t).add(() => restarted.closeRecordStorage());
   await restarted.init();
   assert.equal(restarted.get('items', 'row-300', admin).name, 'Written during compaction');
 });
 
 test('a checkpoint followed by an unsupported directory sync still commits and later saves succeed', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-directory-sync-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   const fsyncFile = fsSync.fsyncSync;
@@ -424,17 +424,17 @@ test('a checkpoint followed by an unsupported directory sync still commits and l
   await store.compact();
   assert.equal(checkpoints, 2);
   const restarted = new DataStore({ file, presetLibrary: library() });
-  t.after(() => restarted.closeRecordStorage());
+  ownedFixture(t).add(() => restarted.closeRecordStorage());
   await restarted.init();
   assert.equal(restarted.get('items', 'row-300', admin).name, 'Written after the first checkpoint');
 });
 
 test('a missing record page file fails the load and leaves the state file untouched', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-missing-pages-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   store.closeRecordStorage();
@@ -443,34 +443,34 @@ test('a missing record page file fails the load and leaves the state file untouc
   assert.ok(pages.length > 0);
   for (const name of pages) await fs.rm(path.join(file + '.records', name));
   const restarted = new DataStore({ file, presetLibrary: library() });
-  t.after(() => restarted.closeRecordStorage());
+  ownedFixture(t).add(() => restarted.closeRecordStorage());
   await assert.rejects(restarted.init(), (error) => error.code === 'StateIntegrity');
   assert.deepEqual(await fs.readFile(file), before);
 });
 
 test('a missing record directory fails the load and leaves the state file untouched', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-missing-directory-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   store.closeRecordStorage();
   const before = await fs.readFile(file);
   await fs.rm(file + '.records', { recursive: true, force: true });
   const restarted = new DataStore({ file, presetLibrary: library() });
-  t.after(() => restarted.closeRecordStorage());
+  ownedFixture(t).add(() => restarted.closeRecordStorage());
   await assert.rejects(restarted.init(), (error) => error.code === 'StateIntegrity');
   assert.deepEqual(await fs.readFile(file), before);
 });
 
 test('an unverifiable record directory identity skips collection after a published compaction', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-identity-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const file = path.join(root, 'state.json'),
     store = new DataStore({ file, presetLibrary: library() });
-  t.after(() => store.closeRecordStorage());
+  ownedFixture(t).add(() => store.closeRecordStorage());
   await store.init();
   await store.applyPreset('invented', { returnSnapshot: false });
   const identity = store.recordStorageDirectoryMatches;

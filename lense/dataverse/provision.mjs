@@ -15,7 +15,7 @@ export function metadataXml(source) {
     attrs: Object.fromEntries(
       Object.entries(node.attrs)
         .filter(([key]) => !(isRoot && node.name === 'fetch' && key === 'savedqueryid'))
-        .sort(([a], [b]) => a.localeCompare(b)),
+        .sort(([a], [b]) => a.localeCompare(b, 'en')),
     ),
     text: node.text.trim() ? node.text : '',
     children: node.children.map((n) => normalize(n)),

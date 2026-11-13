@@ -34,6 +34,7 @@ import {
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
+import { countWork, trackWork, workOf } from './work-counter.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -538,9 +539,12 @@ const insertSorted = (list, value) => {
  * removal a slot is its position; the slots are renumbered once half of them are dead or the tree is full.
  */
 class RowKeyIndex {
-  constructor(rows, keyOf, { frame, wild = false } = {}) {
+  constructor(rows, keyOf, { frame, wild = false, work = null } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
+    // The owning store's work counters (DataStore#work): the build visits every row, get() is one lookup.
+    this.work = work;
+    if (work) work.rowsVisited += rows.length;
     this.wildSlots = wild ? [] : null;
     this.map = new Map();
     this.linear = false;
@@ -628,6 +632,7 @@ class RowKeyIndex {
     else if (list.length === 1 && key != null) this.map.set(key, list[0]);
   }
   get(key) {
+    if (this.work) this.work.indexLookups++;
     const slots = this.map.get(key);
     if (slots === undefined) return [];
     if (typeof slots === 'number') return [this.position(slots)];
@@ -756,15 +761,16 @@ const restoreInPlace = (current, saved) => {
  * as cursorText wrote them, by path, and its primary key): the page resumes after that tuple, so a
  * cursor row deleted or filtered out since skips nothing. A bare id (or values that cannot be read
  * back, see cursorValue) resumes after that row while it is still in the result; null otherwise, and
- * the caller then uses the offset.
+ * the caller then uses the offset. `work`, when given, is a store's work counters: the rows keyed add to rowsVisited.
  */
 export function keysetPage(
   rows,
   specs,
-  { mapping, valueOf, definition, lookupName, collation = 'CI_AI' },
+  { mapping, valueOf, definition, lookupName, collation = 'CI_AI', work = null },
   cursor,
   limit,
 ) {
+  if (work) work.rowsVisited += rows.length;
   const keyed = rows.map((row, index) => ({
     row,
     index,
@@ -1373,6 +1379,14 @@ export class DataStore {
     // paging can bind to the data without digesting the whole state per request.
     this.revision = 0;
     this.isolatedCount = 0;
+    trackWork(this);
+  }
+  /**
+   * The work done so far, for tests that bound an operation by its work instead of its time: rowsVisited (rows iterated
+   * by table scans and index builds) and indexLookups (key-index probes). A copy: callers cannot change the counts.
+   */
+  get work() {
+    return { ...workOf(this) };
   }
   // Only isolated transactions (see transact) divert reads and writes of `state` to
   // a private working copy, and only inside their own async context. Everything else
@@ -2410,7 +2424,7 @@ export class DataStore {
     }
     let entry = indexes.get(name);
     if (!entry || entry.length !== rows.length || entry.frame !== frame) {
-      entry = new RowKeyIndex(rows, keyOf, { frame, wild });
+      entry = new RowKeyIndex(rows, keyOf, { frame, wild, work: workOf(this) });
       indexes.set(name, entry);
     }
     return entry;
@@ -2433,10 +2447,12 @@ export class DataStore {
     const partition = key?.partitionid ?? options.partitionId ?? null;
     const column = mapping.idColumn,
       lookup = elasticKeyOf(primary, partition),
-      scan = () =>
-        rows.flatMap((row, index) =>
+      scan = () => {
+        countWork(this, 'rowsVisited', rows.length);
+        return rows.flatMap((row, index) =>
           equal(row[column], primary) && samePartition(row.partitionid, partition) ? [index] : [],
         );
+      };
     const positions =
       lookup === undefined
         ? scan()
@@ -2471,7 +2487,10 @@ export class DataStore {
     const paged = pagedRecordsOf(rows)?.primaryPositions(mapping.idColumn, id);
     if (paged !== undefined && paged !== null) return paged;
     const column = mapping.idColumn,
-      linear = () => rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
+      linear = () => {
+        countWork(this, 'rowsVisited', rows.length);
+        return rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
+      };
     // Non-string identifiers keep the coercive comparison of the linear scan.
     if (typeof id !== 'string') return linear();
     // A scoped index (uniqueness checks) is rebuilt per transaction, so it never answers a stale miss across writes.
@@ -4026,6 +4045,7 @@ export class DataStore {
       return masks.get(name);
     };
     const backend = (name, rows) => {
+      countWork(this, 'rowsVisited', rows.length);
       const kept = options.backendRowsFilter
         ? rows.filter((row) => options.backendRowsFilter(name, row) === true)
         : rows;
@@ -4870,7 +4890,7 @@ export class DataStore {
     // paging), so a later page neither re-sorts the whole result nor shifts after a concurrent write.
     const keyset =
       paging?.after != null && !isElastic(m)
-        ? keysetPage(rows, order, sortOptions, paging.after, paging.pageSize)
+        ? keysetPage(rows, order, { ...sortOptions, work: workOf(this) }, paging.after, paging.pageSize)
         : null;
     if (keyset) rows = keyset.rows;
     // Public pages always have a deterministic primary-key tie breaker.
@@ -5055,6 +5075,7 @@ export class DataStore {
     // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
     const indexed = this.findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches);
     if (indexed.used) return indexed.row;
+    countWork(this, 'rowsVisited', rows.length);
     return rows.find(matches);
   }
   findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches) {
@@ -5627,6 +5648,7 @@ export class DataStore {
         continue;
       }
       if (index) this.dropRowKeyIndex(rows, name);
+      countWork(this, 'rowsVisited', rows.length);
       const clash = rows.some(
         (other, index) =>
           index !== ownIndex && !equal(other[mapping.idColumn], row[mapping.idColumn]) && keyOf(other) === wanted,
@@ -6575,7 +6597,9 @@ export class DataStore {
   *deleteChildrenForReference(mapping, row, reference, identity, deleting, options) {
     const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
     if (target == null) return;
-    const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
+    const candidates = this.state.tables[reference.entity] ?? [];
+    countWork(this, 'rowsVisited', candidates.length);
+    const children = candidates.filter((child) => {
       const value = field(child, reference.column);
       if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
         return false;
@@ -6629,6 +6653,7 @@ export class DataStore {
     for (const [column, value] of sides) {
       if (value == null) continue;
       const edges = this.state.tables[relationship.intersect.entity];
+      countWork(this, 'rowsVisited', edges.length);
       for (let index = edges.length - 1; index >= 0; index--)
         if (equal(scalar(field(edges[index], column)), value))
           this.removeRow(relationship.intersect.entity, edges, index);
@@ -7478,7 +7503,7 @@ function findScopedUpsertKey({ store, rows, names, kinds, collation, literal, na
   ) {
     let cached = scoped.indexes.get(name);
     if (!cached) {
-      cached = new RowKeyIndex(rows, keySegmentOf(names, collation, kinds));
+      cached = new RowKeyIndex(rows, keySegmentOf(names, collation, kinds), { work: workOf(store) });
       scoped.indexes.set(name, cached);
     }
     if (!cached.linear) {
@@ -7591,14 +7616,21 @@ export function withUpsertClassificationIndex(store, mapping, targets, texts, cl
   }
 }
 
-/** Alternate key segment `a='x',b=2` as a column map; null for a primary key. */
-export function parseKeySegment(key) {
+/**
+ * Alternate key segment `a='x',b=2` as a column map; null for a primary key. `stats`, when a caller passes one, gets
+ * `positions`: the number of characters the scanning loops step over (tests use it to bound the work).
+ */
+export function parseKeySegment(key, stats) {
   const text = String(key ?? '').trim();
   if (!text.includes('=')) return null;
   const parts = {},
-    state = { index: 0 };
+    state = { index: 0, stats };
   while (state.index < text.length) parseKeyPart(text, state, parts);
   return parts;
+}
+
+function countKeyScan(state, from) {
+  if (state.stats) state.stats.positions += state.index - from;
 }
 
 /* NOSONAR */ function parseKeyPart(text, state, parts) {
@@ -7607,6 +7639,7 @@ export function parseKeySegment(key) {
   if (!/[A-Za-z_]/.test(text[state.index] ?? '')) invalidKeySegment();
   state.index++;
   while (state.index < text.length && /\w/.test(text[state.index])) state.index++;
+  countKeyScan(state, nameStart);
   const name = text.slice(nameStart, state.index).toLowerCase();
   if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalidKeySegment();
   skipKeyWhitespace(text, state);
@@ -7614,7 +7647,10 @@ export function parseKeySegment(key) {
   skipKeyWhitespace(text, state);
   const valueStart = state.index;
   if (text[state.index] === "'") parseQuotedKeyValue(text, state);
-  else while (state.index < text.length && text[state.index] !== ',') state.index++;
+  else {
+    while (state.index < text.length && text[state.index] !== ',') state.index++;
+    countKeyScan(state, valueStart);
+  }
   const raw = text.slice(valueStart, state.index).trim();
   if (!raw) invalidKeySegment();
   skipKeyWhitespace(text, state);
@@ -7625,7 +7661,7 @@ export function parseKeySegment(key) {
 }
 
 function parseQuotedKeyValue(text, state) {
-  state.index++;
+  const from = state.index++;
   let closed = false;
   while (state.index < text.length) {
     if (text[state.index++] !== "'") continue;
@@ -7636,11 +7672,14 @@ function parseQuotedKeyValue(text, state) {
     closed = true;
     break;
   }
+  countKeyScan(state, from);
   if (!closed) invalidKeySegment();
 }
 
 function skipKeyWhitespace(text, state) {
+  const from = state.index;
   while (state.index < text.length && /\s/.test(text[state.index])) state.index++;
+  countKeyScan(state, from);
 }
 
 function invalidKeySegment() {

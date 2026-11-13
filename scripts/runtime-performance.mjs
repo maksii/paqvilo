@@ -91,6 +91,9 @@ export function performanceOptionsFromArgs(args) {
     findings.push({ ...finding, durationMs: Math.round(durationMs), budgetMs: limitMs });
     if (strictBudgets) throw new Error(`${finding.stage} exceeded declared ${limitMs} ms budget`);
   };
+  // Strict mode enforces the budgets: a request is aborted at its budget. Recording mode measures every request to its
+  // end and reports a budget miss as a finding.
+  const budgetSignal = (limitMs) => (strictBudgets ? AbortSignal.timeout(limitMs) : undefined);
   for (const tables of scales) {
     const fixtureStarted = performance.now();
     const fixture = await performanceFixture({ tables, records, formsPerTable, columns });
@@ -129,7 +132,7 @@ export function performanceOptionsFromArgs(args) {
         let firstStatusError;
         try {
           const firstStatus = await fetch(sim.url + '/_sim/api/status', {
-            signal: AbortSignal.timeout(catalogueBudgetMs),
+            signal: budgetSignal(catalogueBudgetMs),
           });
           if (!firstStatus.ok) throw new Error(`Status ${firstStatus.status}`);
           await firstStatus.arrayBuffer();
@@ -150,7 +153,7 @@ export function performanceOptionsFromArgs(args) {
         for (const warmth of ['cold', 'warm']) {
           const started = performance.now();
           let complete = false;
-          const pending = fetch(sim.url + '/_apps/api', { signal: AbortSignal.timeout(catalogueBudgetMs) })
+          const pending = fetch(sim.url + '/_apps/api', { signal: budgetSignal(catalogueBudgetMs) })
             .then(async (response) => {
               if (!response.ok) throw new Error(`Catalogue ${response.status}`);
               return response.text();
@@ -166,7 +169,7 @@ export function performanceOptionsFromArgs(args) {
             const at = performance.now();
             try {
               const response = await fetch(sim.url + '/_sim/api/status', {
-                signal: AbortSignal.timeout(heartbeatBudgetMs),
+                signal: budgetSignal(heartbeatBudgetMs),
               });
               if (!response.ok) throw new Error(`Status ${response.status}`);
               await response.arrayBuffer();
@@ -237,7 +240,7 @@ export function performanceOptionsFromArgs(args) {
           for (const route of ['index', 'metadata/x_scale0']) {
             const at = performance.now();
             const response = await fetch(sim.url + '/_apps/api/' + route, {
-              signal: AbortSignal.timeout(catalogueBudgetMs),
+              signal: budgetSignal(catalogueBudgetMs),
             });
             if (!response.ok) throw new Error(`Metadata ${route}: ${response.status}`);
             const text = await response.text(),
@@ -268,7 +271,7 @@ export function performanceOptionsFromArgs(args) {
           ['first-record', '/_apps/api/tables/x_scale0/' + recordId],
         ]) {
           const at = performance.now();
-          const response = await fetch(sim.url + route, { signal: AbortSignal.timeout(catalogueBudgetMs) });
+          const response = await fetch(sim.url + route, { signal: budgetSignal(catalogueBudgetMs) });
           if (!response.ok) throw new Error(`${kind} response ${response.status}`);
           const value = await response.json();
           if (kind === 'first-grid' && (!value.rows.length || value.rows.length > 50))

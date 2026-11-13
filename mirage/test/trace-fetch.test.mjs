@@ -2,6 +2,7 @@
 // tracedFetch (lib/trace-hosts.mjs, D-R3-5): the http-out span of an outbound request against a loopback server: name,
 // attributes, forwarded trace headers, redacted payloads at full only, the provider's own error on 4xx/5xx, denied on
 // 401/403, the network failure code, capture 'none' and a plain fetch at level off.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -28,7 +29,7 @@ async function receiver(t) {
     res.end(JSON.stringify({ ok: true, token: 'abc.def' }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return { origin: `http://127.0.0.1:${server.address().port}`, port: server.address().port, seen };
 }
 
@@ -82,11 +83,12 @@ test('4xx and 5xx answers keep the provider error; 403 is denied; a network fail
   assert.equal(down.status, 500);
   const forbidden = await tracedFetch(traces, { url: `${origin}/forbidden` });
   assert.equal(await forbidden.text(), 'no');
-  const closed = http.createServer();
-  await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
-  const closedPort = closed.address().port;
-  await new Promise((resolve) => closed.close(resolve));
-  await assert.rejects(tracedFetch(traces, { url: `http://127.0.0.1:${closedPort}/closed` }), TypeError);
+  // A refused connection in the shape fetch rejects with; a released port could be taken by another process.
+  const refusedConnection = async () => {
+    const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9'), { code: 'ECONNREFUSED' });
+    throw new TypeError('fetch failed', { cause });
+  };
+  await assert.rejects(tracedFetch(traces, { url: 'http://127.0.0.1:9/closed', fetch: refusedConnection }), TypeError);
   const [failed, refused, downSpan] = traces.spans({ kind: 'http-out' }).items;
   assert.equal(downSpan.status, 'error');
   assert.deepEqual(downSpan.error, { code: 'QuoteBackendDown', message: 'The quote backend is down.', status: 500 });
@@ -163,7 +165,7 @@ test('at level full tracedFetch returns while the body is open, and the caller t
     released.then(() => res.end('second'));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     release();
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
@@ -250,7 +252,7 @@ async function completeServer(t) {
     res.end('second');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return `http://127.0.0.1:${server.address().port}/whole`;
 }
 
@@ -449,4 +451,76 @@ test('closing the trace store cancels an open capture: its body is cancelled and
   assert.equal(cancelled, true, 'the store cancels the body its capture reads');
   const span = await ended;
   assert.equal(span.status, 'cancelled');
+});
+
+// A real answer whose own body is `text`; the capture reads `clone` in place of a copy of that body.
+function answerWithCaptureStream(text, clone) {
+  const answer = new Response(text, { status: 200, headers: { 'content-type': 'text/plain' } });
+  answer.clone = () => ({ body: clone });
+  return answer;
+}
+
+// @test-kind contract: a capture whose body read fails records the failure as its body, and the caller still reads its own body (ADM-5)
+test('a body read that fails without an abort is recorded as unreadable, and the caller reads its own body', async () => {
+  let controller;
+  const clone = new ReadableStream({
+    start(c) {
+      controller = c;
+    },
+  });
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, {
+    url: 'http://127.0.0.1/read-fails',
+    fetch: async () => answerWithCaptureStream('the caller body', clone),
+  });
+  controller.error(new Error('the disk went away'));
+  const span = await ended;
+  assert.equal(span.status, 'ok');
+  assert.equal(span.output.body, '[unreadable body: the disk went away]');
+  assert.equal(await response.text(), 'the caller body', 'the caller reads its own body');
+});
+
+// @test-kind contract: a capture stops reading once the body passes the payload limit and records the first bytes as truncated (ADM-5)
+test('a body larger than the payload limit stops the capture at the limit, and the caller reads the whole body', async () => {
+  const limit = 256;
+  let pulls = 0;
+  let cancelled = false;
+  // highWaterMark 0: each pull is one read of the capture. The second chunk is offered only if the capture reads again.
+  const clone = new ReadableStream(
+    {
+      pull(c) {
+        pulls++;
+        if (pulls === 1) c.enqueue(new TextEncoder().encode('a'.repeat(limit) + 'past the limit'));
+        else {
+          c.enqueue(new TextEncoder().encode('second chunk'));
+          c.close();
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const traces = createTraceStore({ settings: { level: 'full', payloadBytes: limit } });
+  const ended = nextSpanEnd(traces);
+  const whole = 'b'.repeat(limit * 2);
+  const response = await tracedFetch(traces, {
+    url: 'http://127.0.0.1/large',
+    fetch: async () => answerWithCaptureStream(whole, clone),
+  });
+  const span = await ended;
+  assert.equal(span.status, 'ok');
+  // The store bounds the whole recorded output by the same limit: it keeps that output as a preview with its size.
+  const recorded = { status: 200, headers: { 'content-type': 'text/plain' }, body: 'a'.repeat(limit), truncated: true };
+  assert.equal(span.output.truncated, true);
+  assert.equal(
+    span.output.bytes,
+    Buffer.byteLength(JSON.stringify(recorded)),
+    'the first bytes up to the limit, truncated',
+  );
+  assert.equal(pulls, 1, 'the capture does not read past the chunk that passes the limit');
+  assert.equal(cancelled, true, 'the capture releases its stream');
+  assert.equal(await response.text(), whole, 'the caller reads its whole body');
 });

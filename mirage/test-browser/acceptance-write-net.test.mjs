@@ -2,13 +2,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { __testing } from '../acceptance.mjs';
 import { closeServer, devToolsActivePort, openResumingClient } from './shared-browser.mjs';
 
@@ -80,13 +79,13 @@ test('a live flow net stops its page, popups and frames before any page guard, a
   const resuming = await openResumingClient(cdpUrl);
   const flowClient = await chromium.connectOverCDP(cdpUrl);
   let net = null;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await net?.close();
     await flowClient.close();
     await resuming.close();
     await owner.close();
     await closeServer(server);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
 
   const flowContext = flowClient.contexts()[0];

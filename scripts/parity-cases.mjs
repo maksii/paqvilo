@@ -289,7 +289,7 @@ function summarizeKind(kind, rows) {
   }
   const surfaces = [...bySurface.values()]
     .map((entry) => ({ ...entry, suites: entry.suites.size }))
-    .sort((a, b) => a.surface.localeCompare(b.surface));
+    .sort((a, b) => a.surface.localeCompare(b.surface, 'en'));
   const totals = surfaces.reduce((sum, entry) => addInto(sum, entry), { suites: 0, ...zeroTotals() });
   totals.suites = surfaces.reduce((sum, entry) => sum + entry.suites, 0);
   return { kind, totals, surfaces };

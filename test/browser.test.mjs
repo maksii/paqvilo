@@ -18,6 +18,7 @@ import {
 import { refreshUrl } from '../lense/navigation.mjs';
 import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
 import { tempDirSync } from './fixture.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
 
 const origin = 'https://portal.example.com';
 
@@ -857,10 +858,11 @@ test('a browser guard override above the timer limit is clamped to it', async (t
 
 test('a normal close leaves no timer armed', async (t) => {
   const fixture = closeFixture(t);
-  const armed = trackTimers(t);
+  const timers = trackTimers(t);
   const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
   await opened.close();
-  assert.equal(armed.size, 0);
+  assert.ok(timers.recorded > 0, 'the open and close arm at least one Lense timer');
+  assert.equal(timers.armed.size, 0);
 });
 
 test('a reload that gets no document in time is given up with one notice line', async (t) => {
@@ -921,37 +923,48 @@ async function settleWhileTicking(t, promise, stepMs) {
   await promise;
 }
 
-// Records the timers that are scheduled and not yet cleared, so a test can assert that none is left armed.
+// Records the timers that Lense's own code schedules and has not yet cleared (armed), and how many it scheduled
+// (recorded), so a test can assert that none is left armed. Timers other code in the process schedules are not recorded.
+const LENSE = new URL('../lense/', import.meta.url).href;
 function trackTimers(t) {
   const armed = new Set();
+  const timers = { armed, recorded: 0 };
   const {
     setTimeout: startTimer,
     clearTimeout: stopTimer,
     setInterval: startInterval,
     clearInterval: stopInterval,
   } = globalThis;
-  t.mock.method(globalThis, 'setTimeout', (callback, ms) => {
-    const handle = startTimer(() => {
-      armed.delete(handle);
-      callback();
-    }, ms);
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...rest) => {
+    if (!calledFrom(LENSE, import.meta.url)) return startTimer(callback, ms, ...rest);
+    const handle = startTimer(
+      function (...args) {
+        armed.delete(handle);
+        callback.apply(this, args);
+      },
+      ms,
+      ...rest,
+    );
     armed.add(handle);
+    timers.recorded++;
     return handle;
   });
   t.mock.method(globalThis, 'clearTimeout', (handle) => {
     armed.delete(handle);
     stopTimer(handle);
   });
-  t.mock.method(globalThis, 'setInterval', (callback, ms) => {
-    const handle = startInterval(callback, ms);
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => {
+    if (!calledFrom(LENSE, import.meta.url)) return startInterval(callback, ms, ...rest);
+    const handle = startInterval(callback, ms, ...rest);
     armed.add(handle);
+    timers.recorded++;
     return handle;
   });
   t.mock.method(globalThis, 'clearInterval', (handle) => {
     armed.delete(handle);
     stopInterval(handle);
   });
-  return armed;
+  return timers;
 }
 
 test('a launch that Playwright times out is reported as the hang guard whatever its message says', async (t) => {

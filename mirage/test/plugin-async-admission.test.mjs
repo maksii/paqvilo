@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo async admission: success only with an actual execution receipt; mocks and missing adapters are reported honestly
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -70,7 +71,7 @@ async function fixture(t, kind, { systemJobs = true, adapter = true } = {}) {
         }
       : null,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await scheduler.close();
     store.close();

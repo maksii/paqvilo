@@ -21,7 +21,7 @@ import { EXTENSION as CASCADE } from '../lib/dataverse-cascade.mjs';
 import { EXTENSION as ROLLUP, recalculate } from '../lib/dataverse-rollup.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { cascadeMappings } from './support/parent-child-tables.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777b01',
   STEP = '77777777-7777-4777-8777-777777777b02';
@@ -54,7 +54,7 @@ async function inProcessReceiver(t, { ticks = 5 } = {}) {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}/hook`, received };
 }
 // A loopback receiver on its own thread: /drop reads the request and drops the connection; /hang never answers; any
@@ -77,7 +77,7 @@ async function threadReceiver(t) {
     { eval: true },
   );
   const { port } = await new Promise((resolve) => worker.once('message', resolve));
-  t.after(() => worker.terminate());
+  ownedFixture(t).add(() => worker.terminate());
   return {
     origin: `http://127.0.0.1:${port}`,
     log: () =>
@@ -294,9 +294,16 @@ test('a bridge post that may have been delivered (the connection dropped after t
 test('a web hook authentication value never crosses the bridge: the worker resolves its env: reference', async (t) => {
   const receiver = await threadReceiver(t);
   const posted = [],
+    unreadable = [],
     original = MessagePort.prototype.postMessage;
   MessagePort.prototype.postMessage = function capture(message, ...rest) {
-    posted.push(JSON.stringify(message));
+    // Every port in the process passes here. A message JSON cannot hold (a BigInt, a cycle) is recorded instead of
+    // thrown into its sender, and fails the test below: every message posted here must be inspected.
+    try {
+      posted.push(JSON.stringify(message));
+    } catch (error) {
+      unreadable.push(error.message);
+    }
     return original.call(this, message, ...rest);
   };
   t.after(() => {
@@ -311,6 +318,7 @@ test('a web hook authentication value never crosses the bridge: the worker resol
   const query = await widgetWorld({ url: `${receiver.origin}/query`, authtype: 6, authvalue: `key=${SECRET}` });
   localOrganizationService(query.store, profile).create('x_widget', { x_name: 'query auth' });
   MessagePort.prototype.postMessage = original;
+  assert.deepEqual(unreadable, [], 'every posted message was inspected');
   assert.deepEqual(await receiver.log(), [
     ['/ok', SECRET, null],
     ['/query', null, SECRET],
@@ -336,7 +344,7 @@ test('a worker crash is reported to the waiting caller within the call, and the 
     crashing,
     `import { workerData } from 'node:worker_threads';\nawait import(${JSON.stringify(real.href)});\nworkerData.port.on('message', () => setTimeout(() => { throw new Error('invented worker crash'); }, 50));\n`,
   );
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     syncIoWorker.url = real;
     await closeSyncIoBridge();
     await fs.rm(dir, { recursive: true, force: true });

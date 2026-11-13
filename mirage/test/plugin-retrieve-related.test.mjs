@@ -1,5 +1,6 @@
 // @test-kind parity: native and native-r2 relationsReads (GET with $expand of a one-to-many navigation: Retrieve 10/20/40 RelatedEntitiesQuery '<schema>.Referenced' FetchExpression of the nested $select, Retrieve/40 BusinessEntity.RelatedEntities collection with its paging cookie)
 // The plug-in view of a Web API Retrieve that expands a collection navigation. Invented tables and ids only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -72,7 +73,7 @@ async function fixture(t) {
   const handlers = new Map([[steps[0].typeName, () => {}]]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   // The Retrieve pipeline's holder at each stage (a JavaScript handler sees decoded values only).
   const seen = [],
     pipeline = f.store.pluginPipeline;

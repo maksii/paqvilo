@@ -478,12 +478,12 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       res.end(`<p>Original</p><script>fetch('/never-old');setTimeout(()=>{${change}},100)</script>`);
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     });
     const browser = await openOwnedBrowser();
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const driver = browser.pageDriver(`http://127.0.0.1:${server.address().port}`, 'anonymous');
     for (const pathname of ['/hash', '/history', '/replace', '/replace-new'])
       await t.test(pathname, async () => {

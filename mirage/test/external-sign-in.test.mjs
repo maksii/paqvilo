@@ -1,4 +1,5 @@
 // @test-kind contract: the external and local sign-in forms as the designed local identity flow answers them, including the anti-forgery checks on their body tokens.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import {
   AUTHORITY,
   hiddenFields,
@@ -293,7 +294,7 @@ test('the local identity provider serves discovery, keys, the preset chooser, fo
     allowRedirect: (target) => new URL(target).origin === portalOrigin,
   });
   let closed = false;
-  t.after(() => (closed ? undefined : idp.close()));
+  ownedFixture(t).add(() => (closed ? undefined : idp.close()));
   assert.match(idp.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(idp.port, Number(new URL(idp.origin).port));
   const authority = `${idp.origin}/oidc-local/`;
@@ -1083,7 +1084,7 @@ async function signInForm(t, { adminToken, path, fields }) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

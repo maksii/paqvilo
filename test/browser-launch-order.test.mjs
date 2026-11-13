@@ -1,4 +1,5 @@
 // @test-kind contract: browser startup begins its owned context cookie read before later close events.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -10,7 +11,7 @@ import { openBrowser } from '../lense/browser.mjs';
 
 test('owned browser starts cookie restore before a subsequent context close', async (t) => {
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-browser-order-'));
-  t.after(() => fs.rmSync(profileDir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rmSync(profileDir, { recursive: true, force: true }));
   const context = new EventEmitter(),
     events = [];
   let closed = false;
@@ -45,7 +46,7 @@ test('owned browser starts cookie restore before a subsequent context close', as
     context.emit('close');
   });
   const opened = await opening;
-  t.after(() => opened.close());
+  ownedFixture(t).add(() => opened.close());
   assert.deepEqual(events.slice(0, 3), ['launch', 'cookies:open', 'close']);
   await opened.close();
 });

@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { initial, fixture } from '../test/fixtures/platform-experiments.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -19,7 +19,7 @@ test('developer configures platform rules and override presets through two dedic
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiment-ui-'));
   await fixture(root);
   let app, context;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context?.close();
     await app?.close();
     await fs.rm(root, { recursive: true, force: true });
@@ -85,7 +85,7 @@ test('a shadowed saved configuration stays exportable and deletable without appl
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiment-collision-ui-'));
   await fixture(root);
   let app, context;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context?.close();
     await app?.close();
     await fs.rm(root, { recursive: true, force: true });

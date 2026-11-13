@@ -217,7 +217,7 @@ export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl 
       }),
     );
   }
-  sessions.sort((a, b) => a.discoveryFile.localeCompare(b.discoveryFile));
+  sessions.sort((a, b) => a.discoveryFile.localeCompare(b.discoveryFile, 'en'));
   return {
     schemaVersion: 1,
     sessions,

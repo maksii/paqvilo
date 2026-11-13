@@ -6,13 +6,12 @@
 // @test-kind contract: Paqvilo's own headless Canvas runtime behaviour, including the form and session semantics it documents.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { stringify } from 'yaml';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { createCanvasApp, createCanvasRuntime, describeCanvasRuntime, splitTop } from '../lib/canvas-runtime.mjs';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
 import { buildSourceGraph, canvasRequirementRows } from '../lib/source-graph.mjs';
-import { CANVAS_APP_FILES, fixtureApp, organization } from './canvas-runtime-fixture.mjs';
+import { CANVAS_APP_FILES, fixtureApp, organization, serveCanvas } from './canvas-runtime-fixture.mjs';
 
 async function start(t, { principal = 'admin', app = null } = {}) {
   const org = await organization(t);
@@ -258,15 +257,7 @@ test('the driver API needs loopback, a principal and the CSRF token; JSON answer
     principal: async () => caller,
     csrf: () => 'fx-token',
   });
-  const server = http.createServer((req, res) => {
-    if (!handler(req, res)) {
-      res.writeHead(418);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = await serveCanvas(t, handler);
   const post = (body, headers = { 'content-type': 'application/json', 'x-sim-csrf': 'fx-token' }) =>
     fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`, {
       method: 'POST',
@@ -324,15 +315,8 @@ test('the driver API needs loopback, a principal and the CSRF token; JSON answer
 test('a host without the runtime answers 501 CanvasRuntimeUnavailable on the driver API', async (t) => {
   const app = await fixtureApp();
   const handler = createCanvasHandler({ apps: () => [app] });
-  const server = http.createServer((req, res) => {
-    if (!handler(req, res)) {
-      res.writeHead(418);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/_apps/api/canvas/fx_inventedcanvas`, {
+  const base = await serveCanvas(t, handler);
+  const response = await fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`, {
     method: 'POST',
     body: '{}',
   });

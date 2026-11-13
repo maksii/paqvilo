@@ -1,4 +1,5 @@
 // @test-kind contract: the model-driven agent API belongs to one target origin for the life of its identity, and a sign-in redirect only detaches its inspector state.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ const imported = {
 
 async function startLifecycle(t) {
   const stateDir = tempDirSync('model-driven-agent-lifecycle-');
-  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rmSync(stateDir, { recursive: true, force: true }));
   let address = `${target.origin}${target.startPath}`;
   const frame = { url: () => address };
   const page = Object.assign(new EventEmitter(), {
@@ -74,7 +75,7 @@ async function startLifecycle(t) {
     agents.push(agent);
     return agent;
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const agent of agents) await agent.close();
   });
   const counts = { closes: 0 };

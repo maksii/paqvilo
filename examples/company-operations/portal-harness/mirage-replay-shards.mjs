@@ -132,13 +132,14 @@ async function verifyShardOutcome(outcome, runtimeSha256, workers, state) {
 async function verifyShardOutcomes(outcomes, runtimeSha256, workers, state) {
   for (const outcome of outcomes) await verifyShardOutcome(outcome, runtimeSha256, workers, state);
 }
-function spawnWorker(jobFile, { signal } = {}) {
+/** Runs one replay worker; its summary is read once the process has exited and its output has closed. */
+export function spawnWorker(jobFile, { signal, workerModule = module } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('Owned replay worker was cancelled before launch.'));
       return;
     }
-    const child = spawn(process.execPath, [module, '--job', jobFile], {
+    const child = spawn(process.execPath, [workerModule, '--job', jobFile], {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       }),
@@ -162,7 +163,8 @@ function spawnWorker(jobFile, { signal } = {}) {
     child.stdout.on('data', (chunk) => read('stdout', chunk));
     child.stderr.on('data', (chunk) => read('stderr', chunk));
     child.once('error', reject);
-    child.once('exit', (code) => {
+    // `exit` can arrive before the last stdout chunk; `close` follows the end of every output stream.
+    child.once('close', (code) => {
       signal?.removeEventListener('abort', abort);
       if (failure) reject(failure);
       else if (code !== 0)

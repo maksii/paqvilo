@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -96,7 +97,7 @@ test('a retried 503 that never recovers fails the action with every attempt jour
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({
     store,
     scheduler,

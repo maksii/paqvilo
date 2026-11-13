@@ -1,16 +1,17 @@
 // @test-kind tooling: test-only Chromium backport bootstrap keeps browser defaults and real loopback HTTP
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { browserWorkspace } from '../test/browser-workspace.mjs';
+import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
 import { DEFAULT_DISABLED_FEATURES, BACKPORTED_DISABLED_FEATURES } from '../test/browser-backport.mjs';
 
 const execute = promisify(execFile);
@@ -134,13 +135,6 @@ test('sanitized CLI fixture keeps loopback proxy arguments and real HTTP', async
   assert.equal(sanitized.args.includes('--paqvilo-invented-retained'), true);
 });
 
-const freePort = () =>
-  new Promise((resolve) => {
-    const server = net.createServer().listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
 // [action, navigation] default timeouts that a page resolves for its actions and navigations.
 const pageTimeouts = (page) => [
   page._timeoutSettings.timeout({}).timeout,
@@ -172,12 +166,14 @@ test('every way of opening a page in a test has no default Playwright timeout', 
       'launchPersistentContext',
     );
 
-    const port = await freePort();
-    const host = await chromium.launch(
-      browserLaunchOptions({ headless: true, args: [`--remote-debugging-port=${port}`] }),
+    // The host browser chooses its debugging port and reports it in its own profile.
+    const hostProfile = await browserWorkspace(t);
+    const host = await chromium.launchPersistentContext(
+      hostProfile,
+      browserLaunchOptions({ headless: true, args: ANY_DEBUG_PORT_ARGS }),
     );
     owned.push(host);
-    const attached = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const attached = await chromium.connectOverCDP(`http://127.0.0.1:${await devToolsPort(hostProfile)}`);
     owned.push(attached);
     const defaultContext = attached.contexts()[0];
     assert.deepEqual(
@@ -193,7 +189,7 @@ test('every way of opening a page in a test has no default Playwright timeout', 
 
 test('a navigation in a test arms no timeout timer', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   let release;
   const held = new Promise((resolve) => (release = resolve));

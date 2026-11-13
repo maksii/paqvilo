@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -19,7 +20,12 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-read-post-inputs-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    let backend;
+    // The backend closes its hosts before their folder is removed.
+    ownedFixture(t).add(async () => {
+      await backend?.close();
+      await removeFixtureDirectory(root);
+    });
     const sdk = clrSdk(),
       source = path.join(root, 'PostInputs.cs'),
       assembly = path.join(root, 'PostInputs.dll');
@@ -108,8 +114,7 @@ if(c.MessageName=="Retrieve"){
       handlers,
       overrides: Object.fromEntries(clrSteps.map((step) => ['plugin-step:' + step.id, { mode: 'clr' }])),
     });
-    const backend = await createOrganizationBackend({ store, items: () => items, runtimes, handlers });
-    t.after(() => backend.close());
+    backend = await createOrganizationBackend({ store, items: () => items, runtimes, handlers });
     const row = await store.readOperation(() =>
       store.get(
         'widget',

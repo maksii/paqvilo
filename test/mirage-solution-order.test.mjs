@@ -12,6 +12,8 @@ import { loadConfig } from '../lense/config.mjs';
 import { mirageSettings } from '../lense/config-schema.mjs';
 import { derivedSolutionOrder, initProject, mirageReadiness } from '../lense/commands/mirage.mjs';
 import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 const attribute = (name, type) =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><Name>${name}</Name><LogicalName>${name.toLowerCase()}</LogicalName></attribute>`;
@@ -44,7 +46,8 @@ function solutionRoots(work) {
 function workspace(t, mirage) {
   const portal = createFixture();
   const work = tempDirSync('paqvilo-solution-order-');
-  t.after(() => {
+  // Removed after the runtimes the test started have been ended.
+  ownedFixture(t).remove(() => {
     portal.cleanup();
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
@@ -212,6 +215,7 @@ test('mirage start hands the Mirage its catalogue Solution roots in dependency o
     ].map(async ([mirage, expected]) => {
       const site = workspace(t, () => ({ port: 0, ...mirage }));
       const started = await run('mirage', 'start', '--config', site.config, '--startup-timeout', '120000', '--json');
+      ownStartedRuntimes(t, started.stdout);
       try {
         assert.equal(started.status, 0, started.stdout + started.stderr);
         const session = JSON.parse(started.stdout);
@@ -227,6 +231,7 @@ test('mirage start hands the Mirage its catalogue Solution roots in dependency o
         );
         if (mirage.solutionOrder === 'explicit') {
           const repeated = await run('mirage', 'start', '--config', site.config, '--json');
+          ownStartedRuntimes(t, repeated.stdout);
           assert.equal(repeated.status, 0, repeated.stdout + repeated.stderr);
           assert.equal(JSON.parse(repeated.stdout).pid, session.pid, 'the same explicit order reuses its runtime');
           const catalogue = JSON.parse(fs.readFileSync(site.config, 'utf8'));
@@ -242,6 +247,7 @@ test('mirage start hands the Mirage its catalogue Solution roots in dependency o
             path.join(path.dirname(site.config), 'reordered state.json'),
             '--json',
           );
+          ownStartedRuntimes(t, reordered.stdout);
           assert.equal(reordered.status, 0, reordered.stdout + reordered.stderr);
           const newSession = JSON.parse(reordered.stdout);
           assert.notEqual(newSession.pid, session.pid, 'changing explicit layer order must not reuse the old runtime');

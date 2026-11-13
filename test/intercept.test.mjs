@@ -1,8 +1,12 @@
+// @test-kind contract: request interception answers every paused request, installs and releases its DevTools settings per tab, and reports target failures
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { interceptOrigin, interceptOrigins } from '../lense/intercept.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
+import { liveTimers } from './helpers/live-timers.mjs';
+
+const INTERCEPT = import.meta.resolve('../lense/intercept.mjs');
 
 const ORIGIN = 'https://portal.example.com';
 const URL = `${ORIGIN}/form`;
@@ -530,7 +534,186 @@ test('interception setup fails, instead of waiting forever, when a DevTools comm
     t.mock.timers.tick(5_000);
   }
   await ready;
-  assert.match(outcome, /Could not enable development interception: Fetch\.enable did not answer within 10000 ms/);
+  assert.match(outcome, /Could not enable development interception: Fetch\.enable did not answer within 30000 ms/);
+});
+
+/** A clock whose armed guards fire only when the test fires them. */
+function ownedClock() {
+  const guards = new Set();
+  const clock = {
+    setTimeout: (fire, ms, ...args) => {
+      const guard = { fire: () => fire(...args), ms };
+      guards.add(guard);
+      return guard;
+    },
+    clearTimeout: (guard) => guards.delete(guard),
+  };
+  return { guards, clock };
+}
+
+test('the setup hang guard runs on the clock its caller passes', async () => {
+  const { guards, clock } = ownedClock();
+  const b = fakeBrowser();
+  const tab = b.openTab();
+  const answer = tab.cdp.send;
+  const hanging = Promise.withResolvers();
+  tab.cdp.send = (method, params) =>
+    method === 'Fetch.enable' ? (hanging.resolve(), new Promise(() => {})) : answer(method, params);
+  const ready = interceptOrigin(b.context, ORIGIN, async () => {}, { onError: () => {}, clock });
+  await hanging.promise;
+  // Every answered step cleared its guard; only the unanswered command still waits on the passed clock.
+  assert.deepEqual(
+    [...guards].map(({ ms }) => ms),
+    [30_000],
+  );
+  [...guards][0].fire();
+  await assert.rejects(
+    ready,
+    /Could not enable development interception: Fetch\.enable did not answer within 30000 ms/,
+  );
+  assert.equal(guards.size, 0, 'the fired guard is released');
+});
+
+test('the release hang guard runs on the clock its caller passes', async () => {
+  const { guards, clock } = ownedClock();
+  const b = fakeBrowser();
+  const tab = b.openTab();
+  const answer = tab.cdp.send;
+  const disabling = Promise.withResolvers();
+  tab.cdp.send = (method, params) =>
+    method === 'Fetch.disable' ? (disabling.resolve(), new Promise(() => {})) : answer(method, params);
+  const errors = [];
+  const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, {
+    onError: (error) => errors.push(error.message),
+    clock,
+  });
+  assert.equal(guards.size, 0, 'setup left no guard armed');
+  const released = dispose();
+  await disabling.promise;
+  // Every answered release step cleared its guard; only the unanswered command still waits on the passed clock.
+  assert.deepEqual(
+    [...guards].map(({ ms }) => ms),
+    [5_000],
+  );
+  [...guards][0].fire();
+  await released;
+  assert.deepEqual(errors, ['Releasing development interception: Fetch.disable did not answer within 5000 ms']);
+  assert.ok(b.sent.some((s) => s.method === 'Network.setCacheDisabled' && s.cacheDisabled === false));
+  assert.equal(guards.size, 0, 'no release guard remains armed');
+});
+
+test('setup commands and an attachment answering after a renderer start of any length still install interception', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const live = liveTimers(t, INTERCEPT);
+  const b = fakeBrowser(),
+    tab = b.openTab();
+  const frameTree = Promise.withResolvers(),
+    attaching = Promise.withResolvers(),
+    attachment = Promise.withResolvers();
+  const answer = tab.cdp.send;
+  let first = true;
+  tab.cdp.send = (method, params) => {
+    if (method === 'Page.getFrameTree' && first) {
+      first = false;
+      return frameTree.promise.then(() => answer(method, params));
+    }
+    return answer(method, params);
+  };
+  const errors = [];
+  let ready = false;
+  const opening = interceptOrigin(b.context, ORIGIN, (route) => route.fallback(), {
+    onError: (error) => errors.push(error),
+    onAttach: () => {
+      attaching.resolve();
+      return attachment.promise;
+    },
+  }).then((dispose) => {
+    ready = true;
+    return dispose;
+  });
+  // The first command waits for the new tab's renderer; the old 10 s deadline passes without ending setup.
+  await setImmediate();
+  t.mock.timers.tick(10_001);
+  await setImmediate();
+  assert.equal(ready, false);
+  frameTree.resolve();
+  await attaching.promise;
+  t.mock.timers.tick(10_001);
+  await setImmediate();
+  assert.equal(ready, false, 'the attachment is still awaited');
+  attachment.resolve({ dispose: () => {} });
+  const dispose = await opening;
+  assert.deepEqual(errors, []);
+  assert.ok(b.sent.some(({ method }) => method === 'Fetch.enable'));
+  assert.equal(live.size, 0, 'no setup guard remains armed');
+  await dispose();
+});
+
+test('a page that closes, or interception that stops, ends a waiting setup at once and leaves nothing armed', async (t) => {
+  for (const ending of ['page closed', 'interception stopped']) {
+    const live = liveTimers(t, INTERCEPT);
+    const b = fakeBrowser();
+    const failures = [];
+    const dispose = await interceptOrigins(b.context, [ORIGIN], async () => {}, {
+      onError: (error) => failures.push(error),
+      onTargetError: (error) => failures.push(error),
+    });
+    const tab = b.openTab();
+    const answer = tab.cdp.send;
+    const asked = Promise.withResolvers();
+    tab.cdp.send = (method, params) => {
+      if (method !== 'Page.getFrameTree') return answer(method, params);
+      asked.resolve();
+      return new Promise(() => {});
+    };
+    b.context.emit('page', tab.page);
+    await asked.promise;
+    assert.equal(live.size, 1, `${ending}: the hang guard is armed while the renderer is awaited`);
+    let stopped = false;
+    if (ending === 'page closed') {
+      tab.page.isClosed = () => true;
+      tab.page.emit('close');
+    } else
+      dispose().then(() => {
+        stopped = true;
+      });
+    for (let i = 0; i < 20 && (live.size || (ending !== 'page closed' && !stopped)); i++) await setImmediate();
+    assert.equal(live.size, 0, `${ending}: the wait ended without its guard`);
+    if (ending !== 'page closed') assert.equal(stopped, true, 'stopping does not wait for the unanswered command');
+    assert.equal(tab.cdp.listenerCount('Fetch.requestPaused'), 0);
+    assert.deepEqual(failures, [], `${ending}: a closed or stopped setup is not a failure`);
+    await dispose();
+    t.mock.restoreAll();
+  }
+});
+
+test('an attachment reports provenance it could not deliver while its tab is live, and nothing after release', async () => {
+  const b = fakeBrowser(),
+    tab = b.openTab();
+  let report;
+  const errors = [];
+  const dispose = await interceptOrigin(b.context, ORIGIN, (route) => route.fallback(), {
+    onError: (error) => errors.push(error),
+    onAttach: (options) => {
+      report = options.report;
+      return () => {};
+    },
+  });
+  report(new Error('Runtime.callFunctionOn did not answer within 30000 ms'));
+  await setImmediate();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'reload_required');
+  assert.equal(errors[0].phase, 'provenance');
+  assert.match(
+    errors[0].message,
+    /Local provenance for this tab is incomplete: Runtime\.callFunctionOn did not answer/,
+  );
+  tab.page.emit('close');
+  report(new Error('late'));
+  await dispose();
+  report(new Error('later'));
+  await setImmediate();
+  assert.equal(errors.length, 1);
 });
 
 test('CSP is preserved unless bypass is explicitly requested', async () => {

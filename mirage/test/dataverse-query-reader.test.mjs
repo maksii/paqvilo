@@ -1,4 +1,5 @@
 // @test-kind unproven: Local HTTP query reader and parser models; no native recording is replayed by these tests.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -59,7 +60,7 @@ test('HTTP native query reader retains qualified parser positions and unary Nega
       }),
       log() {},
     });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const auth = await fetch(server.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({

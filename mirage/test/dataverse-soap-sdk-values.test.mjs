@@ -161,7 +161,7 @@ var alias=(AliasedValue)row["alias"];if(alias.EntityLogicalName!="widget"||alias
         input: `<root ${declarations}>${encodeValue('b:value', soapSdkValue(value()))}</root>`,
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 10000,
+        timeout: CLI_HANG_GUARD_MS,
       });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       assert.equal(result.stdout, 'observed');

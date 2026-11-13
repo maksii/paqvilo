@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { settledClockEnv } from './support/file-times.mjs';
 import {
   stateFingerprint,
@@ -17,7 +17,7 @@ import {
   cachedImplementationSourceFingerprint,
   implementationEvidence,
 } from '../lib/evidence.mjs';
-import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 test('implementation hashes ignore only generated SDK directories and retain authored and mapped assemblies', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-sdk-fingerprint-'));
@@ -111,9 +111,14 @@ test('cached fingerprints tolerate files and directories removed at their read g
   await assert.rejects(cachedSourceFingerprint(root), { code: 'EACCES' });
 });
 
-test('fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits', async (t) => {
-  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
-  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+/**
+ * A runtime in a temporary directory: its top-level files are copies and its folders link to the toolkit's, except the
+ * `ownFolders`, which are created empty. Fingerprints never follow links, so the copy's implementation hash covers only
+ * what the test owns.
+ */
+async function copiedRuntime(t, prefix, { ownFolders = [] } = {}) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
+  ownedFixture(t).remove(() => removeFixtureDirectory(directory));
   const toolkit = fileURLToPath(new URL('../../', import.meta.url));
   const runtime = path.join(directory, 'mirage');
   await fs.mkdir(runtime);
@@ -122,7 +127,8 @@ test('fresh startup seeds the complete implementation fingerprint cache and stat
   await fs.copyFile(path.join(toolkit, 'package.json'), path.join(directory, 'package.json'));
   for (const entry of await fs.readdir(path.join(toolkit, 'mirage'), { withFileTypes: true })) {
     if (entry.name === 'server.mjs' || entry.name === '.paqvilo') continue;
-    if (entry.isDirectory())
+    if (entry.isDirectory() && ownFolders.includes(entry.name)) await fs.mkdir(path.join(runtime, entry.name));
+    else if (entry.isDirectory())
       await fs.symlink(
         path.join(toolkit, 'mirage', entry.name),
         path.join(runtime, entry.name),
@@ -136,6 +142,11 @@ test('fresh startup seeds the complete implementation fingerprint cache and stat
     [path.join(directory, 'node_modules'), path.join(toolkit, 'node_modules')],
   ])
     await fs.symlink(actual, link, process.platform === 'win32' ? 'junction' : 'dir');
+  return { directory, runtime, target };
+}
+
+test('fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits', async (t) => {
+  const { directory, target } = await copiedRuntime(t, 'sim-fingerprint-startup-');
   const source = path.join(directory, 'portal');
   await fs.mkdir(source);
   await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Fingerprint fixture');
@@ -206,27 +217,26 @@ test('fresh startup seeds the complete implementation fingerprint cache and stat
 
 // @test-kind contract+tooling: generated SDK lock fixtures must preserve the implementation hash used by concurrent acceptance runs.
 test('fresh Mirage startup tolerates an exclusively locked SDK build product', async (t) => {
-  const implementationRoot = fileURLToPath(new URL('../', import.meta.url));
+  // A copied runtime with its own test-sdk folder: nothing else writes to the tree whose hash is compared.
+  const { runtime: implementationRoot, target } = await copiedRuntime(t, 'sim-fingerprint-lock-', {
+    ownFolders: ['test-sdk'],
+  });
   const before = await implementationSourceFingerprint(implementationRoot);
-  const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));
-  const owned = await makeTemporaryDirectory(path.join(sdkRoot, 'fingerprint-lock-'));
+  const owned = path.join(implementationRoot, 'test-sdk', 'fingerprint-lock');
   const generated = path.join(owned, 'obj', 'apphost.exe');
   const portal = path.join(owned, 'obj', 'portal');
   await fs.mkdir(portal, { recursive: true });
   await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Locked fixture\n');
-  await fs.mkdir(path.dirname(generated), { recursive: true });
   await fs.writeFile(generated, 'owned SDK build product');
-  let locker;
-  t.after(async () => {
-    if (locker && locker.exitCode === null) {
-      const exited = once(locker, 'exit');
-      locker.kill();
-      await exited;
+  const stop = (child) => async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill();
+      await closed;
     }
-    await fs.rm(owned, { recursive: true, force: true });
-  });
+  };
   if (process.platform === 'win32') {
-    locker = spawn(
+    const locker = spawn(
       'powershell.exe',
       [
         '-NoProfile',
@@ -236,16 +246,17 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', a
       ],
       { env: { ...process.env, PAQVILO_TEST_LOCK: generated }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
     );
+    ownedFixture(t).add(stop(locker));
     const [ready] = await once(locker.stdout, 'data');
     assert.match(ready.toString(), /LOCKED/);
-    await assert.rejects(sourceFingerprint(fileURLToPath(new URL('../', import.meta.url))), { code: 'EBUSY' });
+    await assert.rejects(sourceFingerprint(implementationRoot), { code: 'EBUSY' });
   }
   const child = spawn(
     process.execPath,
     [
       '--input-type=module',
       '-e',
-      `import { createSimulator } from ${JSON.stringify(new URL('../server.mjs', import.meta.url).href)}; let simulator; try { simulator = await createSimulator({ sourceDir: process.env.PAQ_TEST_PORTAL, stateFile: process.env.PAQ_TEST_STATE, port: 0, watch: false, dataverse: { enabled: false } }); await simulator.close(); simulator = undefined; console.log("MIRAGE_STARTED"); } finally { await simulator?.close(); }`,
+      `import { createSimulator } from ${JSON.stringify(pathToFileURL(target).href)}; let simulator; try { simulator = await createSimulator({ sourceDir: process.env.PAQ_TEST_PORTAL, stateFile: process.env.PAQ_TEST_STATE, port: 0, watch: false, dataverse: { enabled: false } }); await simulator.close(); simulator = undefined; console.log("MIRAGE_STARTED"); } finally { await simulator?.close(); }`,
     ],
     {
       env: {
@@ -257,6 +268,7 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', a
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
+  ownedFixture(t).add(stop(child));
   let stdout = '',
     stderr = '';
   child.stdout.on('data', (value) => {
@@ -264,9 +276,6 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', a
   });
   child.stderr.on('data', (value) => {
     stderr += value;
-  });
-  t.after(() => {
-    if (child.exitCode === null) child.kill();
   });
   const [code] = await once(child, 'close');
   assert.equal(code, 0, stderr);

@@ -1,5 +1,6 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud scenario: a Create carrying a money value runs RetrieveExchangeRate/transactioncurrency PreOperation, PostOperation and asynchronous steps (not its registered PreValidation step) under Create/25 (MultiCurrencyPlugin) < Create/30, as SYSTEM for the caller, input TransactionCurrencyId, output ExchangeRate already at PreOperation; Creates without a money value run none
 // @parity-evidence: native recorder captures 2026-10-30 currency (native and native-r2): a money PATCH runs RetrieveExchangeRate under Update/25; the fixture gains an Update step so the Update frame exists
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -76,7 +77,7 @@ async function fixture(t, extraSteps = []) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 

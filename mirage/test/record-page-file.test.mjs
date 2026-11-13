@@ -1,4 +1,5 @@
 // @test-kind contract: paged record file format, directory durability ordering and create cleanup are Paqvilo's own runtime design
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -48,13 +49,13 @@ test('published prefixes survive later appends and read-only restoration cannot 
     after = store.descriptor();
   assert.notDeepEqual(before, after);
   const reader = await RecordPageFile.open(file, before, { writable: true });
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.deepEqual(reader.read(first), bytes);
   assert.throws(() => reader.read(second), integrity);
   assert.throws(() => reader.append(1, bytes, 1), /not writable/);
   assert.deepEqual(reader.descriptor(), before);
   const latest = await RecordPageFile.open(file, after);
-  t.after(() => latest.close());
+  ownedFixture(t).add(() => latest.close());
   assert.deepEqual(latest.read(second), index);
   assert.deepEqual(latest.read(first), bytes);
 });
@@ -85,13 +86,13 @@ test('tampering is rejected during restoration and uncached page reads', async (
   const descriptor = store.descriptor(),
     legacy = fullReceipt(file, descriptor);
   const reader = await RecordPageFile.open(file, descriptor, { cacheBytes: 0 });
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   patchByte(file, store.page(id).offset + 5, () => 255);
   assert.throws(() => reader.read(id), integrity);
   await assert.rejects(RecordPageFile.open(file, legacy), integrity);
   // A header-chain receipt reads no payload while opening; the payload digest rejects the first read.
   const reopened = await RecordPageFile.open(file, descriptor, { cacheBytes: 0 });
-  t.after(() => reopened.close());
+  ownedFixture(t).add(() => reopened.close());
   assert.throws(() => reopened.read(id), integrity);
   patchByte(file, store.page(id).offset - 48 + 20, (byte) => byte ^ 1);
   await assert.rejects(RecordPageFile.open(file, descriptor), integrity);
@@ -118,7 +119,7 @@ test('short writes roll back the suffix without changing the preceding receipt',
   assert.equal(fs.statSync(file).size, before.bytes);
   assert.deepEqual(store.descriptor(), before);
   const reader = await RecordPageFile.open(file, before);
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.match(reader.read(1).toString(), /before/);
   store.append(1, Buffer.from('[{"id":"after"}]'), 1);
   assert.equal(store.descriptor().pages, 2);
@@ -150,7 +151,7 @@ test('failed durability cannot publish a receipt and rollback failure poisons on
   syncFailure = true;
   assert.throws(() => store.descriptor(), /Invented flush failure/);
   const reader = await RecordPageFile.open(file, before);
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.match(reader.read(1).toString(), /durable/);
   syncFailure = false;
   writeFailure = true;
@@ -200,7 +201,7 @@ test('multiple published prefixes verify in one pass while a later owned append 
     },
   };
   const reader = await RecordPageFile.open(file, after, { prefixes: [before, after], io });
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.equal(
     readBytes,
     Buffer.byteLength('PAQVILO-RECORD-PAGES-1\n') + 2 * 48,
@@ -219,7 +220,7 @@ test('multiple published prefixes verify in one pass while a later owned append 
   const legacyBefore = fullReceipt(file, before),
     legacyAfter = fullReceipt(file, after);
   const legacy = await RecordPageFile.open(file, legacyAfter, { prefixes: [legacyBefore, before], io });
-  t.after(() => legacy.close());
+  ownedFixture(t).add(() => legacy.close());
   assert.equal(readBytes, after.bytes);
   assert.match(legacy.read(2).toString(), /second/);
   assert.deepEqual(legacy.descriptor(), after, 'A verified legacy file publishes header-chain receipts.');
@@ -261,7 +262,7 @@ test('pages are written with Brotli and files written with gzip pages stay reada
   assert.equal(store.page(id).codec, 1);
   assert.deepEqual(store.read(id), raw);
   const reader = await RecordPageFile.open(file, store.descriptor());
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.deepEqual(reader.read(id), raw);
 
   // The earlier layout: kind word without a codec byte and a gzip payload.
@@ -277,7 +278,7 @@ test('pages are written with Brotli and files written with gzip pages stay reada
   const legacy = path.join(root, 'legacy.pages');
   fs.writeFileSync(legacy, Buffer.concat([magic, header, payload]));
   const old = await RecordPageFile.open(legacy, fullReceipt(legacy, { bytes: fs.statSync(legacy).size, pages: 1 }));
-  t.after(() => old.close());
+  ownedFixture(t).add(() => old.close());
   assert.equal(old.page(1).codec, 0);
   assert.deepEqual(old.read(1), raw);
 });

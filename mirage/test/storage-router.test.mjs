@@ -205,14 +205,14 @@ test('the azurite kind is contract until configured, and create() without a conn
   );
 });
 
-test('azurite preflight probes a loopback endpoint and reports a closed port', async (t) => {
+test('azurite preflight probes a loopback endpoint and reports one that drops the connection', async (t) => {
   const seen = [];
   const server = http.createServer((request, response) => {
     seen.push(request.url);
     response.writeHead(200).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const { port } = server.address();
   const up = await preflight({ blobEndpoint: `http://127.0.0.1:${port}/devstoreaccount1?sig=inventedSecret` });
   assert.equal(up.reachable, true);
@@ -220,11 +220,12 @@ test('azurite preflight probes a loopback endpoint and reports a closed port', a
   assert.deepEqual(seen, ['/devstoreaccount1?restype=service&comp=properties']);
   assert.doesNotMatch(up.message, /inventedSecret/);
 
-  const closed = http.createServer();
-  await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
-  const closedPort = closed.address().port;
-  await new Promise((resolve) => closed.close(resolve));
-  const down = await preflight({ blobEndpoint: `http://127.0.0.1:${closedPort}/devstoreaccount1`, timeoutMs: 1000 });
+  // A listener the test keeps open drops every connection: a released port could be taken by another process.
+  const dropping = http.createServer();
+  dropping.on('connection', (socket) => socket.destroy());
+  await new Promise((resolve) => dropping.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => new Promise((resolve) => dropping.close(resolve)));
+  const down = await preflight({ blobEndpoint: `http://127.0.0.1:${dropping.address().port}/devstoreaccount1` });
   assert.equal(down.reachable, false);
   assert.equal(down.status, null);
   assert.equal(down.diagnostic, 'PROVIDER_UNREACHABLE');

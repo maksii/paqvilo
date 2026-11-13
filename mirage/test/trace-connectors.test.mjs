@@ -4,19 +4,13 @@
 // span's trace headers so the local service's root joins the trace.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
+import { serveHandler as listen } from './support/route-server.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
 
 const manual = { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object' } } } };
-async function listen(t, handler) {
-  const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return `http://127.0.0.1:${server.address().port}`;
-}
 async function traced(level = 'full', packs = []) {
   const store = await new DataStore({ state: emptyState() }).init();
   store.traces = createTraceStore({ settings: { level } });

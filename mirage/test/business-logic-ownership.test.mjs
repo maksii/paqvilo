@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo bypass ownership: only evidence-backed observed settings protect steps; unknown ownership is diagnosed without exposing evidence
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observedConfig } from '../lib/project-config.mjs';
@@ -53,7 +54,7 @@ test('the existing host capability inventory exposes unqualified ownership witho
     store,
     sources: { plugins: () => plugins, workflows: () => [], layers: () => [] },
   });
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   const record = host
     .capabilities()
     .list()

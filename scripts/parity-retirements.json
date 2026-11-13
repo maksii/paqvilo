@@ -305,6 +305,216 @@
       "file": "mirage/test/webapi-native-contract.test.mjs",
       "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
       "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/customapi-plugin-pipeline.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; 1 directory removal registered before a later closer now registered with ownedFixture(t).remove so it runs after the closers; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/dataverse-soap-sdk-values.test.mjs",
+      "reason": "Cleanup registration and time budgets only: a 10 s spawnSync timeout on the SDK oracle child replaced by the file hang guard CLI_HANG_GUARD_MS (170 s); no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/dataverse-soap.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-context.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-parent-chain.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 3 directory removals without retries now use removeFixtureDirectory; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-preemption.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 2 closers registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-read-rollback.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 2 closers registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-retry.test.mjs",
+      "reason": "Cleanup registration and time budgets only: the test's own 180 s timeout option removed in favour of the runner's --test-timeout; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-snapshot.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-async-targets.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; 1 directory removal registered before a later closer now registered with ownedFixture(t).remove so it runs after the closers; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-batch-shared-variables.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-bulk-parents.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; 1 directory removal registered before a later closer now registered with ownedFixture(t).remove so it runs after the closers; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-bulk-target-shape.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; 1 directory removal registered before a later closer now registered with ownedFixture(t).remove so it runs after the closers; a 30 s CLR runtime timeoutMs replaced by the shared ORDINARY_CLR_TIMEOUT_MS; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-clr-depth.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-clr-run-as.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-context4-images.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-data-semantics.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-entry-points.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 3 closers registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-image-values.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 2 closers registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-merge.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-merged-operation-context.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 2 closers registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-platform-messages.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import, inserted inside the file-level parity scope (two more closers converted in contract and compatibility tests); no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-query-like.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-read-inputs.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-read-step-writes.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-registration-parity.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-request-root-changes.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-retrieve-exchange-rate.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-retrieve-related.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-bulk-stamps.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-bulk-upsert-key.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-caught-refusals.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-fault-transaction.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-input-sets.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-parent.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-sdk-versionnumber.test.mjs",
+      "reason": "Cleanup registration and time budgets only: the ownedFixture import for a closer converted in a compatibility test, inserted inside the file-level parity scope; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-single-multiple.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; 1 directory removal registered before a later closer now registered with ownedFixture(t).remove so it runs after the closers; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-standard-table-semantics.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-transaction-flags.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/plugin-upsert-identity.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 closer registered with t.after now registered with ownedFixture(t).add; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/webhook-message-values.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 1 directory removal without retries now uses removeFixtureDirectory; a 10 s spawnSync timeout on the SDK oracle child replaced by the file hang guard CLI_HANG_GUARD_MS (170 s); no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
+    },
+    {
+      "file": "mirage/test/webhook-sdk-values.test.mjs",
+      "reason": "Cleanup registration and time budgets only: 2 closers registered with t.after now registered with ownedFixture(t).add; a 10 s spawnSync timeout on the SDK oracle child replaced by the file hang guard CLI_HANG_GUARD_MS (170 s), declared at the top of the file; the matching import; no assertion, expected value or input changed.",
+      "authority": "user request 2026-11-13: resolve the timing and cleanup lines in the hand-written parity tests listed by the PR 23 delivery reviews"
     }
   ]
 }

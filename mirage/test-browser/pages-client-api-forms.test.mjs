@@ -318,7 +318,7 @@ test('$pages full name, rich text and code component controls read and write the
   const { html, spec } = await renderedContactForm();
   const { clientPortalObjectRuntime } = await import('../lib/portal-client-object.mjs');
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   // setIsDirty is the native form script the rendered inputs call on change.

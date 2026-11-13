@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -42,7 +43,7 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
     if (req.method === 'GET' && !res.writableEnded) observeHeld();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     readiness.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

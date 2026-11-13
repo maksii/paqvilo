@@ -3,6 +3,7 @@
 // @parity-evidence: native mergeAccount (native and native-r2) events 25-30 UserId SYSTEM; the merge helper also parses the observer's UserId field (no existing assertion changed)
 // An original CLR observer registered on Merge and the Updates it runs logs what each execution sees: images by
 // message property, the Updates' Targets and the parent chain. Invented loopback accounts and identities only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -119,7 +120,7 @@ async function mergeFixture(t, steps, { fields = {} } = {}) {
     descriptors,
     scheduler,
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const merge = async (body = {}, { tag } = {}) => {
     const answer = await f.request('POST', '/Merge' + (tag === undefined ? '' : `?tag=${encodeURIComponent(tag)}`), {
       Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: target },

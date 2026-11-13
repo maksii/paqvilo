@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -102,7 +103,7 @@ test('native model-driven overlaid JavaScript attributes actual created DOM thro
     imported,
     stop() {},
   });
-  t.after(() => controller.close());
+  ownedFixture(t).add(() => controller.close());
   await page.goto(origin + '/native-script-fixture');
   await page.locator('#fixture-script-created-2').waitFor();
   await page.waitForFunction(() => document.getElementById('paqvilo-xray')?.__px);
@@ -518,7 +519,7 @@ test('actual Xray selection hydrates a cold native control beyond the form and c
     },
     stop() {},
   });
-  t.after(() => controller.close());
+  ownedFixture(t).add(() => controller.close());
   await page.waitForFunction(
     () =>
       window.__paqviloModelDrivenProvider &&

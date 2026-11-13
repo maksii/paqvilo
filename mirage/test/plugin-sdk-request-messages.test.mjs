@@ -1,5 +1,6 @@
 // @test-kind unproven: requests whose sdkmessage has another name (AddMembersTeam -> AddMembers, PublishXml -> Publish) run their steps under the sdkmessage the native filter catalogues list; no native capture of these messages' pipelines yet (NATIVE unpipelined-message-steps)
 // Invented tables, identities and steps only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -45,7 +46,7 @@ async function fixture(t, steps) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen };
 }
 const execute = (f, requestName, values) => {

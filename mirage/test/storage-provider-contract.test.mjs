@@ -25,7 +25,7 @@ runStorageContract(
   test,
   (t) => {
     const storage = assertProvider(createMemoryStorage());
-    t.after(() => storage.close());
+    ownedFixture(t).add(() => storage.close());
     return storage;
   },
   { label: 'memory' },

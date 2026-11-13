@@ -12,8 +12,11 @@ import { createLocalMessageBus, createServiceBusEmulatorBus } from '../lib/messa
 import { decodeMessage } from '../lib/amqp-client.mjs';
 import { parseExactJson, stringifyExactJson } from '../lib/exact-numeric.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 const id = '20000000-0000-0000-0000-000000000001';
 const name = 'invented_MixedCase';
@@ -64,7 +67,7 @@ c.PreEntityImages["Null"]=new Entity("widget",new Guid("${id}"));
 var serializer=new DataContractJsonSerializer(typeof(RemoteExecutionContext));using(var stream=new MemoryStream()){serializer.WriteObject(stream,c);Console.Write(Encoding.UTF8.GetString(stream.ToArray()));}}}`,
     );
     compileClr(source, executable, { target: 'exe', references: [sdk, 'System.Runtime.Serialization.dll'] });
-    const oracle = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    const oracle = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
     assert.equal(oracle.status, 0, oracle.stderr);
     const oracleContext = parseExactJson(oracle.stdout);
     const expected = parameterValues(oracleContext);
@@ -90,7 +93,7 @@ var serializer=new DataContractJsonSerializer(typeof(RemoteExecutionContext));us
       });
     });
     await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-    t.after(
+    ownedFixture(t).add(
       () =>
         new Promise((resolve) => {
           receiver.close(resolve);
@@ -162,7 +165,7 @@ var serializer=new DataContractJsonSerializer(typeof(RemoteExecutionContext));us
           'Endpoint=sb://127.0.0.1;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=invented-exact-key;UseDevelopmentEmulator=true;',
       },
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await bus.close();
       await broker.close();
     });

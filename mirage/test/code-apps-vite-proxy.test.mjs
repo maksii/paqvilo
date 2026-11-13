@@ -1,4 +1,5 @@
 // @test-kind security: the Code Apps Vite proxy answers a foreign Origin itself and forwards no browser-only request metadata
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -58,7 +59,7 @@ async function stubTarget(t) {
     received.push(req.headers);
     res.end('ok');
   });
-  t.after(() => close(target));
+  ownedFixture(t).add(() => close(target));
   return { received, port: await listen(target) };
 }
 

@@ -7,7 +7,7 @@ import os from 'node:os';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('postback mode submits actual URLencoded successful controls and navigates to escaped source HTML', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-browser-postback-'));
@@ -65,7 +65,7 @@ test('postback mode submits actual URLencoded successful controls and navigates 
     },
   });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser.close();
     await app.close();
     await fs.rm(root, { recursive: true, force: true });

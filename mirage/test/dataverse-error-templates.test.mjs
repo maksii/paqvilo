@@ -1,4 +1,5 @@
 // @test-kind contract: Explicit trusted response templates reproduce configured diagnostics; invented suffixes claim no native behavior.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -248,7 +249,7 @@ test('standalone organization and Mirage forward separately observed Dataverse t
       observed: { dataverseErrorStacks: 'response-template' },
       errorTemplates: collectDataverseErrorTemplates([{ id: 'reader', dataverseErrorTemplates: capability() }]),
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await api.close();
       await organization.close();
     });
@@ -256,6 +257,7 @@ test('standalone organization and Mirage forward separately observed Dataverse t
   });
   await t.test('Mirage registered matching pack', async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-template-contract-'));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(
       path.join(directory, 'website.yml'),
       'adx_websiteid: 90000000-0000-4000-8000-000000000003\nadx_name: Invented template fixture\n',
@@ -275,10 +277,7 @@ test('standalone organization and Mirage forward separately observed Dataverse t
       dataPacks: [{ id: 'reader', module }],
       observed: { dataverseErrorStacks: 'response-template', evidence: 'Invented registered-pack wiring contract' },
     });
-    t.after(async () => {
-      await simulator.close();
-      await fs.rm(directory, { recursive: true, force: true });
-    });
+    ownedFixture(t).add(() => simulator.close());
     await check(simulator.dataverse);
   });
 });

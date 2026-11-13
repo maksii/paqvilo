@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFixtureRecipes } from '../testing.mjs';
@@ -39,8 +40,8 @@ test('named recreation coordinates state, IDs, clock and scheduled outcomes with
   assert.deepEqual(await replay(), await replay());
   const a = recipes.create('baseline'),
     b = recipes.create('baseline');
-  t.after(() => a.scheduler.close());
-  t.after(() => b.scheduler.close());
+  ownedFixture(t).add(() => a.scheduler.close());
+  ownedFixture(t).add(() => b.scheduler.close());
   a.scheduler.schedule(() => a.state.tables.x_item.push({ x_name: 'must not run in b' }), { delay: 100 });
   a.clock.advance(50);
   a.ids.uuid();

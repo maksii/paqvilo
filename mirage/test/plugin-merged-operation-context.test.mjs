@@ -1,4 +1,5 @@
 // @test-kind unproven: shared RequestId/OperationId/CorrelationId across merged single and multiple lanes is a local model
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -105,7 +106,7 @@ test('typed scalar-first and multiple-first lanes share operation metadata and v
           ]);
         const items = pluginCatalogue({ plugins: { steps: f.steps }, handlers }),
           backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-        t.after(async () => {
+        ownedFixture(t).add(async () => {
           await backend.close();
           f.store.close();
         });
@@ -140,7 +141,7 @@ test('synchronous multiple-step metadata and shared variables reach queued scala
         .map((step) => ({ ...step, mode: step.message.endsWith('Multiple') ? 0 : 1 }));
       const items = pluginCatalogue({ plugins: { steps }, handlers }),
         backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers, scheduler });
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         await backend.close();
         f.store.close();
       });
@@ -226,7 +227,7 @@ test(
               }),
           });
           t.after(() => tracker.verifyClose(mounted.backend));
-          t.after(() => f.store.close());
+          ownedFixture(t).add(() => f.store.close());
           await fs.writeFile(log, '');
           await f.invoke();
           const seen = (await fs.readFile(log, 'utf8'))

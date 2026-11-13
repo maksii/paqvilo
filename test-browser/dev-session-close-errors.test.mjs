@@ -22,7 +22,21 @@ import { createCdpFaultProxy } from './helpers/cdp-fault-proxy.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
+
+/** A clock for the interception guards: an armed guard fires only when the test fires it. */
+function ownedClock() {
+  const guards = new Set();
+  const clock = {
+    setTimeout: (fire, ms, ...args) => {
+      const guard = { fire: () => fire(...args), ms };
+      guards.add(guard);
+      return guard;
+    },
+    clearTimeout: (guard) => guards.delete(guard),
+  };
+  return { guards, clock };
+}
 
 async function fixture(t) {
   const owner = ownedFixture(t);
@@ -94,7 +108,6 @@ async function fixture(t) {
 
 test('owned browser isolates real wire timeouts in tabs and popups, cancellation, retry and transport loss', async (t) => {
   const { owner, origin, selection, browserOptions, source } = await fixture(t);
-  const debugPort = await freeDebugPort();
   const launch = chromium.launchPersistentContext;
   // Network confinement only; the fault is injected by the independent proxy.
   t.mock.method(chromium, 'launchPersistentContext', (profile, options) =>
@@ -104,8 +117,9 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
       args: [...options.args, ...browserOptions.args],
     }),
   );
-  const owned = await openBrowser(selection.initial, { headless: true, debugPort });
+  const owned = await startOnFreePort((debugPort) => openBrowser(selection.initial, { headless: true, debugPort }));
   owner.add(() => owned.close());
+  const { debugPort } = owned;
   assert.equal(owned.attached, false);
   const version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((response) => response.json());
   const proxy = await createCdpFaultProxy(version.webSocketDebuggerUrl, t.signal);
@@ -115,11 +129,15 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
   const context = browser.contexts()[0],
     logs = [];
   const stopped = Promise.withResolvers();
+  // The setup hang guards run on this clock, so the test fires a guard when the proxy has dropped its command
+  // instead of waiting the real 30 s; healthy tabs are never ended by it.
+  const { guards, clock } = ownedClock();
   const runtime = await startDevSessions(context, selection, {
     attached: owned.attached,
     debugPort,
     stop: () => stopped.resolve(),
     log: (line) => logs.push(line),
+    clock,
   });
   owner.add(() => runtime.close());
   // These are the same owner stop events used by the development CLI.
@@ -154,6 +172,7 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
   await cancelling;
   await cancelled.close();
   for (const popup of [false, true]) {
+    const armedBefore = new Set(guards);
     const fault = proxy.arm();
     let failed;
     if (popup) {
@@ -163,6 +182,12 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
     } else failed = await context.newPage();
     const dropped = await fault;
     assert.equal(dropped.method, 'Page.getFrameTree');
+    // The guard is armed before its command is sent, so the dropped command's guard is the setup guard (30 s) armed
+    // since the fault. The cancelled tab's release can still arm and clear its own 5 s guards meanwhile, and nothing
+    // reports when that release ends, so the setup guard is selected by its duration.
+    const waiting = [...guards].filter((guard) => !armedBefore.has(guard) && guard.ms === 30_000);
+    assert.equal(waiting.length, 1, 'exactly one setup guard waits for the dropped command');
+    waiting[0].fire();
     if (!failed.isClosed()) await failed.waitForEvent('close');
     assert.equal(runtime.failure, undefined);
     assert.equal(runtime.active.size, 1);
@@ -178,7 +203,7 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
     assert.equal(events.dropped, 0);
   }
   assert.equal(proxy.dropped.length, 3, 'one actual unanswered command per cancelled/tab/popup initializer');
-  assert.equal(logs.filter((line) => line.includes('Page.getFrameTree did not answer within 10000 ms')).length, 2);
+  assert.equal(logs.filter((line) => line.includes('Page.getFrameTree did not answer within 30000 ms')).length, 2);
   // Live JS saves intentionally reload pages. Turn that user option off before
   // testing watcher/retry continuity with unsaved drafts still present.
   record.session.liveReload = false;
@@ -226,12 +251,25 @@ for (const attached of [false, true]) {
     // navigate; a tab opened afterwards can need a late repair reload that would replace a
     // draft typed too early. Only the failing tab is new to the running session.
     const healthy = [await context.newPage(), await context.newPage()];
+    // The release hang guard runs on this clock, so the test fires it once the owned case's Fetch.disable is unanswered
+    // instead of waiting the real 5 s.
+    const { guards, clock } = ownedClock();
+    const disabling = Promise.withResolvers();
+    // A test that fails before it fires a guard leaves that guard's wait (the never-answered Fetch.disable) pending, and
+    // the runtime's close waits on it: fire every guard still armed first, as the real timers would.
+    owner.add(() => {
+      for (const guard of [...guards]) {
+        guards.delete(guard);
+        guard.fire();
+      }
+    });
     const runtime = await startDevSessions(context, selection, {
       attached,
       stop: () => {
         stopped = true;
       },
       log: (line) => logs.push(line),
+      clock,
     });
     owner.add(() => runtime.close());
     for (const [index, page] of healthy.entries()) {
@@ -256,9 +294,9 @@ for (const attached of [false, true]) {
         const send = cdp.send.bind(cdp);
         cdp.send = (method, params) =>
           method === 'Page.getFrameTree'
-            ? Promise.reject(new Error('Page.getFrameTree did not answer within 10000 ms'))
+            ? Promise.reject(new Error('Page.getFrameTree did not answer within 30000 ms'))
             : method === 'Fetch.disable' && !attached
-              ? new Promise(() => {})
+              ? (disabling.resolve(), new Promise(() => {}))
               : send(method, params);
       } else if (injected && !healthy.includes(page)) {
         const send = cdp.send.bind(cdp);
@@ -270,9 +308,20 @@ for (const attached of [false, true]) {
       }
       return cdp;
     });
+    const armedBefore = new Set(guards);
     const failed = await context.newPage();
     if (attached) await failed.waitForFunction(() => document.title === 'Local preview unavailable');
-    else if (!failed.isClosed()) await failed.waitForEvent('close');
+    else {
+      await disabling.promise;
+      // The guard is armed before its command is sent, so the unanswered Fetch.disable's guard is the one armed since.
+      const waiting = [...guards].filter((guard) => !armedBefore.has(guard));
+      assert.deepEqual(
+        waiting.map(({ ms }) => ms),
+        [5_000],
+      );
+      waiting[0].fire();
+      if (!failed.isClosed()) await failed.waitForEvent('close');
+    }
     assert.equal(stopped, false);
     assert.equal(runtime.failure, undefined);
     assert.equal(runtime.active.size, 1);
@@ -447,32 +496,44 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
     ),
   );
   env.PAQVILO_TEST_LOOPBACK_PROXY = origin;
-  const debugPort = await freeDebugPort();
-  const child = spawn(
-    process.execPath,
-    ['--import', preload, 'lense/cli.mjs', 'dev', '--config', config, '--headless', '--debug-port', String(debugPort)],
-    {
-      cwd: fileURLToPath(new URL('..', import.meta.url)),
-      env,
-      signal: t.signal,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  const output = childOutput(child, { limit: 32000 });
-  const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
-  child.on('error', () => {}); // Abort is owned by the test deadline; close is still awaited.
   let blocker, remoteBrowser;
-  owner.add(async () => {
-    if (child.exitCode === null && child.signalCode === null && !child.killed) child.kill();
-    await closed;
-    if (blocker) await fs.rmdir(blocker);
+  const { debugPort, child, output, closed, advertised } = await startOnFreePort(async (debugPort) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        preload,
+        'lense/cli.mjs',
+        'dev',
+        '--config',
+        config,
+        '--headless',
+        '--debug-port',
+        String(debugPort),
+      ],
+      {
+        cwd: fileURLToPath(new URL('..', import.meta.url)),
+        env,
+        signal: t.signal,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const output = childOutput(child, { limit: 32000 });
+    const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
+    child.on('error', () => {}); // Abort is owned by the test deadline; close is still awaited.
+    owner.add(async () => {
+      if (child.exitCode === null && child.signalCode === null && !child.killed) child.kill();
+      await closed;
+    });
+    // dev prints the discovery path once the file is completely written; the browser and its port exist by then.
+    const [, advertised] = await output.waitFor(/^agent API\s+.+?: (.+\.json)\s*$/m, {
+      label: 'actual dev must reach its agent startup',
+    });
+    return { debugPort, child, output, closed, advertised };
   });
+  owner.add(() => blocker && fs.rmdir(blocker));
   owner.add(() => remoteBrowser?.close());
-  // dev prints the discovery path once the file is completely written.
-  const [, advertised] = await output.waitFor(/^agent API\s+.+?: (.+\.json)\s*$/m, {
-    label: 'actual dev must reach its agent startup',
-  });
   blocker = advertised;
   const discovery = JSON.parse(await fs.readFile(blocker, 'utf8'));
   assert.equal(discovery.pid, child.pid, 'the blocker belongs to this exact CLI child');

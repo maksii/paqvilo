@@ -12,8 +12,10 @@ import { panelUi } from '../lense/panel-ui.mjs';
 import { createFixture, SITE, SCRIPTS_ID } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
 import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
 
 const ORIGIN = 'https://portal.example.com';
+const PANEL = import.meta.resolve('../lense/panel.mjs');
 const fx = createFixture();
 const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-'));
 const panels = [];
@@ -1147,6 +1149,172 @@ test('disposing the panel clears scheduled work and releases session listeners',
   assert.equal(session.listenerCount('refreshed'), 0);
   assert.equal(session.api, null);
   assert.equal(b.context.listenerCount('page'), 1, 'only interception remains');
+});
+
+/** Holds the removal evaluation of `page` until the test answers it, and counts the panel's live timers. */
+function heldRemoval(t, page) {
+  const held = Promise.withResolvers(),
+    asked = Promise.withResolvers(),
+    live = new Set();
+  const evaluate = page.evaluate;
+  page.evaluate = (fn, data) => {
+    if (fn?.name !== 'removePanelUi') return evaluate(fn, data);
+    asked.resolve();
+    return held.promise.then(() => evaluate(fn, data));
+  };
+  const set = globalThis.setTimeout,
+    clear = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
+    if (!calledFrom(PANEL, import.meta.url)) return set(callback, delay, ...rest);
+    const handle = set(
+      (...args) => {
+        live.delete(handle);
+        callback(...args);
+      },
+      delay,
+      ...rest,
+    );
+    live.add(handle);
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (handle) => {
+    live.delete(handle);
+    return clear(handle);
+  });
+  return { held, asked: asked.promise, live };
+}
+
+// @test-kind contract: disposing the panel means it was removed from every tab, however late a tab answers
+test('dispose resolves once a tab confirms the removal, however late it answers, and leaves nothing armed', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const removal = heldRemoval(t, tab.page);
+  let settled = false;
+  const disposal = panel.dispose().then(() => {
+    settled = true;
+  });
+  await removal.asked;
+  t.mock.timers.tick(2_001);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the removal is still awaited past the old 2 s deadline');
+  removal.held.resolve();
+  await disposal;
+  assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'the removal ran in the tab');
+  assert.equal(removal.live.size, 0, 'no removal guard remains armed');
+});
+
+// @test-kind contract: a closed tab ends the panel removal at once
+test('a tab that closes during the removal ends dispose at once', async (t) => {
+  const closing = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const closed = heldRemoval(t, closing.tab.page);
+  let settled = false;
+  const disposal = closing.panel.dispose().then(() => {
+    settled = true;
+  });
+  await closed.asked;
+  closing.tab.page.isClosed = () => true;
+  closing.tab.page.emit('close');
+  for (let i = 0; i < 20 && !settled; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, true, 'no timer had to fire');
+  await disposal;
+  assert.equal(closed.live.size, 0);
+});
+
+// @test-kind contract: a panel removal that a tab never answers is reported, not resolved as removed
+test('a tab that never answers the removal makes dispose report it', async (t) => {
+  const silent = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const unanswered = heldRemoval(t, silent.tab.page);
+  const reported = assert.rejects(
+    silent.panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): a tab did not answer within 30000 ms/,
+  );
+  await unanswered.asked;
+  t.mock.timers.tick(30_000);
+  await reported;
+  assert.equal(unanswered.live.size, 0);
+});
+
+/** Answers each removal ask of `page` with the next of `answers`: a function run when the ask arrives. */
+function scriptedRemoval(page, answers) {
+  const evaluate = page.evaluate;
+  let asks = 0;
+  page.evaluate = (fn, data) => {
+    if (fn?.name !== 'removePanelUi') return evaluate(fn, data);
+    const answer = answers[asks++];
+    return answer ? answer() : evaluate(fn, data);
+  };
+  return { asks: () => asks };
+}
+
+// @test-kind contract: a removal ask that a committed document replaced is asked again in each new document
+test('dispose asks again in every document a tab commits during the removal', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const main = tab.page.mainFrame();
+  const replaced = () => Promise.reject(new Error('Execution context was destroyed'));
+  const removal = scriptedRemoval(tab.page, [
+    // The first document is replaced, and its commit is reported after the failed ask.
+    () =>
+      replaced().finally(() =>
+        setImmediate(() => {
+          tab.page.emit('framenavigated', {});
+          tab.page.emit('framenavigated', main);
+        }),
+      ),
+    // The second document is replaced too, its commit reported before the failed ask.
+    () => {
+      tab.page.emit('framenavigated', main);
+      return replaced();
+    },
+  ]);
+  await panel.dispose();
+  assert.equal(removal.asks(), 3, 'each committed document was asked once');
+  assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'the removal ran in the last document');
+});
+
+// @test-kind contract: a removal ask that fails without a new document is reported once the guard ends the wait
+test('a removal ask that fails without a new document is reported with its reason', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let asked;
+  const failedAsk = new Promise((resolve) => {
+    asked = resolve;
+  });
+  const removal = scriptedRemoval(tab.page, [
+    () => {
+      asked();
+      return Promise.reject(new Error('invented evaluation failure'));
+    },
+  ]);
+  const reported = assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): invented evaluation failure/,
+  );
+  await failedAsk;
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  await reported;
+  assert.equal(removal.asks(), 1);
+});
+
+// @test-kind contract: a tab that crashes during the removal ends the wait at once and is reported with the ask's reason
+test('a tab that crashes during the removal makes dispose report it at once', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // A crashed tab rejects the ask and emits `crash`, never `close`; the crash may be reported after the failed ask.
+  scriptedRemoval(tab.page, [
+    () =>
+      Promise.reject(new Error('page.evaluate: Target crashed')).finally(() =>
+        setImmediate(() => tab.page.emit('crash', tab.page)),
+      ),
+  ]);
+  await assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): page\.evaluate: Target crashed/,
+  );
+  assert.equal(tab.page.listenerCount('crash'), 0, 'the removal released its crash listener');
 });
 
 // @test-kind contract: closing a tab immediately releases its panel listeners

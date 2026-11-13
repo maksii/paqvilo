@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own _sim service, flow, capability and pack views; purge, approval and preflight calls carry the CSRF header and render as designed
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -236,10 +237,10 @@ test('admin service views peek and purge, answer approvals, run preflight and ex
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 390, height: 900 } });
   const page = await context.newPage();
   const errors = [];

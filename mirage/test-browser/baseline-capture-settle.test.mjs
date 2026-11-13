@@ -1,4 +1,5 @@
 // @test-kind contract: baseline capture reports nonempty settle outcomes for progress, readiness and timeout cases
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -6,7 +7,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { pageRunner } from '../baseline-capture.mjs';
 test('capture distinguishes persistent progress from loading and surfaces readiness timeouts', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   const page = await context.newPage();
   let markup = '';

@@ -1,6 +1,7 @@
 // @test-kind contract: Paqvilo's own local-service declarations, probe bounds (the shared idle window, or the caller's timeoutMs) and capability records.
-// localServices: loopback-only validation, probes against a loopback stub, a closed port and a redirect, the
+// localServices: loopback-only validation, probes against a loopback stub, a refusing port and a redirect, the
 // Service Bus declaration without printing its connection string, and the capability records.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -11,18 +12,18 @@ import { PREFLIGHT_IDLE_TIMEOUT_MS } from '../lib/storage-provider.mjs';
 async function stub(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
   return `http://127.0.0.1:${server.address().port}`;
 }
-async function closedPort() {
-  const server = net.createServer();
+// A port this test owns that refuses every request: each connection is closed unanswered.
+async function refusingPort(t) {
+  const server = net.createServer((socket) => socket.destroy());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  return server.address().port;
 }
 
 // @test-kind security: local services must be loopback and cannot carry connection strings
@@ -94,7 +95,7 @@ test('baseUrl and blob reject credentials, query strings and fragments', () => {
   );
 });
 
-test('preflight reports a loopback stub, a closed port and a refused redirect without throwing', async (t) => {
+test('preflight reports a loopback stub, a refusing port and a refused redirect without throwing', async (t) => {
   const origin = await stub(t, (req, res) => {
     if (req.url === '/moved') {
       res.writeHead(302, { location: 'http://fx.example.test/' });
@@ -103,7 +104,7 @@ test('preflight reports a loopback stub, a closed port and a refused redirect wi
     res.writeHead(200);
     res.end('ok');
   });
-  const port = await closedPort();
+  const port = await refusingPort(t);
   const results = await preflightLocalServices(
     {
       functions: { kind: 'http', baseUrl: origin, probe: '/admin/host/status?code=fx-function-key', required: true },

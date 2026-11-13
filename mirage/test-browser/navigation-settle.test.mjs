@@ -1,4 +1,5 @@
 // @test-kind contract: a document navigation waits for the replaced page's in-flight script writes, bounded by the settle timeout
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -73,13 +74,13 @@ async function fixture(t, { holdWrite = true, pause = true, timeout = 60_000, sy
     }, 400);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     // A preconnected socket that never sent a request would hold server.close open.
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   // The runner's bookkeeping: CDP Network records and paused document requests.
   const cdp = await page.context().newCDPSession(page);
   const records = new Map();

@@ -6,7 +6,7 @@
 // status, and visible help on every control.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import { loopbackServer, serveAdminFile } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,7 +19,6 @@ import { measureView } from './readability.mjs';
 import { createSimulator } from '../server.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
-const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 const docs = docsLinks('0.9.4', 'https://git.example.test/invented/paqvilo');
 // The host shape of `status.routes`: mounted /_sim/api route prefixes (organization-host.mjs simApiRoutes).
 const POWER_PAGES_ROUTES = [
@@ -118,7 +117,7 @@ async function host(t, { state, status, failPacks = 0, traces, events = true, da
     ...(id === 'run-1' ? { traceId: 'fx-trace-1', traceSpanId: 'fx-span-1' } : {}),
     journal: { Invented_step: { status: 'Succeeded', outputs: { ok: true } } },
   });
-  const server = http.createServer(async (req, res) => {
+  const { server } = await loopbackServer(t, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     calls.push(`${req.method} ${url.pathname}${url.search}`);
     try {
@@ -173,22 +172,11 @@ async function host(t, { state, status, failPacks = 0, traces, events = true, da
           return live.failPacks-- > 0 ? send({ error: 'Invented pack registry failure.' }, 500) : send(packs);
         return send({ error: 'Not found' }, 404);
       }
-      const name = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
-      if (name !== 'index.html' && !/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return res.writeHead(404).end();
-      res.setHeader(
-        'content-type',
-        name.endsWith('.mjs') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html',
-      );
-      res.end(await fs.readFile(new URL(`../${SHARED.has(name) ? 'lib' : 'admin'}/${name}`, import.meta.url)));
+      await serveAdminFile(res, url);
     } catch (error) {
       if (!res.headersSent) res.writeHead(error.code === 'ENOENT' ? 404 : 500);
       res.end();
     }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
   });
   return { origin: `http://127.0.0.1:${server.address().port}`, calls };
 }
@@ -201,7 +189,7 @@ after(() => browser?.close());
 
 async function open(t, origin, hash) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -794,7 +782,7 @@ test('at phone width the navigation collapses behind Menu and every view starts 
     status: { docs, routes: POWER_PAGES_ROUTES },
   });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -831,7 +819,7 @@ test('the top bar keeps the page title whole and its buttons inside the window b
   });
   const topBar = async (width) => {
     const context = await browser.newContext({ viewport: { width, height: 800 } });
-    t.after(() => context.close());
+    ownedFixture(t).add(() => context.close());
     const page = await context.newPage();
     await page.goto(`${origin}/__sim/#activity`);
     await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();

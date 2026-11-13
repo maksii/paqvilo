@@ -3,8 +3,12 @@ import { setMaxListeners } from 'node:events';
 import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
+import { readEndedByContextClose } from './portal-provenance-transport.mjs';
 
 const unanswered = Symbol('unanswered');
+// A command or sideband read waits until it answers or the attachment is disposed (its page closed or interception
+// stopped). This guard only ends a wait on a live renderer or server that never answers, and that loss is reported.
+const COMMAND_HANG_MS = 30_000;
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const safeURL = (value) =>
   typeof value === 'string' && value.length <= 32768 && /^(?:https?:\/\/|file:\/\/\/)/.test(value)
@@ -55,8 +59,9 @@ function hasUnverifiedScriptVersion(record, parsed) {
   );
 }
 
-function unresolvedCallsite(event, reason) {
-  return Date.now() - event.createdAt >= 3000 ? { sourceRefs: [], facts: [], reason } : null;
+// A callsite without a proof stays pending while a proof for its document can still arrive (`settled` is false).
+function unresolvedCallsite(settled, reason) {
+  return settled ? { sourceRefs: [], facts: [], reason } : null;
 }
 
 async function callDomRecord(record, command, functionDeclaration, value, unanswered) {
@@ -68,7 +73,6 @@ async function callDomRecord(record, command, functionDeclaration, value, unansw
   if (result === unanswered || result?.exceptionDetails) {
     record.closed = true;
     record.nodes.clear();
-    clearTimeout(record.retry);
     return false;
   }
   return result !== null;
@@ -151,7 +155,7 @@ export function createDomProvenanceTransport(context, configs) {
   const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, binding })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
   return {
     slot,
-    async onAttach({ cdp, configure }) {
+    async onAttach({ cdp, configure, report }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
       const contexts = new Map(),
@@ -161,7 +165,10 @@ export function createDomProvenanceTransport(context, configs) {
         initial = new Map(),
         script,
         closed = false;
-      // A rejected command resolves to `rejected`; a command that outlives its deadline resolves to null.
+      const lost = (error) => {
+        if (!closed) report?.(error);
+      };
+      // A rejected command resolves to `rejected`; a command ended by disposal or the hang guard resolves to null.
       const command = async (method, params = {}, rejected = null) => {
         if (
           closed &&
@@ -174,14 +181,17 @@ export function createDomProvenanceTransport(context, configs) {
           ].includes(method)
         )
           return null;
-        const deadline = closed
-          ? AbortSignal.timeout(3000)
-          : AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]);
-        let release;
+        // Cleanup commands sent during disposal are not ended by it.
+        const ending = closed ? null : controller.signal;
+        let release, timer;
         const expired = new Promise((resolve) => {
           release = () => resolve(null);
-          if (deadline.aborted) release();
-          else deadline.addEventListener('abort', release, { once: true });
+          timer = setTimeout(() => {
+            lost(new Error(`${method} did not answer within ${COMMAND_HANG_MS} ms`));
+            release();
+          }, COMMAND_HANG_MS);
+          if (ending?.aborted) release();
+          else ending?.addEventListener('abort', release, { once: true });
         });
         try {
           return await Promise.race([
@@ -191,8 +201,23 @@ export function createDomProvenanceTransport(context, configs) {
             expired,
           ]);
         } finally {
-          deadline.removeEventListener('abort', release);
+          clearTimeout(timer);
+          ending?.removeEventListener('abort', release);
         }
+      };
+      // In-flight sideband reads per document (`frameId:loaderId`); a callsite waits for them before it is unmapped.
+      const reading = new Map();
+      const settled = (record) =>
+        !reading.get(record.frameId + ':' + record.loaderId) && !acknowledgements.waiting(record.frameId);
+      // A failed read is a loss only while its target still answers; closing the page, context or browser ends it quietly.
+      const readLost = async (message, error) => {
+        if (
+          closed ||
+          readEndedByContextClose(error) ||
+          (await command('Page.getFrameTree', {}, unanswered)) === unanswered
+        )
+          return;
+        lost(new Error(message));
       };
       const locate = (proof, parsed, frame) => {
         const line = frame.line - 1 - (parsed.hasSourceURL ? 0 : parsed.startLine);
@@ -249,11 +274,12 @@ export function createDomProvenanceTransport(context, configs) {
         ];
         if (distinct.length !== 1)
           return unresolvedCallsite(
-            event,
+            settled(record),
             distinct.length > 1 ? 'script-callsite-ambiguous' : 'script-callsite-unmapped',
           );
         // An overlapping different script version cannot be attributed by URL alone.
-        if (hasUnverifiedScriptVersion(record, parsed)) return unresolvedCallsite(event, 'script-version-unverified');
+        if (hasUnverifiedScriptVersion(record, parsed))
+          return unresolvedCallsite(settled(record), 'script-version-unverified');
         const selected = distinct[0];
         return {
           sourceRefs: [selected.ref],
@@ -319,18 +345,8 @@ export function createDomProvenanceTransport(context, configs) {
             if (record.nodes.size) record.dirty = true;
           } while (record.dirty && !closed && !record.closed);
         } finally {
+          // Nodes left pending are flushed again when a proof arrives or the last read of their document settles.
           record.flushing = false;
-          if (
-            record.nodes.size &&
-            !record.retry &&
-            !closed &&
-            !record.closed &&
-            loaders.get(record.frameId) === record.loaderId
-          )
-            record.retry = setTimeout(() => {
-              record.retry = null;
-              flush(record).catch(() => {});
-            }, 3100);
         }
       };
       const ingest = (frameId, loaderId, descriptor, request = {}) => {
@@ -416,7 +432,6 @@ export function createDomProvenanceTransport(context, configs) {
         const record = contexts.get(executionContextId);
         if (record) {
           record.closed = true;
-          clearTimeout(record.retry);
           contexts.delete(executionContextId);
         }
       };
@@ -498,16 +513,17 @@ export function createDomProvenanceTransport(context, configs) {
           record.limitReason ??= 'dom-evidence-transport-limit';
           record.nodes.delete(record.nodes.keys().next().value);
         }
-        record.nodes.set(data.id, { id: data.id, relationship: data.relationship, frames, createdAt: Date.now() });
+        record.nodes.set(data.id, { id: data.id, relationship: data.relationship, frames });
         flush(record).catch(() => {});
       };
       const navigated = ({ frame }) => {
         if (frame?.id) {
           for (const record of contexts.values())
-            if (record.frameId === frame.id && record.loaderId && record.loaderId !== frame.loaderId) {
+            if (record.frameId === frame.id && record.loaderId && record.loaderId !== frame.loaderId)
               record.closed = true;
-              clearTimeout(record.retry);
-            }
+          // A committed document requests its scripts after this event: acknowledgements still waiting in this frame
+          // belong to the replaced document.
+          acknowledgements.forget(frame.id);
           loaders.set(frame.id, frame.loaderId);
           for (const record of contexts.values())
             if (record.frameId === frame.id && !record.loaderId) {
@@ -518,6 +534,7 @@ export function createDomProvenanceTransport(context, configs) {
       };
       const detached = ({ frameId }) => {
         loaders.delete(frameId);
+        acknowledgements.forget(frameId);
         for (const record of contexts.values())
           if (record.frameId === frameId) destroy({ executionContextId: record.id });
         for (const key of descriptors.keys()) if (key.startsWith(frameId + ':')) descriptors.delete(key);
@@ -536,7 +553,15 @@ export function createDomProvenanceTransport(context, configs) {
         requests.set(event.requestId, { ...address, frameId: event.frameId, loaderId: event.loaderId });
         acknowledgements.requested(event.requestId, requests.get(event.requestId));
       };
-      const acknowledgements = createResponseProofQueue({ requests, admit: ingest });
+      const acknowledgements = createResponseProofQueue({
+        requests,
+        admit: ingest,
+        // A discarded acknowledgement is a lost proof: report it and give the frame's waiting callsites their verdict.
+        evicted: (frameId) => {
+          lost(new Error('a script provenance acknowledgement was discarded at the queue limit'));
+          for (const record of contexts.values()) if (record.frameId === frameId) flush(record).catch(() => {});
+        },
+      });
       const response = (event) => {
         if (event.type !== 'Script' || event.response.status !== 200) return;
         const request = requests.get(event.requestId);
@@ -556,13 +581,15 @@ export function createDomProvenanceTransport(context, configs) {
         )?.[1];
         if (typeof proofId !== 'string' || !/^[a-zA-Z0-9_.:-]{1,256}$/.test(proofId)) return;
         if (typeof access !== 'string' || !/^[a-f0-9]{64}$/.test(access)) return;
+        const documentKey = request.frameId + ':' + request.loaderId;
+        reading.set(documentKey, (reading.get(documentKey) ?? 0) + 1);
         (async () => {
           const url = new URL('/_sim/api/page-provenance', origin);
           url.searchParams.set('proof', proofId);
           const answer = await context.request.get(url.href, {
             headers: { 'x-paqvilo-provenance-access': access },
             maxRedirects: 0,
-            timeout: 3000,
+            timeout: COMMAND_HANG_MS,
             failOnStatusCode: false,
           });
           try {
@@ -581,7 +608,17 @@ export function createDomProvenanceTransport(context, configs) {
           } finally {
             await answer.dispose?.();
           }
-        })().catch(() => {});
+        })()
+          .catch((error) => readLost('the script provenance read did not complete', error))
+          .finally(() => {
+            const left = (reading.get(documentKey) ?? 1) - 1;
+            if (left) reading.set(documentKey, left);
+            else reading.delete(documentKey);
+            // The last read of a document settled: its pending callsites receive their verdict now.
+            if (!left)
+              for (const record of contexts.values())
+                if (record.frameId + ':' + record.loaderId === documentKey) flush(record).catch(() => {});
+          });
       };
       const listeners = [
         ['Runtime.executionContextCreated', created],
@@ -589,10 +626,7 @@ export function createDomProvenanceTransport(context, configs) {
         [
           'Runtime.executionContextsCleared',
           () => {
-            for (const record of contexts.values()) {
-              record.closed = true;
-              clearTimeout(record.retry);
-            }
+            for (const record of contexts.values()) record.closed = true;
             contexts.clear();
           },
         ],
@@ -606,7 +640,6 @@ export function createDomProvenanceTransport(context, configs) {
       const dispose = async () => {
         if (closed) return;
         closed = true;
-        for (const record of contexts.values()) clearTimeout(record.retry);
         for (const [event, handler] of listeners) cdp.off(event, handler);
         await Promise.allSettled(
           [...contexts.values()]
@@ -624,6 +657,7 @@ export function createDomProvenanceTransport(context, configs) {
         requests.clear();
         acknowledgements.clear();
         descriptors.clear();
+        reading.clear();
         await Promise.allSettled([
           command('Runtime.removeBinding', { name: binding }),
           ...(script?.identifier
@@ -650,6 +684,8 @@ export function createDomProvenanceTransport(context, configs) {
         dispose,
         publishDescriptor: (frameId, loaderId, proof, request) => ingest(frameId, loaderId, proof, request),
         publishProvenance(event, proof) {
+          // Only a script request's notification is admitted above, so another acknowledgement could never be matched.
+          if (event.resourceType !== 'Script') return false;
           return acknowledgements.fulfill(event, proof);
         },
       };

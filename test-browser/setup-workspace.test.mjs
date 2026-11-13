@@ -14,7 +14,7 @@ import { prepareDemo } from '../lense/commands/demo.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -369,49 +369,51 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
       sites: { portal: { source: '.', environments: { dev: simulator.url }, markup: { enabled: false } } },
     }),
   );
-  const port = await freeDebugPort();
-  const child = spawn(
-    process.execPath,
-    [
-      path.join(root, 'lense/cli.mjs'),
-      'dev',
-      '--config',
-      configFile,
-      '--headless',
-      '--browser',
-      channel,
-      '--debug-port',
-      String(port),
-    ],
-    { cwd: consumer, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  let output = '',
-    remote,
-    setupUrl,
-    announced;
-  // Dev prints the setup address before it announces that it watches sources.
-  const watching = new Promise((resolve, reject) => {
-    announced = resolve;
-    child.once('exit', () => reject(new Error(output)));
-  });
-  const read = (chunk) => {
-    output += chunk;
-    if (/Watching local sources|Watching sources|Browse pages and open tabs/.test(output)) announced();
-  };
-  child.stdout.on('data', read);
-  child.stderr.on('data', read);
-  const exited = once(child, 'exit');
+  // The command of the latest start; a start that lost its debugging port has already closed.
+  let child, exited, output, remote, setupUrl;
   t.resources.push(async () => {
     if (remote) {
       const cdp = await remote.newBrowserCDPSession().catch(() => null);
       await cdp?.send('Browser.close').catch(() => {});
       await remote.close().catch(() => {});
     }
-    if (child.exitCode === null) child.kill('SIGTERM');
+    if (child?.exitCode === null) child.kill('SIGTERM');
     await exited;
     if (setupUrl) await assert.rejects(fetch(setupUrl), /fetch failed/, 'the owned setup server stops with dev');
   });
-  await watching;
+  const port = await startOnFreePort(async (port) => {
+    child = spawn(
+      process.execPath,
+      [
+        path.join(root, 'lense/cli.mjs'),
+        'dev',
+        '--config',
+        configFile,
+        '--headless',
+        '--browser',
+        channel,
+        '--debug-port',
+        String(port),
+      ],
+      { cwd: consumer, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    output = '';
+    let announced;
+    // Dev prints the setup address before it announces that it watches sources. 'close' follows the last output.
+    const watching = new Promise((resolve, reject) => {
+      announced = resolve;
+      child.once('close', () => reject(new Error(output)));
+    });
+    const read = (chunk) => {
+      output += chunk;
+      if (/Watching local sources|Watching sources|Browse pages and open tabs/.test(output)) announced();
+    };
+    child.stdout.on('data', read);
+    child.stderr.on('data', read);
+    exited = once(child, 'exit');
+    await watching;
+    return port;
+  });
   setupUrl = output.match(/setup\s+(http:\/\/127\.0\.0\.1:\d+\/_setup\/)/)?.[1];
   assert.ok(setupUrl, output);
   remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);

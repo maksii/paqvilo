@@ -56,7 +56,11 @@ test('registering an application shows its secret once and later reads carry onl
   await page.getByText('not shown again').waitFor();
   const appRow = page.getByRole('row', { name: /Browser client/ }).first();
   await appRow.getByRole('button', { name: 'Add secret' }).waitFor();
-  assert.match(await appRow.textContent(), new RegExp(secret.slice(0, 3) + '…'), 'the listing shows only the hint');
+  assert.match(
+    await appRow.textContent(),
+    new RegExp(RegExp.escape(secret.slice(0, 3)) + '…'),
+    'the listing shows only the hint',
+  );
   await page
     .getByRole('row', { name: /Browser client/ })
     .nth(1)

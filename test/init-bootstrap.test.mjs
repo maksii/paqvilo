@@ -1,4 +1,5 @@
-import test from 'node:test';
+// @test-kind contract: a generated project's bootstrap and setup readiness behave as designed with local fixtures.
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () =>
@@ -27,14 +29,22 @@ async function workspace(t) {
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return root;
 }
+// A child is ended by the running test's signal when the runner stops that test, never by a timer of its own. Tests in
+// this file run one at a time, so the signal recorded before each test is that test's.
+let testSignal;
+beforeEach((t) => {
+  testSignal = t.signal;
+});
 function run(args, { cwd, env = cleanEnv() } = {}) {
   return withProcessSlot(async () => {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error('Fixture child exceeded 30 seconds'));
-      }, 30000);
+      const child = spawn(process.execPath, args, {
+        cwd,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        signal: testSignal,
+      });
       let stdout = '',
         stderr = '';
       child.stdout.setEncoding('utf8').on('data', (value) => {
@@ -43,14 +53,8 @@ function run(args, { cwd, env = cleanEnv() } = {}) {
       child.stderr.setEncoding('utf8').on('data', (value) => {
         stderr += value;
       });
-      child.on('error', (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on('close', (status) => {
-        clearTimeout(timer);
-        resolve({ status, stdout, stderr });
-      });
+      child.on('error', reject);
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
   });
 }
@@ -70,7 +74,7 @@ async function countingOrigin(t) {
     response.writeHead(503).end('Invented unavailable endpoint');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

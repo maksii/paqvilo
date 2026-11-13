@@ -152,7 +152,7 @@ function requestHost(request) {
 function pendingSummary(requests) {
   const count = requests.size;
   const hosts = [...new Set([...requests.values()].map((record) => record.host))].toSorted((a, b) =>
-    a.localeCompare(b),
+    a.localeCompare(b, 'en'),
   );
   const where = hosts.length ? ` on ${hosts.slice(0, 5).join(', ')}` : '';
   return `${count} pending request${count === 1 ? '' : 's'}${where}`;

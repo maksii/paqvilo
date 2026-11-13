@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,9 +9,9 @@ import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences
 
 test('journal references have no reserved business marker and retain nested saved tables and frozen inputs', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-state-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
   const session = new RecordPageSession(root);
-  t.after(() => session.close());
+  ownedFixture(t).add(() => session.close());
   const rows = session.from([{ id: 'one', recordRefs: { $paqvilo: 'records' } }], { primaryKey: 'id' });
   const marker = { $paqviloRecordTable: { malicious: false }, recordRefs: [{ path: ['business'], table: null }] };
   const value = Object.freeze({
@@ -25,7 +26,7 @@ test('journal references have no reserved business marker and retain nested save
   assert.equal(value.tables.one, rows);
   const parsed = decodeRecordReferences(JSON.parse(JSON.stringify(encoded)));
   const restored = await restoreRecordReferences({ presets: parsed.value }, root);
-  t.after(() => restored.session.close());
+  ownedFixture(t).add(() => restored.session.close());
   assert.ok(pagedRecordsOf(restored.state.presets.tables.one));
   assert.deepEqual(pagedRecordsOf(restored.state.presets.saved[0].tables.two).raw(0), {
     id: 'one',

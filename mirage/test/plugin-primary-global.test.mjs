@@ -1,4 +1,5 @@
 // @test-kind unproven: global Update/Delete execution and primary-key filters across HTTP/SOAP/SDK are modelled; registration probes cover admission
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -85,7 +86,7 @@ test(
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-primary-global-'));
     let backend;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await backend?.close();
       await closeClrHostPool();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });

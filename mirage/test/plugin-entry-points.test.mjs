@@ -1,6 +1,7 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (customApi: a bound custom API's target load runs no Retrieve pipeline; associate: a self-referencing N:N $ref through the relationship-named navigation passes PrimaryEntityRole Referencing; upsert: a Delete by alternate key names it in its PreValidation and main-operation Targets)
 // @parity-evidence: native recorder corpus 2026-10-30, associate (a self-referencing N:N $ref through its relationship-named navigation: Relationship.PrimaryEntityRole Referencing) and upsert (DELETE by alternate key: PreValidation and Delete/30 Target keyAttributes), replayed by the local recorder harness; the edited lines only add these tests and their fixture
 // Web API entry points of named messages and bound operations. Invented tables, identities and messages only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -112,7 +113,7 @@ async function fixture(t, steps) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 
@@ -254,7 +255,7 @@ async function messageFixture(t, steps, { register } = {}) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 const stages = (n, message, extra) => [10, 20, 40].map((stage, i) => step(n + i, message, stage, extra));
@@ -586,7 +587,7 @@ test('a one-to-many collection $ref runs Associate (Referenced) around the child
     handlers,
   });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const base = new URL(f.server.origin + '/api/data/v9.2/').href;
   const linked = await f.request('POST', `/x_roots(${parent})/x_children/$ref`, {
     '@odata.id': `${base}x_childs(${child})`,

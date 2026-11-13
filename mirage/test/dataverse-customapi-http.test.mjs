@@ -1,4 +1,5 @@
 // @test-kind compatibility: Microsoft Learn custom API tables and OData CSDL: row writes update routing, $metadata, parameter validation and deletion
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -30,9 +31,9 @@ async function registryHarness(t, { variable, app, displayName, customApis }) {
       ],
     }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const transport = await startDataverseApi({ organization });
-  t.after(() => transport.close());
+  ownedFixture(t).add(() => transport.close());
   const tokenResponse = await fetch(transport.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({

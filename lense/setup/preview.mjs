@@ -222,7 +222,7 @@ export async function listFolders({ directory, sourceRoot = directory, folder, f
   const names = entries
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name))
     .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b))
+    .sort((a, b) => a.localeCompare(b, 'en'))
     .slice(0, 500);
   const folders = await Promise.all(
     names.map(async (name) => ({
@@ -238,7 +238,7 @@ export async function listFolders({ directory, sourceRoot = directory, folder, f
       ? entries
           .filter((entry) => entry.isFile() && type.name.test(entry.name))
           .map((entry) => entry.name)
-          .sort((a, b) => a.localeCompare(b))
+          .sort((a, b) => a.localeCompare(b, 'en'))
           .slice(0, 500)
       : [];
   const listed = (

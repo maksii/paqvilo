@@ -2,6 +2,7 @@
 // The SDK IOrganizationService on the organization record pipeline: synchronous rule hooks run inline, an asynchronous
 // hook remainder finishes after the synchronous call and reports SDK_DEFERRED_EFFECT on failure, and without an
 // organization the service says it writes the store directly.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -154,7 +155,7 @@ async function storeWith(t, extensions = []) {
       settings: dataverseSettings({ enabled: true }),
       extensions: [...EXTENSIONS, ...extensions],
     });
-    t.after(() => organization.close());
+    ownedFixture(t).add(() => organization.close());
   }
   return store;
 }

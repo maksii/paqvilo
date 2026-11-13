@@ -112,10 +112,11 @@ async function readSolutionComponent(root, folder, websiteId) {
     const layerRoot = await fs.realpath(layer.dir);
     const root = await fs.realpath(path.join(layerRoot, 'powerpagecomponents')).catch(() => null);
     if (!root || !inside(layerRoot, root)) continue;
-    const folders = (await fs.readdir(root, { withFileTypes: true })).filter(
-      (entry) => entry.isDirectory() && !entry.isSymbolicLink(),
-    );
-    // Reads run concurrently but settle before the fold, which applies them in readdir order and rethrows the first failure.
+    const folders = (await fs.readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
+    // Reads run concurrently but settle before the fold, which applies them in code-unit folder order (listing order
+    // differs between file systems) and rethrows the first failure.
     const outcomes = await orderedMap(folders, 16, (entry) =>
       attempt(() => readSolutionComponent(root, entry.name, websiteId)),
     );

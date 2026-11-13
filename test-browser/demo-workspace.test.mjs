@@ -9,7 +9,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { runWorkspaceTask } from './helpers/workspace-task.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test('scaffolded VS Code task signals readiness and attaches to its own development browser', async (t) => {
   const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workspace-'));
@@ -25,17 +24,15 @@ test('scaffolded VS Code task signals readiness and attaches to its own developm
   const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
   const configuration = launch.configurations.find((item) => item.name === 'Demo: Mirage and browser debugger');
   const task = tasks.tasks.find((item) => item.label === configuration.preLaunchTask);
-  const port = await freeDebugPort();
   // The dependency installation is covered by the independent package smoke.
   // Use its installed CLI when supplied; isolate the browser port for this test.
-  const args = task.args.slice(1).map((argument) => (argument === '9222' ? String(port) : argument));
+  const args = (port) => task.args.slice(1).map((argument) => (argument === '9222' ? String(port) : argument));
   const run = runWorkspaceTask(t, {
     cli,
     args,
     cwd: directory,
     env,
     task,
-    port,
     stop: ['--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example'],
     work,
     label: 'Workspace task readiness',

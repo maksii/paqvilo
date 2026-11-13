@@ -27,7 +27,7 @@ import {
 } from '../lib/custom-connector-script.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const NAME = 'x_5fscriptapi',
   AT = `Connectors/${NAME}/`;
@@ -173,7 +173,7 @@ describe('a trusted script host under a state directory', { skip: SKIP }, () => 
       res.end(JSON.stringify({ id: req.url.split('/').pop() }));
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
+    ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
     const merged = records();
     assert.equal(
       merged.find((r) => r.component === 'connector').level,

@@ -12,6 +12,7 @@ import { once } from 'node:events';
 import { listenLoopbackContext } from './helpers/owned-server.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { createFixture, SITE, HOME_ID } from '../test/fixture.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 test('sustained saves preserve forms, scope reloads, show Git drift and repin HEAD through the panel', async (t) => {
   const fx = createFixture();
@@ -60,7 +61,7 @@ test('sustained saves preserve forms, scope reloads, show Git drift and repin HE
     fx.cleanup();
   });
   ownedFixture(t).remove(async () => {
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   const { origin, context } = await listenLoopbackContext(t, server);
   await context.addCookies([{ name: 'fixture-session', value: 'synthetic', url: origin }]);

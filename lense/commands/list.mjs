@@ -9,6 +9,7 @@ import { resolveCatalogue } from '../resolved-catalogue.mjs';
 import { scanSolutionSources } from '../../mirage/lib/solution-schema.mjs';
 import { inventoryCounts } from '../model-driven.mjs';
 import { miragePaths } from './mirage.mjs';
+import { GIT_HANG_GUARD_MS, GIT_MISSING_MESSAGE, gitAnswered, gitMissing } from '../git.mjs';
 
 const chooseLazily = (condition, yes, no) => {
   if (condition()) return yes();
@@ -41,6 +42,8 @@ function displayLocation(value) {
 
 /** Portal extracts in the repository, whether configured or not. */
 export function discoverExtracts(startDir) {
+  // A checkout folder that does not exist (not cloned yet, or a mistyped path) holds no extracts.
+  if (!fs.existsSync(startDir)) return [];
   let root = startDir;
   try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
@@ -50,10 +53,16 @@ export function discoverExtracts(startDir) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-      timeout: 5000,
+      timeout: GIT_HANG_GUARD_MS,
     }).trim();
-  } catch {
-    /* not a git repository: look below the start folder only */
+  } catch (error) {
+    // Git answered that this is no repository: look below the start folder only. Without an answer the
+    // repository root is unknown, and searching a different root would list different extracts.
+    if (gitMissing(error)) throw new Error(GIT_MISSING_MESSAGE, { cause: error });
+    if (!gitAnswered(error))
+      throw new Error(`Git did not answer where the repository of ${startDir} starts (${error.code ?? error.signal})`, {
+        cause: error,
+      });
   }
   const found = [];
   const walk = (dir, depth) => {

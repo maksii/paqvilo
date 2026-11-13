@@ -1,5 +1,6 @@
 // @test-kind parity: native-r2 sdkSurface plug-in Execute(CreateMultiple) and Execute(UpdateMultiple) (6202-6207, 6177/6192): Entity.Id allocated before PreValidation; CreateMultiple/20 and the record's Create/20 Targets carry the key, state, audit stamps and organizationid; UpdateMultiple/20 Targets the key and the modification stamps
 // SDK bulk requests a plug-in issues, on an organization with its records layer. Invented tables and users only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -54,7 +55,7 @@ async function organization(t) {
       ],
     }),
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const admin = store.tableRows('systemuser').find((row) => row.fullname === 'Invented admin').systemuserid;
   const profile = {
     userId: admin,

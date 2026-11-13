@@ -130,7 +130,8 @@ async function directoryFiles(dir) {
           }),
       });
   }
-  return files;
+  // Code-unit order: listing order differs between file systems, and the asset byte budget is spent in this order.
+  return files.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
 }
 
 function addCanvasControls(sequence, prefix, parent, out, names, componentScope, context) {
@@ -441,7 +442,8 @@ function processCanvasYamlSource({
   }
   if (assets.size) result[CANVAS_ASSETS] = assets;
   for (const file of files) file.name = file.name.replaceAll('\\', '/');
-  files.sort((left, right) => left.name.localeCompare(right.name));
+  // Code-unit order: a locale-aware order differs between processes, and the sources are read in this order.
+  files.sort((left, right) => Number(left.name > right.name) - Number(left.name < right.name));
 
   const legacy = files.filter((file) => FX_YAML.test(file.name));
   const sources = files.filter((file) => SRC.test(file.name) && PA_YAML.test(file.name));

@@ -277,7 +277,7 @@ test('a gated concurrent job does not enqueue idle ticks and does not block late
     if (options?.name === 'committed-jobs') ticks++;
     return schedule(fn, delay, options);
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     release();
     await jobs.drain();
     jobs.close();

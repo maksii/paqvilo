@@ -22,8 +22,118 @@ test('drained fixture removal retains errors after its bounded asynchronous retr
   });
   await assert.rejects(removeFixtureDirectory('invented-owned-directory'), (error) => error === failure);
   assert.deepEqual(calls, [
-    ['invented-owned-directory', { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }],
+    ['invented-owned-directory', { recursive: true, force: true, maxRetries: 25, retryDelay: 100 }],
   ]);
+});
+
+test('a resource registered after cleanup ran is released in order and the registration fails', async (t) => {
+  const hooks = [],
+    events = [],
+    controller = new AbortController();
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook), signal: controller.signal });
+  owner.remove(() => events.push('remove-on-time'));
+  controller.abort();
+  await hooks[0]();
+  const warnings = [];
+  t.mock.method(process, 'emitWarning', (warning) => warnings.push(warning));
+  const failure = new Error('Invented late close failure');
+  assert.throws(
+    () =>
+      owner.add(async () => {
+        events.push('close-late');
+        throw failure;
+      }),
+    /cleanup has already started/,
+  );
+  assert.throws(() => owner.remove(() => events.push('remove-late')), /cleanup has already started/);
+  assert.deepEqual(events, ['remove-on-time']);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['remove-on-time', 'close-late', 'remove-late']);
+  assert.deepEqual(warnings, [failure]);
+});
+
+test('a late resource waits for the cleanup that is still running', async () => {
+  const hooks = [],
+    events = [];
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook) });
+  let release;
+  owner.add(async () => {
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    events.push('close-on-time');
+  });
+  const cleanup = hooks[0]();
+  assert.throws(() => owner.add(() => events.push('close-late')), /cleanup has already started/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, []);
+  release();
+  await cleanup;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['close-on-time', 'close-late']);
+});
+
+test('a resource registered after the test ended but before its hook ran is released by the hook', async () => {
+  const hooks = [],
+    events = [],
+    controller = new AbortController();
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook), signal: controller.signal });
+  controller.abort();
+  assert.throws(() => owner.add(() => events.push('close')), /test has ended/);
+  assert.deepEqual(events, []);
+  await hooks[0]();
+  assert.deepEqual(events, ['close']);
+});
+
+test('an owner first requested after its test ended releases what it is given at once', async () => {
+  const events = [],
+    controller = new AbortController();
+  controller.abort();
+  const owner = ownedFixture({ after: () => {}, signal: controller.signal });
+  assert.throws(() => owner.add(() => events.push('close')), /cleanup has already started/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['close']);
+});
+
+test('a listener started by a body that outlived its timeout is closed and the test process ends', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-late-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const fixture = path.join(root, 'late.test.mjs');
+  const helperUrl = new URL('../testing/owned-fixture.mjs', import.meta.url).href;
+  // The body waits until the owner's after hook has run, so it registers its listener after cleanup in every run.
+  await fs.writeFile(
+    fixture,
+    `
+    import test from 'node:test';
+    import http from 'node:http';
+    import { ownedFixture } from ${JSON.stringify(helperUrl)};
+    test('late listener', { timeout: 1 }, async t => {
+      const owner = ownedFixture(t);
+      const cleanupRan = new Promise(resolve => t.after(resolve));
+      await cleanupRan;
+      const server = http.createServer();
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      console.log('late-listener-started');
+      owner.add(() => new Promise(resolve => server.close(() => { console.log('late-listener-closed'); resolve(); })));
+      console.log('UNEXPECTED_BODY_CONTINUED');
+    });
+  `,
+  );
+  const child = spawn(process.execPath, ['--test', fixture], {
+    windowsHide: true,
+    signal: t.signal,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => (output += chunk));
+  child.stderr.on('data', (chunk) => (output += chunk));
+  const [code] = await once(child, 'close');
+  assert.equal(code, 1, output);
+  assert.match(output, /test timed out after 1ms/);
+  assert.match(output, /late-listener-started/);
+  assert.match(output, /late-listener-closed/);
+  assert.doesNotMatch(output, /UNEXPECTED_BODY_CONTINUED/);
 });
 
 test(
@@ -49,7 +159,7 @@ test(
     );
     const closed = once(child, 'close');
     const lines = readline.createInterface({ input: child.stdout });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       if (child.exitCode === null && child.signalCode === null) child.kill();
       await closed;
       lines.close();
@@ -85,7 +195,7 @@ test(
     });
     const closed = once(child, 'close');
     const lines = readline.createInterface({ input: child.stdout });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       if (child.exitCode === null && child.signalCode === null) child.kill();
       await closed;
       lines.close();

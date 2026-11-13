@@ -5,7 +5,12 @@
 import path from 'node:path';
 import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, releaseClrRuntime } from './plugin-clr.mjs';
+import {
+  pluginRuntimeDescriptors,
+  sharedClrRuntimePreparer,
+  releaseClrRuntime,
+  settleClrReleases,
+} from './plugin-clr.mjs';
 import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
 import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
@@ -170,6 +175,8 @@ function packFactory(packs, exportName, kind) {
  * A factory that throws (or returns an invalid provider) fails composition with PROVIDER_FACTORY_FAILED naming the pack; the
  * instances created before it, the rejected instance itself and every resource it registered with own() are settled and
  * closed (closeCreated, reverse creation order) before the failure propagates; a rejected instance is never returned.
+ * messageBusTimeoutMs, when given, is the core servicebus-emulator bus's per-wait bound (null: no wall-clock bound);
+ * otherwise the bus keeps its own default.
  */
 export async function composeProviders(options) {
   const created = [];
@@ -201,6 +208,7 @@ function buildProviders(
     diagnostic = () => {},
     organizationUri = () => null,
     env = process.env,
+    messageBusTimeoutMs,
   },
   created,
 ) {
@@ -269,6 +277,7 @@ function buildProviders(
   const messagingConfig = messagingSettings(config.providers?.messaging);
   const buses = buildMessageBuses({
     messagingConfig,
+    messageBusTimeoutMs,
     store,
     now,
     ids,
@@ -374,7 +383,17 @@ function buildPackStorageProvider({ id, entry, stateDirectory, now, ids, instant
   return null;
 }
 
-function buildMessageBuses({ messagingConfig, store, now, ids, instantiate, organizationUri, created, diagnostic }) {
+function buildMessageBuses({
+  messagingConfig,
+  messageBusTimeoutMs,
+  store,
+  now,
+  ids,
+  instantiate,
+  organizationUri,
+  created,
+  diagnostic,
+}) {
   const localBus = (id, entry) =>
     createLocalMessageBus({
       store,
@@ -396,6 +415,7 @@ function buildMessageBuses({ messagingConfig, store, now, ids, instantiate, orga
       id,
       entry,
       messagingConfig,
+      messageBusTimeoutMs,
       store,
       now,
       ids,
@@ -413,6 +433,7 @@ function buildMessageProvider({
   id,
   entry,
   messagingConfig,
+  messageBusTimeoutMs,
   store,
   now,
   ids,
@@ -435,7 +456,12 @@ function buildMessageProvider({
   );
   // servicebus-emulator without a pack factory: the core AMQP transport, linked to the entities the endpoints map to it.
   if (!instance && entry.kind === 'servicebus-emulator') {
-    instance = createServiceBusEmulatorBus({ id, settings: entry, entities: mappedEntities(messagingConfig, id) });
+    instance = createServiceBusEmulatorBus({
+      id,
+      settings: entry,
+      entities: mappedEntities(messagingConfig, id),
+      ...(messageBusTimeoutMs === undefined ? {} : { timeoutMs: messageBusTimeoutMs }),
+    });
     created.push({ name: `messageProviders/${id}`, item: instance });
   }
   if (instance) return instance;
@@ -1666,20 +1692,25 @@ async function applyOperationOverrides(c, next, commit) {
  * caller mapped and an uploaded runtime stay: their owners release them. An entry leaves the map only after its release, so
  * a directory shared with another entry stays until that entry is released too, and a failed release is retried by the next close.
  */
+// The release functions below change the runtime map and stop hosts before they return. A request (an operations-override
+// change) does not wait for a directory removal: each removal is owned by the runtime map, and the host close awaits the
+// map's removals, the ones synchronous callers (the plug-in pipeline and catalogue) started included.
 function releaseHostRuntimes(c) {
-  const entries = [...c.runtimes];
+  const entries = [...c.runtimes],
+    removals = [];
   for (const [id, runtime] of entries) {
     if (runtime.uploaded || !c.preparedRuntimes.has(runtime)) continue;
     const others = [...c.runtimes].filter(([key]) => key !== id).map(([, other]) => other);
-    releaseClrRuntime(runtime, { liveRuntimes: others, diagnostic: c.diagnostic });
+    removals.push(releaseClrRuntime(runtime, { liveRuntimes: others, diagnostic: c.diagnostic }));
     c.runtimes.delete(id);
   }
+  return Promise.all([...removals, settleClrReleases(c.runtimes)]);
 }
 
 function closePreparedOverrides(prepared, runtimes, diagnostic) {
   for (const [id, runtime] of prepared) {
     runtimes.delete(id);
-    releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic });
+    releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic, owner: runtimes });
   }
 }
 
@@ -1693,7 +1724,7 @@ function closePreparedOverrides(prepared, runtimes, diagnostic) {
         // Steps of one assembly share a runtime and its hosts: they stop only when no remaining step uses it. The mode
         // change is already committed; a host still running a queued job stops when the runtime closes.
         try {
-          releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic });
+          releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic, owner: runtimes });
         } catch (error) {
           if (error.code !== 'LocalPluginHostBusy') throw error;
           diagnostic({

@@ -1,6 +1,7 @@
 // @test-kind compatibility: Microsoft Learn Web service error codes 0x8004418d SandboxWorkerNotAvailable for a crashed sandbox worker process
 // Invented C# plug-in whose Execute calls Environment.FailFast, so the CLR host process exits before it answers. Run in the
 // isolated host and in the pooled host (persistentHost), so both worker exit handlers are covered.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -19,7 +20,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-crash-'));
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       await closeClrHostPool();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

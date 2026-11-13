@@ -5,6 +5,7 @@
 // staged it (staged-by link, triggered link on the staging span), never by the span current when the scheduler runs; a bulk
 // delete's per-row deletes are one `rows` event, not spans. Jobs run from a manual task list, so no test waits on time.
 // Invented schemas and loopback fixtures only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -253,7 +254,7 @@ test('a background operation runs under its job span and its callback is an http
     });
   });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => receiver.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => receiver.close(resolve)));
   const callback = `http://127.0.0.1:${receiver.address().port}/invented/callback`;
   const world = await asyncWorld({ level: 'full' });
   const { api, traces, context, store } = world;
@@ -375,7 +376,7 @@ async function listenerWorld(t) {
       }),
     ],
   });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   await store.transact(() => {
     store.state.tables.workflow.push({
       workflowid: DESKTOP,
@@ -474,7 +475,7 @@ test('the rollup mass job is a job root that counts the recalculated columns; a 
     scheduler,
   });
   let closed = false;
-  t.after(() => closed || organization.close());
+  ownedFixture(t).add(() => closed || organization.close());
   store.traces = createTraceStore({ settings: { level: 'summary' } });
   const traces = store.traces;
   const ambient = traces.start({ kind: 'http', name: 'GET /ambient' });
@@ -546,7 +547,7 @@ test('the elastic TTL purge the install timer runs is a job root with one rows e
     });
   });
   installElastic(api);
-  t.after(() => closeElastic(api));
+  ownedFixture(t).add(() => closeElastic(api));
   t.mock.timers.tick(1000);
   await purged;
   assert.deepEqual(failures, []);

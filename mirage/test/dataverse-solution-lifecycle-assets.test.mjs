@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own solution lifecycle and retained asset layers; the archive layout follows the Solution reader
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -113,7 +114,7 @@ async function importInto(host, bytes, extra = {}) {
 // @test-kind unproven: the owner and row-version stamps are a local model of how a platform import writes rows; no capture backs them
 test('an imported workflow row is owned by the importing user and carries a row version and timestamps', async (t) => {
   const source = await server();
-  t.after(() => source.close());
+  ownedFixture(t).add(() => source.close());
   await importInto(source, archive());
   const workflow = source.store.state.tables.workflow.find((row) => row.workflowid === workflowId);
   assert.equal(workflow.xaml, 'opaque workflow');
@@ -127,7 +128,7 @@ test('an imported workflow row is owned by the importing user and carries a row 
 
 test('solution API retains app/form/view/workflow and opaque assets across restart, export and fresh import', async (t) => {
   const source = await server();
-  t.after(() => source.close());
+  ownedFixture(t).add(() => source.close());
   const bytes = archive();
   await importInto(source, bytes);
   assert.equal(
@@ -147,7 +148,7 @@ test('solution API retains app/form/view/workflow and opaque assets across resta
   const edited = await source.request('PATCH', `/systemforms(${formId})`, { name: 'Edited form' });
   assert.equal(edited.status, 204, JSON.stringify(edited.json));
   const restarted = await server(JSON.parse(JSON.stringify(source.store.state)));
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const exported = await restarted.request('POST', '/ExportSolution', {
     SolutionName: 'new_assetfixture',
     Managed: true,
@@ -165,7 +166,7 @@ test('solution API retains app/form/view/workflow and opaque assets across resta
     'Edited form',
   );
   const target = await server();
-  t.after(() => target.close());
+  ownedFixture(t).add(() => target.close());
   await importInto(target, Buffer.from(exported.json.ExportSolutionFile, 'base64'));
   assert.equal(
     target.store.state.tables.systemform.find((row) => row.formid === formId)?.formxml,
@@ -181,7 +182,7 @@ test('solution API retains app/form/view/workflow and opaque assets across resta
 
 test('failed import rolls back metadata, component rows and retained payload bytes', async (t) => {
   const host = await server();
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   const before = JSON.stringify(host.store.state.dataverse.solutionAssets ?? null);
   const result = await host.request('POST', '/ImportSolution', {
     CustomizationFile: archive({ broken: true }).toString('base64'),
@@ -195,7 +196,7 @@ test('failed import rolls back metadata, component rows and retained payload byt
 
 test('app membership action edits export and reimport while preserving unresolved declarations and XML siblings', async (t) => {
   const host = await server();
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   const unresolved = '31a58b8c-793c-4bf0-9fb3-8270309b21ff';
   const bytes = zipOf(
     readSolutionAssetEntries(archive()).map((entry) =>
@@ -232,7 +233,7 @@ test('app membership action edits export and reimport while preserving unresolve
   assert.match(xml, /FutureSetting value="retained"/);
   assert.match(xml, new RegExp(unresolved));
   const target = await server();
-  t.after(() => target.close());
+  ownedFixture(t).add(() => target.close());
   await importInto(target, Buffer.from(without.json.ExportSolutionFile, 'base64'));
   assert.equal((await target.request('GET', `/RetrieveAppComponents(AppModuleId=${appId})`)).json.value.length, 0);
   const added = await host.request('POST', '/AddAppComponents', {
@@ -243,7 +244,7 @@ test('app membership action edits export and reimport while preserving unresolve
   const restored = await host.request('POST', '/ExportSolution', { SolutionName: 'new_assetfixture', Managed: true });
   assert.equal(restored.status, 200, JSON.stringify(restored.json));
   const fresh = await server();
-  t.after(() => fresh.close());
+  ownedFixture(t).add(() => fresh.close());
   await importInto(fresh, Buffer.from(restored.json.ExportSolutionFile, 'base64'));
   const restoredMembers = await fresh.request('GET', `/RetrieveAppComponents(AppModuleId=${appId})`);
   assert.equal(restoredMembers.json.value.length, 1);
@@ -252,7 +253,7 @@ test('app membership action edits export and reimport while preserving unresolve
 
 test('managed upgrade and uninstall target owned assets and transfer retained component origins', async (t) => {
   const host = await server();
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   await importInto(host, archive());
   const unrelated = archive({ uniqueName: 'new_unrelated', version: '1.0.0.0' });
   // An independent solution without shared records must retain its payload.
@@ -289,7 +290,7 @@ test('managed upgrade and uninstall target owned assets and transfer retained co
 
 test('effective solution metadata caches payload parsing across ordinary CRUD and preserves base metadata', async (t) => {
   const host = await server();
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   await importInto(host, archive());
   let reads = 0;
   const overlay = createSolutionMetadataOverlay({
@@ -344,7 +345,7 @@ test('XML component merge retains distinct table components and accumulates pack
 
 test('solution import and export retain source relationship menus/cascades and global choice facts', async (t) => {
   const source = await server();
-  t.after(() => source.close());
+  ownedFixture(t).add(() => source.close());
   const facts = `<EntityRelationships><EntityRelationship Name="new_assetrecord_parent"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencedEntityName>new_assetrecord</ReferencedEntityName><ReferencingEntityName>new_assetrecord</ReferencingEntityName><ReferencedAttributeName>new_assetrecordid</ReferencedAttributeName><ReferencingAttributeName>new_parentid</ReferencingAttributeName><IntroducedVersion>3.2.1.0</IntroducedVersion><IsCustomizable>0</IsCustomizable><RelationshipBehavior>1</RelationshipBehavior><SecurityTypes>Append</SecurityTypes><CascadeDelete>Restrict</CascadeDelete><CascadeArchive>RemoveLink</CascadeArchive><EntityRelationshipRoles><EntityRelationshipRole><RelationshipRoleType>1</RelationshipRoleType><NavigationPropertyName>new_parent</NavigationPropertyName><NavPaneDisplayOption>DoNotDisplay</NavPaneDisplayOption><NavPaneArea>Details</NavPaneArea><NavPaneOrder>0</NavPaneOrder><CustomLabels><CustomLabel languagecode="1033" description="Parent records" /></CustomLabels></EntityRelationshipRole><EntityRelationshipRole><RelationshipRoleType>0</RelationshipRoleType><NavigationPropertyName>new_children</NavigationPropertyName></EntityRelationshipRole></EntityRelationshipRoles></EntityRelationship></EntityRelationships><optionsets><optionset Name="new_assetchoice"><OptionSetType>picklist</OptionSetType><IsGlobal>1</IsGlobal><IntroducedVersion>3.2.1.0</IntroducedVersion><IsCustomizable>0</IsCustomizable><options><option value="100000000" ExternalValue="" IsHidden="1"><labels><label description="First" languagecode="1033" /></labels></option></options></optionset></optionsets>`;
   const entries = readSolutionAssetEntries(archive()).map((entry) => ({
     ...entry,
@@ -378,7 +379,7 @@ test('solution import and export retain source relationship menus/cascades and g
   const exported = await source.request('POST', '/ExportSolution', { SolutionName: 'new_assetfixture', Managed: true });
   assert.equal(exported.status, 200, JSON.stringify(exported.json));
   const target = await server();
-  t.after(() => target.close());
+  ownedFixture(t).add(() => target.close());
   await importInto(target, Buffer.from(exported.json.ExportSolutionFile, 'base64'));
   await check(target);
 });

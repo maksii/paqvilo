@@ -1,3 +1,4 @@
+// @test-kind contract: shared runtime primitives (ordered mapping, directory listing, XML scanning, readiness and shutdown) behave as Paqvilo designs them.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { orderedMap } from '../lense/async-map.mjs';
 import { directoryFiles } from '../lense/directory-files.mjs';
 import { mapLimit, sourceDirectoryDigest } from '../mirage/lib/solution-cache.mjs';
+import { sourceFingerprint } from '../mirage/lib/evidence.mjs';
 import { decodeXml, xmlAttributes, xmlStartTag, xmlTokens } from '../mirage/lib/xml-text.mjs';
 import { globalMetadataVersion } from '../mirage/lib/metadata-version.mjs';
 import { liveDataverseSettings } from '../mirage/lib/live-dataverse-settings.mjs';
@@ -46,12 +48,13 @@ test('ordered mapper bounds work, preserves iterables and explicit adapter limit
   assert.equal(0 in (await mapLimit([1], NaN, () => assert.fail())), false);
 });
 
-test('directory policy preserves import order and exact fingerprint bytes', async (t) => {
+test('directory policy lists in code-unit name order and keeps exact fingerprint bytes', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-traversal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'z.txt': 'z',
     'a/nested.txt': 'a',
+    'B.txt': 'upper',
     '.paqvilo/local.txt': 'local',
     'node_modules/x.txt': 'module',
     '.git/x': 'git',
@@ -60,29 +63,23 @@ test('directory policy preserves import order and exact fingerprint bytes', asyn
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await fs.writeFile(path.join(root, name), text);
   }
-  const listed = await directoryFiles(root, {
-    skip: new Set(['.git', '.paqvilo', 'node_modules']),
-    sort: (a, b) => a.name.localeCompare(b.name),
-  });
-  assert.deepEqual(
-    listed.map((file) => path.relative(root, file).replaceAll('\\', '/')),
-    ['a/nested.txt', 'z.txt'],
-  );
+  const relative = (list) => list.map((file) => path.relative(root, file).replaceAll('\\', '/'));
+  // Code-unit order puts upper case before lower case, unlike a locale-aware order, on every file system.
+  const listed = await directoryFiles(root, { skip: new Set(['.git', '.paqvilo', 'node_modules']) });
+  assert.deepEqual(relative(listed), ['B.txt', 'a/nested.txt', 'z.txt']);
   const expected = createHash('sha256');
-  for (const name of ['a/nested.txt', 'z.txt']) expected.update(name).update('\0').update(files[name]).update('\0');
-  assert.equal(await sourceDirectoryDigest(root), expected.digest('hex'));
-  const natural = await directoryFiles(root, { skip: new Set(['.git', '.portalconfig']) });
-  const walk = async (dir) => {
-    const result = [];
-    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-      if (entry.isSymbolicLink() || ['.git', '.portalconfig'].includes(entry.name)) continue;
-      const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) result.push(...(await walk(file)));
-      else if (entry.isFile()) result.push(file);
-    }
-    return result;
-  };
-  assert.deepEqual(natural, await walk(root));
+  for (const name of ['B.txt', 'a/nested.txt', 'z.txt'])
+    expected.update(name).update('\0').update(files[name]).update('\0');
+  const digest = expected.digest('hex');
+  assert.equal(await sourceDirectoryDigest(root), digest);
+  assert.equal(await sourceFingerprint(root), digest, 'the evidence fingerprint is the same digest');
+  assert.deepEqual(relative(await directoryFiles(root, { skip: new Set(['.git', '.portalconfig']) })), [
+    '.paqvilo/local.txt',
+    'B.txt',
+    'a/nested.txt',
+    'node_modules/x.txt',
+    'z.txt',
+  ]);
 });
 
 test('shared XML decoding handles adjacent CDATA and invalid numeric references without unbounded scans', () => {

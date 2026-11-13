@@ -1196,7 +1196,7 @@ export class PortalModel {
     const components = this.#readEnhancedComponents();
     this.#indexEnhancedPages(components);
     for (const component of components) this.#indexEnhancedSource(component);
-    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url)));
+    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url), 'en'));
   }
 
   #readEnhancedComponents() {
@@ -1564,7 +1564,7 @@ export class PortalModel {
         : []),
     ];
     for (const folder of folders) this.#loadWebFilesFromFolder(folder);
-    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url)));
+    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url), 'en'));
   }
 
   #loadWebFilesFromFolder(folder) {

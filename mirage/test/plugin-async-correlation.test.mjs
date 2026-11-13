@@ -1,6 +1,7 @@
 // @test-kind unproven: local async child-request correlation model (runner request context); no native capture cited
 // Runner request contexts (plugin-async.mjs): an asynchronous step runs in a child of the request that wrote the row (the
 // HTTP x-ms-correlation-request-id); its System Job row and plug-in trace log carry the CorrelationId of its execution context.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
@@ -77,7 +78,7 @@ test('an asynchronous step runs in a child of the HTTP request, and its job and 
     (context) => pluginPhaseRequiresCheckpoint(items(), context),
   );
   const runner = createAsyncPluginRunner({ store, items, handlers, runtimes: new Map(), systemJobs: () => true });
-  t.after(() => runner.close());
+  ownedFixture(t).add(() => runner.close());
 
   await json(
     await request('POST', '/x_items', { x_name: 'Invented row' }, { 'x-ms-correlation-request-id': CORRELATION }),

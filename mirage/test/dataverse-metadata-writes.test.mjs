@@ -1,5 +1,6 @@
 // @test-kind contract: Paqvilo's own metadata write behaviour through the Web API, exercised on loopback with an invented schema
 // Metadata ids of solution components, upsert locations, secured primary names and $batch metadata writes.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -37,7 +38,7 @@ async function start(t, state, users = []) {
       users,
     }),
   });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const token = (
     await (
       await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {

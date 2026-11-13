@@ -1,6 +1,7 @@
 // Associate/Disassociate outside a plug-in run on the asynchronous drive (a synchronous web hook runs inside its
 // operation). A flow Relate/Unrelate rows action (with and without an organization) and a Web API $ref post a
 // synchronous web hook step in process, so timers keep running while the step waits and a receiver in this process answers.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -77,7 +78,7 @@ async function receiver(t) {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}/hook`, received };
 }
 const tables = (url) => ({

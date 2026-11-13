@@ -23,8 +23,9 @@ test(
       fs.unlink = (file, callback) => unlink(file, (error) => {
         if (String(file) === lockedFile && ['EBUSY', 'EPERM'].includes(error?.code)) {
           if (!closed) throw new Error('Removal began before simulator closed');
+          // Release once: the removal retries while the holder may still be reading the line.
+          if (!observedBusy) held.stdin.end('release\\n');
           observedBusy = true;
-          held.stdin.end('release\\n');
         }
         callback(error);
       });

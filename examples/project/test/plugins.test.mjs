@@ -1,3 +1,4 @@
+import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -35,7 +36,7 @@ test('exported plugin steps use explicit local models for validation, normalizat
     port: 0,
     watch: false,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await sim.applyPreset('example-demo');
   const signed = signInHeaders(sim, 'a4300000-0000-4000-8000-000000002001');
   const write = (resource, method, body) =>

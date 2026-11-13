@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -18,7 +19,7 @@ async function fixture(t, { resumeRun, csrf = () => CSRF } = {}) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store });
   const flowRuns = createFlowRunStore({ store, scheduler, approvals: connectors.approvals });
   const routes = createFlowRoutes({ api: { flowRuns, providers: { connectors } }, csrf, resumeRun });
@@ -218,7 +219,7 @@ test('the callback URL is built on the origin the host passes, not on the reques
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const response = await new Promise((resolve, reject) => {
     const request = http.request(
       {
@@ -248,7 +249,7 @@ async function signedHttpTrigger(t, { schema, operationOptions }) {
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
   storeScheduler(store, scheduler);
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store, scheduler, clock });
   const trigger = { type: 'Request', kind: 'Http', inputs: { method: 'POST', schema } };
   if (operationOptions) trigger.operationOptions = operationOptions;
@@ -270,7 +271,7 @@ async function signedHttpTrigger(t, { schema, operationOptions }) {
     flowOf: () => ({ definition, mode: 'exported', connectors }),
   });
   runs.attach(api);
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   const routes = createFlowRoutes({ api, csrf: () => CSRF });
   const origin = await serveFlowRoutes(t, routes);
   const issued = await fetch(`${origin}/_sim/api/flow-triggers/${FLOW}/callback-url`, {

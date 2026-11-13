@@ -12,11 +12,14 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
 import { organizationCustomApi, runExportedServerLogic } from '../lib/exported-operations.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777730';
 const CONTACT = '77777777-7777-4777-8777-777777777731';
 const portal = { settings: {}, website: { id: SITE, name: 'Invented site' } };
+// These tests are about the bridges, not the local 5 s bound: each run has the platform's default limit
+// (ServerLogic/TimeoutInSeconds 120), so a loaded machine cannot end it early.
+const PLATFORM_DEFAULT_TIMEOUT_MS = 120_000;
 const identity = { id: CONTACT, contactId: CONTACT, roleIds: ['77777777-7777-4777-8777-777777777732'] };
 
 async function logic(t, code) {
@@ -34,7 +37,7 @@ const run = async (t, code, options = {}) =>
       identity,
       method: 'POST',
       operation: 'post',
-      // No explicit timeout: the documented local allowance (5 s, mirage/docs/operations.md) applies.
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
       ...options,
     }),
   );
@@ -80,7 +83,7 @@ test('a custom API function parameter keeps commas inside its quoted literal', a
     extensions: await sourceOrganizationExtensions({ customApis: new Map([['fx_echo', { handler }]]) }),
     settings: dataverseSettings({ enabled: false }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const api = await store.create(
     'customapi',
     { uniquename: 'fx_Echo', name: 'Echo', bindingtype: 0, isfunction: true },
@@ -118,7 +121,7 @@ test('Dataverse.InvokeCustomApi runs the custom API through the organization', a
     extensions: await sourceOrganizationExtensions({ customApis: new Map([['fx_echo', { handler }]]) }),
     settings: dataverseSettings({ enabled: false }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   await (async () => {
     const api = await store.create(
       'customapi',
@@ -187,6 +190,7 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
       identity: { id: CONTACT, contactId: CONTACT, roleIds: [] },
       method: 'POST',
       operation: 'post',
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
       services: { triggerFlow },
     }),
   )[0];
@@ -206,7 +210,7 @@ test('HttpClient reaches a declared loopback rewrite and refuses any other host 
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const local = `http://127.0.0.1:${server.address().port}/`;
   const logs = [],
     diagnostics = [];

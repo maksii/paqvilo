@@ -518,7 +518,7 @@ async function main() {
     findings.push(...clones[index].map((clone) => ({ ...clone, key: `${scope}:clone:${clone.key}`, type: 'clone' })));
     console.log(`Clone ${scope}: ${files.length} files, ${clones[index].length} blocks reviewed against baseline.`);
   }
-  findings.sort((a, b) => a.key.localeCompare(b.key));
+  findings.sort((a, b) => a.key.localeCompare(b.key, 'en'));
   fs.writeFileSync(path.join(output, 'findings.json'), JSON.stringify(findings, null, 2) + '\n');
   if (args.includes('--write-baseline')) {
     fs.writeFileSync(

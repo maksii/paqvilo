@@ -3,6 +3,7 @@
 // settings, 404 on unknown ids and 501 without a trace store, sort passthrough, the reserved-name tree route, the streamed
 // json/ndjson/otlp export and the /_sim/events trace channel (cleanup, payload-free frames, slow clients). Time comes
 // from an injected clock; channel tests wait on stream events, never on time.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -41,7 +42,7 @@ async function fixture(t, { traces: given } = {}) {
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, body, headers = {}) => {
     const response = await fetch(origin + path, {
@@ -454,7 +455,7 @@ async function channelServer(t, traces, { gate = null } = {}) {
     attached.push(res);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

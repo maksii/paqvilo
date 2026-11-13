@@ -1,6 +1,7 @@
 // Shared setup of the trace-plugins and trace-plugins-context suites: an organization runtime over the invented x_item and
 // x_note tables, and a store holding the invented fx_Ping custom API (string input Message, string output Reply). Each
 // suite registers its own steps, handlers and assertions. Invented schemas only.
+import { ownedFixture } from '../../testing/owned-fixture.mjs';
 import { DataStore, emptyState } from '../../lib/data.mjs';
 import { dataverseSettings } from '../../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../../lib/dataverse-organization.mjs';
@@ -22,7 +23,7 @@ export async function itemNoteOrganization(t, mapping) {
     settings: dataverseSettings({ enabled: true }),
     extensions: [...EXTENSIONS],
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   return store;
 }
 

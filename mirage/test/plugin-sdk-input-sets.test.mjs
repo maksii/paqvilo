@@ -1,5 +1,6 @@
 // @test-kind parity: native recorder corpus sdkSurface, sdkMessages, soapMessages and crud web hook payloads (native and native-r2): FromSandbox, ConcurrencyBehavior and DefaultsAddedFlag presence per stage on SDK bulk requests, a main operation's own Update and asynchronous web hook parents
 // Invented tables, identities and messages only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -55,7 +56,7 @@ async function fixture(t, steps) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const caller = f.store.tableRows('systemuser').find((item) => item.applicationid).systemuserid;
   const sdk = (requestName, values, messages = []) =>
     f.store.transact(() =>

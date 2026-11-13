@@ -1,4 +1,5 @@
 // @test-kind contract: the approval and Service Bus queue connector operations are Paqvilo's designed runtime behaviour over the local store and bus.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -15,7 +16,7 @@ async function organization(t) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   return { clock, store, scheduler };
 }
 
@@ -195,7 +196,7 @@ async function waitingRoutes(t, { approvalType, assignedTo }) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store });
   const flowRuns = createFlowRunStore({ store, scheduler, approvals: connectors.approvals });
   const resumed = [];

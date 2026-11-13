@@ -1,4 +1,5 @@
 // @test-kind contract: explicitly registered Paqvilo project packs resolve connection aliases and selected providers; unimplemented local operations report ConnectorNotSimulated/501.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -46,7 +47,7 @@ test('code app connector resolves its project connection and reports unsupported
   });
   const server = http.createServer((req, res) => handler(req, res));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const post = (path) =>
     fetch(`http://127.0.0.1:${server.address().port}/_apps/code/invented/connectors/${path}`, {
       method: 'POST',
@@ -109,7 +110,7 @@ async function gatedService(t) {
     res.end('{"ok":true}');
   });
   await new Promise((resolve) => service.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => service.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => service.close(resolve)));
   return { uri: `http://127.0.0.1:${service.address().port}/slow`, arrived: arrived.promise, open: gate.resolve };
 }
 

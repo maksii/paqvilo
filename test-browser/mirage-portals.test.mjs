@@ -16,6 +16,7 @@ import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { mirageTarget } from '../lense/commands/mirage.mjs';
 import { createFixture } from '../test/fixture.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const ENHANCED = fs.realpathSync.native(fileURLToPath(new URL('./fixtures/enhanced/', import.meta.url)));
 const MEMBER = 'e1000000-0000-4000-8000-000000000111';
@@ -73,7 +74,7 @@ async function startPortals(t) {
     classic.cleanup();
   });
   ownedFixture(t).remove(async () => {
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   const live = await serveLive(servers);
   const config = path.join(work, 'paqvilo.config.yml');

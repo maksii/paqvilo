@@ -3,6 +3,7 @@
 // (no hand-seeded frame): stage sets shared by a single-record request and its *Multiple lane, PostOperation seeded with
 // the PreOperation images and PreBusinessEntity, asynchronous snapshots at their rank slot, the platform's primary-name
 // image and bulk-origin per-target sets.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -141,7 +142,7 @@ async function observe(t, steps, act, store = storeOf()) {
       overrides: Object.fromEntries(steps.map((entry) => ['plugin-step:' + entry.id, { mode: 'clr' }])),
     });
   const backend = await createOrganizationBackend({ store, items: () => items, runtimes, descriptors, scheduler });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   await act(store);
   await scheduler.runDue();
   await backend.asyncPluginRunner.drain();

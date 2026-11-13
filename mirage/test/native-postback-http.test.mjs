@@ -7,7 +7,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
   t,
@@ -112,7 +112,7 @@ async function fixture(
     app.store.state.mappings.annotation = { entitySet: 'annotations', idColumn: 'annotationid' };
     app.store.state.tables.annotation = [];
   }
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(root, { recursive: true, force: true });
   });

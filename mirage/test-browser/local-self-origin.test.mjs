@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -30,13 +31,13 @@ test('exported hostname-based native modal URLs retain the local port and same-o
     );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     server.close();
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage(),
     errors = [];
   page.on('pageerror', (e) => errors.push(e.message));

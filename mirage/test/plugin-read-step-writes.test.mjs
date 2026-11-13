@@ -1,4 +1,5 @@
 // @test-kind parity: native dev-environment recorder corpus (readNested): RetrieveMultiple and Retrieve steps write through the SDK on a Web API read, and a Retrieve step's write stays committed when the read then faults
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -18,7 +19,7 @@ test('a read step writes through the SDK on a Web API read and its write survive
   state.tables.x_log = [];
   const store = await new DataStore({ state }).init();
   const organization = await createOrganizationRuntime({ store, settings: dataverseSettings({ enabled: true }) });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
   const profile = { userId: system, evidence: 'Invented read observer', grants: [] };
   // Native readNested: the RetrieveMultiple and Retrieve PostOperation steps each create a row; the Retrieve step then throws.

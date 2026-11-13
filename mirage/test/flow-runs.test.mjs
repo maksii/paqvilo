@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's designed flow run store behaviour, its run rows and their error fields, on invented flows and a fixed clock.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -12,7 +13,7 @@ async function fixture(t, options = {}) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const notes = [];
   const runs = createFlowRunStore({ store, scheduler, diagnostic: (note) => notes.push(note), ...options });
   return { store, clock, scheduler, runs, notes };

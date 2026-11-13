@@ -31,7 +31,7 @@ function ciFixture(t) {
   );
   write(
     'scripts/verified-download.mjs',
-    'export function downloadVerifiedArchive() { throw new Error("Unexpected download"); }',
+    'export function ensureVerifiedArchive() { throw new Error("Unexpected download"); }',
   );
   const env = { ...process.env, GITHUB_ACTIONS: 'false' };
   for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
@@ -307,10 +307,10 @@ test('cached validation cannot restore a receipt after source changes during dep
 test('validation concurrency follows the contributor setting, else the machine, and stays serial on hosted CI', async () => {
   const { validationJobs } = await import('../scripts/ci.mjs');
   const GiB = 2 ** 30;
-  assert.equal(validationJobs({}, undefined, { cpus: 20, memory: 96 * GiB }), 5);
-  assert.equal(validationJobs({}, undefined, { cpus: 4, memory: 16 * GiB }), 1);
-  assert.equal(validationJobs({}, undefined, { cpus: 32, memory: 8 * GiB }), 2, 'memory bounds a many-core machine');
-  assert.equal(validationJobs({ GITHUB_ACTIONS: 'true' }, undefined, { cpus: 20, memory: 96 * GiB }), 1);
+  assert.equal(validationJobs({}, null, { cpus: 20, memory: 96 * GiB }), 5);
+  assert.equal(validationJobs({}, null, { cpus: 4, memory: 16 * GiB }), 1);
+  assert.equal(validationJobs({}, null, { cpus: 32, memory: 8 * GiB }), 2, 'memory bounds a many-core machine');
+  assert.equal(validationJobs({ GITHUB_ACTIONS: 'true' }, null, { cpus: 20, memory: 96 * GiB }), 1);
   assert.equal(validationJobs({}, '3'), 3);
   assert.equal(validationJobs({ PAQ_CI_JOBS: '2' }, '3'), 2, 'the environment overrides Git configuration');
   for (const value of ['0', '-1', 'two', '1.5'])

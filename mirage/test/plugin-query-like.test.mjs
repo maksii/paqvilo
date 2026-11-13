@@ -1,5 +1,6 @@
 // @test-kind parity: native-r2 faults 5479/5481, pipelineEffects and native asyncRetry: Web API startswith reaches the plug-in Query as like 'p%'; the PagingCookie lists each order column then the primary key
 // Invented x_item table only. The plug-in RetrieveMultiple query of a Web API startswith read, and the paging cookie a page carries.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -50,7 +51,7 @@ async function fixture(t, seen) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, backend };
 }
 

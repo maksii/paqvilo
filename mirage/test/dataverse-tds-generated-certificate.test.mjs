@@ -1,5 +1,6 @@
 // The TDS endpoint without a shared certificate generates its in-memory certificate at the first TLS handshake
 // (dataverse-tds.mjs): every connection still completes TLS, and later connections present the same certificate.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -22,7 +23,7 @@ async function peerCertificate(port, ALPNProtocols) {
 test('an endpoint without a shared certificate completes TLS with one generated certificate', async (t) => {
   const store = await new DataStore({ state: emptyState() }).init();
   const api = await startDataverseApi({ store, settings: dataverseSettings({ enabled: true }), log: () => {} });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   const first = await peerCertificate(api.tdsPort, ['tds/8.0']);
   const second = await peerCertificate(api.tdsPort, ['tds/8.0']);
   assert.match(first.fingerprint256, /^(?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/);

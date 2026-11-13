@@ -11,7 +11,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { serveOrganization } from './support/web-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { parseCustomApiFiles, parseFxExpressionFiles } from '../lib/dataverse-customapi.mjs';
@@ -64,24 +64,7 @@ async function organization(t) {
       ],
     }),
   });
-  const transport = await startDataverseApi({ organization: runtime });
-  ownedFixture(t).add(async () => {
-    await transport.close();
-    await runtime.close();
-  });
-  const token = (
-    await (
-      await fetch(transport.authority + '/oauth2/v2.0/token', {
-        method: 'POST',
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: APP,
-          client_secret: 'invented',
-          scope: transport.origin + '/.default',
-        }),
-      })
-    ).json()
-  ).access_token;
+  const { transport, token } = await serveOrganization(t, runtime, APP, 'invented');
   return async (route) => {
     const response = await fetch(transport.origin + '/api/data/v9.2/' + route, {
       headers: { authorization: `Bearer ${token}` },

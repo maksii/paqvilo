@@ -533,7 +533,7 @@ test('the dashboard route answers 503 starting before its host exists', async (t
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const response = await fetch(`${origin}/_sim/api/dashboard`);
   assert.equal(response.status, 503);
@@ -567,7 +567,7 @@ test('activity keeps counts named like credentials; the rest of the body is reda
     await route(req, res, new URL(req.url, 'http://127.0.0.1'));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const body = await json(await fetch(`http://127.0.0.1:${server.address().port}/_sim/api/dashboard`));
   assert.deepEqual(body.activity.diagnostics.byCode, { X_AUTHORIZATION: 2 });
   assert.deepEqual(body.activity.counters, { tokenRequests: 3, 'x.accessToken': 1 });

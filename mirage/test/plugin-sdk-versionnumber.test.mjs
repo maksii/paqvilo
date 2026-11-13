@@ -1,5 +1,6 @@
 // @test-kind parity: native and native-r2 recorder corpora (crud, bulk, reads, async pq.r.0.40.1): no plug-in SDK entity carries a versionnumber attribute; Entity.RowVersion carries the version
 // The row version reaches a plug-in only as Entity.RowVersion. Invented tables and identities only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -120,6 +121,6 @@ async function fixture(t, edit) {
   const handlers = new Map([['Invented.Recorder', ({ context }) => edit(context)]]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, backend };
 }

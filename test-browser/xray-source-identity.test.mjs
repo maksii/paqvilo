@@ -1,4 +1,5 @@
 // @test-kind contract: X-ray source identity reports uncertain candidates with their complete authored provenance
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -16,7 +17,7 @@ after(() => browser?.close());
 // Each test gets its own context on the shared browser; the root path serves the fixture and any other path a plain frame.
 async function fixture(t, html, report = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.route('**/*', (route) =>
     route.fulfill({
@@ -294,16 +295,41 @@ test('descent remembers the selected child, native controls are picked without f
       window.geometryReads++;
       return get.call(this);
     };
-  });
-  // Wait for pending pointer/layout events to settle even when the full suite is busy.
-  // A recurring geometry poll cannot pass this quiet window.
-  await page.waitForFunction(() => {
-    const now = performance.now();
-    if (window.lastGeometryReads !== window.geometryReads) {
-      window.lastGeometryReads = window.geometryReads;
-      window.geometryQuietSince = now;
+    // Track the frame and timer callbacks the page schedules from now on until they run or are cancelled.
+    window.nativeFrame = window.requestAnimationFrame;
+    window.scheduled = new Set();
+    for (const [schedule, cancel] of [
+      ['requestAnimationFrame', 'cancelAnimationFrame'],
+      ['setTimeout', 'clearTimeout'],
+    ]) {
+      const nativeSchedule = window[schedule],
+        nativeCancel = window[cancel];
+      window[schedule] = function (callback, ...rest) {
+        const entry = {};
+        entry.id = Reflect.apply(nativeSchedule, this, [
+          function (...args) {
+            window.scheduled.delete(entry);
+            return typeof callback === 'function' ? Reflect.apply(callback, this, args) : undefined;
+          },
+          ...rest,
+        ]);
+        entry.cancel = nativeCancel;
+        window.scheduled.add(entry);
+        return entry.id;
+      };
+      window[cancel] = function (id) {
+        for (const entry of window.scheduled)
+          if (entry.id === id && entry.cancel === nativeCancel) window.scheduled.delete(entry);
+        return Reflect.apply(nativeCancel, this, [id]);
+      };
     }
-    return now - window.geometryQuietSince > 450;
+  });
+  // The pointer and layout work the click started has ended once a whole rendering frame (its resize observations
+  // included) passes with no frame or timer callback left to run. A recurring poll through either never lets this
+  // end, and the test's timeout reports it.
+  await page.evaluate(async () => {
+    do await new Promise((resolve) => window.nativeFrame.call(window, () => window.nativeFrame.call(window, resolve)));
+    while (window.scheduled.size);
   });
   await page.evaluate(() => (window.geometryReads = 0));
   // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.

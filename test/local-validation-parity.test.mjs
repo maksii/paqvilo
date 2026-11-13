@@ -47,7 +47,8 @@ test('local Windows validation runs every hosted browser channel of each lane, L
   assert.deepEqual(
     examples.commands.map((command) => [command.args.slice(3).join(' '), command.env.PAQ_CI_BROWSER]),
     [
-      ['examples --prepared', 'chromium'],
+      ['examples --unit --prepared', 'chromium'],
+      ['examples --browser --prepared', 'chromium'],
       ['examples --browser --prepared', 'msedge'],
     ],
   );
@@ -56,7 +57,112 @@ test('local Windows validation runs every hosted browser channel of each lane, L
     labels(linux).some((label) => label.includes('msedge')),
     false,
   );
-  assert.equal(linux.find((step) => step.label === 'examples').commands.length, 1);
+  assert.equal(linux.find((step) => step.label === 'examples').commands.length, 2);
+});
+
+test('local unit lanes run under Node coverage as the hosted SonarQube lanes do; browser and hosted lanes do not', () => {
+  const changed = ['test/local-validation-parity.test.mjs'];
+  const scope = classifyChanges([], { full: true });
+  const covered = (list) =>
+    list.flatMap((step) =>
+      step.commands
+        .filter((command) => command.coverage)
+        .map((command) =>
+          command.args[0] === 'scripts/ci.mjs'
+            ? command.args.slice(3, 5).join(' ')
+            : command.args.at(-1).replaceAll('\\', '/'),
+        ),
+    );
+  const all = ['mirage', 'lense', 'examples'];
+  assert.deepEqual(covered(steps(scope, all, { changed, repeat: 1 })), [
+    'mirage --unit',
+    'lense --unit',
+    'test/local-validation-parity.test.mjs',
+    'examples --unit',
+  ]);
+  assert.deepEqual(covered(steps(scope, all, { changed, repeat: 1, env: { GITHUB_ACTIONS: 'true' } })), []);
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.equal(JSON.stringify(ci).includes('NODE_V8_COVERAGE'), false, 'hosted CI lanes keep the plain mode');
+});
+
+test('a coverage command gets its own directory under the run folder, never the caller value, removed on failure', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-ci-coverage-'));
+  ownedFixture(t).remove(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const record = path.join(directory, 'record.mjs');
+  fs.writeFileSync(
+    record,
+    `import fs from 'node:fs'; const value = process.env.NODE_V8_COVERAGE ?? ''; fs.appendFileSync(${JSON.stringify(path.join(directory, 'seen.txt'))}, value + '|' + (value && fs.existsSync(value)) + String.fromCharCode(10)); process.exitCode = Number(process.argv[2]);`,
+  );
+  const caller = path.join(directory, 'caller-coverage');
+  const inherited = process.env.NODE_V8_COVERAGE;
+  process.env.NODE_V8_COVERAGE = caller;
+  t.after(() => {
+    if (inherited === undefined) delete process.env.NODE_V8_COVERAGE;
+    else process.env.NODE_V8_COVERAGE = inherited;
+  });
+  const logs = path.join(directory, 'run', 'logs');
+  await assert.rejects(
+    runSteps(
+      [
+        {
+          label: 'unit',
+          commands: [
+            { args: [record, '0'], coverage: true },
+            { args: [record, '1'], coverage: true },
+          ],
+        },
+        { label: 'plain', commands: [[record, '0']] },
+      ],
+      1,
+      { cwd: directory, logs },
+    ),
+    /Validation failed: unit\./,
+  );
+  const seen = fs
+    .readFileSync(path.join(directory, 'seen.txt'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => line.split('|'));
+  assert.equal(seen.length, 3);
+  for (const [value, existed] of seen.slice(0, 2)) {
+    assert.equal(path.dirname(value), path.join(directory, 'run'), 'inside the run folder');
+    assert.equal(existed, 'true', 'the directory exists while the command runs');
+    assert.equal(fs.existsSync(value), false, 'and is gone when it ends, also after a failure');
+  }
+  assert.notEqual(seen[0][0], seen[1][0], 'each command has a directory of its own');
+  assert.deepEqual(seen[2], [caller, 'false'], 'a plain command is left as the caller started it');
+  assert.deepEqual(fs.readdirSync(path.join(directory, 'run')), []);
+});
+
+test('a coverage run first removes the coverage directories earlier runs left behind, and nothing else', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-ci-coverage-leftover-'));
+  ownedFixture(t).remove(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const earlier = path.join(directory, '.paqvilo', 'ci', 'runs', 'run-1-interrupted');
+  fs.mkdirSync(path.join(earlier, 'v8-coverage-left'), { recursive: true });
+  fs.writeFileSync(path.join(earlier, 'v8-coverage-left', 'coverage-1.json'), '{}');
+  fs.mkdirSync(path.join(earlier, 'logs'));
+  fs.writeFileSync(path.join(earlier, 'logs', 'unit.log'), 'evidence');
+  await runSteps([{ label: 'plain', commands: [['-e', '']] }], 1, { cwd: directory });
+  assert.equal(fs.existsSync(path.join(earlier, 'v8-coverage-left')), true, 'a run without coverage leaves them');
+  await runSteps([{ label: 'unit', commands: [{ args: ['-e', ''], coverage: true }] }], 1, { cwd: directory });
+  assert.deepEqual(fs.readdirSync(earlier), ['logs'], 'the leftover is gone, the earlier logs stay');
+  assert.equal(fs.readFileSync(path.join(earlier, 'logs', 'unit.log'), 'utf8'), 'evidence');
+});
+
+test('a coverage directory that cannot be removed is left to the next run and does not fail a passed lane', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-ci-coverage-busy-'));
+  ownedFixture(t).remove(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const attempts = [];
+  const busy = (target) => {
+    attempts.push(target);
+    throw Object.assign(new Error('Invented busy directory'), { code: 'EBUSY' });
+  };
+  const lane = [{ label: 'unit', commands: [{ args: ['-e', ''], coverage: true }] }];
+  await runSteps(lane, 1, { cwd: directory, removeDirectory: busy });
+  assert.equal(attempts.length, 1);
+  assert.equal(fs.existsSync(attempts[0]), true, 'the directory stays for the next run');
+  await runSteps(lane, 1, { cwd: directory });
+  assert.equal(fs.existsSync(attempts[0]), false, 'the next coverage run removes it');
 });
 
 test('local validation runs the Security workflow CodeQL analysis first, except on hosted runners', () => {
@@ -76,6 +182,26 @@ test('local validation checks test kinds against the default branch, as the host
   assert.equal(labels(steps(scope, [], { env: { GITHUB_ACTIONS: 'true' } })).includes('test kinds'), false);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.ok(ci.jobs.changes.steps.some((step) => step.run === 'node scripts/check-test-tags.mjs --event'));
+});
+
+test('local validation approximates the SonarQube rules on changes from the default branch, hosted CI does not', () => {
+  const scope = classifyChanges(['docs/faq.md']);
+  const sonar = (options) => steps(scope, [], options).find((step) => step.label === 'sonar rules');
+  assert.deepEqual(sonar({}).commands, [['scripts/sonar-rules.mjs', '--base', 'origin/main']]);
+  assert.deepEqual(sonar({ base: 'origin/0.9.8' }).commands, [['scripts/sonar-rules.mjs', '--base', 'origin/0.9.8']]);
+  assert.equal(labels(steps(scope, [], { env: { GITHUB_ACTIONS: 'true' } })).includes('sonar rules'), false);
+  // Hosted runs reach the SonarQube server itself, so no workflow runs the approximation.
+  for (const name of ['ci', 'security', 'sonarqube']) {
+    const workflow = fs.readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
+    assert.doesNotMatch(workflow, /sonar-rules/, `${name}.yml`);
+  }
+  const sonarqube = YAML.parse(fs.readFileSync(new URL('../.github/workflows/sonarqube.yml', import.meta.url), 'utf8'));
+  assert.ok(
+    Object.values(sonarqube.jobs).some((job) =>
+      job.steps?.some((step) => step.uses?.startsWith('SonarSource/sonarqube-scan-action@')),
+    ),
+    'the hosted gate is the server analysis',
+  );
 });
 
 test('the package smoke starts from an empty npm cache, as a hosted runner would', () => {
@@ -142,7 +268,7 @@ test('repeated tests come from commits no remote branch contains, not from the w
 });
 
 test('the changed-test repeat count is configured like the job count', () => {
-  assert.equal(validationRepeat({}, undefined), 2);
+  assert.equal(validationRepeat({}, null), 2);
   assert.equal(validationRepeat({}, '0'), 0);
   assert.equal(validationRepeat({ PAQ_CI_REPEAT: '3' }, '0'), 3);
   for (const value of ['-1', 'two', '1.5']) assert.throws(() => validationRepeat({ PAQ_CI_REPEAT: value }), /integer/);

@@ -9,7 +9,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import childProcess from 'node:child_process';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { once } from 'node:events';
@@ -77,9 +77,14 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-runtime-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const hook = await receiver(root);
-    t.after(() => hook.stop());
+    let hook, organization;
+    // The organization closes its hosts, and the receiver stops, before their folder is removed.
+    ownedFixture(t).add(async () => {
+      await organization?.close();
+      await hook?.stop();
+      await removeFixtureDirectory(root);
+    });
+    hook = await receiver(root);
     const sdk = clrSdk(),
       proxy = path.join(path.dirname(sdk), 'Microsoft.Crm.Sdk.Proxy.dll'),
       source = path.join(root, 'Probe.cs'),
@@ -111,7 +116,7 @@ test(
       },
     ];
     const store = await new DataStore({ state }).init();
-    const organization = await createOrganizationRuntime({
+    organization = await createOrganizationRuntime({
       store,
       settings: dataverseSettings({
         enabled: true,
@@ -121,7 +126,6 @@ test(
         ],
       }),
     });
-    t.after(() => organization.close());
     const user = store.tableRows('systemuser').find((row) => row.fullname === 'Invented probe').systemuserid;
     const profile = {
       userId: user,

@@ -13,86 +13,86 @@ import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PAQVILO_|GIT_)/i.test(key)));
-const run = (args, options = {}) =>
+// Each test runs a bounded number of CLI processes, so the per-test limit never covers a whole command list. A child
+// is ended by the test's own signal when the runner stops the test, never by a timer of its own.
+const run = (t, args, options = {}) =>
   withProcessSlot(
     () =>
       new Promise((resolve) => {
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, ...options },
+          { env, encoding: 'utf8', windowsHide: true, signal: t.signal, ...options },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         );
       }),
   );
 
-test('root flags reject trailing arguments and diagnostics use the requested stream', async () => {
-  const cases = [
-    ['--version', 'unexpected'],
-    ['--help', '--bogus'],
-    ['--version', '--json'],
-    ['doctor', '--json'],
-    ['doctor', '--setup', '--browser', '', '--json'],
-    ['doctor', '--setup', '--config', 'absent.yml', '--browser', 'unknown', '--json'],
-    ['unknown\nкоманда', '--json'],
-    ['--json'],
-    ['', '--json'],
-    ['lense', '', '--json'],
-    ['dataverse', '', '--json'],
-    ['doctor', '--help', '--bogus', '--json'],
-    ['mirage', '--help', '--bogus', '--json'],
-    ['mirage', 'help', '--bogus', '--json'],
-    ['mirage', '--help', '--bogus'],
-  ];
-  const results = await Promise.all(cases.map((args) => run(args)));
-  for (const [index, args] of cases.entries()) {
-    const result = results[index];
+const rootFlagCases = [
+  ['--version', 'unexpected'],
+  ['--help', '--bogus'],
+  ['--version', '--json'],
+  ['doctor', '--json'],
+  ['doctor', '--setup', '--browser', '', '--json'],
+  ['doctor', '--setup', '--config', 'absent.yml', '--browser', 'unknown', '--json'],
+  ['unknown\nкоманда', '--json'],
+  ['--json'],
+  ['', '--json'],
+  ['lense', '', '--json'],
+  ['dataverse', '', '--json'],
+  ['doctor', '--help', '--bogus', '--json'],
+  ['mirage', '--help', '--bogus', '--json'],
+  ['mirage', 'help', '--bogus', '--json'],
+  ['mirage', '--help', '--bogus'],
+];
+for (const args of rootFlagCases)
+  test(`root flags reject trailing arguments and diagnostics use the requested stream: ${JSON.stringify(args)}`, async (t) => {
+    const result = await run(t, args);
     assert.equal(result.status, 1, JSON.stringify(args));
     if (args.includes('--json')) {
       const report = JSON.parse(result.stdout);
       assert.equal(report.ok, false);
       assert.equal(typeof report.error.code, 'string');
       assert.equal(result.stderr, '');
+      if (args.includes('absent.yml')) assert.match(report.error.message, /--browser must be/);
     } else {
       assert.equal(result.stdout, '');
       assert.doesNotMatch(result.stderr, /\n\s+at /);
     }
-  }
-  assert.match(JSON.parse(results[5].stdout).error.message, /--browser must be/);
-});
+  });
 
-test('all public command help succeeds and leaves the owned working directory unchanged', async (t) => {
-  const cwd = tempDirSync('paqvilo-help-contract-');
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const commands = [
-    [],
-    ['lense'],
-    ['mirage'],
-    ['dataverse'],
-    ...['init', 'setup', 'doctor'].map((name) => [name, '--help']),
-    ...['dev', 'list', 'use', 'doctor', 'map', 'status', 'audit', 'resources', 'verify', 'agent', 'model-driven'].map(
-      (name) => ['lense', name, '--help'],
-    ),
-    ...MIRAGE_COMMANDS.map((name) => ['mirage', name, '--help']),
-  ];
-  const results = await Promise.all(commands.map((args) => run(args, { cwd })));
-  for (const [index, args] of commands.entries()) {
-    assert.equal(results[index].status, 0, `${args.join(' ')}: ${results[index].stderr}`);
-    assert.ok(results[index].stdout.trim(), args.join(' '));
-    assert.equal(results[index].stderr, '', args.join(' '));
-  }
-  assert.deepEqual(fs.readdirSync(cwd), []);
-});
+const publicCommands = [
+  [],
+  ['lense'],
+  ['mirage'],
+  ['dataverse'],
+  ...['init', 'setup', 'doctor'].map((name) => [name, '--help']),
+  ...['dev', 'list', 'use', 'doctor', 'map', 'status', 'audit', 'resources', 'verify', 'agent', 'model-driven'].map(
+    (name) => ['lense', name, '--help'],
+  ),
+  ...MIRAGE_COMMANDS.map((name) => ['mirage', name, '--help']),
+];
+for (const args of publicCommands)
+  test(`public command help succeeds and leaves the owned working directory unchanged: paqvilo ${args.join(' ')}`, async (t) => {
+    const cwd = tempDirSync('paqvilo-help-contract-');
+    t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    const result = await run(t, args, { cwd });
+    assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
+    assert.ok(result.stdout.trim(), args.join(' '));
+    assert.equal(result.stderr, '', args.join(' '));
+    assert.deepEqual(fs.readdirSync(cwd), []);
+  });
 
-test('public Mirage tool help rejects malformed requests without running the tool', async () => {
-  const commands = Object.keys(MIRAGE_TOOLS);
-  const results = await Promise.all(commands.map((name) => run(['mirage', name, '--help', '--unknown', '--json'])));
-  for (const [index, result] of results.entries()) {
-    assert.equal(result.status, 1, commands[index]);
-    assert.equal(JSON.parse(result.stdout).ok, false, commands[index]);
-    assert.equal(result.stderr, '', commands[index]);
-  }
-  const positional = await run(['mirage', 'liquid-conformance', '--help', 'unexpected']);
+for (const name of Object.keys(MIRAGE_TOOLS))
+  test(`public Mirage tool help rejects malformed requests without running the tool: ${name}`, async (t) => {
+    const result = await run(t, ['mirage', name, '--help', '--unknown', '--json']);
+    assert.equal(result.status, 1, name);
+    assert.equal(JSON.parse(result.stdout).ok, false, name);
+    assert.equal(result.stderr, '', name);
+  });
+
+test('public Mirage tool help rejects a positional argument without running the tool', async (t) => {
+  const positional = await run(t, ['mirage', 'liquid-conformance', '--help', 'unexpected']);
   assert.equal(positional.status, 1);
   assert.equal(positional.stdout, '');
   assert.match(positional.stderr, /Unexpected argument/);
@@ -108,7 +108,7 @@ test('option terminators keep literal help and JSON values out of dispatcher con
     ['lense', 'invented', '--help', '--json'],
     ['mirage', 'inspekt', '--help'],
   ];
-  const results = await Promise.all(cases.map((args) => run(args, { cwd })));
+  const results = await Promise.all(cases.map((args) => run(t, args, { cwd })));
   for (const [index, result] of results.entries()) {
     assert.equal(result.status, 1, `${cases[index].join(' ')}: ${result.stdout} ${result.stderr}`);
     if (index === 3) assert.equal(JSON.parse(result.stdout).error.code, 'unknown_command');
@@ -145,8 +145,11 @@ test('shell quoting preserves spaced Cyrillic and metacharacter paths', async (t
   const result = await withProcessSlot(
     () =>
       new Promise((resolve) => {
-        execFile(program, args, { cwd, env, encoding: 'utf8', windowsHide: true }, (error, stdout, stderr) =>
-          resolve({ status: error?.code ?? 0, stdout, stderr }),
+        execFile(
+          program,
+          args,
+          { cwd, env, encoding: 'utf8', windowsHide: true, signal: t.signal },
+          (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
         );
       }),
   );

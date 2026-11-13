@@ -233,7 +233,7 @@ test('reference runner detects JSON/status/state mismatches, rejects writes and 
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     await fs.rm(directory, { recursive: true, force: true });
@@ -323,7 +323,7 @@ test('anonymous parity requires session controls and refuses runtime-state redir
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const current of [server, destination]) {
       current.closeAllConnections();
       await new Promise((resolve) => current.close(resolve));

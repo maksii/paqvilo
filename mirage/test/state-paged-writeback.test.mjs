@@ -1,3 +1,4 @@
+// @test-kind contract: paged record storage across presets and admin routes is Paqvilo's own runtime design
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { pagedRecordsOf } from '../lib/record-tables.mjs';
 import { StateStorage } from '../lib/state-storage.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const admin = { admin: true };
 const pack = {
@@ -46,14 +48,14 @@ async function storedItemIsPaged(file) {
 
 test('settings-only presets keep paged tables on their pages, at runtime and at startup', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-paged-writeback-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented writeback');
   const stateFile = path.join(root, 'state.json');
   const start = (preset) =>
     createSimulator({ sourceDir: root, stateFile, watch: false, packs: [pack], preset, presetMode: 'always' });
   const sim = await start('pagedItems');
   let open = true;
-  t.after(() => open && sim.close());
+  ownedFixture(t).add(() => open && sim.close());
   assert.ok(pagedRecordsOf(sim.store.state.tables.item), 'The startup preset stores the table on pages.');
   await sim.applyPreset('settingsOnly');
   assert.equal(sim.store.state.settings.permissionMode, 'permissive');
@@ -64,7 +66,7 @@ test('settings-only presets keep paged tables on their pages, at runtime and at 
   assert.ok(await storedItemIsPaged(stateFile));
 
   const restarted = await start('settingsOnly');
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.ok(pagedRecordsOf(restarted.store.state.tables.item), 'The startup preset path keeps pages too.');
   assert.equal(restarted.store.get('items', 'row-0', admin).name, 'Invented 0');
   assert.ok(await storedItemIsPaged(stateFile));
@@ -72,7 +74,7 @@ test('settings-only presets keep paged tables on their pages, at runtime and at 
 
 test('reference enrichment of one table keeps other paged tables on their pages', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-paged-enrichment-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented enrichment');
   const liveBridge = {
     origin: 'https://reference.example.test',
@@ -100,7 +102,7 @@ test('reference enrichment of one table keeps other paged tables on their pages'
     preset: 'pagedItems',
     liveBridge,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.ok(pagedRecordsOf(sim.store.state.tables.item));
   const response = await fetch(sim.url + '/_sim/api/reference/enrich', {
     method: 'POST',
@@ -116,7 +118,7 @@ test('reference enrichment of one table keeps other paged tables on their pages'
 
 test('state-returning admin routes stream stored tables and answer summaries without rows', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-paged-response-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented responses');
   const sim = await createSimulator({
     sourceDir: root,
@@ -126,7 +128,7 @@ test('state-returning admin routes stream stored tables and answer summaries wit
     preset: 'pagedItems',
     presetMode: 'always',
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const post = (route) =>
     fetch(sim.url + '/_sim/api' + route, {
       method: 'POST',

@@ -102,30 +102,39 @@ async function layerEntries(layer, budget) {
   const result = [];
   if (layer.type !== 'directory') return result;
   const root = await fs.realpath(layer.dir);
-  async function visit(dir, top = false) {
+  // Code-unit order: resources and the entry budget follow it, and listing order differs between file systems.
+  async function sortedEntries(dir) {
+    const entries = [];
     for await (const entry of await fs.opendir(dir)) {
       budget.take('traversalEntries', 1);
+      entries.push(entry);
+    }
+    return entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
+  }
+  async function indexFile(file) {
+    const name = path.relative(root, file).replaceAll('\\', '/');
+    if (
+      !/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(
+        name,
+      )
+    )
+      return;
+    budget.take('entries', 1);
+    const real = await fs.realpath(file);
+    if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
+    // Index physical names first. Binary images and unrelated WebResources do
+    // not enter memory; only metadata and declared JS/CSS assets are read.
+    const indexed = { name, file };
+    indexed.load = async () => (indexed.data ??= await readBudgetedFile(file, root, budget));
+    result.push(indexed);
+  }
+  async function visit(dir, top = false) {
+    for (const entry of await sortedEntries(dir)) {
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (!top || /^(?:webresources|entities|other|appactions|controls)$/i.test(entry.name)) await visit(file);
-      } else if (entry.isFile()) {
-        const name = path.relative(root, file).replaceAll('\\', '/');
-        if (
-          !/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(
-            name,
-          )
-        )
-          continue;
-        budget.take('entries', 1);
-        const real = await fs.realpath(file);
-        if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
-        // Index physical names first. Binary images and unrelated WebResources do
-        // not enter memory; only metadata and declared JS/CSS assets are read.
-        const indexed = { name, file };
-        indexed.load = async () => (indexed.data ??= await readBudgetedFile(file, root, budget));
-        result.push(indexed);
-      }
+      } else if (entry.isFile()) await indexFile(file);
     }
   }
   await visit(root, true);

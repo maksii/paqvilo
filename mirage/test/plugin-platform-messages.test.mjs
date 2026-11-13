@@ -1,5 +1,6 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus, captures native and native-r2 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios)
 // @parity-evidence: tag reason only; the assertions cite the native and native-r2 captures of the same scenarios (audit C2-02 VAL-c8)
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 // @parity-evidence: import lines only (no assertion changes); the appended Assign test cites native sdkMessages 5179
@@ -381,7 +382,7 @@ async function bulkFixture(t, steps, seen) {
   );
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return f;
 }
 const bulkStep = (message, stage, n) => ({
@@ -491,7 +492,7 @@ test('HTTP many-to-many association reads the intersect pair before its Associat
   );
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const response = await f.request('POST', `/roots(${root})/tags/$ref`, {
     '@odata.id': `${f.server.origin}/api/data/v9.2/tags(${tag})`,
   });
@@ -534,7 +535,7 @@ async function sharedFixture(t, steps, seen) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return f;
 }
 

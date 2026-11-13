@@ -1,4 +1,5 @@
 // @test-kind unproven: local model of main Update rebase over nested SDK writes and deletes; no native capture cited
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -44,7 +45,7 @@ async function fixture(t, handler, { message = 'Update', fields = {}, rows } = {
   const handlers = new Map([[step.id, (context) => handler({ ...context, service, store: f.store })]]);
   const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, service };
 }
 

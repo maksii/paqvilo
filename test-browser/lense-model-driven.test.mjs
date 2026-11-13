@@ -16,6 +16,7 @@ import { createModelDrivenOverlay, readModelDrivenResourceMap } from '../lense/m
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 
@@ -46,7 +47,7 @@ test('an original-source breakpoint resolved through an explicitly served compil
   owner.add(() => cdp?.detach());
   owner.add(() => release?.());
   owner.add(() => context?.close());
-  owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const original = 'export function answer(): number {\n  return 42;\n}',
     compiled = 'globalThis.compiledAnswer = function(){\n  return 42;\n};\n//# sourceMappingURL=bundle.js.map',
     payload = {
@@ -232,7 +233,7 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
   const owned = {};
   ownBrowserResources(t, server, owned);
   ownedFixture(t).remove(async () => {
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+    await fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = (owned.context = await browser.newContext({ serviceWorkers: 'block' }));
@@ -274,7 +275,7 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
 
 test('public model-driven Lense overlays native scripts and reloads on source save without native writes', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const solution = path.join(root, 'solution'),
     resourceDir = path.join(solution, 'WebResources');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
@@ -371,7 +372,7 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
       '--resource-map',
       resourceMap,
       '--browser',
-      'chromium',
+      channel,
       '--headless',
       '--output',
       reportFile,

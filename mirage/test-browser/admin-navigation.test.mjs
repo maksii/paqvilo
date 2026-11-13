@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -87,7 +88,7 @@ test('admin paginates large tables, lazily inspects details and never requests t
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

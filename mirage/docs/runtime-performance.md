@@ -8,7 +8,7 @@ How Mirage starts, what it reuses between restarts, how to measure startup and c
 - **Bootstrap presets.** With `--preset-mode bootstrap` (`presetMode: 'bootstrap'`, or the catalogue's `presetMode`) a preset is applied only when the state file does not exist yet, so restarting an existing state keeps local records. The default, `always`, reapplies the preset on every start. `status.startupPreset` reports the preset, the mode and whether it was applied.
 - **State restore.** The portal host restores the state file once and checks the file identity before adopting it. Journal sections that a restore discards are checksummed without rebuilding their values.
 - **Solution reuse.** A site-bound context keeps its Solution scan and schema inputs. A runtime rediscovers the inventory and checks file stamps, roots, layer order and locale before reusing them; changed portal content also invalidates the portal import.
-- **Source watching.** On Windows, source watching uses recursive OS notifications per distinct root, filters events to the watched sources and waits for changed files to settle, so the handle count follows path depth rather than the number of exported directories. Other platforms use chokidar. `bootstrap.timings.watcher` reports the backend in use.
+- **Source watching.** On Windows, source watching uses recursive OS notifications per distinct root, filters events to the watched sources and waits for changed files to settle, so the handle count follows path depth rather than the number of exported directories. Other platforms use chokidar. `bootstrap.timings.watcher` reports the backend in use. On Windows each folder above a root is also watched, without its subfolders, so that a replaced export root is noticed; the runtime therefore handles a notification for every entry created, removed or changed directly inside those folders (measured: about 0.2 ms of kernel time for one entry created and removed). Keep a source root out of a folder that other programs write to constantly, such as the temporary folder, or start the runtime with `--no-watch` (`watch: false` for `createSimulator`).
 
 `status.bootstrap.timings` reports source and cache, state restore and composition, preset and organization costs, the state-file size and format, and memory snapshots. `startupMs` and `listenerMs` measure the runtime call through listener and watcher setup; the portal's `sourceBootstrapMs` measures the earlier source and state composition. The portal's `profilePinMs`, `statePreloadMs` and `stateRestoreMs` overlap configuration time, so do not add them together. A listening runtime does not mean the browser has loaded the application.
 
@@ -126,15 +126,43 @@ each falls back to a scan when it cannot prove its answer.
 node --test mirage/test-volume/write-volume.test.mjs
 ```
 
-It runs each scenario on fresh fixtures at N = 2,500 and 2N = 5,000 rows and asserts the ratio between
-the two times, never absolute milliseconds. Linear work stays near 2×, and a per-row table scan reaches
-about 4×. The bound is 3×, or 1.6× for single-record reads, which should not grow. A scenario passes
-when any of three attempts stays under its bound. The scenarios are:
+It runs each scenario on fresh fixtures at N = 2,500 and 2N = 5,000 rows and asserts the work each one
+does, never time. Each operation has three measures:
+
+- The work the store counts (`DataStore#work`): rows that the counted scans and index builds visit, and
+  key-index lookups.
+- The array elements that JavaScript visits while the operation runs, whoever calls it. The test installs
+  counting wrappers on `Array.prototype` around the measured call and removes them afterwards, so a
+  per-row scan outside the counted loops is seen too. A callback method counts its callback calls, a search
+  counts the elements up to its match, an iterator counts its steps, a copy counts what it copies, and a
+  sort counts one pass.
+- The array elements moved in place (block moves): the elements that `splice`, `shift`, `unshift` and
+  `copyWithin` shift. An insert at the end of a table moves nothing.
+
+Loops over a `Map` or a `Set`, indexed `for` loops and string scans are outside every measure.
+
+On the first two measures the work at 2N may be at most twice the work at N plus 1,000. Linear work stays
+within that bound, and a per-row scan of a growing array does about four times as much. A single-record
+read must do exactly the same work at both sizes. Block moves have the same bound in a scenario that
+deletes no rows, plus the change log's limit (10,000): once the log holds more entries than its limit, a
+commit drops the oldest in one block move. In a scenario that deletes rows, the block moves at each size
+must stay within one tail move per removed row: deleting k rows from a table of n rows may move at most
+(n − 1) + (n − 2) + … + (n − k) rows, computed from the scenario's sizes. A second move per removed row
+fails. The times are printed as diagnostics only.
+
+The store has a known cost here. A table is an ordered array, and removing a row moves the references
+behind it in one native block move, so deleting k rows from a table of n rows moves up to k·n row
+references. On the development machine, a cascade delete of 10,000 children that are the first rows of a
+100,000-row table took about 0.95 s; the same delete of the last 10,000 rows, where nothing moves, took
+about 0.47 s, so about half the time is the moves.
+
+The scenarios are:
 
 - CreateMultiple.
 - UpsertMultiple by alternate key.
 - 2,000 single-record reads through `store.query` with the row-security filter.
 - Paging through every row at 500 per page with an insert before the cursor. Every row must appear
-  exactly once; the gate times the cost per page.
+  exactly once. Each page is measured on its own, and the gate compares the most expensive page, so a
+  one-off cost on one page is not averaged away.
 - A cascade delete of 1,000 and 2,000 children.
 - A Basic-depth reader paging a deep share graph of 12 teams, where every second row is shared.

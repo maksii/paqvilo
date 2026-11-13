@@ -1,5 +1,6 @@
 // @test-kind parity: native dev-environment recorder corpus (pipelineEffects, async, crud, ownerAndState): async step context and deleted-row job failure
 // Asynchronous step admission against native corpus facts (dataverse-recorder). Invented schema and handlers.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -33,7 +34,7 @@ async function organization(t, steps, handlers) {
     scheduler = createScheduler({ clock: store.clock, manual: true }),
     items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
   });

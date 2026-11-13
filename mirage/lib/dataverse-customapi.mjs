@@ -270,7 +270,10 @@ export function parseFxExpressionFiles(files, { organizationId } = {}) {
 export async function readCustomApiSolution(customApisDir, options) {
   const files = [];
   const walk = async (dir, rel) => {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
+    // Code-unit order: the parsed rows keep the file order, which differs between file systems.
+    for (const entry of (await readdir(dir, { withFileTypes: true })).sort(
+      (a, b) => Number(a.name > b.name) - Number(a.name < b.name),
+    )) {
       const path = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) await walk(join(dir, entry.name), path);
       else if (FILE_KINDS[entry.name]) files.push({ path, text: await readFile(join(dir, entry.name), 'utf8') });
@@ -843,10 +846,13 @@ function* resolveClrMainRuntime(store, api, options, original, synchronous) {
     const previous = runtime;
     runtime = yield (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor);
     // The new runtime is live too: a shared preparer returns it on the replaced runtime's directory.
+    // The request does not wait for the replaced directory's removal: the runtime map owns it (plugin-clr.mjs
+    // settleClrReleases), and the map owner's close awaits it.
     if (previous)
       releaseClrRuntime(previous, {
         liveRuntimes: [runtime, ...runtimesExcept(options.runtimes, original.id)],
         diagnostic: api.diagnostic,
+        owner: options.runtimes,
       });
     options.runtimes.set(original.id, runtime);
     options.mainRuntimeIds.add(original.id);
@@ -1908,7 +1914,11 @@ async function prepareRuntimesPass(api, options, refresh) {
     if (active.has(id)) continue;
     const runtime = options.runtimes.get(id);
     if (runtime)
-      releaseClrRuntime(runtime, { liveRuntimes: runtimesExcept(options.runtimes, id), diagnostic: api.diagnostic });
+      releaseClrRuntime(runtime, {
+        liveRuntimes: runtimesExcept(options.runtimes, id),
+        diagnostic: api.diagnostic,
+        owner: options.runtimes,
+      });
     options.runtimes.delete(id);
     options.mainRuntimeIds.delete(id);
     options.preparationFailures.delete(id);
@@ -1922,6 +1932,7 @@ async function prepareRuntimesPass(api, options, refresh) {
         releaseClrRuntime(previous, {
           liveRuntimes: runtimesExcept(options.runtimes, original.id),
           diagnostic: api.diagnostic,
+          owner: options.runtimes,
         });
       options.runtimes.delete(original.id);
       options.runtimes.set(original.id, await (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor));
@@ -2066,8 +2077,13 @@ export function install(api, options = {}) {
       if (previous && previous.runtimes !== resolved.runtimes) {
         for (const id of previous.mainRuntimeIds) {
           const runtime = previous.runtimes.get(id);
+          // The removal is owned by the runtime map now in use; its owner's close awaits it.
           if (runtime)
-            releaseClrRuntime(runtime, { liveRuntimes: [...resolved.runtimes.values()], diagnostic: api.diagnostic });
+            releaseClrRuntime(runtime, {
+              liveRuntimes: [...resolved.runtimes.values()],
+              diagnostic: api.diagnostic,
+              owner: resolved.runtimes,
+            });
           previous.runtimes.delete(id);
         }
         resolved.mainRuntimeIds.clear();

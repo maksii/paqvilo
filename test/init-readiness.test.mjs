@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, execFile } from 'node:child_process';
+import childProcess, { spawnSync, execFile } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   checkProject,
   inspectProjectAdoption,
@@ -286,6 +287,39 @@ test('adoption detects effective private-path unignore rules without creating or
     false,
     'outside Git, custom exceptions require review rather than a false ready verdict',
   );
+});
+
+// @test-kind security: a Git check that gave no answer is reported, never read as a folder outside Git
+test('completion and adoption report a Git command that gave no answer instead of reading it as no repository', async (t) => {
+  const { directory } = await fixture(t);
+  const original = childProcess.spawnSync;
+  let failure;
+  // The product imports spawnSync by name; syncBuiltinESMExports carries the replacement to that binding.
+  const replaced = t.mock.method(childProcess, 'spawnSync', (command, ...rest) =>
+    command === 'git'
+      ? { status: null, signal: failure.signal ?? null, error: failure.error, stdout: '' }
+      : original(command, ...rest),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  // Killed at its hang guard, and not started at all.
+  for (failure of [
+    { signal: 'SIGTERM', error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }) },
+    { error: Object.assign(new Error('spawnSync git ENOENT'), { code: 'ENOENT' }) },
+  ]) {
+    assert.throws(() => scaffoldMarkers(directory), /Git did not answer which project files to check/);
+    const adoption = inspectProjectAdoption(directory, { config: configFile, processEnv: {} });
+    assert.equal(adoption.ok, false);
+    assert.ok(
+      adoption.diagnostics.some(
+        (item) => item.code === 'PRIVATE_IGNORE_REVIEW' && /Git did not answer the ignore check/.test(item.action),
+      ),
+      JSON.stringify(adoption.diagnostics),
+    );
+  }
 });
 
 test('targeted private exceptions require review even when representative Git probes remain excluded', async (t) => {

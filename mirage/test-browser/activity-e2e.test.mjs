@@ -6,6 +6,7 @@
 // matching Activity content; Escape, Enter, `/` and arrows work; 1,000 retained activities render one page; the phone
 // width never scrolls sideways; dark and light follow the system theme.
 // PAQVILO_ACTIVITY_SCREENSHOTS=<folder> also saves light, dark and 390 px screenshots (evidence runs only).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -45,7 +46,7 @@ after(async () => {
 /** A new page at `viewport` in `colorScheme`; page errors are collected. */
 async function pageOf(t, { width = 1440, height = 1000, colorScheme = 'light' } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

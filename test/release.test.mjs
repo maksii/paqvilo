@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
+import { collectSyntheticEvidence, syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 import {
   validateReleaseFiles,
   REQUIRED_RELEASE_FILES,
@@ -309,11 +309,15 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
   };
-  write('extended-round/multipart.json', '{"synthetic":true}');
+  // Round evidence is collected under the run's own name, as browser tests write it; the bare name is not collected.
+  const evidence = syntheticEvidencePath(state, 'extended-round', 'multipart.json');
+  const collected = path.relative(state, evidence).replaceAll('\\', '/');
+  fs.writeFileSync(evidence, '{"synthetic":true}');
+  write('extended-round/multipart.json', 'NOT-COLLECTED');
   write('extended-round/private.session.json', 'PRIVATE');
   write('agents/session.json', 'PRIVATE');
   // An allowlisted name behind the linked folder below: only the link check keeps it out.
-  write('agents/acceptance.json', 'PRIVATE');
+  write('agents/acceptance.run-1.json', 'PRIVATE');
   write('profiles/Default/Cookies', 'PRIVATE');
   write('audit/live.png', 'PRIVATE');
   write('extended-round/applications-layout-fixture.png', 'PROJECT-OWNED');
@@ -324,7 +328,7 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
     process.platform === 'win32' ? 'junction' : 'dir',
   );
   const result = collectSyntheticEvidence(state);
-  assert.deepEqual(result.files, ['extended-round/multipart.json']);
+  assert.deepEqual(result.files, [collected]);
   assert.deepEqual(fs.readdirSync(result.output).sort(), ['extended-round', 'manifest.json']);
   assert.equal(fs.readFileSync(path.join(result.output, result.files[0]), 'utf8'), '{"synthetic":true}');
   assert.equal(JSON.parse(fs.readFileSync(path.join(result.output, 'manifest.json'), 'utf8')).synthetic, true);

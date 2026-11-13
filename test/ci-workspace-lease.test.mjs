@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { acquireCiWorkspaceLease, assertOwnedCiState } from '../scripts/ci-workspace-lease.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState, processStartIdentity } from '../scripts/ci-workspace-lease.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
 
@@ -188,6 +188,25 @@ test('inherited worker processes keep the parent lease until their handles have 
   await assert.rejects(acquireCiWorkspaceLease(directory, {}), /already owns/);
   child.kill();
   await closed;
+  await release();
+  await (
+    await acquireCiWorkspaceLease(directory, {})
+  )();
+});
+
+test('a worker record whose process ID now names another process does not retain the lease', async (t) => {
+  const directory = checkout(t),
+    environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  const members = path.join(directory, '.paqvilo/ci/workspace.lock/members'),
+    identity = processStartIdentity(process.pid);
+  assert.ok(identity, 'this process has a readable start identity');
+  // A running process with this PID but a different start: the worker that recorded it has exited.
+  fs.writeFileSync(path.join(members, 'reused.json'), JSON.stringify({ pid: process.pid, identity: `${identity}0` }));
+  fs.writeFileSync(path.join(members, 'running.json'), JSON.stringify({ pid: process.pid, identity }));
+  await assert.rejects(release(), /workers still own/);
+  fs.unlinkSync(path.join(members, 'running.json'));
   await release();
   await (
     await acquireCiWorkspaceLease(directory, {})

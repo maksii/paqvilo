@@ -6,9 +6,12 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
+import diagnosticsChannel from 'node:diagnostics_channel';
 import { createSimulator } from '../server.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { personaFixture } from './fixtures/persona-catalog.mjs';
+import { calledFrom } from './support/timer-origin.mjs';
 
 async function fixture(t, options = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-shutdown-'));
@@ -120,4 +123,42 @@ test('shutdown keeps draining a body the client finishes inside the idle guard',
   assert.doesNotMatch(head, /^HTTP\/1\.1 503/);
   await closing;
   socket.destroy();
+});
+
+test('a persona runtime ends a stalled request body at its parent runtime idle bound when the parent closes', async (t) => {
+  const { app, call } = await personaFixture(t, { shutdownBodyIdleMs: 50 });
+  // person-2 opens its own persona runtime (an isolated context), which the parent runtime closes with its own close.
+  const { response, value: persona } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
+  assert.equal(response.status, 200, JSON.stringify(persona));
+  assert.equal(persona.isolated, true);
+  const { hostname, port } = new URL(persona.origin);
+  const socket = net.connect({ host: hostname, port: Number(port) });
+  socket.on('error', () => {});
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  const closed = once(socket, 'close');
+  // The persona runtime's own server is not reachable from here: its request is recognised by the client port.
+  const received = Promise.withResolvers();
+  const started = ({ request }) => {
+    if (request.socket.remotePort === socket.localPort) received.resolve();
+  };
+  diagnosticsChannel.subscribe('http.server.request.start', started);
+  t.after(() => diagnosticsChannel.unsubscribe('http.server.request.start', started));
+  socket.write(
+    `POST / HTTP/1.1\r\nHost: ${hostname}:${port}\r\nContent-Type: application/x-www-form-urlencoded\r\n` +
+      `Content-Length: 1000\r\n\r\n{`,
+  );
+  await received.promise;
+  const server = new URL('../server.mjs', import.meta.url).href,
+    originalSetTimeout = setTimeout,
+    bounds = [];
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (calledFrom(server, import.meta.url)) bounds.push(delay);
+    return originalSetTimeout(callback, delay, ...args);
+  });
+  await app.close();
+  await closed;
+  assert.equal(socket.destroyed, true);
+  assert.ok(bounds.includes(50), 'the stalled body is guarded by the parent runtime bound');
+  assert.ok(!bounds.includes(30_000), 'no request is guarded by the default bound');
 });

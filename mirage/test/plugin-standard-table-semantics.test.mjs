@@ -1,6 +1,7 @@
 // @test-kind parity: native and native-r2 mergeAccount (account Create/10 Target defaults 2737/7368, Create/20 FormattedValues 7371, Merge images without isprivate, rows and reads holding address1_addressid and address2_addressid)
 // Standard table semantics a plug-in sees on account writes: create defaults, catalogue labels, readable image columns
 // and the platform's customer address ids. Invented rows and identities only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -50,7 +51,7 @@ async function fixture(t) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen };
 }
 

@@ -12,10 +12,13 @@ import path from 'node:path';
 import { emptyState } from '../lib/data.mjs';
 import { runExportedServerLogic } from '../lib/exported-operations.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-7777777777c1';
 const CONTACT = '77777777-7777-4777-8777-7777777777c2';
+// These tests are about tracing, not the local 5 s bound: each run has the platform's default limit
+// (ServerLogic/TimeoutInSeconds 120), so a loaded machine cannot end it early.
+const PLATFORM_DEFAULT_TIMEOUT_MS = 120_000;
 
 async function logic(t, code) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'trace-server-logic-'));
@@ -42,7 +45,7 @@ async function receiver(t) {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return { received, origin: `http://127.0.0.1:${server.address().port}/` };
 }
 
@@ -66,6 +69,7 @@ test('a server logic run is a server-logic span with input, output, Logger lines
       operation: 'post',
       body: '{"order":"A-1"}',
       query: { mode: 'invented' },
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
       services: { httpRewrites: { 'https://api.example.test/': target.origin } },
     }),
   );
@@ -120,6 +124,7 @@ test('a failed server logic run fails its span with the error', async (t) => {
       identity: null,
       method: 'GET',
       operation: 'get',
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
     }),
   );
   const [run] = traces.spans({ kind: 'server-logic' }).items;

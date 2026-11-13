@@ -1,5 +1,5 @@
 // @test-kind contract: Lense CLI commands produce the designed JSON and text output for catalogues and settings.
-import { test, before, after } from 'node:test';
+import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +10,8 @@ import { createInterface } from 'node:readline';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 
 let fx;
 before(() => {
@@ -20,15 +22,23 @@ const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
 );
+// A child is ended by the running test's signal when the runner stops that test, never by a timer of its own. Tests in
+// this file run one at a time, so the signal recorded before each test is that test's. A cleanup that runs after its
+// test was stopped (a `mirage stop` in an after hook) still runs to completion.
+let testSignal;
+beforeEach((t) => {
+  testSignal = t.signal;
+});
+const childSignal = () => (testSignal?.aborted ? undefined : testSignal);
 // Asynchronous so that independent invocations of one test run concurrently.
-function runWithin(timeout, ...args) {
+function run(...args) {
   return withProcessSlot(
     () =>
       new Promise((resolve) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 64 << 20 },
+          { env, encoding: 'utf8', windowsHide: true, signal: childSignal(), maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({
               status: error ? (typeof error.code === 'number' ? error.code : null) : 0,
@@ -40,7 +50,6 @@ function runWithin(timeout, ...args) {
       ),
   );
 }
-const run = (...args) => runWithin(30_000, ...args);
 const runWithEnv = (extra, ...args) =>
   withProcessSlot(
     () =>
@@ -48,7 +57,13 @@ const runWithEnv = (extra, ...args) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { env: { ...env, ...extra }, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20 },
+          {
+            env: { ...env, ...extra },
+            encoding: 'utf8',
+            windowsHide: true,
+            signal: childSignal(),
+            maxBuffer: 64 << 20,
+          },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -218,14 +233,12 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   const stop = () => (stopped ??= run('mirage', 'stop', '--config', config, '--repo', fx.dir, '--json'));
   // Register before starting: readiness and hint assertions must not leak the
   // owned runtime or leave the shared fixture locked if they fail.
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     const result = await stop();
     assert.equal(result.status, 0, result.stdout + result.stderr);
   });
-  // A busy machine can need more than 30 s to import. The command's own startup timeout ends
-  // first, so a failed start stops its runtime instead of being killed and leaving it running.
-  const started = await runWithin(
-    150_000,
+  // The command's own startup timeout ends a start that never becomes ready, so a failed start stops its runtime.
+  const started = await run(
     'mirage',
     'start',
     '--config',
@@ -704,17 +717,17 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
     unrelated = idle(),
     finished = idle();
   let identityGuard;
-  t.after(async () => {
-    await Promise.all(
+  ownedFixture(t).add(() =>
+    Promise.all(
       [starting, unrelated, finished, identityGuard].filter(Boolean).map(async (child) => {
         if (child.exitCode !== null || child.signalCode !== null) return;
         const closed = once(child, 'close');
         child.kill();
         await closed;
       }),
-    );
-    fs.rmSync(root, { recursive: true, force: true });
-  });
+    ),
+  );
+  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
   await Promise.all([starting, unrelated, finished].map((child) => once(child, 'spawn')));
   if (process.platform === 'win32') {
     // Windows can recycle a terminated PID into a concurrent process probe. Retaining
@@ -733,7 +746,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
     const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
     try {
       const [ready] = await Promise.race([
-        once(reader, 'line', { signal: AbortSignal.timeout(120_000) }),
+        once(reader, 'line', { signal: t.signal }),
         once(identityGuard, 'exit').then(([code]) => {
           throw new Error(`Fixture process-handle guard exited before readiness (${code})`);
         }),
@@ -819,13 +832,14 @@ test('mirage start refuses a port held by another program before spawning anythi
   const { createServer } = await import('node:net');
   const blocker = createServer();
   await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => blocker.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => blocker.close(resolve)));
   const config = fx.file('mirage-port-catalogue.yml');
   fs.writeFileSync(
     config,
     `defaultSite: test\nsites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example.com\n    mirage:\n      port: ${blocker.address().port}\n`,
   );
   const busy = await run('mirage', 'start', '--config', config, '--repo', fx.dir, '--json');
+  ownStartedRuntimes(t, busy.stdout);
   assert.equal(busy.status, 1);
   assert.match(
     JSON.parse(busy.stdout).error.message,

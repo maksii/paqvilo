@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('real simulator admin lazy records, audit API/Liquid correlation, valid-token denial, sanitized export and #audit landing in Activity', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-audit-'));
@@ -61,7 +61,7 @@ test('real simulator admin lazy records, audit API/Liquid correlation, valid-tok
     },
   });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await browser.close();
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });

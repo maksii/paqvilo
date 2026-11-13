@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -39,7 +40,7 @@ async function fixture(t) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const page = await browser.newPage();
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await page.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

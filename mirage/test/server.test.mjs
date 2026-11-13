@@ -7,7 +7,12 @@ import os from 'node:os';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import {
+  makeTemporaryDirectory,
+  assertTemporaryDirectory,
+  ownedFixture,
+  removeFixtureDirectory,
+} from '../testing/owned-fixture.mjs';
 
 test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
   for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
@@ -20,7 +25,7 @@ test('embedded simulator rejects empty and malformed ports before reading source
 
 test('startup validates and applies one owned preset body without generating a second private candidate', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-preset-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
   let calls = 0;
   const pack = {
@@ -50,7 +55,7 @@ test('startup validates and applies one owned preset body without generating a s
     preset: 'invented',
     presetConfiguration: 'apply',
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.equal(calls, 1);
   assert.equal(sim.store.state.tables.x_item[0].name, 'Invented 1');
   await sim.applyPreset('invented');
@@ -60,7 +65,7 @@ test('startup validates and applies one owned preset body without generating a s
 
 test('startup ownership keeps caller initial records and simulator settings detached', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-initial-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
   const initial = {
     tables: { item: [{ itemid: 'one', nested: { value: 1 } }] },
@@ -68,7 +73,7 @@ test('startup ownership keeps caller initial records and simulator settings deta
     simulator: { externalAssets: false },
   };
   const sim = await createSimulator({ sourceDir: root, stateFile: null, initial, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   initial.tables.item[0].nested.value = 2;
   initial.simulator.externalAssets = true;
   assert.equal(sim.store.state.tables.item[0].nested.value, 1);
@@ -148,7 +153,7 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
     // unless exempt.
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with wildcard field lists' },
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     const resolved = await assertTemporaryDirectory(dir);
     await fs.rm(resolved, { recursive: true, force: true });

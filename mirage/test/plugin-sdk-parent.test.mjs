@@ -1,4 +1,5 @@
 // @test-kind unproven: local model of SDK entry snapshot detachment and callback operation metadata; no native capture cited
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -138,7 +139,7 @@ for (const flavor of ['typed', 'legacy', 'original'])
         pending = [],
         releases = [],
         late = [];
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         for (const release of releases) release();
         await Promise.all(pending);
         for (const backend of backends) await backend.close();

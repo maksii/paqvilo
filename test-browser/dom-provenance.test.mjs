@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -39,15 +40,23 @@ async function fixture(
   const context = await browser.newContext();
   let writer;
   // t.after hooks run in registration order: release the claimed writer before its context.
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await writer?.dispose();
     await context.close();
   });
   const page = await context.newPage();
   const origin = 'http://127.0.0.1:11883',
     packets = [],
-    scripts = new Map();
-  await page.exposeBinding(options.binding, (_source, payload) => packets.push(JSON.parse(payload)));
+    scripts = new Map(),
+    arrivals = [];
+  await page.exposeBinding(options.binding, (_source, payload) => {
+    packets.push(JSON.parse(payload));
+    for (const arrived of arrivals.splice(0)) arrived();
+  });
+  // Resolves once the binding has delivered at least `count` packets.
+  const packetsReach = async (count) => {
+    while (packets.length < count) await new Promise((arrived) => arrivals.push(arrived));
+  };
   await context.addInitScript({
     content: `
     window.nativeDom = {createElement:Document.prototype.createElement,appendChild:Node.prototype.appendChild,append:Element.prototype.append,
@@ -97,20 +106,23 @@ async function fixture(
         window[slot].query(window[name] ?? document.getElementById(name), { scope, anchorGeneration: 7 }),
       { name, slot: options.slot, scope },
     );
+  // A short in-page pause before an assertion that no packet was sent. It cannot decide a positive result: an expected
+  // packet is awaited from the binding with packetsReach.
   const settle = async () => {
     await page.evaluate(async () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
   };
-  const resolve = async () => {
-    await settle();
+  const resolve = async (count) => {
+    await packetsReach(count);
+    assert.equal(packets.length, count);
     for (const packet of packets)
       await writer.evaluate((writer, { id, proof }) => writer.resolve(id, proof), {
         id: packet.id,
         proof: proofFor(packet.id),
       });
   };
-  return { page, writer, packets, script, query, resolve, settle, origin };
+  return { page, writer, packets, packetsReach, script, query, resolve, settle, origin };
 }
 
 test('creation, cloning, insertion and moves retain actual-node identity without emitting content or query values', async (t) => {
@@ -133,7 +145,7 @@ test('creation, cloning, insertion and moves retain actual-node identity without
   assert.ok(pending.availability.some((item) => item.reason === 'creation-proof-pending'));
   assert.deepEqual(pending.scope, scope);
   assert.equal(pending.anchorGeneration, 7);
-  await fx.resolve();
+  await fx.resolve(6);
   for (const [name, relationship] of [
     ['created', 'created-by'],
     ['cloned', 'cloned-by'],
@@ -254,7 +266,7 @@ test('nested custom-element constructors retain their own creation callsite inst
     `document.getElementById('target').innerHTML='<invented-control></invented-control>';window.component=document.querySelector('invented-control');window.nested=component.firstChild;`,
     '/outer.js',
   );
-  await fx.resolve();
+  await fx.resolve(2);
   for (const [name, url] of [
     ['component', '/outer.js'],
     ['nested', '/component.js'],
@@ -312,7 +324,7 @@ test('private proof admission uses captured intrinsics and disposal preserves au
     };
   });
   await fx.script(`window.created=document.createElement('button');document.body.append(created);`);
-  await fx.resolve();
+  await fx.resolve(1);
   const result = await fx.query('created');
   assert.equal(
     await fx.page.evaluate(() => window.leakedSecret),
@@ -398,7 +410,7 @@ test('batch resolution admits at most128records and sends one source-ready event
   await fx.script(
     `window.created=[];for(let i=0;i<4;i++){const node=document.createElement('i');created.push(node);document.body.append(node)};window.ready=[];document.addEventListener('paqvilo-provenance-ready',event=>ready.push(event.detail));`,
   );
-  await fx.settle();
+  await fx.packetsReach(4);
   assert.equal(fx.packets.length, 4);
   const entries = fx.packets.map((packet) => ({ id: packet.id, proof: proofFor(packet.id) }));
   assert.equal(await fx.writer.evaluate((writer, entries) => writer.resolveMany(entries), entries.slice(0, 3)), 3);
@@ -444,7 +456,7 @@ test('anonymous UI redraws do not generate backend events or a provenance-ready 
       `window.selected=document.createElement('b');document.body.append(selected);`,
       '/round-' + round + '.js',
     );
-    await fx.settle();
+    await fx.packetsReach(prior + 1);
     assert.equal(fx.packets.length, prior + 1);
     const packet = fx.packets.at(-1);
     assert.equal(

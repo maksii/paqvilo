@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -7,7 +8,7 @@ import { resolveInspectionEvidence } from '../lense/inspection-evidence.mjs';
 
 test('actual portal node joins use rendered component scope and never navigation defaults, page forms or values', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const html =
     '<form id="form" data-formid="form-a" data-entityname="sample_entry"><label id="caption" for="title">Title</label><input id="title" name="title" value="PRIVATE_VALUE"><button id="submit">Save</button><div id="child" data-formid="form-b" data-entityname="sample_child"><input id="other" name="title"></div></form><input id="outside" name="title"><iframe id="frame"></iframe>';
@@ -220,7 +221,7 @@ test('actual portal node joins use rendered component scope and never navigation
 
 test('typed advanced wrappers and modal form hierarchy preserve exact configuration while progress chrome stays enclosing', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.route('http://127.0.0.1:11889/**', (route) =>
     route.fulfill({

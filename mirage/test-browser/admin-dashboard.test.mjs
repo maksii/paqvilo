@@ -1,15 +1,14 @@
 // @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 // The /_sim/ Health dashboard against a fake JSON host: topology, node drawer,
 // on-demand preflight, polling, the 503 "starting" state, 390 px layout, and the 404 fallback of an older host.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import { loopbackServer, serveAdminFile } from './shared-browser.mjs';
 import { EventEmitter } from 'node:events';
-import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
-const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 const DASHBOARD_TIME = new Date('2030-01-01T00:00:00Z');
 const NODE_IDS = [
   'client:browser',
@@ -88,7 +87,7 @@ const payload = (total) => ({
 
 async function host(t, { dashboard }) {
   const calls = [];
-  const server = http.createServer(async (req, res) => {
+  const { server } = await loopbackServer(t, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     calls.push(url.pathname + url.search);
     try {
@@ -140,22 +139,11 @@ async function host(t, { dashboard }) {
         res.writeHead(404).end('{}');
         return;
       }
-      const name = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
-      if (name !== 'index.html' && !/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return res.writeHead(404).end();
-      res.setHeader(
-        'content-type',
-        name.endsWith('.mjs') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html',
-      );
-      res.end(await fs.readFile(new URL(`../${SHARED.has(name) ? 'lib' : 'admin'}/${name}`, import.meta.url)));
+      await serveAdminFile(res, url);
     } catch (error) {
       if (!res.headersSent) res.writeHead(error.code === 'ENOENT' ? 404 : 500);
       res.end();
     }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
   });
   return { origin: `http://127.0.0.1:${server.address().port}`, calls };
 }
@@ -168,7 +156,7 @@ after(() => browser?.close());
 
 async function open(t, origin, { clock = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   // Installing a fake clock alone still advances with wall time. Pause before
   // navigation so only explicit test ticks can trigger the dashboard's 5 s poll.
@@ -338,7 +326,7 @@ test('a slow dashboard never stacks Health polls: one round is in flight, and on
   });
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await context.addInitScript(COUNT_DASHBOARD_FETCHES);
   const page = await context.newPage();
   await page.clock.install({ time: new Date(DASHBOARD_TIME.getTime() - 86_400_000) });

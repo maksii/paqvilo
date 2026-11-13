@@ -23,6 +23,7 @@ import {
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { calledFrom } from './support/timer-origin.mjs';
 
 const MEMORY = new URL('../lib/storage-memory.mjs', import.meta.url).href;
 
@@ -319,18 +320,25 @@ test('the offline preflight accepts a local-disk root the running host accepts (
 });
 
 // Records the delay of every timer the code under test arms on the mocked clock, and counts the timers still armed. It
-// replaces the mocked setTimeout and clearTimeout for the duration of run() and restores them in finally.
+// replaces the mocked setTimeout and clearTimeout for the duration of run() and restores them in finally. Only timers
+// armed by Mirage's own code are recorded: a fetch connection of an earlier test also arms global timers.
+const MIRAGE_LIB = new URL('../lib/', import.meta.url).href;
 async function withTimerSpy(run) {
   const mockedSetTimeout = globalThis.setTimeout;
   const mockedClearTimeout = globalThis.clearTimeout;
   const delays = [];
   const armed = new Set();
-  globalThis.setTimeout = (callback, delay) => {
+  globalThis.setTimeout = (callback, delay, ...rest) => {
+    if (!calledFrom(MIRAGE_LIB, import.meta.url)) return mockedSetTimeout(callback, delay, ...rest);
     delays.push(delay);
-    const handle = mockedSetTimeout(() => {
-      armed.delete(handle);
-      callback();
-    }, delay);
+    const handle = mockedSetTimeout(
+      function (...args) {
+        armed.delete(handle);
+        callback.apply(this, args);
+      },
+      delay,
+      ...rest,
+    );
     armed.add(handle);
     return handle;
   };

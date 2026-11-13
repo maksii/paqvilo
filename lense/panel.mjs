@@ -72,6 +72,9 @@ const MAX_API_BYTES = 32 * 1024;
 const MIRAGE_READ_GUARD_MS = 60_000;
 // Hang guard for opening a launched scenario runtime's first document; matches the launch write's 120 s.
 const SCENARIO_NAVIGATION_GUARD_MS = 120_000;
+// Hang guard for removing the panel from one tab: it ends the wait on a tab whose debugger is paused, which never
+// answers. A closed tab ends the wait at once; an unanswered removal is reported by dispose().
+const PANEL_REMOVAL_HANG_MS = 30_000;
 const BINARY_EXT = /\.(?:png|jpe?g|gif|ico|webp|woff2?|ttf|eot|otf|pdf|zip|mp4|mp3)$/i;
 
 const GROUP_OF = {
@@ -1677,7 +1680,7 @@ export function enablePanel(context, session, opts = {}) {
       if (rawUrl) url = rawUrl.endsWith('/') ? rawUrl : rawUrl + '/';
       if (url) entries.push({ t: 'page', title: page.name || url, url });
     }
-    entries.sort((a, b) => a.url.localeCompare(b.url));
+    entries.sort((a, b) => a.url.localeCompare(b.url, 'en'));
     for (const s of session.model.inlineSources)
       entries.push({
         t: s.kind,
@@ -2159,21 +2162,65 @@ export function enablePanel(context, session, opts = {}) {
     for (const remove of listeners) remove();
     if (session.api === api) session.api = null;
     if (session.sourceInspector === sourceInspector) session.sourceInspector = null;
-    let timer;
-    // A paused debugger must not hold shutdown open indefinitely. The queued cleanup also
-    // retires this token, so a late draw cannot recreate the panel after it resumes.
-    const cleanup = Promise.allSettled(
-      [...portalPages().map((page) => page.evaluate(removePanelUi, { token })), ...errorObservers].map((item) =>
-        item?.close ? item.close() : item,
-      ),
-    );
-    disposal = Promise.race([
-      cleanup,
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, 2000);
-      }),
-    ]).finally(() => clearTimeout(timer));
+    // Resolves once every tab confirmed the removal or closed; rejects naming the tabs that did neither.
+    disposal = Promise.all([
+      Promise.all(portalPages().map(removeFrom)),
+      Promise.allSettled([...errorObservers].map((observer) => observer.close())),
+    ]).then(([outcomes]) => {
+      const unconfirmed = outcomes.filter(Boolean);
+      if (unconfirmed.length)
+        throw new Error(
+          `The development panel could not be confirmed removed from ${unconfirmed.length} tab(s): ${unconfirmed.join('; ')}`,
+        );
+    });
     return disposal;
+  };
+  // Removes the panel from the tab's current document. Settles with null once removed or the tab closed, otherwise
+  // with the reason. The queued cleanup also retires this token, so a late draw cannot recreate the panel after a
+  // paused debugger resumes; the guard ends a wait on such a tab, which never answers. A crashed tab emits `crash`, not
+  // `close`, and is reported with the reason its ask failed.
+  const removeFrom = async (page) => {
+    let timer, onClose, onCrash, next;
+    const ended = new Promise((resolve) => {
+      onClose = () => resolve(null);
+      onCrash = () => resolve('the tab crashed');
+      page.once('close', onClose);
+      page.once('crash', onCrash);
+      timer = setTimeout(resolve, PANEL_REMOVAL_HANG_MS, `a tab did not answer within ${PANEL_REMOVAL_HANG_MS} ms`);
+    });
+    // Documents committed in the tab while it is asked; each one replaces the document an ask was sent to.
+    let commits = 0;
+    const committed = (frame) => {
+      if (frame !== page.mainFrame()) return;
+      commits++;
+      next?.resolve(true);
+    };
+    page.on('framenavigated', committed);
+    const ask = () =>
+      page.evaluate(removePanelUi, { token }).then(
+        () => null,
+        (error) => (page.isClosed() ? null : { failed: String(error?.message ?? error).split('\n')[0] }),
+      );
+    try {
+      for (;;) {
+        const seen = commits;
+        const outcome = await Promise.race([ask(), ended]);
+        if (!outcome?.failed) return outcome;
+        // A failed ask is asked again in the document that replaced the one asked. Its commit may be reported after
+        // the failure, so without one yet the next commit is awaited; the guard or a closed tab ends that wait.
+        if (commits === seen) {
+          next = Promise.withResolvers();
+          const renewed = await Promise.race([next.promise, ended]);
+          next = null;
+          if (renewed !== true) return renewed === null ? null : outcome.failed;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+      page.off('close', onClose);
+      page.off('crash', onCrash);
+      page.off('framenavigated', committed);
+    }
   };
   return {
     keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])),

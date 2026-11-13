@@ -1,4 +1,5 @@
 // @test-kind compatibility: Microsoft Learn MSCRM.BypassCustomPluginExecution and BypassBusinessLogicExecution optional parameters
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -141,7 +142,7 @@ async function probeFixture(t, steps, seen) {
     runtimes: new Map(),
     descriptors: new Map(),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, backend };
 }
 

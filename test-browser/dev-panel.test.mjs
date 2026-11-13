@@ -473,7 +473,7 @@ test('browser CORS console errors keep the page path without a synthetic line; s
   );
   other.listen(0, '127.0.0.1');
   await once(other, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     other.closeAllConnections();
     await new Promise((r) => other.close(r));
   });

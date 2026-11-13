@@ -1,4 +1,5 @@
 // @test-kind contract: persona catalog rendering preserves exact canonical grouped and other-contact membership at scale
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -26,7 +27,7 @@ test('1000-persona grouped sign-in and admin filtering render every persona once
       .map((contact) => `@contact:${String(contact.contactid).toLowerCase()}`),
     expectedCanonical = [...expectedCurated, ...expectedPack, ...expectedOther];
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.goto(app.url + '/_sim/#identity');
   const picker = page.locator('#browser-persona-picker');

@@ -98,6 +98,11 @@ const Server = {
   Connector: { Dataverse: connector, HttpClient, CloudFlow },
   Logger: { Log: log('Log'), Info: log('Log'), Warn: log('Warn'), Error: log('Error') },
 };
+// Set before the answer (result or failure) is posted: the host leaves a limit that falls due while the answer is still
+// queued to that answer. A caller that passes no flag (a direct test of this worker) gets the answer alone.
+const answered = () => {
+  if (workerData.answered) Atomics.store(new Int32Array(workerData.answered), 0, 1);
+};
 parentPort.postMessage({ kind: 'ready' });
 try {
   const context = vm.createContext(
@@ -114,7 +119,9 @@ try {
   ).runInContext(context, { timeout: workerData.timeout });
   const raw = typeof result === 'string' ? result : JSON.stringify(result ?? null);
   if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error('Server-logic result exceeds the local limit');
+  answered();
   parentPort.postMessage({ kind: 'result', raw });
 } catch (error) {
+  answered();
   parentPort.postMessage({ kind: 'failure', message: String(error.message).slice(0, 1000) });
 }

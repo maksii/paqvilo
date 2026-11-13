@@ -10,7 +10,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { pageRunner } from '../baseline-capture.mjs';
 import { verifyParity } from '../verify.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:15154';
 // The fixtures settle as soon as they are quiet. The bound is longer than the runner's hang guard, so it never decides
@@ -25,7 +25,7 @@ after(() => browser?.close());
 
 async function fixture(t, contentType, body) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await context.route(origin + '/**', (route) => route.fulfill({ contentType, body }));
   return context.newPage();
 }
@@ -62,10 +62,10 @@ test('the parity verifier records a document without a body as a readiness failu
   const server = http.createServer((_req, res) => res.writeHead(200, { 'content-type': 'image/svg+xml' }).end(SVG));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const served = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   // The attached browser is this test's own context, and the simulator state answers at once.
   t.mock.method(chromium, 'connectOverCDP', async () => ({ contexts: () => [context], close: async () => {} }));
   t.mock.method(globalThis, 'fetch', async () =>

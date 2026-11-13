@@ -28,6 +28,8 @@ const canonical = (value) =>
 const failure = (message, status = 501, code = 'LocalOperationUnsupported') => new DataError(message, status, code);
 // hang guard: a worker still alive this long after its answer is running, not ending; it is terminated.
 const ANSWERED_EXIT_GUARD_MS = 30_000;
+// The server-logic worker's start-up limit: the cold worker start, counted apart from the execution limit.
+const WORKER_STARTUP_LIMIT_MS = 30_000;
 const terminateWorker = (worker) => worker.terminate().catch(() => {});
 
 /** Registrations are functions in explicitly trusted, matching project packs. */
@@ -131,7 +133,7 @@ export function describe() {
         name: 'siteSettings',
         level: 'behaviour',
         reason:
-          'ServerLogic/Enabled, AllowedDomains and AllowNetworkingToAllDomains apply; TimeoutInSeconds is bounded by the local 5 s limit (SERVER_LOGIC_TIMEOUT_LOCAL).',
+          'ServerLogic/Enabled, AllowedDomains and AllowNetworkingToAllDomains apply; TimeoutInSeconds caps the local limit (default 5 s; SERVER_LOGIC_TIMEOUT_LOCAL).',
       },
       {
         name: 'httpClient',
@@ -163,9 +165,17 @@ const parsePayload = (text) => {
   return value;
 };
 
+/** A server-logic time limit (ms) is unset or a finite number greater than 0; `name` names it in the error. */
+export function assertServerLogicTimeout(value, name = 'timeout') {
+  if (value !== undefined && !(typeof value === 'number' && Number.isFinite(value) && value > 0))
+    throw new TypeError(`${name} must be a finite number of milliseconds greater than 0.`);
+}
+
 /**
  * Execute an explicitly registered export against local data with bounded CPU and lifetime.
  * `environmentVariables` (secret-resolver.mjs environmentVariablePayload) defaults to the store's effective values.
+ * `timeout` (ms, default 5000; assertServerLogicTimeout) bounds the run, at least 100 ms and at most the site's
+ * ServerLogic/TimeoutInSeconds (default 120 s, at most 240 s).
  * `services` carries the host bridges of one RPC channel (exported-operation-worker.mjs), each optional:
  * - invokeCustomApi({ method, url, payload, identity }) -> { status, body, headers }: Dataverse.InvokeCustomApi (organizationCustomApi below);
  * - triggerFlow({ flowId, payload, identity }) -> { status, body }: CloudFlow.TriggerAsync through the portal cloud-flow pipeline
@@ -184,10 +194,11 @@ const parsePayload = (text) => {
   body = '',
   input = '',
   query = {},
-  timeout = 5000,
+  timeout,
   environmentVariables,
   services = {},
 }) {
+  assertServerLogicTimeout(timeout);
   if (!record?.file) throw failure('The exported server-logic code file is missing.');
   if ((await fs.realpath(record.file)) !== record.file)
     throw failure('The exported server-logic file changed outside its imported source path.');
@@ -198,9 +209,10 @@ const parsePayload = (text) => {
     maxBytes: 1024 * 1024,
     encoding: 'utf8',
   });
-  // ServerLogic/TimeoutInSeconds (default 120, at most 240) bounds the run; the local bound (at most 5 s) is lower.
+  // ServerLogic/TimeoutInSeconds (default 120, at most 240) bounds the run on the platform. A local run defaults to 5 s; an
+  // explicit timeout from a direct caller sets the bound up to that platform limit.
   const seconds = Math.min(Number(settingOf(portal, 'ServerLogic/TimeoutInSeconds')) || 120, 240);
-  const bound = Math.max(100, Math.min(Number(timeout) || 5000, 5000, seconds * 1000));
+  const bound = Math.max(100, Math.min(timeout ?? 5000, seconds * 1000));
   const settings = Object.fromEntries(
     Object.entries(portal.settings ?? {}).map(([name, value]) => [name, value?.value ?? value]),
   );
@@ -330,8 +342,13 @@ const parsePayload = (text) => {
       identity?.id || identity?.contactId
         ? { ...identity, contactid: identity.contactId ?? identity.id, fullname: identity.name ?? null }
         : null;
+    // The worker sets this flag before it posts its result or failure. A limit timer whose callback runs while that answer
+    // is still queued (the main thread was busy past the limit) leaves the call to the answer: the worker enforces the
+    // limit on its own code, and terminating a worker that has answered and is ending can end Mirage in a V8 fatal error.
+    const answered = new Int32Array(new SharedArrayBuffer(4));
     const worker = new Worker(new URL('./exported-operation-worker.mjs', import.meta.url), {
       workerData: {
+        answered: answered.buffer,
         code,
         operation: context.FunctionName,
         context,
@@ -357,6 +374,7 @@ const parsePayload = (text) => {
       else resolve(value);
     };
     const stop = (error) => {
+      if (Atomics.load(answered, 0) === 1) return;
       finish(error);
       // Only the limit timers call this, for a worker still running at its limit.
       worker.terminate().catch(() => {});
@@ -382,7 +400,7 @@ const parsePayload = (text) => {
             'LocalOperationStartupTimeout',
           ),
         ),
-      30_000,
+      WORKER_STARTUP_LIMIT_MS,
     );
     worker.on('error', (error) => finish(failure(error.message)));
     worker.on('exit', (code) => {
@@ -397,7 +415,14 @@ const parsePayload = (text) => {
       if (message.kind === 'ready') {
         clearTimeout(timer);
         timer = setTimeout(
-          () => stop(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')),
+          () =>
+            stop(
+              failure(
+                `Server-logic execution exceeded its local time limit of ${bound} ms.`,
+                504,
+                'LocalOperationTimeout',
+              ),
+            ),
           bound + 300,
         );
         return;

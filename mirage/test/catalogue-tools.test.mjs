@@ -15,16 +15,18 @@ import { withProcessSlot } from './process-slots.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
-// Resolves with the exit status instead of rejecting, so callers can assert failures too.
-const runMirage = (args, timeout) =>
+// Resolves with the exit status and signal instead of rejecting, so callers can assert failures too. The test's own
+// signal ends the child when the runner's --test-timeout ends the test; nothing else bounds it.
+const runMirage = (args, t) =>
   withProcessSlot(
     () =>
       new Promise((resolve) =>
         execFile(
           process.execPath,
           [bin, 'mirage', ...args],
-          { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
-          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
+          { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, signal: t.signal },
+          (error, stdout, stderr) =>
+            resolve({ status: error ? error.code : 0, signal: error?.signal ?? null, stdout, stderr }),
         ),
       ),
   );
@@ -110,10 +112,14 @@ test('catalogue option tables produce registry help accepted by each parser and 
     const args = [name, '--config', config, '--json'];
     if (name !== 'portal-matrix') args.push('--site', 'synthetic');
     if (name === 'portal-matrix') args.push('--only', 'import,bootstrap,liquid,webapi');
-    runs.push(runMirage(args, 30000).then((result) => ({ name, result })));
+    runs.push(runMirage(args, t).then((result) => ({ name, result })));
   }
   for (const { name, result } of await Promise.all(runs)) {
-    assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
+    assert.deepEqual(
+      { status: result.status, signal: result.signal },
+      { status: 0, signal: null },
+      `${name}: ${result.stdout}\n${result.stderr}`,
+    );
     assert.equal(typeof JSON.parse(result.stdout), 'object', name);
   }
   assert.ok((await fs.readdir(path.join(root, '.paqvilo/portal-matrix'))).length);
@@ -140,10 +146,15 @@ test('parity and conformance help name their real required plan options', async 
         missing,
       ],
       ['liquid-conformance', '--suite', missing, '--json'],
-    ].map((args) => runMirage(args, 10000)),
+    ].map((args) => runMirage(args, t)),
   );
   for (const [index, result] of results.entries()) {
-    assert.notEqual(result.status, 0);
+    // parity-suite reports the failure on stderr with exit 1; liquid-conformance --json answers MIRAGE_FAILED with 2.
+    assert.deepEqual(
+      { status: result.status, signal: result.signal },
+      { status: index === 1 ? 2 : 1, signal: null },
+      result.stdout + result.stderr,
+    );
     const message = index === 1 ? JSON.parse(result.stdout).error.message : result.stderr;
     if (index === 1) assert.equal(result.stderr, '');
     assert.match(message, /ENOENT/);
@@ -166,9 +177,9 @@ test('render-sweep --strict with a path that matches no page exits 2 and shows z
       '/nothing',
       '--strict',
     ],
-    60000,
+    t,
   );
-  assert.equal(result.status, 2, result.stderr);
+  assert.deepEqual({ status: result.status, signal: result.signal }, { status: 2, signal: null }, result.stderr);
   assert.match(result.stdout, /Pages: 0,/);
   assert.match(result.stderr, /no page/);
 });

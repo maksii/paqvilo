@@ -5,6 +5,7 @@ import { fakeBrowser } from '../../test/fake-browser.mjs';
 import { OverlaySession } from '../../lense/session.mjs';
 import { enablePanel } from '../../lense/panel.mjs';
 import { ownCloseSteps } from './owned-server.mjs';
+import { PROFILE_RELEASE_RETRIES } from './profile-cleanup.mjs';
 
 // A panel state for an invented site and a fresh browser context, both owned by the test.
 // The caller routes the page; nothing listens on the loopback origin.
@@ -40,6 +41,6 @@ export async function panelSession(t, browser, origin) {
 export function ownMirageSession(t, { app, work, closers }) {
   ownCloseSteps(t, [...closers, () => app.close()]);
   ownedFixture(t).remove(async () => {
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
 }

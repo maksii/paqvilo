@@ -7,6 +7,7 @@ import { readLocalFileSync } from './local-file.mjs';
 import { detectSourceDialect } from '../mirage/lib/source-dialect.mjs';
 import { discoverSolutionTrees } from '../mirage/lib/solution-schema.mjs';
 import { developmentScriptDrift } from './project-workflows.mjs';
+import { GIT_HANG_GUARD_MS, GIT_MISSING_MESSAGE, gitMissing } from './git.mjs';
 
 const MARKER = 'TODO(paqvilo-init):';
 const ignored = new Set(['.git', 'node_modules', '.paqvilo', 'paqvilo.config.local.yml', 'coverage']);
@@ -34,18 +35,22 @@ function safeTextFile(directory, name) {
   }
   return fs.statSync(path.join(directory, name)).isFile();
 }
+// A Git command that could not start, was killed or outlasted its hang guard gave no answer.
+const unanswered = (git) => Boolean(git.error) || git.status === null;
+// Why: Git was not found, or the error code or signal that ended it.
+const noAnswer = (git) => `(${gitMissing(git.error) ? GIT_MISSING_MESSAGE : (git.error?.code ?? git.signal)})`;
+// Room for a file list of a large repository, as in git.mjs; a list cut off at this limit is reported as no answer.
+const FILE_LIST_BUFFER = 256 * 1024 * 1024;
+const runGit = (args, options = {}) =>
+  spawnSync('git', args, { encoding: 'utf8', windowsHide: true, timeout: GIT_HANG_GUARD_MS, ...options }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+
 function projectFiles(directory) {
   // Include untracked starter files, and honor project ignores once Git is initialized.
-  const git = spawnSync(
-    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-    ['-C', directory, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-    {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 10000,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
+  const git = runGit(['-C', directory, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+    maxBuffer: FILE_LIST_BUFFER,
+  });
+  // Walking the folder instead would ignore the project's ignore rules, so no answer is an error.
+  if (unanswered(git)) throw new Error(`Git did not answer which project files to check ${noAnswer(git)}`);
   if (git.status === 0)
     return [...new Set(git.stdout.split('\0').filter(Boolean))]
       .filter((name) => safeTextFile(directory, name))
@@ -260,16 +265,9 @@ function checkProbeExclusions(probes, excluded, diagnostics) {
 }
 
 function checkTrackedPrivatePaths(target, diagnostics) {
-  const index = spawnSync(
-    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-    ['--no-optional-locks', '-C', target, 'ls-files', '--cached', '-z', '--', '.'],
-    {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 10000,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
+  const index = runGit(['--no-optional-locks', '-C', target, 'ls-files', '--cached', '-z', '--', '.'], {
+    maxBuffer: FILE_LIST_BUFFER,
+  });
   if (index.status !== 0) {
     diagnostics.push({
       code: 'PRIVATE_INDEX_REVIEW',
@@ -296,18 +294,18 @@ function checkGitIgnore(target, rules, diagnostics) {
     '.env.local',
     'paqvilo.config.local.yml',
   ];
-  const git = spawnSync(
-    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-    ['--no-optional-locks', '-C', target, 'check-ignore', '--no-index', '-z', '--stdin'],
-    {
-      input: probes.join('\0') + '\0',
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 10000,
-      maxBuffer: 64 * 1024,
-    },
-  );
-  if (git.status === 0 || git.status === 1) {
+  const git = runGit(['--no-optional-locks', '-C', target, 'check-ignore', '--no-index', '-z', '--stdin'], {
+    input: probes.join('\0') + '\0',
+    maxBuffer: 64 * 1024,
+  });
+  // Any other exit means no repository; no answer at all says nothing about the ignore rules.
+  if (unanswered(git))
+    diagnostics.push({
+      code: 'PRIVATE_IGNORE_REVIEW',
+      file: '.gitignore',
+      action: `Git did not answer the ignore check ${noAnswer(git)}; review that private paths are ignored before declaring adoption complete.`,
+    });
+  else if (git.status === 0 || git.status === 1) {
     checkProbeExclusions(probes, new Set(git.stdout.split('\0').filter(Boolean)), diagnostics);
     // Ignore rules do not remove files already present in Git's index. Inspect only
     // indexed path names, never their contents, and leave removal to the project owner.

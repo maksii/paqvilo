@@ -1,5 +1,6 @@
 // A run cancelled while provider 1 is in flight never calls provider 2 and ends Cancelled; Terminate with
 // runStatus Cancelled ends the run Cancelled.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -34,7 +35,7 @@ async function unit(t, definition, operations) {
     flowOf: () => ({ definition, mode: 'exported', connectors }),
   });
   runs.attach({});
-  t.after(() => {
+  ownedFixture(t).add(() => {
     runs.close();
     scheduler.close();
   });

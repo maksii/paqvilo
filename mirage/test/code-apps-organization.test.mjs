@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -37,7 +38,7 @@ test('SDK metadata and binary files traverse the actual local code app and organ
     }),
     extensions: await sourceOrganizationExtensions(),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   organization.registry.register({
     name: 'x_Echo',
     kind: 'action',
@@ -61,7 +62,7 @@ test('SDK metadata and binary files traverse the actual local code app and organ
   });
   const server = http.createServer((req, res) => handler(req, res));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   configure({ app: 'invented', origin: `http://127.0.0.1:${server.address().port}` });
   const sdk = createCodeAppSdkExecutor({ entitySets: { x_item: 'x_items' } });
   const metadata = await sdk.executeAsync({

@@ -299,11 +299,14 @@ export function formatOutput(value) {
 // ---- Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // Scan the whole-template shorthands without overlapping dot/whitespace regex
 // repetitions. Preserve the optional single whitespace and final-newline rules.
-function shorthandBody(text, literal) {
+function shorthandBody(text, literal, stats) {
   const end = shorthandEnd(text);
-  if (literal) return literalShorthand(text, end);
-  return commentShorthand(text, end);
+  // The delimiter checks read at most this many characters at the two ends of the template.
+  if (stats) stats.shorthand += SHORTHAND_DELIMITER_READS;
+  if (literal) return literalShorthand(text, end, stats);
+  return commentShorthand(text, end, stats);
 }
+const SHORTHAND_DELIMITER_READS = 8;
 
 function shorthandEnd(text) {
   let end = text.length;
@@ -312,14 +315,14 @@ function shorthandEnd(text) {
   return end;
 }
 
-function literalShorthand(text, end) {
+function literalShorthand(text, end, stats) {
   const start = 3;
   if (!text.startsWith('{{{') || text.slice(end - 3, end) !== '}}}') return null;
   end -= 3;
-  return shorthandText(text, start, end);
+  return shorthandText(text, start, end, stats);
 }
 
-function commentShorthand(text, end) {
+function commentShorthand(text, end, stats) {
   let start = 1;
   if (text[0] !== '{' || text[end - 1] !== '}') return null;
   if (isShorthandSpace(text, start)) start++;
@@ -327,16 +330,18 @@ function commentShorthand(text, end) {
   end--;
   if (isShorthandSpace(text, end - 1)) end--;
   if (text[--end] !== '#') return null;
-  return shorthandText(text, start, end);
+  return shorthandText(text, start, end, stats);
 }
 
 function isShorthandSpace(text, index) {
   return /\s/.test(text[index] ?? '');
 }
 
-function shorthandText(text, start, end) {
+function shorthandText(text, start, end, stats) {
   if (isShorthandSpace(text, start)) start++;
   if (start > end) return null;
+  // Trimming and the line-break test read the body once each.
+  if (stats) stats.shorthand += 2 * (end - start);
   const body = text.slice(start, end).trimEnd();
   return /[\n\r\u2028\u2029]/.test(body) ? null : body;
 }
@@ -347,23 +352,29 @@ function parsedNode(list, node, span) {
   listLocations.get(list)[list.length] = span;
   list.push(node);
 }
-export function tokenize(source, rawTags = new Set()) {
+/**
+ * `stats`, when a caller passes one, gets `shorthand`: the characters the whole-template shorthand checks read, and
+ * `positions`: the characters the whitespace-control and token scans step over (tests use them to bound the work).
+ */
+export function tokenize(source, rawTags = new Set(), stats = undefined) {
   if (source == null || source === '') return [];
   // Comment/literal shorthands only apply when they span the whole template.
   let text = String(source);
   let offsets = Array.from({ length: text.length }, (_, i) => i);
-  const literal = shorthandBody(text, true);
+  const literal = shorthandBody(text, true, stats);
   if (literal !== null) {
     text = `{% literal %}${literal}{% endliteral %}`;
     offsets = null;
   }
-  const comment = shorthandBody(text, false);
+  const comment = shorthandBody(text, false, stats);
   if (comment !== null) {
     text = `{% comment %}${comment}{% endcomment %}`;
     offsets = null;
   }
   const normalized = trailingWhitespaceText(text, offsets);
-  return tokenizeTokens(normalized.text, rawTags, normalized.offsets);
+  // The whitespace-control pattern starts with a literal '-', so it reads each character once.
+  if (stats) stats.positions += text.length;
+  return tokenizeTokens(normalized.text, rawTags, normalized.offsets, stats);
 }
 
 function trailingWhitespaceText(text, offsets) {
@@ -386,7 +397,7 @@ function trailingWhitespaceText(text, offsets) {
   return { text, offsets };
 }
 
-function tokenizeTokens(text, rawTags, offsets) {
+function tokenizeTokens(text, rawTags, offsets, stats) {
   const tokens = [];
   const spans = [];
   const add = (token, from, to) => {
@@ -399,10 +410,11 @@ function tokenizeTokens(text, rawTags, offsets) {
   for (;;) {
     start.lastIndex = position;
     match = start.exec(text);
+    if (stats) stats.positions += (match ? match.index : text.length) - position;
     if (!match) break;
     appendLeadingLiteral(text, match, position, add);
     const isTag = match[1] === '{%';
-    const scanned = scanDelimitedToken(text, match.index, match[0].length, match[1], isTag);
+    const scanned = scanDelimitedToken(text, match.index, match[0].length, match[1], isTag, stats);
     add(scanned.token, match.index, scanned.position);
     position = scanned.position;
     if (isTag) position = consumeTagBody(text, scanned.token, position, rawTags, add);
@@ -438,7 +450,7 @@ function consumeTagBody(text, token, position, rawTags, add) {
   return name && rawTags.has(name) ? consumeRawTag(text, name, position, add) : position;
 }
 
-function scanDelimitedToken(text, start, openingLength, opening, isTag) {
+function scanDelimitedToken(text, start, openingLength, opening, isTag, stats) {
   let token = opening;
   let position = start + openingLength;
   while (position < text.length) {
@@ -448,6 +460,7 @@ function scanDelimitedToken(text, start, openingLength, opening, isTag) {
       const end = text.indexOf(ch, position);
       if (end < 0) {
         token += text.slice(position);
+        position = text.length;
         break;
       }
       token += text.slice(position, end + 1);
@@ -455,9 +468,11 @@ function scanDelimitedToken(text, start, openingLength, opening, isTag) {
     } else if ((isTag ? ch === '%' : ch === '}') && text[position] === '}') {
       token += '}';
       position++;
+      if (stats) stats.positions += position - start;
       return { token, position };
     }
   }
+  if (stats) stats.positions += position - start;
   throw new LiquidSyntaxError(
     isTag
       ? `Tag '${token}' was not properly terminated with regexp: ${TAG_END_TEXT}`

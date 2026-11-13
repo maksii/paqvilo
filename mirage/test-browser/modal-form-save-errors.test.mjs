@@ -37,7 +37,7 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   let context;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await context?.close();
     readiness.close();
     server.closeAllConnections();

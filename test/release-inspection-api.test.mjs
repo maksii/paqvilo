@@ -1,5 +1,5 @@
 // @test-kind unproven: the checks in this file exercise release inspection api with local fixtures; no native capture establishes the behaviour they assert.
-import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -59,7 +59,7 @@ async function fixture(t, getReport) {
   });
   const panel = enablePanel(browser.context, session, { open: async () => null });
   await interceptOrigin(browser.context, origin, session.route);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await panel.dispose();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });

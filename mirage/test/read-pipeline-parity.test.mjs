@@ -1,4 +1,5 @@
 // @test-kind unproven: local model of read pipeline stages, ColumnSet and projection; "native" comments cite no recording
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -222,7 +223,7 @@ test('HTTP entity and property reads run Retrieve once; bypassed reads run no cu
   );
   const items = pluginCatalogue({ plugins: { steps: registrations }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const body = await f.json(await f.request('GET', `/widgets(${id})?$select=title`), 200);
   assert.equal(body.title, 'Observed');
   assert.deepEqual(seen, ['retrieve']);
@@ -485,7 +486,7 @@ test('an Update PreValidation addition participates in later-stage filtering and
   ]);
   const items = pluginCatalogue({ plugins: { steps: [early, filtered] }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   await assert.rejects(store.update('widgets', id, { title: 'Changed' }), /Filtered guard ran/);
   assert.equal(store.tableRows('widget')[0].title, 'Before');
   assert.equal(store.tableRows('widget')[0].note, 'Extra');
@@ -496,7 +497,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-read-mutations-'));
-    t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       proxy = path.join(path.dirname(sdk), 'Microsoft.Crm.Sdk.Proxy.dll');
     await fs.copyFile(proxy, path.join(directory, path.basename(proxy)));
@@ -533,7 +534,7 @@ var change=new Entity("widget",new Guid("${second}"));change["title"]="After";se
       serviceProfile: profile,
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
-    t.after(() => closeClrHostPool({ runtime }));
+    ownedFixture(t).add(() => closeClrHostPool({ runtime }));
     const store = fixture();
     store.state.tables.widget.push({ widgetid: second, title: 'Replacement', note: 'New target' });
     const registration = { ...step('Retrieve'), typeName: 'Invented.ReadInputs', assemblyName: 'ReadInputs' };
@@ -718,7 +719,7 @@ test('selective SDK bypass respects organization limits and does not propagate i
   ]);
   const items = pluginCatalogue({ plugins: { steps: [first, second] }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const invoke = (selectedProfile) =>
     dispatchSdkCall({
       store,
@@ -837,7 +838,7 @@ test('read bypass retains source-protected steps and reports unqualified ownersh
     handlers,
     diagnostic: (entry) => diagnostics.push(entry),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   for (const headers of [
     { 'MSCRM.BypassCustomPluginExecution': 'true' },
     { 'MSCRM.BypassBusinessLogicExecutionStepIds': registrations.map((entry) => entry.id).join(',') },

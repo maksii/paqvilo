@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
@@ -29,8 +29,6 @@ test('standalone dev starts configured apps, opens the workbench and closes only
     external.closeAllConnections();
     return close(external);
   });
-  // Vite binds this port with --strictPort after startup; a released listen(0) port is in the ephemeral range.
-  const port = await freeDebugPort();
   await fs.mkdir(path.join(dir, 'app'));
   await fs.symlink(
     fileURLToPath(new URL('../node_modules/', import.meta.url)),
@@ -54,9 +52,10 @@ test('standalone dev starts configured apps, opens the workbench and closes only
   );
   const vite = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url));
   const project = path.join(dir, 'mirage.project.json');
-  await fs.writeFile(
-    project,
-    JSON.stringify({
+  const portalProject = path.join(dir, 'portal.project.json');
+  // Vite binds the owned app's port itself (--strictPort), so the port is written into both projects before each start.
+  const writeProjects = async (port) => {
+    const config = {
       version: 2,
       runtime: { kind: 'dataverse-api' },
       simulation: { level: 'dry-run' },
@@ -77,10 +76,18 @@ test('standalone dev starts configured apps, opens the workbench and closes only
           devServer: { command: ['unwanted-app-server'] },
         },
       ],
-    }),
-  );
-  async function launch(startPath, selectedProject = project) {
-    const debugPort = await freeDebugPort();
+    };
+    await fs.writeFile(project, JSON.stringify(config));
+    config.runtime = { kind: 'power-pages' };
+    config.portals = [{ id: 'example', path: fileURLToPath(new URL('../examples/project/portal/', import.meta.url)) }];
+    await fs.writeFile(portalProject, JSON.stringify(config));
+  };
+  // Another process took the app's port: Vite refused it, or dev found a foreign server there and would have used it.
+  const appPortTaken = (error, port) =>
+    new RegExp(
+      `Port ${port} is already in use|\\[code app owned\\] using existing http://127\\.0\\.0\\.1:${port}\\b`,
+    ).test(String(error?.message ?? error));
+  async function start(startPath, selectedProject, port, debugPort) {
     const args = [
       cli,
       'mirage',
@@ -96,8 +103,9 @@ test('standalone dev starts configured apps, opens the workbench and closes only
     ];
     const child = spawn(process.execPath, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const closed = once(child, 'close');
-    let browser;
+    const started = { port, debugPort, child, closed, browser: null };
     owner.add(async () => {
+      const { browser } = started;
       if (browser?.isConnected()) {
         const cdp = await browser.newBrowserCDPSession();
         await cdp.send('Browser.close').catch(() => {});
@@ -113,11 +121,21 @@ test('standalone dev starts configured apps, opens the workbench and closes only
       }
       await closed;
     });
-    const output = childOutput(child);
-    const match = await output.waitFor(/[Oo]pening (http:\/\/127\.0\.0\.1:\d+)(\/[^\s]*)/, {
+    started.output = childOutput(child);
+    started.match = await started.output.waitFor(/[Oo]pening (http:\/\/127\.0\.0\.1:\d+)(\/[^\s]*)/, {
       label: 'Code Apps development opening browser',
     });
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+    // The app's start is reported before the browser opens; a foreign server is a lost port, not this test's app.
+    if (appPortTaken(started.output.text, port)) throw new Error(`Code app port taken:\n${started.output.text}`);
+    return started;
+  }
+  async function launch(startPath, selectedProject = project) {
+    const started = await startOnFreePort(async (port) => {
+      await writeProjects(port);
+      return startOnFreePort((debugPort) => start(startPath, selectedProject, port, debugPort));
+    }, appPortTaken);
+    const { port, debugPort, closed, output, match } = started;
+    const browser = (started.browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`));
     const context = browser.contexts()[0];
     const page = context.pages()[0];
     // The dev command prints the administration address; its calls and a start path under /_sim use that origin.
@@ -170,10 +188,5 @@ test('standalone dev starts configured apps, opens the workbench and closes only
   }
   await launch();
   await launch('/_sim/?example=1#section');
-  const config = JSON.parse(await fs.readFile(project, 'utf8'));
-  config.runtime = { kind: 'power-pages' };
-  config.portals = [{ id: 'example', path: fileURLToPath(new URL('../examples/project/portal/', import.meta.url)) }];
-  const portalProject = path.join(dir, 'portal.project.json');
-  await fs.writeFile(portalProject, JSON.stringify(config));
   await launch(undefined, portalProject);
 });

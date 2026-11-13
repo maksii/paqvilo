@@ -1,4 +1,5 @@
-import test from 'node:test';
+// @test-kind contract: a generated project's acceptance runner, smoke and strict gates behave as designed on local fixtures.
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,13 +23,21 @@ async function project(t, options = {}) {
   await fs.symlink(toolkit, path.join(root, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
   return root;
 }
-async function run(root, args = ['tools/test-browser.mjs'], timeout = 60000) {
+// A child is ended by the running test's signal when the runner stops that test, never by a timer of its own. Tests in
+// this file run one at a time, so the signal recorded before each test is that test's. Each test runs a bounded
+// number of children, so the per-test limit never covers a whole sequence of scenarios.
+let testSignal;
+beforeEach((t) => {
+  testSignal = t.signal;
+});
+async function run(root, args = ['tools/test-browser.mjs']) {
   return withProcessSlot(async () => {
     const child = spawn(process.execPath, args, {
       cwd: root,
       env: environment,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      signal: testSignal,
     });
     let output = '';
     child.stdout.on('data', (chunk) => {
@@ -37,15 +46,10 @@ async function run(root, args = ['tools/test-browser.mjs'], timeout = 60000) {
     child.stderr.on('data', (chunk) => {
       output += chunk;
     });
-    const timer = setTimeout(() => child.kill(), timeout);
-    try {
-      return await new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('close', (code) => resolve({ code, output }));
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    return await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code, output }));
+    });
   });
 }
 async function fixture(root, site = 'portal') {
@@ -70,6 +74,10 @@ test('untouched source-free pack tests and smoke remain lightweight; strict requ
   assert.equal(starter.code, 0, starter.output);
   assert.equal(strict.code, 1, strict.output);
   assert.match(strict.output, /Missing: portal/);
+});
+
+test('a populated fixture smoke passes, strict still requires declared executed cases, and smoke state stays outside the fixture', async (t) => {
+  const root = await project(t);
   await fixture(root);
   const [smoke, smokeStrict] = await Promise.all([run(root), run(root, ['tools/test-browser.mjs', '--strict'])]);
   assert.equal(smoke.code, 0, smoke.output);
@@ -82,8 +90,8 @@ test('untouched source-free pack tests and smoke remain lightweight; strict requ
   );
 });
 
-test('empty smoke skips without importing a runtime or pack, while populated fixtures still load them', async (t) => {
-  for (const noPack of [false, true]) {
+for (const noPack of [false, true])
+  test(`empty smoke skips without importing a runtime or pack, while populated fixtures still load them${noPack ? ' (no pack)' : ''}`, async (t) => {
     const root = await project(t, { noPack });
     const dependency = path.join(root, 'node_modules/paqvilo');
     assert.equal((await fs.lstat(dependency)).isSymbolicLink(), true);
@@ -117,45 +125,46 @@ test('empty smoke skips without importing a runtime or pack, while populated fix
     const populated = await run(root, ['--test', 'test-browser/smoke.test.mjs']);
     assert.equal(populated.code, 1, populated.output);
     assert.match(populated.output, /Fixture runtime import sentinel/);
-  }
-});
+  });
 
-test('strict reporter counts structured successful site cases and rejects skips, TODOs, filters and current-catalogue drift', async (t) => {
-  const declared = (root) => path.join(root, 'test-browser/declared.test.mjs'),
-    root = await project(t, { noPack: true }),
-    file = declared(root);
-  const body = (options) =>
-    `import assert from 'node:assert/strict'; import {acceptanceTest} from '../support/site.mjs'; acceptanceTest('portal','synthetic assertion',()=>assert.equal(2+2,4),${options});`;
-  const unexecuted = Promise.all(
-    ['{skip:true}', '{todo:true}'].map(async (options) => {
-      const other = await project(t, { noPack: true });
-      await fs.writeFile(declared(other), body(options));
-      return [options, await run(other, ['tools/test-browser.mjs', '--strict'])];
-    }),
-  );
-  await fs.writeFile(file, body('{}'));
-  const initial = await Promise.all([
+const declared = (root) => path.join(root, 'test-browser/declared.test.mjs');
+const declaredBody = (options) =>
+  `import assert from 'node:assert/strict'; import {acceptanceTest} from '../support/site.mjs'; acceptanceTest('portal','synthetic assertion',()=>assert.equal(2+2,4),${options});`;
+async function declaredProject(t, options = '{}') {
+  const root = await project(t, { noPack: true });
+  await fs.writeFile(declared(root), declaredBody(options));
+  return root;
+}
+
+test('strict reporter counts a structured successful site case and rejects a name filter', async (t) => {
+  const root = await declaredProject(t);
+  const [result, filtered] = await Promise.all([
     run(root, ['tools/test-browser.mjs', '--strict']),
     run(root, ['tools/test-browser.mjs', '--strict', '--test-name-pattern=unmatched-case']),
   ]);
-  let result = initial[0];
-  const filtered = initial[1];
   assert.equal(result.code, 0, result.output);
   assert.equal(filtered.code, 1, filtered.output);
-  for (const [options, skipped] of await unexecuted) {
+});
+
+for (const options of ['{skip:true}', '{todo:true}'])
+  test(`strict reporter rejects an unexecuted site case: ${options}`, async (t) => {
+    const skipped = await run(await declaredProject(t, options), ['tools/test-browser.mjs', '--strict']);
     assert.equal(skipped.code, 1, options + skipped.output);
     assert.match(skipped.output, /Missing: portal/, options);
-  }
+  });
+
+test('strict reporter follows current-catalogue drift and owns the test reporter', async (t) => {
+  const root = await declaredProject(t);
   // Effective personal catalogue changes must join the gate without regeneration.
   await fs.writeFile(
     path.join(root, 'paqvilo.config.local.yml'),
     YAML.stringify({ sites: { extra: { source: 'missing', environments: { local: 'http://127.0.0.1:1' } } } }),
   );
-  result = await run(root, ['tools/test-browser.mjs', '--strict']);
+  const result = await run(root, ['tools/test-browser.mjs', '--strict']);
   assert.equal(result.code, 1, result.output);
   assert.match(result.output, /Missing: extra/);
   await fs.appendFile(
-    file,
+    declared(root),
     "\nacceptanceTest('extra','second owned assertion',()=>assert.ok('content'.includes('tent')));\n",
   );
   const [both, tap] = await Promise.all([
@@ -165,7 +174,10 @@ test('strict reporter counts structured successful site cases and rejects skips,
   assert.equal(both.code, 0, both.output);
   assert.notEqual(tap.code, 0);
   assert.match(tap.output, /owns the test reporter/);
-  await fs.rm(file);
+});
+
+test('empty acceptance discovery stays valid for starter checks and cannot pass strict', async (t) => {
+  const root = await project(t, { noPack: true });
   await fs.rm(path.join(root, 'test-browser/smoke.test.mjs'));
   const [empty, emptyStrict] = await Promise.all([run(root), run(root, ['tools/test-browser.mjs', '--strict'])]);
   assert.equal(empty.code, 0, 'empty discovery remains valid for starter checks');

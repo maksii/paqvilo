@@ -1,4 +1,5 @@
 // @test-kind contract: a fresh CLR host starts from its runtime's verified host executable, never from a new copy per call, a changed executable is refused, and the call's snapshot holds no SDK copy
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -64,7 +65,16 @@ Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");}}`,
       notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').map((note) => note.absenceVerified),
       [true, true],
     );
-    await fs.appendFile(executable, 'changed bytes');
+    // Windows can release the image of an exited process, or a scanner its own handle on the file, just after the exit
+    // is reported; a write it refuses meanwhile is tried again (the runner's --test-timeout bounds a file never released).
+    for (;;)
+      try {
+        await fs.appendFile(executable, 'changed bytes');
+        break;
+      } catch (cause) {
+        if (!['EBUSY', 'EPERM'].includes(cause.code)) throw cause;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
     notes.length = 0;
     assert.throws(call, (error) => error.code === 'LocalPluginSourceChanged');
     assert.deepEqual(notes, [], 'a changed host executable starts no host');
@@ -78,7 +88,7 @@ test(
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-fresh-load-'))),
       sdk = clrSdk(),
       proxy = path.join(path.dirname(sdk), 'Microsoft.Crm.Sdk.Proxy.dll');
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const library = async (name, code, options) => {
       await fs.writeFile(path.join(root, name + '.cs'), code);
       compileClr(path.join(root, name + '.cs'), path.join(root, name + '.dll'), options);
@@ -106,7 +116,7 @@ test(
       serviceProfile: { userId: user, evidence: 'Invented backend', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
-    t.after(() => releaseClrRuntime(runtime));
+    ownedFixture(t).add(() => releaseClrRuntime(runtime));
     const notes = [];
     assert.equal(
       executeClrPlugin(runtime, {}, { store: {}, diagnostic: (note) => notes.push(note) }).executionMode,
@@ -134,8 +144,8 @@ for (const persistentHost of [false, true])
     async (t) => {
       const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-sdk-changed-'))),
         sdk = clrSdk();
-      t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-      t.after(() => closeClrHostPool());
+      ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+      ownedFixture(t).add(() => closeClrHostPool());
       await fs.writeFile(
         path.join(root, 'Quiet.cs'),
         'namespace Invented{public sealed class Quiet:Microsoft.Xrm.Sdk.IPlugin{public void Execute(System.IServiceProvider p){}}}',
@@ -153,7 +163,7 @@ for (const persistentHost of [false, true])
         serviceProfile: { userId: user, evidence: 'Invented backend', grants: [] },
         context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
       });
-      t.after(() => releaseClrRuntime(runtime));
+      ownedFixture(t).add(() => releaseClrRuntime(runtime));
       const cached = runtime.files.find((file) => file.sha256 === runtime.provenance.sdkSha256);
       assert.equal(path.dirname(cached.path), runtime.directory, 'the SDK is a file of the runtime cache');
       await fs.appendFile(cached.path, Buffer.from([0]));

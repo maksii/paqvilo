@@ -3,6 +3,7 @@
 // Native corpus (dataverse-recorder depth): a PostOperation Create step that creates another row of its table from
 // each level reached Depth 10 and the request answered 204, so nested CLR execution passes the documented
 // on-premises cap of 8. Invented schema and assembly.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -23,7 +24,7 @@ for (const persistentHost of [false, true])
     { skip: CLR_SKIP },
     async (t) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-depth-'));
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         closeClrHostPool();
         await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
       });
@@ -115,7 +116,7 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
-      timeoutMs: 60_000,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: { userId: user, evidence: 'Invented slow step', grants: [] },
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });

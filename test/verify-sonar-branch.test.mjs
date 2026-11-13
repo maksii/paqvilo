@@ -1,4 +1,5 @@
 // @test-kind tooling: full-source Sonar gating fails closed on scanner and paginated API inconsistencies.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -63,7 +64,7 @@ async function fixture(t, options = {}) {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   });

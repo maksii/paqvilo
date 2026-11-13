@@ -164,7 +164,7 @@ test('x-ms-correlation-request-id reaches the committed event and the asynchrono
   const webhooks = webhookDelivery(store),
     diagnostics = [];
   const runner = wireRegisteredSteps(store, webhooks, (entry) => diagnostics.push(entry));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await server.close();
   });

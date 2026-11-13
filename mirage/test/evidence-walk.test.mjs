@@ -1,6 +1,7 @@
+// @test-kind contract: the fingerprint digest is Paqvilo's own: relative path, NUL, bytes, NUL, in code-unit name order.
 // The source fingerprint walk reads files concurrently; the digest is the documented one (relative path, NUL,
-// bytes, NUL, in name order, directories in place), entries that vanish during a walk are left out of both the digest
-// and the cached signature, and any other read failure still fails the fingerprint.
+// bytes, NUL, in code-unit name order, the same in every locale, directories in place), entries that vanish during a
+// walk are left out of both the digest and the cached signature, and any other read failure still fails the fingerprint.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -20,7 +21,9 @@ import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function reference(root) {
   const hash = createHash('sha256');
   async function walk(dir) {
-    const entries = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    const entries = (await fs.readdir(dir, { withFileTypes: true })).sort(
+      (a, b) => Number(a.name > b.name) - Number(a.name < b.name),
+    );
     for (const entry of entries) {
       if (['.git', 'node_modules'].includes(entry.name)) continue;
       const file = path.join(dir, entry.name);

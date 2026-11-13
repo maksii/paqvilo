@@ -1,5 +1,5 @@
 // @test-kind tooling: the project boundary guard keeps the core free of private business dependencies and selects namespaces independently.
-import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -120,7 +120,7 @@ test('default Mirage discovery has no project packs and embedded registration is
     watch: false,
     port: 0,
   });
-  t.after(() => simulator.close());
+  ownedFixture(t).add(() => simulator.close());
   const anonymous = await fetch(simulator.url);
   assert.equal(anonymous.status, 200);
   assert.match(await anonymous.text(), /Sign in/);

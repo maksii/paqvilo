@@ -91,7 +91,7 @@ async function initializeDevelopmentTarget(origin, context) {
 export async function startDevSessions(
   context,
   selection,
-  { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log } = {},
+  { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log, clock } = {},
 ) {
   const { mode, initial, targets } = selection;
   const provenance = createInspectionProvenanceTransport(context, targets);
@@ -240,6 +240,7 @@ export async function startDevSessions(
       {
         bypassCSP: Boolean(initial.browser.bypassCSP),
         onAttach: provenance.onAttach,
+        clock,
         onTargetError: async (error, page) => {
           log(
             `ERROR       Isolated tab interception failed (${error.phase}): ${error.message}. Healthy tabs remain active; retry in a new tab.`,

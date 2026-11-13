@@ -145,7 +145,7 @@ test('real witness route binds cookie-isolated visitors, remains anonymous witho
   const { app, runtime } = await fixture(t),
     one = await runtime.createSession({ contactId: 'visitor-one' }),
     two = await runtime.createSession({ contactId: 'visitor-two' });
-  t.after(() => {
+  ownedFixture(t).add(() => {
     one.close();
     two.close();
   });

@@ -18,7 +18,9 @@ function parseFlatFragment(text) {
 const markupCache = new Map();
 let markupBytes = 0,
   markupParses = 0,
-  markupHits = 0;
+  markupHits = 0,
+  // Work done by markup scans: each node the walk visits and each selector looked up. Read-only for callers.
+  markupVisits = 0;
 const scriptCache = new Map();
 let scriptBytes = 0;
 export const elementSourceHintCacheStats = () => ({
@@ -26,6 +28,7 @@ export const elementSourceHintCacheStats = () => ({
   bytes: markupBytes,
   parses: markupParses,
   hits: markupHits,
+  visits: markupVisits,
 });
 const copyHint = (hint, source) => ({
   ...source,
@@ -123,6 +126,7 @@ function collectMarkupNodes(tree, prepared) {
     pending = [tree];
   while (pending.length) {
     const node = pending.pop();
+    markupVisits++;
     if (['script', 'style', 'template'].includes(node.tagName)) continue;
     const attrs = Object.fromEntries(
       (node.attrs ?? [])
@@ -242,6 +246,7 @@ function addMarkupHints(nodes, ids, source, prepared) {
   for (const { node, attrs, id } of nodes) {
     const candidate = markupHint(source, node, attrs, id, ids, prepared);
     if (!candidate) continue;
+    markupVisits++;
     const existing = selectors.get(candidate.selector);
     if (existing) {
       existing.occurrences++;

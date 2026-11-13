@@ -1,4 +1,5 @@
 // @test-kind security: effective-write authorization is per invocation, never reused, expires on failure and honours grant revocation
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -46,7 +47,7 @@ async function fixture(t, { organization = false, operation = 'create', provider
       settings: dataverseSettings({ enabled: true }),
       extensions,
     });
-    t.after(() => runtime.close());
+    ownedFixture(t).add(() => runtime.close());
   }
   return { store, service: localOrganizationService(store, allowed) };
 }

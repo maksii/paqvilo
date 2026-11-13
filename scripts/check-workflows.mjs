@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { downloadVerifiedArchive } from './verified-download.mjs';
+import { ensureVerifiedArchive } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const assets = {
@@ -42,14 +42,14 @@ export const assets = {
   'linux-arm64': {
     actionlint: [
       '1.7.12',
-      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz',
+      'https://api.github.com/repos/rhysd/actionlint/releases/assets/384924897',
       '325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6',
       'actionlint',
       'actionlint_1.7.12_linux_arm64.tar.gz',
     ],
     shellcheck: [
       '0.11.0',
-      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.gz',
+      'https://api.github.com/repos/koalaman/shellcheck/releases/assets/336391401',
       '68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc',
       'shellcheck-v0.11.0/shellcheck',
       'shellcheck-v0.11.0.linux.aarch64.tar.gz',
@@ -58,14 +58,14 @@ export const assets = {
   'darwin-x64': {
     actionlint: [
       '1.7.12',
-      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz',
+      'https://api.github.com/repos/rhysd/actionlint/releases/assets/384924880',
       '5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644',
       'actionlint',
       'actionlint_1.7.12_darwin_amd64.tar.gz',
     ],
     shellcheck: [
       '0.11.0',
-      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.gz',
+      'https://api.github.com/repos/koalaman/shellcheck/releases/assets/336391375',
       'c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51',
       'shellcheck-v0.11.0/shellcheck',
       'shellcheck-v0.11.0.darwin.x86_64.tar.gz',
@@ -74,14 +74,14 @@ export const assets = {
   'darwin-arm64': {
     actionlint: [
       '1.7.12',
-      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz',
+      'https://api.github.com/repos/rhysd/actionlint/releases/assets/384924893',
       'aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f',
       'actionlint',
       'actionlint_1.7.12_darwin_arm64.tar.gz',
     ],
     shellcheck: [
       '0.11.0',
-      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.gz',
+      'https://api.github.com/repos/koalaman/shellcheck/releases/assets/336391359',
       '339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f',
       'shellcheck-v0.11.0/shellcheck',
       'shellcheck-v0.11.0.darwin.aarch64.tar.gz',
@@ -94,19 +94,18 @@ function execute(command, args, env = process.env) {
     throw new Error(`${command} failed (${result.status ?? result.error?.message}).`, { cause: result.error });
 }
 const digest = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-async function provision(name, specification) {
+export async function provision(
+  name,
+  specification,
+  { cache = path.resolve(process.env.PAQVILO_TOOL_CACHE ?? path.join(root, '.paqvilo/tools')), token, fetchImpl } = {},
+) {
   const [version, url, expected, executable, archiveName] = specification;
-  const cache = path.resolve(process.env.PAQVILO_TOOL_CACHE ?? path.join(root, '.paqvilo/tools'));
   const directory = path.join(cache, `${name}-${version}-${process.platform}-${process.arch}`);
   const archive = path.join(directory, archiveName);
   const target = path.join(directory, 'unpacked', executable);
   const receipt = path.join(directory, 'verified.json');
   fs.mkdirSync(directory, { recursive: true });
-  if (!fs.existsSync(archive)) {
-    console.log(`Preparing ${name} ${version} from its upstream release.`);
-    await downloadVerifiedArchive(url, archive, expected);
-  }
-  if (digest(archive) !== expected) throw new Error(`${name} archive digest mismatch.`);
+  await ensureVerifiedArchive(url, archive, expected, { token, fetchImpl });
   let recorded;
   try {
     recorded = JSON.parse(fs.readFileSync(receipt, 'utf8'));
@@ -141,17 +140,42 @@ export function workflowTools(platform = process.platform, arch = process.arch) 
     );
   return tools;
 }
-async function main() {
+/** CI cache key of the two pinned tool archives of a platform: a SHA-256 over their pins alone. */
+export function workflowToolsCacheKey(platform = process.platform, arch = process.arch) {
+  return createHash('sha256')
+    .update(JSON.stringify([`${platform}-${arch}`, workflowTools(platform, arch)]))
+    .digest('hex');
+}
+// With --cache-key it only prints that key, also to GITHUB_OUTPUT, and reads nothing else. With --provision it only
+// provisions and verifies both tools; otherwise it also runs them over the workflows and hooks.
+export async function checkWorkflows({
+  argv = process.argv,
+  env = process.env,
+  provisionTool = provision,
+  run = execute,
+} = {}) {
   const supported = workflowTools();
-  const actionlint = await provision('actionlint', supported.actionlint);
-  const shellcheck = await provision('shellcheck', supported.shellcheck);
-  execute(actionlint, ['-color', '-shellcheck', shellcheck, '-pyflakes=', '-oneline']);
-  execute(shellcheck, ['--shell=sh', '.githooks/pre-commit', '.githooks/commit-msg', '.githooks/pre-push']);
+  if (argv.includes('--cache-key')) {
+    const line = `key=${workflowToolsCacheKey()}\n`;
+    process.stdout.write(line);
+    if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, line);
+    return;
+  }
+  // CI passes its read-only token to the --provision step alone; the check itself then finds both tools in the cache.
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN || undefined;
+  const actionlint = await provisionTool('actionlint', supported.actionlint, { token });
+  const shellcheck = await provisionTool('shellcheck', supported.shellcheck, { token });
+  if (argv.includes('--provision')) {
+    console.log('Workflow tools provisioned and verified (actionlint 1.7.12, ShellCheck 0.11.0).');
+    return;
+  }
+  run(actionlint, ['-color', '-shellcheck', shellcheck, '-pyflakes=', '-oneline']);
+  run(shellcheck, ['--shell=sh', '.githooks/pre-commit', '.githooks/commit-msg', '.githooks/pre-push']);
   console.log('Workflow and hook checks passed (actionlint 1.7.12, ShellCheck 0.11.0).');
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    await main();
+    await checkWorkflows();
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's designed runtime behaviour: a resumed tracked run replays its replayed actions and draws its volatile values from the run's tape, on invented flows.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -49,7 +50,7 @@ async function setup(t, { definition = definitionOf(), secrets = null, rows = []
   state.tables.environmentvariablevalue = [];
   const store = await new DataStore({ state, clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const pack = {
     id: 'fx-pack',
     connectors: {
@@ -77,7 +78,7 @@ async function setup(t, { definition = definitionOf(), secrets = null, rows = []
     flowOf: (id) => (id === FLOW ? flow : null),
   });
   runs.attach({});
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   const setMode = (value) =>
     store.transact(() => {
       store.state.tables.environmentvariablevalue.push({
@@ -256,7 +257,7 @@ async function drawSetup(t, definition = drawDefinition()) {
     received = [];
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const record = async (request) => {
     received.push(request.parameters);
     return { statusCode: 200, body: 'ok' };

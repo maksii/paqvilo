@@ -4,11 +4,30 @@ import path from 'node:path';
 
 const GIT_ARGS = ['-c', 'core.quotepath=off', '-c', 'core.longpaths=true'];
 
+// Hang guard for one Git command. A command that outlasts it has given no answer and is reported as a failure.
+export const GIT_HANG_GUARD_MS = 120_000;
+
+/**
+ * Whether a failed Git command was answered by Git: it ran and exited with a status (`code` of an execFile error,
+ * `status` of an execFileSync one). A command that could not start, was killed or outlasted its hang guard gave
+ * no answer, which callers never read as a negative one.
+ */
+export const gitAnswered = (error) => Number.isInteger(error?.code) || Number.isInteger(error?.status);
+
+/**
+ * Whether a Git command could not start because no `git` program was found: Git is not installed or not on PATH.
+ * It is one way of giving no answer, and asking again cannot change it, so callers say so instead of "retry".
+ */
+export const gitMissing = (error) => error?.code === 'ENOENT';
+export const GIT_MISSING_MESSAGE = 'Git was not found. Install Git or add it to PATH, then try again.';
+
 function gitOptions(cwd, { buffer = false, input } = {}) {
+  // Variables a Git hook sets would point the command at another repository. The ceiling stays: it is the
+  // user's own limit on how far up Git looks for a repository.
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
-        !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(
+        !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(
           key,
         ),
     ),
@@ -20,7 +39,7 @@ function gitOptions(cwd, { buffer = false, input } = {}) {
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
     windowsHide: true,
     input: typeof input === 'string' ? Buffer.from(input) : input,
-    timeout: 30_000,
+    timeout: GIT_HANG_GUARD_MS,
     env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
   };
 }
@@ -38,44 +57,46 @@ const gitAsync = (cwd, args, options) =>
 
 /**
  * Where HEAD of the checkout points right now: its commit and branch (null when detached or in an
- * unborn repository). Read-only and asynchronous; null outside a Git working tree.
+ * unborn repository). Read-only and asynchronous; null when Git answers that there is no HEAD (outside a Git
+ * working tree, or before the first commit). Rejects when Git gives no answer.
  * @returns {Promise<{commit: string, branch: string|null, detached: boolean}|null>}
  */
 export async function gitHead(sourceDir) {
+  let output;
   try {
-    const [commit, name] = (await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']))
-      .trim()
-      .split(/\r?\n/);
-    if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) return null;
-    const branch = name && name !== 'HEAD' ? name : null;
-    return { commit, branch, detached: branch === null };
-  } catch {
-    return null;
+    output = await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']);
+  } catch (error) {
+    if (gitAnswered(error)) return null;
+    throw error;
   }
+  const [commit, name] = output.trim().split(/\r?\n/);
+  if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) return null;
+  const branch = name && name !== 'HEAD' ? name : null;
+  return { commit, branch, detached: branch === null };
 }
 
 /**
  * Directories whose files change when HEAD or a ref moves: the checkout's own git dir (HEAD of a
- * linked worktree lives there) and the common dir (refs, packed-refs). Null outside a repository.
+ * linked worktree lives there) and the common dir (refs, packed-refs). Null when Git answers that the folder is
+ * not in a working tree; rejects when Git gives no answer.
  * @returns {Promise<{gitDir: string, commonDir: string, toplevel: string}|null>}
  */
 export async function gitDirectories(sourceDir) {
   sourceDir = path.resolve(sourceDir);
+  let output;
   try {
-    const [gitDir, commonDir, toplevel] = (
-      await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel'])
-    )
-      .trim()
-      .split(/\r?\n/);
-    if (!gitDir || !commonDir || !toplevel) return null;
-    return {
-      gitDir: path.resolve(sourceDir, gitDir),
-      commonDir: path.resolve(sourceDir, commonDir),
-      toplevel: path.resolve(toplevel),
-    };
-  } catch {
-    return null;
+    output = await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel']);
+  } catch (error) {
+    if (gitAnswered(error)) return null;
+    throw error;
   }
+  const [gitDir, commonDir, toplevel] = output.trim().split(/\r?\n/);
+  if (!gitDir || !commonDir || !toplevel) return null;
+  return {
+    gitDir: path.resolve(sourceDir, gitDir),
+    commonDir: path.resolve(sourceDir, commonDir),
+    toplevel: path.resolve(toplevel),
+  };
 }
 
 /** Blob contents (null for a missing path or a non-blob) of a `cat-file --batch` response, in request order. */
@@ -156,8 +177,10 @@ export class GitBaseline {
         this.unborn =
           git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' &&
           !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
-      } catch {
+      } catch (probe) {
         this.unborn = false;
+        // Without an answer the folder may be a repository before its first commit; say so instead of the ref error.
+        if (!gitAnswered(probe)) this.#unavailable(probe);
       }
     }
   }
@@ -226,11 +249,19 @@ export class GitBaseline {
   preload(files) {
     const { entries, input } = this.#batch(files);
     if (!entries.length) return;
+    let output;
     try {
-      const output = git(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+      output = git(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+    } catch (err) {
+      // A Git that gave no answer is not asked again per file: the baseline is unavailable until a ref check
+      // gets an answer. A failed batch leaves show() as an individual-file fallback.
+      if (!gitAnswered(err)) this.#unavailable(err);
+      return;
+    }
+    try {
       for (const [file, content] of parseBatch(entries, output)) this.cache.set(file, content);
     } catch {
-      // A failed batch leaves show() available as an individual-file fallback.
+      // An incomplete response leaves show() as the individual-file fallback.
     }
   }
 
@@ -239,17 +270,28 @@ export class GitBaseline {
     const { entries, input } = this.#batch(files);
     if (!entries.length) return;
     const version = this.baselineVersion;
+    let output;
     try {
-      const output = await gitAsync(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
-      if (version !== this.baselineVersion) return;
+      output = await gitAsync(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+    } catch (err) {
+      // As preload(): no answer makes the baseline unavailable, a failed batch leaves show() as the fallback.
+      if (version === this.baselineVersion && !gitAnswered(err)) this.#unavailable(err);
+      return;
+    }
+    if (version !== this.baselineVersion) return;
+    try {
       for (const [file, content] of parseBatch(entries, output))
         if (!this.cache.has(file)) this.cache.set(file, content);
     } catch {
-      // As preload(): show() remains the individual-file fallback.
+      // As preload(): an incomplete response leaves show() as the fallback.
     }
   }
 
-  /** Content of `file` at the baseline ref; null when it does not exist there (a new file). */
+  /**
+   * Content of `file` at the baseline ref; null when Git answers that it does not exist there (a new file), or
+   * when the baseline is unavailable. A Git that gives no answer makes the baseline unavailable (with the error)
+   * instead of recording the file as new; the next ref check that gets an answer makes it available again.
+   */
   show(file) {
     if (!this.available) return null;
     file = path.resolve(file);
@@ -258,8 +300,11 @@ export class GitBaseline {
     try {
       const rel = this.#relative(file);
       if (rel) content = git(this.sourceDir, ['show', `${this.commit}:./${rel}`], { buffer: true }).toString('utf8');
-    } catch {
-      content = null;
+    } catch (err) {
+      if (!gitAnswered(err)) {
+        this.#unavailable(err);
+        return null;
+      }
     }
     this.cache.set(file, content);
     return content;

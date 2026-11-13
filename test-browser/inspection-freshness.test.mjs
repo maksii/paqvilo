@@ -11,7 +11,6 @@ import { panelSession } from './helpers/panel-session.mjs';
 
 // Routed entirely by page.route; nothing listens on this loopback port.
 const origin = 'http://127.0.0.1:11111';
-const LATE_REPORT_WINDOW_MS = 100;
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -122,11 +121,20 @@ test('a delayed manual refresh clears its old report and cannot overwrite a newe
       .__px.identify(document.getElementById('picked'))
       .evidence.source.refs.some((ref) => ref.name === 'Latest source'),
   );
-  const obsolete = page.waitForResponse((response) => new URL(response.url()).pathname === '/__paqvilo/api/inspect');
+  // The panel reads each inspection answer with Response.json() and accepts or rejects it in the promise reactions
+  // of that read, so its handling has ended once the read has settled and the page has run another task.
+  await page.evaluate(() => {
+    const json = Response.prototype.json;
+    window.inspectionAnswersRead = 0;
+    Response.prototype.json = function (...args) {
+      const read = json.apply(this, args);
+      if (new URL(this.url).pathname === '/__paqvilo/api/inspect')
+        read.finally(() => window.inspectionAnswersRead++).catch(() => {});
+      return read;
+    };
+  });
   await answer(1, 2, 'Obsolete refresh');
-  await obsolete;
-  // A rejected late report leaves nothing to observe; allow its page handler one short window.
-  await page.waitForTimeout(LATE_REPORT_WINDOW_MS);
+  await page.waitForFunction(() => window.inspectionAnswersRead === 1);
   assert.deepEqual(await identity(), ['Latest source']);
   assert.doesNotMatch(await page.locator('#paqvilo-xray .card').innerText(), /Old source|Obsolete refresh/);
 });

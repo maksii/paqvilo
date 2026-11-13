@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase, pluginStepMatchesEntity } from '../lib/exported-plugins.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
@@ -163,7 +163,7 @@ test('SDK and HTTP association messages queue one durable async snapshot after c
       ]);
       const items = pluginCatalogue({ plugins: { steps }, handlers });
       const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-      t.after(() => backend.close());
+      ownedFixture(t).add(() => backend.close());
       const mutations = [];
       f.store.addMutationObserver((event) => mutations.push(event.operation));
       if (transport === 'sdk') {
@@ -262,7 +262,7 @@ test('association pre-operation Target and RelatedEntities replacement rebinds t
           ]);
           const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
           const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-          t.after(() => backend.close());
+          ownedFixture(t).add(() => backend.close());
           if (transport === 'sdk')
             await f.store.transact(() =>
               invoke(
@@ -330,7 +330,7 @@ test('a mutated association target must pass the effective backend grant before 
   ]);
   const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const restricted = {
     ...profile,
     grants: profile.grants.map((grant) =>
@@ -351,7 +351,12 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const temporary = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-association-rebind-'));
-    t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+    let backend;
+    // The backend closes its hosts before their folder is removed.
+    ownedFixture(t).add(async () => {
+      await backend?.close();
+      await removeFixtureDirectory(temporary);
+    });
     const otherRoot = '20000000-0000-0000-0000-000000000091',
       otherChild = '20000000-0000-0000-0000-000000000092';
     const sdk = clrSdk(),
@@ -404,13 +409,12 @@ test(
       runtimes,
       overrides: { [`plugin-step:${step.id}`]: { mode: 'clr' } },
     });
-    const backend = await createOrganizationBackend({
+    backend = await createOrganizationBackend({
       store: f.store,
       items: () => items,
       runtimes,
       descriptors: new Map([[step.id, runtime.descriptor]]),
     });
-    t.after(() => backend.close());
     await f.json(
       await f.request('POST', `/roots(${rootId})/children/$ref`, {
         '@odata.id': `${f.server.origin}/api/data/v9.2/children(${childId})`,
@@ -443,7 +447,7 @@ test('1001 N:N related references reach a loopback step and a later refusal roll
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.close(resolve);
@@ -495,7 +499,7 @@ test('1001 N:N related references reach a loopback step and a later refusal roll
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers, systemJobs: () => false });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const service = localOrganizationService(store, profile),
     related = { $type: 'EntityReferenceCollection', values: references };
   await store.transact(() => service.associateAsync('root', rootId, relationship('root_tag'), related));
@@ -542,7 +546,7 @@ test('HTTP and SDK association handlers roll back arbitrary trusted-handler muta
   ]);
   const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   await assert.rejects(
     f.store.transact(
       () => invoke(f.store, 'Associate', 'root', rootId, relationship('root_child'), refs('child', childId)),

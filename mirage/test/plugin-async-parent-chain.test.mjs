@@ -14,7 +14,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { asyncMultipleJobParent, asynchronousParentChain } from '../lib/plugin-sdk-parent.mjs';
-import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
@@ -191,7 +191,7 @@ test(
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-chain-')),
       source = path.join(root, 'Recurse.cs'),
       sdk = clrSdk();
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Recurse:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var level=t.GetAttributeValue<int>("x_level");if(level>=4)return;var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var n=new Entity("x_node");n["x_name"]="level "+(level+1);n["x_level"]=level+1;s.Create(n);}}}`,
@@ -256,7 +256,7 @@ async function chainProbe(t, steps) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-origin-')),
     source = path.join(root, 'Probe.cs'),
     sdk = clrSdk();
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(
     source,
     `using System;using System.Linq;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;namespace Invented{public sealed class Probe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
@@ -417,7 +417,7 @@ test('jobs of a Web API UpsertMultiple end in its relabelled main operation', { 
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-upsert-jobs-')),
     source = path.join(root, 'Log.cs'),
     sdk = clrSdk();
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   await fs.writeFile(
     source,
     `using System;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Log:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.Mode!=1)return;var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var chain=c.MessageName;for(var f=c.ParentContext;f!=null;f=f.ParentContext)chain+=" < "+f.MessageName+"/"+f.Stage+"["+string.Join(",",f.InputParameters.Keys.OrderBy(k=>k,StringComparer.Ordinal).ToArray())+"]";var log=new Entity("x_log");log["x_name"]=chain;s.Create(log);}}}`,

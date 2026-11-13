@@ -1,5 +1,6 @@
 // @test-kind parity: native recorder corpus batch (two captures): changeset contexts start SharedVariables with IsODataTransaction true and ODataChangesetRequestCount (2 for POST+PATCH, 1 for one PATCH); the non-changeset part has neither
 // Invented x_item rows in a JSON $batch: each changeset member's plug-in contexts start with the batch's transaction facts.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -65,7 +66,7 @@ async function batchFixture(t) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, seen, backend };
 }
 

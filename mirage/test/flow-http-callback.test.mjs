@@ -1,6 +1,7 @@
 // @test-kind contract: the HTTP Request trigger's signed callback URL and trigger matching are Paqvilo's own runtime behaviour.
 // The HTTP Request trigger's signed callback URL (per-flow HMAC key sealed in state, method restriction, body schema,
 // 401 on a bad signature) and "When an action is performed" matching by catalog and category assignment.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
@@ -62,7 +63,7 @@ async function host(t, { httpDefinition = HTTP_DEFINITION } = {}) {
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
   storeScheduler(store, scheduler);
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store, scheduler, clock });
   const workflows = new Map([
       [HTTP_FLOW, wrap(httpDefinition)],

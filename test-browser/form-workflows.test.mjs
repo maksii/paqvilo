@@ -17,8 +17,11 @@ import { watchSources } from '../lense/commands/dev.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { componentContent } from '../lense/portal-model.mjs';
 import { createFixture, SITE } from '../test/fixture.mjs';
+import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 
-const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
+// Round evidence the CI collector publishes; each run writes its own files.
+const evidence = (name) =>
+  syntheticEvidencePath(fileURLToPath(new URL('../.paqvilo/', import.meta.url)), 'extended-round', name);
 const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
 const xmlEscape = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const component = (id, type, content) =>
@@ -95,9 +98,8 @@ test('interception preserves multipart file uploads, empty files and Unicode for
   assert.ok(received[0].bytes.includes(binary), 'all file bytes, including NUL and non-UTF8 data, arrive intact');
   assert.ok(received[0].bytes.includes(Buffer.from('filename="empty.txt"')));
   assert.ok(received[0].bytes.includes(Buffer.from(notes)));
-  fs.mkdirSync(evidenceDir, { recursive: true });
   fs.writeFileSync(
-    new URL('multipart.json', evidenceDir),
+    evidence('multipart.json'),
     JSON.stringify(
       {
         submissions: received.length,
@@ -275,10 +277,9 @@ for (const layout of ['classic', 'enhanced'])
       methods.every((method) => method === 'GET'),
       'watcher scenarios send only GET to the synthetic fixture',
     );
-    fs.mkdirSync(evidenceDir, { recursive: true });
     fs.writeFileSync(
-      new URL(`${layout}-workflows.json`, evidenceDir),
+      evidence(`${layout}-workflows.json`),
       JSON.stringify({ layout, observations, faults, pageErrors, documentReads: methods.length }, null, 2),
     );
-    await page.screenshot({ path: fileURLToPath(new URL(`${layout}-workflows.png`, evidenceDir)) });
+    await page.screenshot({ path: evidence(`${layout}-workflows.png`) });
   });

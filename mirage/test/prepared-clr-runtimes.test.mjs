@@ -1,4 +1,5 @@
 // @test-kind tooling: preserve caller-prepared CLR runtime identity and reject unsafe fixture mappings before backend setup
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -265,7 +266,7 @@ test('custom preparer remains authoritative for an unmapped step and exact descr
       return selected.prepared;
     },
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   assert.deepEqual(diagnostics, []);
   assert.equal(calls.length, 1);
   assert.equal(calls[0], selected.descriptor);

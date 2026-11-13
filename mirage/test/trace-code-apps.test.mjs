@@ -10,6 +10,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { configure, dataClient, getContext } from '../lib/code-apps-client.js';
+import { codeAppProbe } from '../lib/code-apps-http.mjs';
 import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { endedTree } from './support/trace-scenario.mjs';
 import { staffSimulator, writeFiles } from './support/trace-staff-hosts.mjs';
@@ -202,7 +203,14 @@ test('a code app call without a staff user is a denied root with its code and an
   );
 });
 
-test('the dev server probe is an http-out span of its root that forwards the trace', async () => {
+// hang guard only: the probe's own 1.5 s limit is not what this test is about, and a loaded machine can stall that long
+const PROBE_HANG_GUARD_MS = 170_000;
+test('the dev server probe is an http-out span of its root that forwards the trace', async (t) => {
+  const { timeoutMs } = codeAppProbe;
+  codeAppProbe.timeoutMs = PROBE_HANG_GUARD_MS;
+  t.after(() => {
+    codeAppProbe.timeoutMs = timeoutMs;
+  });
   const { sim, probes, admin } = await runtime();
   const response = await fetch(sim.url + '/_apps/code/_api/apps?probe=1', { headers: { cookie: admin.cookie } });
   assert.equal((await response.json()).apps[0].server.state, 'reachable');

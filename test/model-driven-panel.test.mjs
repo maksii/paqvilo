@@ -1,6 +1,8 @@
 // @test-kind contract: the Lense model-driven panel's native comparison budgets, lease handling and Issues shape are Paqvilo's own designed behaviour, checked on owned loopback fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import {
   createModelDrivenPanelSources,
@@ -266,6 +268,39 @@ test('overlapping real Git source updates retain only the latest catalogue and c
   assert.equal(diff.ok, true);
   assert.equal(diff.against, 'Git HEAD');
   assert.ok(diff.added > 0, 'the latest actual source edit is compared with its committed Git bytes');
+});
+
+test('a HEAD read Git does not answer leaves the Git state unknown and the next update reads it', async (t) => {
+  const fixture = createFixture();
+  ownedFixture(t).remove(() => fixture.cleanup());
+  fixture.write('web-files/source-a.js', 'window.sourceA = 1;');
+  fixture.commit();
+  const original = childProcess.execFile;
+  let silent = true;
+  // Only the HEAD read (rev-parse HEAD --abbrev-ref HEAD) gets no answer while silent; the baseline reads run the real Git.
+  const replaced = t.mock.method(childProcess, 'execFile', function (file, args, options, callback) {
+    if (!silent || !args.includes('--abbrev-ref')) return original.call(this, file, args, options, callback);
+    queueMicrotask(() => callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null })));
+    return {};
+  });
+  syncBuiltinESMExports();
+  ownedFixture(t).add(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const name = 'x_a.js';
+  const catalogue = {
+    assets: new Map([
+      [name, { name, file: fixture.file('web-files/source-a.js'), mime: 'text/javascript', data: Buffer.from('a') }],
+    ]),
+    layers: [{ dir: fixture.dir, documents: [] }],
+  };
+  const sources = await createModelDrivenPanelSources(catalogue);
+  assert.equal(sources.state.git, null);
+  assert.equal(sources.state.facts.get(name).baseline.available, true, 'the answered baseline stays usable');
+  silent = false;
+  await sources.update(catalogue);
+  assert.match(sources.state.git?.commit ?? '', /^[0-9a-f]{40,64}$/);
 });
 
 test('only exact owned resource locations become source links and browser positions become one-based', () => {

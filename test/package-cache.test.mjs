@@ -1,5 +1,5 @@
 // @test-kind tooling: exercises the package-cache primer and offline install metadata path with an isolated local registry
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -29,7 +29,14 @@ test(
     const manifest = { name: 'invented-sdk', version: '1.0.0' };
     await fs.writeFile(path.join(pkg, 'package.json'), JSON.stringify(manifest));
     await fs.writeFile(path.join(pkg, 'index.js'), 'export default 1;');
-    const run = (args, cwd) => exec(process.execPath, [npm, ...args], { cwd, windowsHide: true });
+    // A contributor's personal .npmrc (registry, cache, offline, package-lock) must not change what npm does here.
+    const userconfig = path.join(root, 'absent.npmrc');
+    const run = (args, cwd) =>
+      exec(process.execPath, [npm, ...args], {
+        cwd,
+        env: { ...process.env, npm_config_userconfig: userconfig },
+        windowsHide: true,
+      });
     const packed = JSON.parse(
       (await run(['pack', '--json', '--ignore-scripts', '--offline', '--cache', cache], pkg)).stdout,
     )[0];
@@ -60,7 +67,7 @@ test(
       res.end();
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
+    ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
     origin = `http://127.0.0.1:${server.address().port}`;
     await fs.writeFile(
       path.join(consumer, 'package.json'),
@@ -104,6 +111,7 @@ test(
     Object.assign(primerEnvironment, {
       npm_execpath: npm,
       npm_config_cache: cache,
+      npm_config_userconfig: userconfig,
       npm_config_registry: origin,
       npm_config_update_notifier: 'false',
       npm_config_offline: 'false',

@@ -26,7 +26,7 @@ const canonical = (value) =>
   JSON.stringify(
     Object.fromEntries(
       Object.entries(value)
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(([a], [b]) => a.localeCompare(b, 'en'))
         .map(([k, v]) => [k, normalizeValue(v)]),
     ),
   );

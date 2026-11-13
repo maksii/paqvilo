@@ -1,4 +1,5 @@
 // @test-kind contract: the stop command prints shell-safe hints and stops only the Mirage runtimes it owns across shells.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -107,21 +108,13 @@ async function collectorFixture(t, { reportCwd = false } = {}) {
   await fs.chmod(shim, 0o755);
   let bashFile;
   if (process.platform === 'win32') {
-    for (const candidate of [
-      path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git/bin/bash.exe'),
-      path.join(process.env.LOCALAPPDATA ?? '', 'Programs/Git/bin/bash.exe'),
-    ]) {
-      if (
-        await fs.access(candidate).then(
-          () => true,
-          () => false,
-        )
-      ) {
-        bashFile = candidate;
-        break;
-      }
-    }
-    if (bashFile) t.diagnostic('POSIX argv is also exercised through Git Bash with MSYS path conversion disabled.');
+    // Git for Windows, the Git the toolkit requires, ships Git Bash as bin/bash.exe of its install root, three folders
+    // above its exec path. Taking it from the Git in use, instead of probing install folders, runs the lane on every
+    // Windows machine; a missing Git Bash fails here with its path.
+    const execPath = (await execute('git', ['--exec-path'], { windowsHide: true })).stdout.trim();
+    bashFile = path.resolve(execPath, '..', '..', '..', 'bin', 'bash.exe');
+    await fs.access(bashFile);
+    t.diagnostic('POSIX argv is also exercised through Git Bash with MSYS path conversion disabled.');
   }
   return { directory, cli, bashFile, availableShells: [...shells, ...(bashFile ? ['git-bash'] : [])] };
 }
@@ -309,7 +302,7 @@ test('external command replay refuses a pipe before reading or executing any chi
       server.once('error', reject);
       server.listen(file, resolve);
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     });

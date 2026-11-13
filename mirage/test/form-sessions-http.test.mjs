@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const wizardSchema = {
   initialStepId: 'create',
@@ -77,7 +77,7 @@ async function fixture(t, { formYaml = '', mode = 'local', liveBridge, forms = {
     allowLiveWrites: true,
     watch: false,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(root, { recursive: true, force: true });
   });

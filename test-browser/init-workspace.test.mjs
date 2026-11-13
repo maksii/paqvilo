@@ -1,5 +1,5 @@
 // @test-kind contract: owned task children drain and stop; generated debugger tasks reuse their development browser.
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +11,6 @@ import { runWorkspaceTask, stopOwnedChild } from './helpers/workspace-task.mjs';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
 import { childStdioGate, assertChildStdioDrain } from './helpers/child-stdio-gate.mjs';
 
 test('workspace task drains independent fixtures after Mirage stop fails and retains its work', async (t) => {
@@ -50,7 +49,7 @@ test('owned task shutdown drains pending stdio after the direct child exit', asy
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const gate = childStdioGate(t, child);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await stopOwnedChild(child, gate.closed);
     await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
@@ -76,20 +75,20 @@ test('empty-project debugger task matches the actual local development ready lin
   const task = tasks.tasks.find((item) => item.label === launch.preLaunchTask);
   assert.equal(task.type, 'process');
   assert.equal(manifest.scripts['mirage:dev:portal:debug'], 'npm run mirage:dev:portal -- --debug-port 9223');
-  const port = await freeDebugPort();
   const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
-  const args = task.args
-    .slice(1)
-    .filter((arg) => arg !== '--headed')
-    .map((arg) => (arg === '9223' ? String(port) : arg.replace('${workspaceFolder}', work)));
+  // The task starts on a free debugging port in place of the generated 9223.
+  const args = (port) =>
+    task.args
+      .slice(1)
+      .filter((arg) => arg !== '--headed')
+      .map((arg) => (arg === '9223' ? String(port) : arg.replace('${workspaceFolder}', work)));
   const run = runWorkspaceTask(t, {
     cli,
     args,
     cwd: work,
     env,
     task,
-    port,
     stop: ['--config', path.join(work, 'paqvilo.config.yml'), '--site', 'portal'],
     work,
     cleanup: () => fixture.cleanup(),

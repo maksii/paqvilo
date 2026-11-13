@@ -170,7 +170,9 @@ async function restoreOwnedSession(context, profileDir, origins, guardMs) {
 
 // Each portal scope has its own session file. The name carries a hash of the scope's hosts, so no host text appears in it.
 export function sessionFileFor(profileDir, origins) {
-  const hosts = [...portalHosts(origins)].map((host) => host.toLowerCase()).toSorted((a, b) => a.localeCompare(b));
+  const hosts = [...portalHosts(origins)]
+    .map((host) => host.toLowerCase())
+    .toSorted((a, b) => a.localeCompare(b, 'en'));
   const scope = createHash('sha256').update(hosts.join(',')).digest('hex').slice(0, 16);
   return `${profileDir}.session.${scope}.json`;
 }

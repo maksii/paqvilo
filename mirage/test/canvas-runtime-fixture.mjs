@@ -1,12 +1,14 @@
 // Canvas app and organization for the canvas runtime tests: pa.yaml sources written with the yaml package (so
 // formulas stay literal), an organization-owned fx_widget table (display name 'Widget Name' on fx_name) and two staff
 // users: a System Administrator and a Basic User, who reads fx_widget but may not create rows.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { stringify } from 'yaml';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { readCanvasSource, canvasInventoryRecord } from '../lib/canvas-source.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { serveHandler } from './support/route-server.mjs';
 
 const ADMIN_OID = '77777777-7777-4777-8777-7777777777a1',
   BASIC_OID = '77777777-7777-4777-8777-7777777777a2';
@@ -38,7 +40,7 @@ export async function organization(t, { rows = null } = {}) {
       ],
     }),
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const id = (oid) => runtime.principals.resolve({ oid }).user.systemuserid;
   return {
     store,
@@ -52,6 +54,17 @@ export async function organization(t, { rows = null } = {}) {
     },
   };
 }
+// Serves a canvas handler on loopback, released with the test; a request the handler does not take answers 418.
+// Answers the server's origin.
+export function serveCanvas(t, handler) {
+  return serveHandler(t, (req, res) => {
+    if (!handler(req, res)) {
+      res.writeHead(418);
+      res.end();
+    }
+  });
+}
+
 export const msappOf = (files) =>
   writeSolutionAssetEntries(Object.entries(files).map(([name, body]) => ({ name, data: Buffer.from(body) })));
 /** The app entry canvas-http.mjs serves ({ uniqueName, source with tree }) and its inventory record. */

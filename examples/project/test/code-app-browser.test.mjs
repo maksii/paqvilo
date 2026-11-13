@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
+import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -27,12 +28,12 @@ test('example uses the standalone organization and selected staff session', asyn
     port: 0,
     watch: false,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   child.send(origin);
   await once(child, 'message');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

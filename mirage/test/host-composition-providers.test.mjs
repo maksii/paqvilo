@@ -1,5 +1,6 @@
 // Pack provider factories (organization-host.mjs composeProviders): pack storageProviders, messageProviders and
 // outboxHandlers are instantiated once per host, closed with it, and a throwing factory fails composition naming the pack.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -144,7 +145,7 @@ test('an azurite entry with an unset connection string is instantiated by core a
 test('the core azurite factory serves a declared azurite route against a Blob endpoint and its preflight is satisfied', async (t) => {
   const { startAzuriteFake } = await import('../testing/azurite-fake.mjs');
   const fake = await startAzuriteFake();
-  t.after(() => fake.close());
+  ownedFixture(t).add(() => fake.close());
   const env = { FX_AZURITE: fake.connectionString() };
   const providers = await composeProviders({
     store: await store(),
@@ -342,7 +343,7 @@ test('an azurite entry whose loopback endpoint answers 200 but is no Blob endpoi
   const http = await import('node:http');
   const server = http.createServer((req, res) => res.end('')).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
@@ -367,7 +368,7 @@ test('an azurite entry whose loopback endpoint answers 200 but is no Blob endpoi
 test('the host graph shows the Azurite node by its observed state, never a constant declared', async (t) => {
   const { startAzuriteFake } = await import('../testing/azurite-fake.mjs');
   const fake = await startAzuriteFake();
-  t.after(() => fake.close());
+  ownedFixture(t).add(() => fake.close());
   const env = { FX_AZURITE: fake.connectionString() };
   const compose = async (environment) =>
     composeOrganizationHost({
@@ -383,16 +384,16 @@ test('the host graph shows the Azurite node by its observed state, never a const
     });
   const azuriteNode = (host) => host.topology().nodes.find((item) => item.id === 'external:azurite');
   const host = await compose(env);
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   assert.equal(azuriteNode(host).status, 'declared'); // not contacted yet
   // The topology is memoised (store revision, 5-second bucket): a fresh host probed before its first topology shows ready.
   const probed = await compose(env);
-  t.after(() => probed.close());
+  ownedFixture(t).add(() => probed.close());
   await providerRequirements({ providers: probed.providers, env });
   assert.equal(azuriteNode(probed).status, 'ready');
   assert.equal(azuriteNode(probed).detail.health[0].ready, true);
   const missing = await compose({});
-  t.after(() => missing.close());
+  ownedFixture(t).add(() => missing.close());
   const node = azuriteNode(missing);
   assert.equal(node.status, 'missing');
   assert.match(node.detail.health[0].reason, /FX_AZURITE is not set/);

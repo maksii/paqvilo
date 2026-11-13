@@ -441,10 +441,23 @@ export function watchSources(
   let repository = null;
   let repositoryTimer = null;
   let baselineTimer = null;
+  // A Git that gives no answer is asked again on every repository check; the user is told once, and again only
+  // after Git has answered in between.
+  let gitSilent = false;
+  const gitNoAnswer = (err) => {
+    if (!gitSilent && !closed)
+      log(`${time()}  ${label}  WARN   Git did not answer (${err.message}); asking again on the next repository check`);
+    gitSilent = true;
+  };
   const checkRepository = () => {
     if (closed || baselineFlight) return;
     baselineFlight = (async () => {
-      if (tracksHead) await session.refreshHead().catch(() => null);
+      if (!located) await locate();
+      if (closed) return;
+      if (tracksHead)
+        await session.refreshHead().then(() => {
+          gitSilent = false;
+        }, gitNoAnswer);
       if (!tracksBaseline) return;
       const changed = await session.baseline.checkForUpdate();
       if (!changed || closed) return;
@@ -457,12 +470,29 @@ export function watchSources(
         baselineFlight = null;
       });
   };
-  const repositoryReady = (async () => {
-    if (!tracksBaseline && !tracksHead) return;
-    const directories = await gitDirectories(cfg.sourceDir);
+  // Whether Git has answered where the repository lives (or that there is none). Until it has, every repository
+  // check asks again, and HEAD and the baseline are polled.
+  let located = false;
+  const poll = () => {
+    clearInterval(baselineTimer);
+    baselineTimer = null;
+    if (closed || (!tracksBaseline && !tracksHead)) return;
+    baselineTimer = setInterval(checkRepository, baselinePollMs ?? (repository ? 15_000 : 2000));
+    baselineTimer.unref();
+  };
+  const locate = async () => {
+    let directories;
+    try {
+      directories = await gitDirectories(cfg.sourceDir);
+    } catch (err) {
+      gitNoAnswer(err);
+      return;
+    }
+    located = true;
+    gitSilent = false;
     if (closed) return;
-    // Outside a repository there is no HEAD to follow; do not spawn Git for it on every poll.
-    if (!directories) tracksHead = false;
+    // Git answered that there is no repository: no HEAD to follow; do not spawn Git for it on every poll.
+    if (directories === null) tracksHead = false;
     if (directories && gitWatch) {
       try {
         const roots = new Set([directories.gitDir, directories.commonDir].map((dir) => path.resolve(dir)));
@@ -492,9 +522,13 @@ export function watchSources(
         repository = null;
       }
     }
+    poll();
+  };
+  const repositoryReady = (async () => {
     if (!tracksBaseline && !tracksHead) return;
-    baselineTimer = setInterval(checkRepository, baselinePollMs ?? (repository ? 15_000 : 2000));
-    baselineTimer.unref();
+    await locate();
+    // No answer: where the repository lives is unknown, so HEAD and the baseline are polled instead of watched.
+    if (!located) poll();
   })().catch((err) => log(`${time()}  ${label}  ERROR  repository watcher: ${err.message}`));
   watcher.on('error', (err) => log(`${time()}  ${label}  ERROR  source watcher: ${err.message}`));
   const closeWatcher = watcher.close.bind(watcher);

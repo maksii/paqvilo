@@ -1,4 +1,5 @@
 // @test-kind security: plug-in SDK calls run as the CreateOrganizationService user (null SYSTEM, Guid.Empty the step's user, else that user) and are authorized by that user's Dataverse security roles; a user without the privilege is refused with the native privilege fault. Native run-as roles replace the grant profile (user decision 2026-10-30); factory semantics are from Microsoft Learn IOrganizationServiceFactory.CreateOrganizationService.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -37,7 +38,7 @@ async function organization(t, extraUsers = []) {
       ],
     }),
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const id = (name) => store.tableRows('systemuser').find((row) => row.fullname === name).systemuserid;
   // The descriptor profile grants nothing: authorization comes from the run-as user's roles.
   const profile = { userId: id('Invented admin'), evidence: 'Invented run-as step', grants: [] };
@@ -189,7 +190,7 @@ test('an asynchronous step queued by a run-as SDK write runs as that user', asyn
   ]);
   const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
   // Each write commits on its own, queueing its asynchronous step.
   store.transact(() => create(null, 'queued as system'));

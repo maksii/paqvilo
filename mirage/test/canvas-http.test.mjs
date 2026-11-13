@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's local Canvas inventory HTTP routes report explicit host capability levels, diagnostics and route/method ownership without starting an app.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertNoElements } from './assert-markup.mjs';
@@ -28,7 +29,7 @@ async function server(t, apps) {
     }
   });
   await new Promise((resolve) => instance.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => instance.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => instance.close(resolve)));
   return { url: `http://127.0.0.1:${instance.address().port}`, diagnostics };
 }
 
@@ -131,7 +132,7 @@ test('canvas list and inventory API answer inventory without the runtime and beh
     }
   });
   await new Promise((resolve) => instance.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => instance.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => instance.close(resolve)));
   const hostedList = await (
     await fetch(`http://127.0.0.1:${instance.address().port}/_apps/canvas/`, {
       headers: { accept: 'application/json' },

@@ -50,7 +50,8 @@ async function fingerprintFiles(root, implementation) {
     const nested = await orderedMap(level, READ_CONCURRENCY, async (dir) => {
       const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
         .filter((entry) => !excludedEntry(root, dir, entry, implementation))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        // Code-unit order: a locale-aware order depends on the process locale and changes the hash.
+        .sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
       children.set(dir, entries);
       return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
     });

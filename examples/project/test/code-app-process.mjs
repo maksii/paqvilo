@@ -1,3 +1,4 @@
+import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { access } from 'node:fs/promises';
@@ -16,7 +17,7 @@ export async function startCodeApp(
     stdio: ['ignore', 'pipe', 'pipe', ...(ipc ? ['ipc'] : [])],
   });
   const closed = once(child, 'exit');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill();
     await closed;
   });

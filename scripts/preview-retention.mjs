@@ -51,7 +51,7 @@ export function retentionPlan(metadata, { keep = 3 } = {}) {
         .map(([tag]) => tag);
       return [{ version, channel, published, released: compareCore(match, stable[0].match) <= 0, protectedTags }];
     })
-    .sort((a, b) => b.published - a.published || b.version.localeCompare(a.version));
+    .sort((a, b) => b.published - a.published || b.version.localeCompare(a.version, 'en'));
   // Protected previews count toward the cap; never silently delete custom-tag targets.
   const current = previews.filter((item) => !item.released);
   const protectedCurrent = current.filter((item) => item.protectedTags.length);

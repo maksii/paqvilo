@@ -1,5 +1,6 @@
 // @test-kind parity: native recorder corpus 2026-10-30, pipelineEffects scenario captured twice: async steps get the Target PostOperation started with, not its context edits
 // @parity-evidence: native recorder corpus 2026-10-30 pipelineEffects and native-r2/pipelineEffects: async Create/CreateMultiple Targets carry the defaults and lack the PostOperation edit; async Update targets are partial with modified stamps
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -97,7 +98,7 @@ async function exercise(t, { observe, runtime } = {}) {
     descriptors,
     scheduler,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
   });
@@ -218,7 +219,7 @@ test(
       source = path.join(root, 'Targets.cs'),
       sdk = clrSdk(),
       log = path.join(root, 'seen.txt');
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     await fs.writeFile(
       source,
       `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class AsyncTarget:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));var t=((EntityCollection)c.InputParameters["Targets"]).Entities[0];var scenario=t.GetAttributeValue<string>("scenario");var parent=c.ParentContext;var baseline=(Entity)parent.InputParameters["Target"];if(c.Mode!=1||c.IsInTransaction||c.OperationCreatedOn.Kind!=DateTimeKind.Unspecified||parent==null||parent.Stage!=30||parent.Mode!=1||parent.MessageName!=c.MessageName||parent.Depth!=c.Depth||parent.OperationId!=c.OperationId||parent.RequestId!=c.RequestId||parent.OperationCreatedOn!=c.OperationCreatedOn||baseline.Id!=parent.PrimaryEntityId)throw new Exception("Async main parent metadata differs");if((string)parent.SharedVariables["tag"]!="Invented materialization request")throw new Exception("Canonical parent tag lost");if(c.PostEntityImagesCollection.Length!=1||!c.PostEntityImagesCollection[0].Contains("AsynchronousStepPrimaryName")||c.PreEntityImagesCollection.Length!=(scenario=="updated"?1:0)||(scenario=="updated"&&!c.PreEntityImagesCollection[0].Contains("pre")))throw new Exception("Async Context4 alignment differs");if(scenario=="updated"){if(t.GetAttributeValue<Guid>("widgetid")!=new Guid("${id(10)}")||!t.Contains("modifiedon")||!t.Contains("modifiedby")||!t.Contains("modifiedonbehalfby")||t.Contains("untouched")||t.Contains("category")||(ConcurrencyBehavior)parent.InputParameters["ConcurrencyBehavior"]!=ConcurrencyBehavior.Default)throw new Exception("Update Target lost partial/stamp shape");}else{if(t.GetAttributeValue<OptionSetValue>("category").Value!=4||t.GetAttributeValue<OptionSetValue>("statuscode").Value!=1||!t.GetAttributeValue<string>("code").StartsWith("INV-")||!baseline.GetAttributeValue<bool>("flag")||!baseline.Contains("title")||!baseline.Contains("widgetid"))throw new Exception("Create defaults or parent baseline lost");if(scenario=="removed"){if(!t.Contains("title")||!t.GetAttributeValue<bool>("flag")||!t.Contains("widgetid")||t.GetAttributeValue<string>("text")!="Stored text"||baseline.GetAttributeValue<string>("text")!="Stored text")throw new Exception("PostOperation context edits reached the queued Target");}else if(!t.Contains("widgetid")||!t.GetAttributeValue<bool>("flag"))throw new Exception("Baseline primary/default lost");}File.AppendAllText(@"${log.replaceAll('"', '""')}",scenario+Environment.NewLine);}}}`,

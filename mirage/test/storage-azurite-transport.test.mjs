@@ -1,6 +1,7 @@
 // Core Azurite transport (storage-azurite.mjs): Shared Key signing, connection strings, loopback-only endpoints,
 // error mapping with the Azure code, authenticated preflight, SAS URLs the endpoint accepts, and the key kept out of output.
 // @test-kind contract: the Azurite fake is a shipped test double whose request handling this file pins, including aborted uploads
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
@@ -199,7 +200,7 @@ test('a data operation against an endpoint that never answers is Unavailable onc
   const sockets = new Set();
   const silent = net.createServer((socket) => sockets.add(socket)); // accepts, never answers
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => silent.close(resolve));
   });
@@ -380,7 +381,7 @@ async function slowFakeEndpoint(t, fakeEndpoint) {
     upstream.end();
   });
   await new Promise((resolve) => relay.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     relay.closeAllConnections();
     await new Promise((resolve) => relay.close(resolve));
   });

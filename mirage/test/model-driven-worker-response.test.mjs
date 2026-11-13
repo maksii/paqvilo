@@ -1,4 +1,5 @@
 // @test-kind contract: the metadata compiler threads are Mirage's own runtime seam; each test pins a designed behaviour of it.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -352,7 +353,7 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
       payload = JSON.parse(singleMember(Buffer.concat(encoded)).toString());
     },
   });
-  t.after(() => handler.close());
+  ownedFixture(t).add(() => handler.close());
   const pending = handler(
     { method: 'GET', headers: { 'accept-encoding': 'gzip' } },
     res,

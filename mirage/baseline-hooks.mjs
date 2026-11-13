@@ -22,10 +22,11 @@ export async function runHook(command, { persona, cwd } = {}) {
       out += chunk;
     });
     child.on('error', reject);
-    child.on('exit', (code) =>
+    // 'close' follows the end of the output streams; 'exit' can come before the last output arrives.
+    child.on('close', (code, signal) =>
       code === 0
         ? resolve({ code, output: out.slice(-2000) })
-        : reject(new Error(`Hook failed (${code}): ${resolved}\n${out.slice(-2000)}`)),
+        : reject(new Error(`Hook failed (${code ?? signal}): ${resolved}\n${out.slice(-2000)}`)),
     );
   });
 }

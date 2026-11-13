@@ -123,7 +123,7 @@ async function hostFixture(t) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   let context;
-  t.after(() =>
+  ownedFixture(t).add(() =>
     drainFixture([
       () => context?.close(),
       () =>

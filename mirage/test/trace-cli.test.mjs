@@ -3,6 +3,7 @@
 // (sim-trace-routes.mjs), a status route, a CSRF state route and a /_sim/events `trace` channel (createTraceChannel). The
 // event stream produces its spans once the channel is attached, so no step waits on time; with `endStream` the server
 // then drops the connection the way a stopping runtime does.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -91,7 +92,7 @@ async function fixture(t, { endStream = false } = {}) {
     res.end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

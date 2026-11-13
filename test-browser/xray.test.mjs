@@ -299,7 +299,7 @@ test('X-ray inspects fields and sources without activating portal controls acros
 
 test('X-ray keeps nested table contexts, scaled clipping, dialog order and popovers isolated', async (t) => {
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

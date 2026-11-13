@@ -1,4 +1,5 @@
 // @test-kind contract: Organization-cache diagnostics require explicit observations with their source; invented IDs and indices check only configuration and wiring.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observedConfig } from '../lib/project-config.mjs';
@@ -136,7 +137,7 @@ test('standalone HTTP and batch apply the same context only to genuine missing-a
   const store = await new DataStore({ state }).init();
   const organization = await createOrganizationRuntime({ store, settings: dataverseSettings(settings) });
   const api = await startDataverseApi({ organization, observed: observedConfig(observed()) });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
     await organization.close();
   });

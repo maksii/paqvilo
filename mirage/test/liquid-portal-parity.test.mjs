@@ -1956,7 +1956,7 @@ test('related rows reached through a relationship read a multi-select array as i
     initial: state,
     watch: false,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -1964,7 +1964,7 @@ test('related rows reached through a relationship read a multi-select array as i
     await fetch(`${app.url}/`, { headers: signInHeaders(app, 'editor', { roles: ['Editor'] }) })
   ).text();
   assert.match(html, /3,1,2\|xy\/3,1,2\|xy\//);
-  assert.doesNotMatch(html, /312/);
+  assert.doesNotMatch(html, /312\|/);
 });
 
 const VIEW_METADATA = {

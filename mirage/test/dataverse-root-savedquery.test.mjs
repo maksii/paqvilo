@@ -1,4 +1,5 @@
 // @test-kind observation: two native authorized collection requests in fixtures/dataverse-root-savedquery-native.json record status 404, code 0x80040217 and the message template, with request path and response body hashes only; the request is typed in this test, so it is not a replay case. Only the request GUID is substituted in the message.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -52,7 +53,7 @@ async function setup(t) {
     ],
   });
   const api = await startDataverseApi({ store, settings, schema, log: () => {} });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
     delete process.env[secretName];
   });

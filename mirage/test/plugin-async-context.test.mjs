@@ -13,7 +13,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { serviceEndpointDelivery, remoteExecutionContext } from '../lib/dataverse-webhooks.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -91,7 +91,7 @@ test('async-only implicit multiple steps retain the known source request metadat
       store.addCommitStager((events) => {
         source = events.find((event) => event.operation === operation);
       });
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         await backend.close();
         store.close();
       });
@@ -161,7 +161,7 @@ test('typed async contexts bind each actual System Job identity and creation tim
     runtimes: new Map(),
     systemJobs: () => true,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await scheduler.close();
     store.close();
@@ -204,7 +204,7 @@ test('a queued multiple job runs the saved single-message frame under its own me
       runtimes: new Map(),
       systemJobs: () => true,
     });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await scheduler.close();
     store.close();
@@ -289,7 +289,7 @@ test('queued multiple execution preserves the actual originating SDK depth indep
           handlers,
         });
         const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
-        t.after(async () => {
+        ownedFixture(t).add(async () => {
           await backend.close();
           store.close();
         });
@@ -342,7 +342,7 @@ test('an actual loopback webhook payload uses its queued System Job metadata rat
     webhooks: serviceEndpointDelivery(store),
     systemJobs: () => true,
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await runner.close();
     await scheduler.close();
     store.close();
@@ -407,7 +407,7 @@ test('missing queued creation metadata fails explicitly before any original hand
         runtimes: new Map(),
         systemJobs: () => true,
       });
-      t.after(async () => {
+      ownedFixture(t).add(async () => {
         await runner.close();
         await scheduler.close();
         store.close();
@@ -440,7 +440,7 @@ test('a sync nested webhook retains known operation metadata and UTC components 
   store.state.tables.serviceendpoint = [
     { serviceendpointid: id(60), contract: 8, authtype: 0, url: `http://127.0.0.1:${server.address().port}/hook` },
   ];
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     store.close();
     await new Promise((resolve) => server.close(resolve));
   });
@@ -492,7 +492,7 @@ test(
       runners = [],
       schedulers = [];
     let runtime, syncRuntime;
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       for (const runner of runners) await runner.close();
       if (runtime) await closeClrHostPool({ runtime });
       if (syncRuntime) await closeClrHostPool({ runtime: syncRuntime });

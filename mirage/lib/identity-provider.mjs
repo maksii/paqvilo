@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPair, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chooserReport, chooserResults, chooserSearch, CHOOSER_PARAMETERS } from './persona-chooser.mjs';
@@ -151,6 +152,10 @@ function verifyPkce(entry, verifier) {
   // The runtime's trace store (docs/design/tracing.md): each request is an http root of host identity-provider, joined to
   // the portal's back-channel calls through their forwarded trace headers (D-R3-8).
   traces = null,
+  // Generates the signing key pair; the default runs off the event loop. Tests pass their own to hold it.
+  generateSigningKeyPair = promisify(generateKeyPair),
+  // Counts the chooser's work ({ compared, scanned }, persona-chooser.mjs chooserSelection) when given.
+  chooserWork = null,
 }) {
   settings = identityProviderSettings(settings);
   const builtinAssets = new Map(
@@ -161,15 +166,21 @@ function verifyPkce(entry, verifier) {
       ]),
     ),
   );
-  // Generated on first signature or key discovery: a 2048-bit key pair blocks the event loop.
-  let signingKey;
-  const signingKeys = () => {
-    if (!signingKey) {
-      const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-      const jwk = publicKey.export({ format: 'jwk' });
-      signingKey = { privateKey, jwk, kid: createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16) };
-    }
-    return signingKey;
+  // Generated off the event loop by the first request that needs it (most runs never sign in). Concurrent first requests
+  // share one generation; a failed generation fails the requests that waited for it, and the next request tries again.
+  let pendingKey = null;
+  const signingKey = () => {
+    pendingKey ??= Promise.resolve()
+      .then(() => generateSigningKeyPair('rsa', { modulusLength: 2048 }))
+      .then(({ privateKey, publicKey }) => {
+        const jwk = publicKey.export({ format: 'jwk' });
+        return { privateKey, jwk, kid: createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16) };
+      })
+      .catch((error) => {
+        pendingKey = null;
+        throw error;
+      });
+    return pendingKey;
   };
   let origin = null;
   let cookieName = 'paqvilo-mirage-idp';
@@ -179,8 +190,8 @@ function verifyPkce(entry, verifier) {
   const assertions = new Map();
   const authority = (provider) => `${origin}/${provider.slug}/`;
   const tokenEndpoint = (provider) => `${authority(provider)}oauth2/token`;
-  const signToken = (payload) => {
-    const { privateKey, kid } = signingKeys();
+  const signToken = async (payload) => {
+    const { privateKey, kid } = await signingKey();
     const header = base64url(JSON.stringify({ typ: 'JWT', alg: 'RS256', kid }));
     const body = base64url(JSON.stringify(payload));
     return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')}`; // NOSONAR: preserve template coercion and selected evaluation
@@ -358,7 +369,7 @@ function verifyPkce(entry, verifier) {
     return token;
   };
   /** The authorization response for `user`, as the response type asks. */
-  const answer = (res, provider, params, user) => {
+  const answer = async (res, provider, params, user) => {
     const type = new Set(normalizeResponseType(params.response_type).split(' '));
     const code = type.has('code') ? randomBytes(24).toString('base64url') : null;
     if (code)
@@ -379,7 +390,7 @@ function verifyPkce(entry, verifier) {
       ...(code ? { code } : {}),
       ...(accessToken ? { access_token: accessToken, token_type: 'Bearer', expires_in: String(TOKEN_LIFETIME_S) } : {}),
       ...(type.has('id_token')
-        ? { id_token: signToken(idTokenClaims(provider, params, user, { code, accessToken })) }
+        ? { id_token: await signToken(idTokenClaims(provider, params, user, { code, accessToken })) }
         : {}),
       state: params.state,
     };
@@ -397,7 +408,7 @@ function verifyPkce(entry, verifier) {
       report = chooserReport(personaCatalog(), list);
     const parameters = new URLSearchParams(query);
     for (const [key, value] of Object.entries({ ...extras, ...params })) if (value) parameters.set(key, value);
-    if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action);
+    if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action, chooserWork);
     const policy = newUserPolicy(settings, registration(), provider, params),
       presentation = parameters.get('presentation') === 'dialog' ? 'dialog' : settings.presentation;
     const requested =
@@ -430,7 +441,7 @@ function verifyPkce(entry, verifier) {
           )}</div><button type="submit" form="idp-register" name="subject" value="new">Continue as a new user</button></section>`
       : '';
     const requester = new URL(params.redirect_uri).origin,
-      content = chooserResults(report, parameters, action),
+      content = chooserResults(report, parameters, action, chooserWork),
       heading =
         provider.caption && provider.caption !== provider.key ? `${provider.caption} (${provider.key})` : provider.key;
     const head =
@@ -443,7 +454,7 @@ function verifyPkce(entry, verifier) {
         )
         .join('');
     return page(
-      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>` : ''}</header>${chooserSearch(report, parameters, action, hidden)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requested ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>` : ''}</div>`, // NOSONAR: preserve template coercion and selected evaluation
+      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>` : ''}</header>${chooserSearch(report, parameters, action, hidden, chooserWork)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requested ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>` : ''}</div>`, // NOSONAR: preserve template coercion and selected evaluation
       { head },
     );
   };
@@ -547,7 +558,7 @@ function verifyPkce(entry, verifier) {
       access_token: accessToken,
       expires_in: TOKEN_LIFETIME_S,
       scope: entry.scope,
-      id_token: signToken(idTokenClaims(provider, params, entry.user, { accessToken })),
+      id_token: await signToken(idTokenClaims(provider, params, entry.user, { accessToken })),
     });
   }
   function userinfo(req, res, provider) {
@@ -648,7 +659,7 @@ function verifyPkce(entry, verifier) {
         ],
       });
     if (req.method === 'GET' && route === 'discovery/keys') {
-      const { jwk, kid } = signingKeys();
+      const { jwk, kid } = await signingKey();
       return json(res, 200, { keys: [{ kty: jwk.kty, use: 'sig', kid, alg: 'RS256', n: jwk.n, e: jwk.e }] });
     }
     if (req.method === 'POST' && route === 'oauth2/token') return token(req, res, provider);

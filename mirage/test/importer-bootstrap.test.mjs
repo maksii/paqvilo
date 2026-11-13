@@ -429,8 +429,8 @@ test('a running runtime reloads solution changes, recompiles metadata and report
   assert.equal(mapping(before).fieldMetadata.sample_name.maxLength, 100);
   await fs.access(path.join(stateDir, 'cache', 'solution-sources.json'));
   // The runtime announces each completed reload on its event stream (after SOURCES_RELOADED is recorded). The watcher is
-  // ready once createSimulator resolves; the abort bound only turns a reload that never comes into a failure.
-  const stream = await fetch(app.url + '/__sim/events', { signal: AbortSignal.timeout(60_000) });
+  // ready once createSimulator resolves; a reload that never comes is ended by the runner's --test-timeout.
+  const stream = await fetch(app.url + '/__sim/events');
   const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
   ownedFixture(t).add(() => reader.cancel().catch(() => {}));
   let received = '';

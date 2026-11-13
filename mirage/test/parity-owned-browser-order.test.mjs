@@ -1,4 +1,5 @@
 // @test-kind contract+security: the owned parity capture installs its route check before page creation and keeps owner-close ordering.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -99,7 +100,7 @@ test('owned parity capture reads status before awaiting response headers', async
   const browser = { newContext: () => Promise.resolve(context), close: () => Promise.resolve() };
   t.mock.method(chromium, 'launch', () => Promise.resolve(browser));
   const owner = await openOwnedBrowser({ channel: 'chromium' });
-  t.after(() => owner.close());
+  ownedFixture(t).add(() => owner.close());
   const result = await owner
     .pageDriver('http://127.0.0.1', 'anonymous')
     .source('/safe', { quietMs: 0, settleTimeout: 1000 });

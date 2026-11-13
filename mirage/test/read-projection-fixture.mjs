@@ -1,6 +1,7 @@
 // Shared fixture for the read-projection, paging, exact-JSON, collation and file-name tests: a loopback Dataverse API
 // over a state with the default EXTENSIONS and two application users: ADMIN (System Administrator) and
 // CUST (System Customizer, which does not bypass column security).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
@@ -55,7 +56,7 @@ export async function readFixture(t, { mappings = {}, tables = {}, settings: ext
   const extensions = [...EXTENSIONS, spy];
   const organization = await createOrganizationRuntime({ store, settings, extensions });
   const server = await startDataverseApi({ store, settings, log: () => {}, extensions, organization });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await server.close();
     await organization.close();
   });

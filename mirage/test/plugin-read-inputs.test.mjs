@@ -1,6 +1,7 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, replayed by the local recorder harness: reads (a Web API collection GET hands RetrieveMultiple a paged FetchExpression of the client's selection and a first/last paging cookie), crud and upsert (the platform's existence read: no IncludeAnnotations, empty paging cookie)
 // @parity-evidence: native recorder captures 2026-10-30 readAsync (native and native-r2); the fixture lines changed only to register the asynchronous Retrieve step of the new test
 // Read message inputs and outputs as RetrieveMultiple steps see them. Invented table and identities only.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -60,7 +61,7 @@ async function fixture(t, edit = () => {}, steps = [step(1, 20), step(2, 40)]) {
   ]);
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   // The PostOperation collection as the pipeline hands it to steps (a handler sees only its entities).
   const cookies = [],
     pipeline = f.store.pluginPipeline;

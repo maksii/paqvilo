@@ -1,5 +1,6 @@
 // @test-kind parity: native dataverse-recorder corpus (sdkMessages, crud, async): a job regarding a row deleted before it starts never executes, for every message and for web hooks
 // Invented schema, handlers and loopback receiver.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -68,7 +69,7 @@ async function organization(t, steps, { asyncStartDelayMs } = {}) {
     scheduler,
     ...(asyncStartDelayMs === undefined ? {} : { asyncStartDelayMs: () => asyncStartDelayMs }),
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
     await new Promise((resolve) => {
@@ -234,7 +235,7 @@ test('an asynchronous create loop stops at Depth 12 with the infinite-loop fault
       handlers,
     });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
   });

@@ -137,7 +137,7 @@ export const normalizePortalPath = (value) => {
 };
 
 const IO_CONCURRENCY = 32;
-/** Preserve source readdir ordering and the importer's existing skip policy. */
+/** Source files in name order (lense/directory-files.mjs), with the importer's skip policy. */
 const walk = (dir) => directoryFiles(dir, { skip: new Set(['.git', '.portalconfig']), concurrency: IO_CONCURRENCY });
 // Text sources are prefetched concurrently; reads fall back to disk for other files.
 async function read(file, contents) {
@@ -1069,7 +1069,7 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
   // language's ID).
   for (const entry of configEntries
     .filter((item) => item.isFile() && /(?:^|\.)portallanguage\.ya?ml$/i.test(item.name))
-    .sort((a, b) => a.name.localeCompare(b.name))) {
+    .sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     const file = path.join(portalConfig, entry.name);
     try {
       const parsed = YAML.parse(await fs.readFile(file, 'utf8')) ?? {};

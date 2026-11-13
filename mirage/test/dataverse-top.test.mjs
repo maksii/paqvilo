@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -37,7 +38,7 @@ test('Dataverse collection $top parses native signed/whitespace Int64 input and 
       }),
       log: () => {},
     });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
     if (previous === undefined) delete process.env[SECRET];
     else process.env[SECRET] = previous;

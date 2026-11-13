@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -44,7 +45,7 @@ async function observedSaver(t) {
 
 test('streaming old headers cannot deliver their body to the next run', async (t) => {
   const { saver, admitted } = await observedSaver(t);
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const first = saver.expect();
   const headers = admitted();
   const pending = stream(saver, first.run);
@@ -70,7 +71,7 @@ test('streaming old headers cannot deliver their body to the next run', async (t
 
 test('malformed evidence rejects its own wait without an unhandled rejection before the caller awaits it', async (t) => {
   const saver = await startSaver();
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const expected = saver.expect();
   assert.equal((await post(saver, expected.run, '{malformed-json')).status, 400);
   await new Promise((resolve) => setImmediate(resolve));
@@ -82,7 +83,7 @@ test('malformed evidence rejects its own wait without an unhandled rejection bef
 
 test('a consumed run refuses duplicate posts without changing its result', async (t) => {
   const saver = await startSaver();
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const expected = saver.expect();
   assert.equal((await post(saver, expected.run, { fixture: 'first' })).status, 204);
   assert.deepEqual(await expected.received, { fixture: 'first' });
@@ -107,7 +108,7 @@ test('closing an incomplete owned request settles the wait and releases all rece
 
 test('aborted evidence rejects only the corresponding wait and a later run still works', async (t) => {
   const { saver, admitted } = await observedSaver(t);
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const expected = saver.expect();
   const headers = admitted();
   const pending = stream(saver, expected.run);

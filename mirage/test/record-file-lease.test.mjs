@@ -1,11 +1,12 @@
 // @test-kind contract: record ownership, publication, migration and live-reader leases preserve persistent state integrity
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
   RecordFileLease,
   collectRecordGarbage,
@@ -16,6 +17,20 @@ import {
 import * as leaseModule from '../lib/record-file-lease.mjs';
 import { RecordPageSession } from '../lib/record-tables.mjs';
 import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences } from '../lib/record-state.mjs';
+
+// The Windows short (8.3) name of a path. The path reaches cmd.exe through the environment, so `&`, `^` or `%` in a
+// user's temporary folder is not parsed as command syntax.
+const shortName = (file) =>
+  execFileSync(
+    process.env.ComSpec ?? 'cmd.exe',
+    ['/d', '/v:off', '/c', 'for %I in ("%PAQ_TEST_SHORT_PATH%") do @echo %~sI'],
+    {
+      encoding: 'utf8',
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+      env: { ...process.env, PAQ_TEST_SHORT_PATH: file },
+    },
+  ).trim();
 
 test('a file replaced during opening is rejected and its handle is closed', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-open-'));
@@ -46,27 +61,23 @@ test('a file replaced during opening is rejected and its handle is closed', (t) 
 
 test('directory aliases share canonical record ownership, leases and publication identity', async (t) => {
   const root = await fs.promises.realpath(fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-paths-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
   const target = path.join(root, 'canonical-directory'),
     link = path.join(root, 'directory-alias');
   fs.mkdirSync(target);
   fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
   const aliases = [link];
   if (process.platform === 'win32') {
-    const short = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${target}") do @echo %~sI`], {
-      encoding: 'utf8',
-      windowsVerbatimArguments: true,
-      windowsHide: true,
-    }).trim();
+    const short = shortName(target);
     if (short !== target) aliases.push(short);
   }
   const session = new RecordPageSession(target, { stateOwner: path.join(target, 'state.json') });
-  t.after(() => session.close());
+  ownedFixture(t).add(() => session.close());
   const rows = session.from([{ id: 'invented-row', value: 'Retained' }], { primaryKey: 'id' });
   for (const alias of aliases) {
     assert.equal(stateRecordOwner(path.join(alias, 'state.json')), stateRecordOwner(path.join(target, 'state.json')));
     const reader = new RecordPageSession(alias, { stateOwner: path.join(alias, 'state.json') });
-    t.after(() => reader.close());
+    ownedFixture(t).add(() => reader.close());
     assert.equal(reader.directory, target);
     assert.equal(reader.lease.directory, target);
     assert.doesNotThrow(() =>
@@ -197,6 +208,27 @@ const persisted = (rows) =>
   JSON.stringify(encodeRecordReferences({ op: 'section', key: 'state', value: { tables: { item: rows } } }));
 const decoded = (text) => decodeRecordReferences(JSON.parse(text));
 const marker = (directory) => JSON.parse(fs.readFileSync(path.join(directory, '.record-owner.json'), 'utf8'));
+// The test decides the rename that replaces a record directory's owner marker. Windows refuses to replace a file that
+// another process has open, and an on-access scanner can hold a freshly written marker for longer than the product's
+// retry budget; the product then keeps the earlier, still valid marker by design. `refuse()` decides each attempt: a
+// refusal is a sharing error, and a landed rename gives the marker the temporary's bytes and removes the temporary.
+const ownMarkerReplace = (t, refuse = () => false) => {
+  const rename = fs.renameSync;
+  let attempts = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(to) !== '.record-owner.json') return rename(from, to);
+    attempts++;
+    if (refuse()) throw Object.assign(new Error('Invented sharing hold'), { code: 'EPERM' });
+    fs.writeFileSync(to, fs.readFileSync(from));
+    fs.rmSync(from);
+  });
+  return {
+    attempts: () => attempts,
+    land() {
+      refuse = () => false;
+    },
+  };
+};
 
 test('a state and its record directory load together after moving and refuse another state', async (t) => {
   const root = owned(t, 'invented-record-move-');
@@ -207,13 +239,15 @@ test('a state and its record directory load together after moving and refuse ano
   session.close();
   fs.renameSync(path.join(root, 'first'), path.join(root, 'moved'));
   const moved = path.join(root, 'moved', 'state.json');
+  const replace = ownMarkerReplace(t);
   const restored = await restoreRecordReferences(decoded(entry).value, moved + '.records', { stateOwner: moved });
-  t.after(() => restored.session.close());
+  ownedFixture(t).add(() => restored.session.close());
   assert.equal(restored.state.tables.item[0].value, 'Retained');
   assert.equal(restored.session.ownedDirectory, true);
+  assert.equal(replace.attempts(), 1, 'The moved state replaces its marker once.');
   assert.equal(marker(moved + '.records').state, stateRecordOwner(moved), 'The marker follows its state.');
   const fresh = new RecordPageSession(moved + '.records', { stateOwner: moved });
-  t.after(() => fresh.close());
+  ownedFixture(t).add(() => fresh.close());
   assert.equal(fresh.ownerKey, restored.session.ownerKey);
   assert.throws(
     () => new RecordPageSession(moved + '.records', { stateOwner: path.join(root, 'other.json') }),
@@ -227,7 +261,7 @@ test('a state and its record directory load together after moving and refuse ano
   );
 });
 
-test('a directory published before owner keys loads after moving and migrates its marker', async (t) => {
+test('a directory published before owner keys loads after moving, keeps a marker it cannot replace and migrates it on the next open', async (t) => {
   const root = owned(t, 'invented-record-legacy-');
   fs.mkdirSync(path.join(root, 'first'));
   const first = path.join(root, 'first', 'state.json'),
@@ -255,12 +289,32 @@ test('a directory published before owner keys loads after moving and migrates it
   }
   fs.renameSync(path.join(root, 'first'), path.join(root, 'moved'));
   const moved = path.join(root, 'moved', 'state.json');
-  const restored = await restoreRecordReferences(decodeRecordReferences(legacy).value, moved + '.records', {
-    stateOwner: moved,
-  });
-  t.after(() => restored.session.close());
+  const restore = () =>
+    restoreRecordReferences(decodeRecordReferences(structuredClone(legacy)).value, moved + '.records', {
+      stateOwner: moved,
+    });
+  // Every replacement is refused for the whole retry budget; its backoff is recorded, not waited.
+  const replace = ownMarkerReplace(t, () => true);
+  t.mock.method(Atomics, 'wait', () => 'timed-out');
+  const held = await restore();
+  ownedFixture(t).add(() => held.session.close());
+  assert.equal(held.state.tables.item[0].value, 'Earlier');
+  assert.equal(held.session.ownedDirectory, true, 'The earlier marker still owns its directory.');
+  assert.equal(replace.attempts(), 100, 'The replacement is retried for the whole budget.');
+  assert.deepEqual(marker(moved + '.records'), { format: 1, key: legacyKey }, 'The earlier marker is kept as it was.');
+  assert.deepEqual(
+    fs.readdirSync(moved + '.records').filter((name) => name.endsWith('.tmp')),
+    [],
+    'The refused temporary is removed.',
+  );
+  held.session.close();
+  // The next open migrates the kept marker once a replacement lands.
+  replace.land();
+  const restored = await restore();
+  ownedFixture(t).add(() => restored.session.close());
   const rows = restored.state.tables.item;
   assert.equal(rows[0].value, 'Earlier');
+  assert.equal(replace.attempts(), 101);
   assert.deepEqual(marker(moved + '.records'), { format: 2, key: legacyKey, state: stateRecordOwner(moved) });
   const republished = restored.session.describe(rows);
   assert.equal(republished.owner, legacyKey);
@@ -276,6 +330,8 @@ test('owner migration retries sharing failures, bounds refusal and preserves con
     waits.push(milliseconds);
     return 'timed-out';
   });
+  // A replace that reaches the marker lands through the test, so no other process holding the new marker decides it.
+  const landing = ownMarkerReplace(t);
   const migration = (name, rename) => {
     const directory = owned(t, 'invented-owner-' + name + '-');
     const file = path.join(directory, '.record-owner.json');
@@ -294,14 +350,29 @@ test('owner migration retries sharing failures, bounds refusal and preserves con
     return { directory, file, location, claim, attempts: () => attempts };
   };
   for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    const before = [];
     const recovered = migration('recover', (attempt, file, replace, ...args) => {
+      before.push({
+        marker: JSON.parse(fs.readFileSync(file, 'utf8')),
+        next: JSON.parse(fs.readFileSync(args[0], 'utf8')),
+      });
       if (attempt < 3) throw Object.assign(Error('Invented sharing conflict'), { code });
       return replace(...args);
     });
+    const landed = landing.attempts();
     assert.deepEqual(recovered.claim(), { key, owned: true });
     assert.deepEqual(marker(recovered.directory), { format: 2, key, state: recovered.location });
     assert.equal(recovered.attempts(), 3);
     assert.deepEqual(fs.readdirSync(recovered.directory), ['.record-owner.json']);
+    assert.equal(landing.attempts() - landed, 1, 'only the third attempt replaces the marker');
+    assert.deepEqual(
+      before,
+      Array.from({ length: 3 }, () => ({
+        marker: { format: 1, key },
+        next: { format: 2, key, state: recovered.location },
+      })),
+      'the earlier marker stays as it was until the replacement lands',
+    );
   }
   for (const [failure, attempts] of [
     [Object.assign(Error('Invented permanent sharing conflict'), { code: 'EPERM' }), 100],
@@ -313,7 +384,9 @@ test('owner migration retries sharing failures, bounds refusal and preserves con
       throw failure;
     });
     waits.length = 0;
+    const landed = landing.attempts();
     assert.deepEqual(refused.claim(), { key, owned: true });
+    assert.equal(landing.attempts(), landed, 'a refused replacement never reaches the marker');
     assert.equal(refused.attempts(), attempts);
     assert.equal(waits.length, attempts - 1, 'one requested wait between each retry');
     assert.ok(
@@ -332,7 +405,9 @@ test('owner migration retries sharing failures, bounds refusal and preserves con
     fs.writeFileSync(file, JSON.stringify(replacement));
     throw Object.assign(Error('Invented sharing conflict after another publication'), { code: 'EPERM' });
   });
+  const landed = landing.attempts();
   assert.throws(raced.claim, { code: 'StateIntegrity' });
+  assert.equal(landing.attempts(), landed, 'the changed ownership is never replaced');
   assert.equal(raced.attempts(), 1);
   assert.deepEqual(marker(raced.directory), replacement);
   assert.deepEqual(fs.readdirSync(raced.directory), ['.record-owner.json']);
@@ -345,11 +420,7 @@ test(
     const root = owned(t, 'invented-record-identity-');
     const file = path.join(root, 'Invented Long State Name.json');
     fs.writeFileSync(file, '{}');
-    const short = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${file}") do @echo %~sI`], {
-      encoding: 'utf8',
-      windowsVerbatimArguments: true,
-      windowsHide: true,
-    }).trim();
+    const short = shortName(file);
     for (const alias of [file.toUpperCase(), short])
       assert.equal(stateRecordOwner(alias), stateRecordOwner(file), alias);
   },
@@ -403,7 +474,9 @@ test('owner publication without hard links creates the marker exclusively once',
 
 test('stale temporaries of exited processes are removed, and an unmarked directory reports its ownership', async (t) => {
   const root = owned(t, 'invented-record-leftovers-');
-  const exited = spawnSync(process.execPath, ['-e', '']).pid;
+  // No process can hold this PID: Windows PIDs are multiples of 4, and it is above every Linux and macOS PID limit.
+  // The PID of a real exited child could be reused by a live process, which keeps its temporaries.
+  const exited = 2_147_483_647;
   const stale = [
     `${exited}-${randomUUID()}.sort`,
     `${exited}-${randomUUID()}.lease.tmp`,
@@ -423,7 +496,7 @@ test('stale temporaries of exited processes are removed, and an unmarked directo
   const unmarked = owned(t, 'invented-record-unmarked-');
   fs.writeFileSync(path.join(unmarked, randomUUID() + '.pages'), 'Invented');
   const reader = new RecordPageSession(unmarked);
-  t.after(() => reader.close());
+  ownedFixture(t).add(() => reader.close());
   assert.equal(reader.ownedDirectory, false);
   assert.equal(reader.info().ownership, 'missing-owner-marker');
 });

@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { once } from 'node:events';
@@ -11,7 +10,7 @@ import { chromium } from 'playwright-core';
 import { wsServer as WebSocketServer } from 'playwright-core/lib/utilsBundle';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { runAcceptance } from '../acceptance.mjs';
 import { closeServer, devToolsActivePort, openResumingClient } from './shared-browser.mjs';
 
@@ -154,13 +153,13 @@ test('a live acceptance flow stops the writes of popups another debugging client
   const { webSocketDebuggerUrl } = await (await fetch(new URL('/json/version', cdpUrl))).json();
   const popupFates = Promise.all(POPUP_WRITES.map((write) => fates.get(write).promise));
   const endpoint = await holdingEndpoint(webSocketDebuggerUrl, popupFates, fates);
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await endpoint.close();
     await resuming.close();
     await owner.close();
     await closeServer(live);
     await closeServer(simulator);
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeFixtureDirectory(directory);
   });
   // A tab of the live origin open before the run, as in the user's browser.
   await (await owner.newPage()).goto(`${liveOrigin}/other`);

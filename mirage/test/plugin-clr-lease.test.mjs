@@ -1,4 +1,5 @@
 // @test-kind security: pooled CLR host revokes service, factory, trace, context and provider handles when their invocation ends
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -49,7 +50,7 @@ test(
       },
       context: { initiatingUserId: id, organizationId: id, businessUnitId: id },
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       closeClrHostPool({ runtime });
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../../testing/owned-fixture.mjs';
 import { createOrganizationBackend } from '../../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../../lib/exported-plugins.mjs';
 import { createPreparedClrRuntimePreparer } from './prepared-clr-runtimes.mjs';
@@ -28,6 +29,6 @@ export async function attachClrSteps(t, { store, steps, runtime, handlers = new 
     prepareRuntime: selectedPreparer,
     diagnostic,
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { backend, items, runtimes, descriptors };
 }

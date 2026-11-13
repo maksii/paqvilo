@@ -14,11 +14,12 @@ import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
-import { releaseStaleUploadedRuntimes, resolveXrmSdk } from '../lib/plugin-uploaded.mjs';
+import { releaseStaleUploadedRuntimes, releaseUploadedRuntime, resolveXrmSdk } from '../lib/plugin-uploaded.mjs';
+import { settleClrReleases } from '../lib/plugin-clr.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
 import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { CLR_SKIP, clrSdk, compileClr, strongNameKey } from './fixtures/clr-sdk.mjs';
-import { makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-7777-7777-7777777777c8';
 const SECRET = 'PAQVILO_UPLOADED_PLUGIN_SECRET';
@@ -245,6 +246,8 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     assert.equal(second.response.status, 204, await second.response.clone().text());
     assert.equal(await nameOf(second.id), 'beta-v2', 'the updated content runs');
     assert.notEqual(runtimes.get(step).directory, prepared, 'the changed content was prepared again');
+    // The pipeline replaced the runtime synchronously; its directory's removal settles on its own.
+    await settleClrReleases(runtimes);
     assert.equal(fs.existsSync(prepared), false, 'the runtime of the old content was closed');
 
     // Deleting the step closes its runtime (the host sweeps on every catalogue rebuild).
@@ -253,6 +256,7 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     created.splice(created.indexOf(step), 1);
     releaseStaleUploadedRuntimes(store, runtimes, items());
     assert.equal(runtimes.has(step), false);
+    await settleClrReleases(runtimes);
     assert.equal(fs.existsSync(current), false);
   });
 
@@ -410,5 +414,46 @@ describe('Microsoft.Xrm.Sdk discovery for uploaded assemblies', () => {
       () => resolveXrmSdk({ env: { ...env, PAQVILO_XRM_SDK: path.join(root, 'absent.dll') } }),
       /PAQVILO_XRM_SDK/,
     );
+  });
+});
+
+// @test-kind contract: closing an uploaded runtime is the prepared-runtime release: its directory goes once its hosts are verified stopped
+describe('uploaded runtime release', () => {
+  it('removes the prepared directory through the prepared-runtime release once its hosts are verified stopped', async (t) => {
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-uploaded-release-'));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
+    const directory = path.join(root, 'clr-uploaded');
+    fs.mkdirSync(directory);
+    const step = '30000000-0000-4000-8000-0000000000c8',
+      runtimes = new Map([[step, { uploaded: true, directory, descriptor: { cacheRoot: root } }]]),
+      closed = [],
+      notes = [];
+    await releaseUploadedRuntime(runtimes, step, (note) => notes.push(note), {
+      closeHostPool: ({ runtime }) => closed.push(runtime.directory) && { closed: 1, allAbsenceVerified: true },
+    });
+    assert.deepEqual(closed, [directory], 'the given closeHostPool stops the runtime hosts');
+    assert.deepEqual(notes, [], 'no cleanup is reported');
+    assert.equal(fs.existsSync(directory), false, 'the directory is removed');
+  });
+
+  it('keeps the prepared directory and reports it while a host is not verified stopped', async (t) => {
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-uploaded-release-'));
+    t.after(() => removeFixtureDirectory(root));
+    const directory = path.join(root, 'clr-uploaded');
+    fs.mkdirSync(directory);
+    const step = '30000000-0000-4000-8000-0000000000c9',
+      runtimes = new Map([[step, { uploaded: true, directory, descriptor: { cacheRoot: root } }]]),
+      notes = [];
+    releaseUploadedRuntime(runtimes, step, (note) => notes.push(note), {
+      closeHostPool: () => ({ closed: 1, allAbsenceVerified: false }),
+    });
+    assert.equal(runtimes.has(step), false, 'the step no longer maps the runtime');
+    assert.equal(fs.existsSync(directory), true, 'the directory is kept while its host is not verified stopped');
+    assert.deepEqual(
+      notes.map((note) => note.code),
+      ['PLUGIN_CLR_CLEANUP'],
+      'the kept directory is reported once',
+    );
+    assert.match(notes[0].message, /^CLR host not verified stopped; runtime cache directory kept: clr-uploaded$/);
   });
 });

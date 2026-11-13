@@ -1,4 +1,5 @@
 // @test-kind contract: original CLR source debugging explicitly gates construction and snapshots declared symbols without changing default execution
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -211,7 +212,7 @@ test(
     );
     const child = spawn(process.execPath, [script], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let hostPid;
-    t.after(() => {
+    ownedFixture(t).add(() => {
       // The owned CLR host exits when its parent's end of its input closes. A numeric host PID may already have been reused.
       child.kill();
     });

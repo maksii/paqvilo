@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
+import { spawnSync } from 'node:child_process';
 
 const variable = 'PAQ_CI_WORKSPACE_LEASE';
 const alive = (pid) => {
@@ -11,6 +12,40 @@ const alive = (pid) => {
   } catch (error) {
     return error.code !== 'ESRCH';
   }
+};
+/** The start time of a process, read as `lense/commands/mirage.mjs` reads it: a recorded PID names the same process
+ * only while this value is unchanged, because Windows reuses process IDs quickly. null when it cannot be read. */
+export function processStartIdentity(pid) {
+  if (process.platform === 'win32') {
+    const result = spawnSync(
+      'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`,
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    return result.status === 0 ? result.stdout.trim() || null : null;
+  }
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null; // field 22: start time since boot
+  } catch {
+    /* macOS and other systems without /proc */
+  }
+  /* NOSONAR */ const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+// A member still owns the lease while its PID runs the process that joined. An identity that cannot be read now
+// keeps the lease: an unread identity is never taken for a reused PID.
+const memberAlive = (member) => {
+  if (!Number.isSafeInteger(member?.pid) || member.pid < 1) return true;
+  if (!alive(member.pid)) return false;
+  if (typeof member.identity !== 'string') return true;
+  const current = processStartIdentity(member.pid);
+  return current === null || current === member.identity;
 };
 const valid = (owner) =>
   owner &&
@@ -97,10 +132,11 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
     inherited.token === prior.token &&
     alive(prior.pid)
   ) {
-    const member = path.join(members, `${process.pid}-${randomUUID()}.json`);
+    const member = path.join(members, `${process.pid}-${randomUUID()}.json`),
+      identity = processStartIdentity(process.pid);
     await membership(() => {
       if (read(ownerFile)?.token !== prior.token) throw busy();
-      fs.writeFileSync(member, JSON.stringify({ pid: process.pid }), { flag: 'wx' });
+      fs.writeFileSync(member, JSON.stringify({ pid: process.pid, identity }), { flag: 'wx' });
     });
     let released = false;
     return async () => {
@@ -126,12 +162,7 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
     if (released) return;
     await membership(() => {
       if (read(ownerFile)?.token !== owner.token) throw new Error('CI workspace lease ownership changed.');
-      if (
-        fs.readdirSync(members).some((file) => {
-          const member = read(path.join(members, file));
-          return !Number.isSafeInteger(member?.pid) || member.pid < 1 || alive(member.pid);
-        })
-      )
+      if (fs.readdirSync(members).some((file) => memberAlive(read(path.join(members, file)))))
         throw new Error('CI workspace workers still own their lease; retaining it for inspection.');
       const retired = `${directory}.released-${owner.token}`;
       fs.renameSync(directory, retired);

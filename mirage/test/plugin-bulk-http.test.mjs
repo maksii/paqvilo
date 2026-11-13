@@ -7,8 +7,9 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { pooledClrLifecycle } from './fixtures/pooled-clr-lifecycle.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -55,7 +56,7 @@ async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes 
     prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
     ...(diagnostic ? { diagnostic } : {}),
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   return { ...f, items, backend };
 }
 
@@ -164,7 +165,7 @@ public sealed class BulkAsync:IPlugin{public void Execute(IServiceProvider s){va
         grants: [{ entity: 'x_item', operations: ['read', 'update'] }],
       },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: 30000,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const specs = [
       ['Seed', 10, 1, 0],
@@ -1286,11 +1287,7 @@ test(
       evidence: 'Invented wrapper SDK driver',
       grants: [{ entity: 'x_item', operations: ['read', 'update'] }],
     };
-    const observerStages = [10, 20, 40],
-      childInvocationBudgetMs = 2000;
-    // The Driver waits for three separately bounded child CLR observers. Its
-    // inclusive budget includes its own work and all three child invocations.
-    const callerInvocationBudgetMs = childInvocationBudgetMs * (observerStages.length + 1);
+    const observerStages = [10, 20, 40];
     runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
@@ -1301,7 +1298,7 @@ test(
       cacheRoot: path.join(root, 'cache'),
       persistentHost: true,
       serviceProfile: profile,
-      timeoutMs: childInvocationBudgetMs,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
     for (const kind of ['Default', 'Star', 'ETag', 'SDK CLR', 'SDK JS']) {
@@ -1343,9 +1340,7 @@ test(
             .filter((entry) => ['Invented.Inputs', 'Invented.Driver'].includes(entry.typeName))
             .map((entry) => [
               entry.id,
-              entry.typeName === 'Invented.Driver'
-                ? retypeClrRuntime(runtime, { typeName: entry.typeName, timeoutMs: callerInvocationBudgetMs })
-                : runtime,
+              entry.typeName === 'Invented.Driver' ? retypeClrRuntime(runtime, { typeName: entry.typeName }) : runtime,
             ]),
         );
         const tracker = lifecycle.child('case');
@@ -1583,7 +1578,7 @@ test(
       cacheRoot: path.join(root, 'cache'),
       serviceProfile: { userId: user, evidence: 'Invented bulk output replacement', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: 30000,
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const post = { ...step('CreateMultiple', 40), typeName: 'Invented.Output', assemblyName: 'Output' };
     const f = await fixture(

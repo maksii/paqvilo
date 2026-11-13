@@ -246,16 +246,25 @@ test('configured authentication routes trim trailing slashes in linear time with
     'configured-route trimming does not broaden sign-out matching',
   );
   const nearMatch = '/' + '/'.repeat(200_000) + 'x';
-  const started = performance.now();
-  assert.equal(authRoute(nearMatch, 'GET', { loginPath: '/custom/login' }), null);
-  assert.equal(authRoute('/custom/login', 'GET', { loginPath: nearMatch }), null);
-  assert.deepEqual(authRoute('/custom/login' + '/'.repeat(200_000), 'GET', { loginPath: '/custom/login' }), {
-    kind: 'sign-in-page',
-  });
-  // The three linear calls take about a millisecond; a repeated suffix scan (/\/+$/ backtracking) over 200,000
-  // slashes takes tens of seconds, so this bound separates the two by three orders of magnitude on any runner.
-  const LINEAR_BOUND_MS = 1500;
-  assert.ok(performance.now() - started < LINEAR_BOUND_MS, 'long slash runs must not trigger repeated suffix scans');
+  // Count the characters the trimming reads instead of timing it: a single backward scan reads each trailing slash
+  // once and the first other character once, where a repeated suffix scan (/\/+$/ backtracking) would be quadratic.
+  const codePointAt = String.prototype.codePointAt;
+  let reads = 0;
+  String.prototype.codePointAt = function (...args) {
+    reads++;
+    return codePointAt.apply(this, args);
+  };
+  try {
+    assert.equal(authRoute(nearMatch, 'GET', { loginPath: '/custom/login' }), null);
+    assert.equal(authRoute('/custom/login', 'GET', { loginPath: nearMatch }), null);
+    assert.deepEqual(authRoute('/custom/login' + '/'.repeat(200_000), 'GET', { loginPath: '/custom/login' }), {
+      kind: 'sign-in-page',
+    });
+  } finally {
+    String.prototype.codePointAt = codePointAt;
+  }
+  // Six compared values read one non-slash character each; one of them also reads its 200,000 trailing slashes.
+  assert.equal(reads, 6 + 200_000, 'long slash runs must be read once, not rescanned');
 });
 
 test('the sign-in content lists personas, labels the simulation and escapes values', () => {

@@ -1,4 +1,5 @@
 // @test-kind parity: native recorder corpus sdkSurface (dev environment, captures native and native-r2): a synchronous step's SDK UpdateMultiple and CreateMultiple on custom tables succeed without any caller-supplied capability, an SDK Upsert by alternate key creates the row (RecordCreated, Target), and the step's later Creates still succeed
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -27,7 +28,7 @@ async function step(t, requests) {
   state.tables.x_thing = [1, 2].map((n) => ({ x_thingid: ROW(n), x_name: `thing ${n}`, x_code: `C${n}` }));
   const store = await new DataStore({ state }).init();
   const organization = await createOrganizationRuntime({ store, settings: dataverseSettings({ enabled: true }) });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
   // No bulkTables: availability comes from the organization's message filters.
   const profile = { userId: system, evidence: 'Invented calling step', grants: [] };

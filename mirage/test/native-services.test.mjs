@@ -768,7 +768,7 @@ async function postNoteForm(t, context, token) {
     if (!(await handleNativeService(req, res, new URL(req.url, 'http://127.0.0.1'), context))) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });

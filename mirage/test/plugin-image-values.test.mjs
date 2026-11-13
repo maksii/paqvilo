@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo JavaScript typed/legacy image views and Context4 alignment mirroring the native image projection
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -209,7 +210,7 @@ test(
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-image-values-')),
       backends = [];
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       for (const backend of backends) await backend.close();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });
@@ -289,7 +290,7 @@ test(
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-parent-images-')),
       backends = [];
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       for (const backend of backends) await backend.close();
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });

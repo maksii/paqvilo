@@ -10,8 +10,9 @@ import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination } from '../baseline-paths.mjs';
 import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-// The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
-const CLI_HANG_MS = 60_000;
+// Hang guard only: the runner cannot end a blocked synchronous child, so this stops a hung CLI (a stopped child fails
+// on its signal). It is the 170 s child-process guard the other unit tests use.
+const CLI_HANG_MS = 170_000;
 
 async function fixture(run) {
   const base = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));

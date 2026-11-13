@@ -1,5 +1,6 @@
 // @test-kind parity: native dataverse-recorder faults.json, reproduced in native-r2 faults.json: a PATCH (Upsert) whose Update PreOperation step threw (400) still ran the existence read's asynchronous RetrieveMultiple step, with the request's RequestId
 // Invented schema and handlers.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -56,7 +57,7 @@ test('a completed read keeps its asynchronous job when the enclosing request rol
       handlers,
     });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
   });
@@ -110,7 +111,7 @@ test('a Retrieve whose PostOperation step faults still runs its asynchronous Ret
       handlers,
     });
   const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await backend.close();
     store.close();
   });

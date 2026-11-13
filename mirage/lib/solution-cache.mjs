@@ -82,18 +82,14 @@ const digestCache = new Map();
 
 /**
  * The same SHA-256 as evidence.mjs `sourceFingerprint(dir)` (relative path, NUL, bytes,
- * NUL for every file in sorted depth-first order; symlinks and .git/.portalconfig/
+ * NUL for every file in code-unit name order, depth first; symlinks and .git/.portalconfig/
  * node_modules/.paqvilo skipped), with directories and files read concurrently. The
  * digest is recomputed only when a file's size, mtime, ctime or identity changed, or
  * when a file changed too recently for its stat to prove it unchanged (recordedStamp).
  */
 export async function sourceDirectoryDigest(dir) {
   const root = path.resolve(dir);
-  const files = await directoryFiles(root, {
-    skip: DIGEST_SKIP,
-    sort: (a, b) => a.name.localeCompare(b.name),
-    concurrency: 32,
-  });
+  const files = await directoryFiles(root, { skip: DIGEST_SKIP, concurrency: 32 });
   const stamps = await mapLimit(files, 64, async (file) => {
     const stat = await fs.stat(file, { bigint: true });
     return recordedStamp(

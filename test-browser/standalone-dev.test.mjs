@@ -1,5 +1,5 @@
 // @test-kind contract: standalone public dev closes its owned browser and runtime, keeps a reused runtime and isolates a sibling
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -10,7 +10,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { browserChannel } from '../mirage/lib/browser-launch.mjs';
-import { freeDebugPort } from './helpers/debug-port.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
@@ -84,7 +85,7 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
       if (!/closed|disconnected/i.test(error.message)) throw error;
     });
   };
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const browser of browsers) if (browser.isConnected()) await closeBrowser(browser).catch(() => {});
     for (const entry of children)
       if (entry.child.exitCode === null) {
@@ -94,39 +95,41 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     await commands(project, 'stop').catch(() => {});
     await commands(sibling, 'stop').catch(() => {});
     // Windows can keep files of an exited browser profile busy for a few seconds.
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   const siblingRuntime = await commands(sibling, 'start', '--port', '0');
   const develop = async () => {
-    const debugPort = await freeDebugPort();
-    const child = spawn(
-      process.execPath,
-      [
-        cli,
-        'mirage',
-        'dev',
-        '--project',
-        project,
-        '--port',
-        '0',
-        '--browser',
-        browserChannel(),
-        '--profile',
-        'dedicated-fixture',
-        '--debug-port',
-        String(debugPort),
-        // Ownership and closing do not depend on a visible window; headed adds only a slower shutdown.
-        '--headless',
-      ],
-      { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    const exited = new Promise((resolve, reject) => {
-      child.once('exit', (code, signal) => resolve({ code, signal }));
-      child.once('error', reject);
+    const { debugPort, child, exited, url } = await startOnFreePort(async (debugPort) => {
+      const child = spawn(
+        process.execPath,
+        [
+          cli,
+          'mirage',
+          'dev',
+          '--project',
+          project,
+          '--port',
+          '0',
+          '--browser',
+          browserChannel(),
+          '--profile',
+          'dedicated-fixture',
+          '--debug-port',
+          String(debugPort),
+          // Ownership and closing do not depend on a visible window; headed adds only a slower shutdown.
+          '--headless',
+        ],
+        { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const exited = new Promise((resolve, reject) => {
+        child.once('exit', (code, signal) => resolve({ code, signal }));
+        child.once('error', reject);
+      });
+      children.push({ child, exited });
+      // The line is printed after the debugging port is confirmed and just before the first navigation.
+      const [, url] = await announced(child, /Opening (http:\/\/127\.0\.0\.1:\d+)\//);
+      return { debugPort, child, exited, url };
     });
-    children.push({ child, exited });
-    // The line is printed after the debugging port is confirmed and just before the first navigation.
-    const [, url] = await announced(child, /Opening (http:\/\/127\.0\.0\.1:\d+)\//);
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     browsers.push(browser);
     const [context] = browser.contexts();

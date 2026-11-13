@@ -38,6 +38,18 @@ const bounded = async (promise) => {
     clearTimeout(timer);
   }
 };
+// Start-up reads process identities through this instead of PowerShell or /proc.
+const INJECTED_IDENTITY = 'injected identity';
+const injectedIdentity = async () => INJECTED_IDENTITY;
+// A start-up under test settles before its test ends, so a failed assertion cannot leave it running into the next test.
+function settleWithTest(t, pending) {
+  const settled = pending.then(
+    () => {},
+    () => {},
+  );
+  ownedFixture(t).add(() => settled);
+  return settled;
+}
 async function fixture(t) {
   const root = await tempDir('paq-startup-cancel-');
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
@@ -112,15 +124,15 @@ test('ownership cancellation releases queued and externally locked updates witho
   await fs.writeFile(paths.ownershipFile, initial);
   const lock = `${paths.ownershipFile}.lock`;
   await fs.writeFile(lock, 'foreign-lock');
-  // The lock holder's age is checked only after an exclusive create found the lock taken: the external-lock retry path.
+  // The lock's owner is read only after an exclusive create found the lock taken: the external-lock retry path.
   let retrying;
   const retried = new Promise((resolve) => {
     retrying = resolve;
   });
-  const stat = fs.stat;
-  t.mock.method(fs, 'stat', (file, ...rest) => {
+  const readFile = fs.readFile;
+  t.mock.method(fs, 'readFile', (file, ...rest) => {
     if (path.resolve(String(file)) === path.resolve(lock)) retrying();
-    return stat(file, ...rest);
+    return readFile(file, ...rest);
   });
   const first = new AbortController(),
     second = new AbortController();
@@ -174,14 +186,15 @@ test('Ctrl+C during existing-runtime discovery exits before launching a child', 
         server.close(resolve);
       }),
   );
-  await ownRuntime(paths, await processIdentityAsync(process.pid), `http://127.0.0.1:${server.address().port}`);
+  await ownRuntime(paths, INJECTED_IDENTITY, `http://127.0.0.1:${server.address().port}`);
   const phases = [],
     signalsBefore = process.listenerCount('SIGINT');
-  const pending = mirage(
-    { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
+  const pending = start(
+    modelDrivenConfig(root),
     { port: '0', startup: { elapsedMs: 0, phase: (phase) => phases.push(phase) } },
-    ['start'],
+    { identityOf: injectedIdentity },
   );
+  settleWithTest(t, pending);
   await entered;
   process.emit('SIGINT');
   await bounded(assert.rejects(pending, /startup was interrupted/));
@@ -221,20 +234,31 @@ for (const ownedMismatch of [false, true])
         },
       ]);
     const phases = [];
-    const pending = mirage(
-      { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
+    let interrupt;
+    const interrupted = new Promise((resolve) => {
+      interrupt = resolve;
+    });
+    const pending = start(
+      modelDrivenConfig(root),
       {
         port: '0',
         startup: {
           elapsedMs: 0,
           phase(phase) {
             phases.push(phase);
-            if (phase === 'process launch') queueMicrotask(() => process.emit('SIGINT'));
+            if (phase === 'process launch')
+              queueMicrotask(() => {
+                process.emit('SIGINT');
+                interrupt();
+              });
           },
         },
       },
-      ['start'],
+      { identityOf: injectedIdentity },
     );
+    const settled = settleWithTest(t, pending);
+    // The bound covers only the release after the interrupt, not the start-up work before it.
+    await Promise.race([interrupted, settled]);
     await bounded(assert.rejects(pending, /startup was interrupted/));
     assert.equal(requests, 0);
     assert.ok(phases.includes('process launch'));
@@ -397,6 +421,142 @@ test('start-up fails after the silence bound and names the silence and the start
     return true;
   });
   assert.deepEqual(fake.kills, [[STARTUP_PID, 'SIGTERM']]);
+});
+
+// A loopback runtime whose every status request is handed to `respond`, so the test decides when and how it answers.
+async function probedRuntime(t, respond) {
+  const server = http.createServer((_req, res) => respond(res));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(
+    () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(resolve);
+      }),
+  );
+  return `http://127.0.0.1:${server.address().port}`;
+}
+const answerReady = (res) => {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ runtime: { kind: 'model-driven' } }));
+};
+// The connection ends without an answer: to the start this is the same as a probe that timed out.
+const failProbe = (res) => res.socket.destroy();
+
+// The test's own runtime record: this process, with the start's launch settings and the identity the start reads.
+function ownedLaunch(paths, { alive = () => true } = {}) {
+  const gate = pollGate();
+  const launched = [];
+  return {
+    gate,
+    launched,
+    options: {
+      paths,
+      identityOf: injectedIdentity,
+      sleep: gate.sleep,
+      now: () => 1_000_000,
+      alive,
+      spawnRuntime() {
+        launched.push(true);
+        throw new Error('The test launches no runtime.');
+      },
+    },
+  };
+}
+
+// The start's next wait for its owned runtime; a start that settles instead never waited.
+const nextWait = (launch, pending) =>
+  Promise.race([
+    launch.gate.nextPoll(),
+    pending.then(
+      () => assert.fail('The start returned without waiting for its owned runtime.'),
+      (error) => assert.fail(`The start failed without waiting for its owned runtime: ${error.message}`),
+    ),
+  ]);
+
+// @test-kind contract: an owned runtime with the launch settings is waited for while its process lives, never launched twice
+test('an owned runtime whose status answers late is reused, not launched a second time', async (t) => {
+  const { root, paths } = await fixture(t);
+  const release = deferred(),
+    held = deferred();
+  let requests = 0;
+  const url = await probedRuntime(t, (res) => {
+    if (++requests === 1) return failProbe(res);
+    held.resolve();
+    release.promise.then(() => answerReady(res));
+  });
+  await ownRuntime(paths, INJECTED_IDENTITY, url);
+  const launch = ownedLaunch(paths);
+  // The CLI hands the start a fractional elapsed time, as here.
+  const pending = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '600000', startup: { elapsedMs: 0.25, phase() {} } },
+    launch.options,
+  );
+  settleWithTest(t, pending);
+  // The first probe failed; the start waits for the live owner instead of launching.
+  const poll = await nextWait(launch, pending);
+  assert.deepEqual(launch.launched, []);
+  poll.resolve();
+  // The repeated probe reaches the runtime: a start that waits again without asking is not waiting for it.
+  await Promise.race([
+    held.promise,
+    launch.gate.nextPoll().then(() => assert.fail('The repeated probe never reached the runtime.')),
+  ]);
+  assert.deepEqual(launch.launched, [], 'A held status answer must not start a second runtime.');
+  release.resolve();
+  const session = await pending;
+  assert.equal(session.started, false);
+  assert.equal(session.pid, process.pid);
+  assert.equal(session.url, url);
+  assert.equal(requests, 2);
+});
+
+// @test-kind contract: an owned runtime that stays silent past the start-up bound refuses the start
+test('an owned runtime that stays silent past the start-up bound refuses the start', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await probedRuntime(t, failProbe);
+  await ownRuntime(paths, INJECTED_IDENTITY, url);
+  let now = 1_000_000;
+  const launch = ownedLaunch(paths);
+  launch.options.now = () => now;
+  const pending = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: { phase() {} } },
+    launch.options,
+  );
+  settleWithTest(t, pending);
+  const poll = await nextWait(launch, pending);
+  now += 1000;
+  poll.resolve();
+  await assert.rejects(pending, (error) => {
+    assert.match(error.message, new RegExp(`Mirage pid ${process.pid} runs with these settings`));
+    assert.match(error.message, /did not answer within 1000 ms/);
+    assert.match(error.message, /mirage stop/);
+    return true;
+  });
+  assert.deepEqual(launch.launched, []);
+});
+
+// @test-kind contract: once the owned runtime's process has exited, the start launches a new runtime
+test('an owned runtime whose process exits while it is awaited is replaced by a new launch', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await probedRuntime(t, failProbe);
+  await ownRuntime(paths, INJECTED_IDENTITY, url);
+  let ownerAlive = true;
+  const launch = ownedLaunch(paths, { alive: () => ownerAlive });
+  const pending = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '600000', startup: { phase() {} } },
+    launch.options,
+  );
+  settleWithTest(t, pending);
+  const poll = await nextWait(launch, pending);
+  assert.deepEqual(launch.launched, []);
+  ownerAlive = false;
+  poll.resolve();
+  await assert.rejects(pending, /The test launches no runtime/);
+  assert.deepEqual(launch.launched, [true]);
 });
 
 // Every readiness probe is refused at connect level by this double, so no port is reserved, released or listened on.

@@ -1,4 +1,5 @@
 // @test-kind parity: native recorder parity corpus crud (a bare Web API PATCH): the Upsert's existence RetrieveMultiple and its Update share one RequestId, OperationId and CorrelationId
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -46,7 +47,7 @@ test('a Web API PATCH upsert runs its existence read and its write under one req
   const steps = [step('RetrieveMultiple', 20, 1), step('Update', 10, 2), step('Update', 40, 3)];
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   assert.equal((await f.request('PATCH', `/x_items(${id})`, { x_name: 'Upserted' })).status < 300, true);
   assert.deepEqual(
     seen.map(([message, stage]) => `${message}/${stage}`),

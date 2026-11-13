@@ -1,4 +1,5 @@
 // @test-kind compatibility: Microsoft.Xrm.Sdk / Microsoft.Crm.Sdk.Proxy message contracts (WhoAmI, RetrieveVersion, ExecuteMultiple, ExecuteTransaction, RetrieveEntity, ConcurrencyBehavior) answered on the plug-in SDK drive; these are contract checks against the SDK message contracts, and the native bulkRequests capture is compared in the parity harness, not here
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -26,7 +27,7 @@ async function organization(t) {
       ],
     }),
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const user = store.tableRows('systemuser').find((row) => row.fullname === 'Invented caller');
   const profile = {
     userId: user.systemuserid,

@@ -95,7 +95,7 @@ async function composed(t, extra = {}) {
     diagnostic: (entry) => notes.push(entry),
     ...extra,
   });
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   return { store, host, notes };
 }
 

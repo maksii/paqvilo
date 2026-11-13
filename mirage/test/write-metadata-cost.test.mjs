@@ -1,4 +1,5 @@
 // @test-kind contract: generic write observers resolve unchanged whole metadata a bounded number of times, retaining fresh metadata and rollback.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -35,7 +36,7 @@ test('a write scans component metadata independently of unrelated table count an
     metadataFields: (logical) => metadata().entities?.[logical]?.fields,
     metadataSnapshot: () => metadata().entities,
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   let scans = 0;
   const stringify = JSON.stringify;
   t.mock.method(JSON, 'stringify', (value, ...args) => {

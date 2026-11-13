@@ -20,6 +20,7 @@ import { readModelDrivenNativeSource } from '../lense/model-driven-native-compar
 import { panelUi } from '../lense/panel-ui.mjs';
 import { modelDrivenPanelData } from '../lense/model-driven-panel.mjs';
 import { modelDrivenInspectorUi } from '../lense/model-driven-inspector-ui.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 let browser;
 before(async () => {
@@ -100,11 +101,19 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     guards = guardScheduler(),
     root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-panel-parity-'));
   // Async Git reads started by a refresh can still hold the directory briefly on Windows.
-  owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10 }));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const file = path.join(root, 'x_script.js'),
     raw = 'window.sourceRevision="same";';
   await fs.writeFile(file, raw);
-  const git = (args) => execFileSync('git', args, { cwd: root, windowsHide: true, stdio: 'pipe' });
+  // Repository variables of a calling Git process, and hooks and signing in the user's configuration, stay out.
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const git = (args) =>
+    execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], {
+      cwd: root,
+      env: gitEnv,
+      windowsHide: true,
+      stdio: 'pipe',
+    });
   if (withGit) {
     git(['init', '-q']);
     git(['add', 'x_script.js']);

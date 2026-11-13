@@ -156,7 +156,7 @@ async function selectedGeometry(page, selector) {
 // Each case uses its own browser context, so cases run concurrently in one browser.
 test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const results = [];
   t.after(() => {
     if (process.env.XRAY_AUDIT_REPORT) {

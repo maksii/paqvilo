@@ -1,4 +1,5 @@
 // @test-kind compatibility: Learn Web service error codes 0x80040224/0x80040265/0x80040217/0x8009000c for plug-in exceptions and caught nested faults
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,7 +14,7 @@ import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-s
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 async function failureRuntime(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-failure-'));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await closeClrHostPool();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
   });

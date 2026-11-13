@@ -1,5 +1,5 @@
 // @test-kind contract: Local interception and provenance transport are exercised with synthetic loopback fixtures.
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -129,7 +129,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     releaseRepair = resolve;
   });
   let detached;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     releaseDescriptors();
     releaseSlow();
     releaseRepair();

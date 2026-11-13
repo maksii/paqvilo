@@ -199,7 +199,9 @@ test('reader fixture requests reject unowned external and scheme-relative origin
     response.end();
   });
   await new Promise((resolve) => trap.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => trap.close((error) => (error ? reject(error) : resolve()))));
+  ownedFixture(t).add(
+    () => new Promise((resolve, reject) => trap.close((error) => (error ? reject(error) : resolve()))),
+  );
   const port = trap.address().port;
   for (const url of [`http://127.0.0.1:${port}`, `//127.0.0.1:${port}`, 'https://example.invalid']) {
     await assert.rejects(send({ url, csrf: 'test' }, '{'), /owned loopback fixture/);

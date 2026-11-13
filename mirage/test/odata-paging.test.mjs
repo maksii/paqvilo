@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('queued state replacement compares freshness inside transaction and preserves earlier edits', async () => {
   const store = await new DataStore().init();
@@ -22,7 +22,7 @@ test('queued state replacement compares freshness inside transaction and preserv
 test('portal API applies 5000/default and Prefer paging, follows signed cursors, rejects changed persona/data/query and skip', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'odata-pages-'));
   let app;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app?.close();
     await fs.rm(directory, { recursive: true, force: true });
   });

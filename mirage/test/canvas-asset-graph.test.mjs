@@ -1,4 +1,5 @@
 // @test-kind contract: the Canvas player answers every JavaScript module its pages import at the URL that import resolves to.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import http from 'node:http';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
@@ -21,7 +22,7 @@ test('every static import of a served Canvas player module resolves to a served 
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const entries = canvasPlayerAssetNames
     .filter((name) => /\.m?js$/.test(name))

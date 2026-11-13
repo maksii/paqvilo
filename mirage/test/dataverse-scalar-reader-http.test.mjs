@@ -1,4 +1,5 @@
 // @test-kind contract: HTTP fixture setup, local diagnostic stack policy, SDK compatibility and nonmutation checks; native scalar assertions are tagged individually below.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -72,7 +73,7 @@ test('HTTP scalar errors retain native type/format causes and exact numeric toke
       }),
       log: () => {},
     });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
     if (previous === undefined) delete process.env[SECRET];
     else process.env[SECRET] = previous;
@@ -213,9 +214,9 @@ test('custom API actions obtain scalar causes through the actual HTTP transport'
       ],
     }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const transport = await startDataverseApi({ organization });
-  t.after(() => transport.close());
+  ownedFixture(t).add(() => transport.close());
   const tokenResponse = await fetch(transport.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({

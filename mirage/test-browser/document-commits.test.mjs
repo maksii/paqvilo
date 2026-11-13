@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -6,7 +7,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { observeDocumentCommits } from '../lib/document-commits.mjs';
 import { eventLog } from './shared-browser.mjs';
 
-const observations = (kind) => eventLog({ message: `${kind} observation did not arrive` });
+const observations = (t, kind) => eventLog(t, { message: `${kind} observation did not arrive` });
 test('document commits follow cross-origin renderer targets, swaps and observer disposal', async (t) => {
   const server = http.createServer((req, res) => {
     if (req.url.startsWith('/never')) return;
@@ -18,18 +19,18 @@ test('document commits follow cross-origin renderer targets, swaps and observer 
     );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext(),
     page = await context.newPage(),
     cdp = await context.newCDPSession(page),
-    documents = observations('Document'),
-    commits = observations('Commit'),
-    requests = observations('Request'),
+    documents = observations(t, 'Document'),
+    commits = observations(t, 'Commit'),
+    requests = observations(t, 'Request'),
     current = new WeakMap();
   page.on('request', (request) => {
     if (request.resourceType() === 'fetch')
@@ -112,7 +113,7 @@ test('document commits follow cross-origin renderer targets, swaps and observer 
   const retired = documents.length;
   await page.goto(origin + '/after-dispose');
   assert.equal(documents.length, retired);
-  const again = observations('Replacement observer document');
+  const again = observations(t, 'Replacement observer document');
   const stop = await observeDocumentCommits(page, cdp, {
     document: () => {},
     ready: (frame, token) => again.push({ frame, token }),

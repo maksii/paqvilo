@@ -113,8 +113,11 @@ async function fixture(t, mode) {
       ['--matrix', matrixFile, '--out', out, '--side', 'live', '--all-scenarios', ...writes],
       t.signal,
     );
-    assert.equal(await fs.readFile(closed, 'utf8'), 'closed', output);
-    const run = JSON.parse(await fs.readFile(path.join(out, 'run-live.json'), 'utf8'));
+    // A missing file fails with the CLI output, which says why the run ended before writing it.
+    const readWritten = (file) =>
+      fs.readFile(file, 'utf8').catch((error) => assert.fail(`${error.message}\nCLI exit ${exit}:\n${output}`));
+    assert.equal(await readWritten(closed), 'closed', output);
+    const run = JSON.parse(await readWritten(path.join(out, 'run-live.json')));
     const readEvents = async (file) => {
       try {
         return (await fs.readFile(file, 'utf8')).trim().split('\n').filter(Boolean);

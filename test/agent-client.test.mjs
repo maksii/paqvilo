@@ -1,4 +1,5 @@
 // @test-kind contract: agent client argument mapping, deadlines and response handling designed by Paqvilo
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,13 +10,17 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import agent, { agentRequest, listAgentSessions, readDiscovery } from '../lense/commands/agent.mjs';
 import { tempDir } from './fixture.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
+
+// Lense's own code: a test records only the timers it arms, not those of a fetch connection an earlier test opened.
+const LENSE = new URL('../lense/', import.meta.url).href;
 
 async function fixture(t, handler) {
   const dir = await tempDir('pp-agent-client-');
   const server = http.createServer(handler);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
     await fs.rm(dir, { recursive: true, force: true });
@@ -225,7 +230,7 @@ test('agent sessions bounds each probe by --timeout: a silent session is unreach
     deadlineCleared = resolve;
   });
   t.mock.method(globalThis, 'clearTimeout', (...args) => {
-    deadlineCleared();
+    if (calledFrom(LENSE, import.meta.url)) deadlineCleared();
     return clearMocked(...args);
   });
   const root = await tempDir('pp-agent-sessions-');
@@ -320,7 +325,7 @@ async function unansweredAction(t, file, args, positionals) {
   const mockedSetTimeout = globalThis.setTimeout;
   const armed = [];
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
-    armed.push(delay);
+    if (calledFrom(LENSE, import.meta.url)) armed.push(delay);
     return mockedSetTimeout(callback, delay, ...rest);
   });
   const sent = Promise.withResolvers();

@@ -92,6 +92,23 @@ export async function loopbackServer(t, handler) {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
+// Modules of the admin app that live in mirage/lib instead of mirage/admin.
+const ADMIN_LIB_MODULES = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
+
+/**
+ * Answers a request for the admin app's page (`/__sim/`), one of its modules or a stylesheet with the file from the
+ * Mirage sources; another name is answered 404. A read failure rejects, for the caller's request handler to answer.
+ */
+export async function serveAdminFile(res, url) {
+  const name = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
+  if (name !== 'index.html' && !/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return res.writeHead(404).end();
+  res.setHeader(
+    'content-type',
+    name.endsWith('.mjs') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html',
+  );
+  res.end(await fs.readFile(new URL(`../${ADMIN_LIB_MODULES.has(name) ? 'lib' : 'admin'}/${name}`, import.meta.url)));
+}
+
 /**
  * Reads a simulator's admin state once before a page times its first render. The first read in a process builds the
  * organization runtime (lazy modules and system tables: about 1 s idle, over 8 s on a loaded host), which admin view
@@ -120,9 +137,12 @@ export async function adminPage(t, browser, app, directory) {
 
 /**
  * An array of observed events whose pushes wake `until(predicate)`, so a test awaits the recorded event itself
- * instead of polling on a timer. The bound only turns a missing event into a named failure before the test timeout.
+ * instead of polling on a timer. No clock bounds the wait: the test's timeout is the hang guard. When the test `t`
+ * ends while a wait is pending, the wait ends too and `message` is reported as a diagnostic of that test (the
+ * runner reports a timed-out test only as a timeout).
  */
-export function eventLog({ timeout = 60_000, message = 'The expected event did not arrive' } = {}) {
+export function eventLog(t, { message = 'The expected event did not arrive' } = {}) {
+  const { signal } = t;
   const items = [],
     waiters = new Set();
   const push = items.push.bind(items);
@@ -137,16 +157,23 @@ export function eventLog({ timeout = 60_000, message = 'The expected event did n
     until: {
       value: (predicate) =>
         new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
+          const abort = () => {
             waiters.delete(check);
-            reject(new Error(`${message} within ${timeout} ms`));
-          }, timeout);
+            const failure = `${message} (${items.length} event(s) recorded)`;
+            t.diagnostic(failure);
+            reject(new Error(failure, { cause: signal.reason }));
+          };
           const check = () => {
             if (!predicate(items)) return;
-            clearTimeout(timer);
+            signal.removeEventListener('abort', abort);
             waiters.delete(check);
             resolve(items);
           };
+          if (signal.aborted) {
+            abort();
+            return;
+          }
+          signal.addEventListener('abort', abort, { once: true });
           waiters.add(check);
           check();
         }),

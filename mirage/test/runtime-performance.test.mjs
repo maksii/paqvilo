@@ -579,7 +579,7 @@ test('one Dataverse Web API request resolves the solution metadata overlay once 
     readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
   });
   const api = await startDataverseApi({ store, settings, organization, log: () => {} });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await api.close();
     await organization.close();
@@ -1004,26 +1004,25 @@ for (const watch of [false, true])
       ),
     );
     if (!watch) await sim.reload();
-    let changed;
-    const deadline = performance.now() + 120_000;
-    do {
-      changed = await catalogue();
-      if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break;
+    const formShowsAdded = (metadata) =>
+      metadata.forms.some((form) =>
+        form.tabs.some((tab) =>
+          tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
+        ),
+      );
+    // The model-driven runtime announces no reload event. A watched change is applied by a later reload, and a reload
+    // that saw only the first of the two writes is followed by another, so the catalogue is read until it shows both
+    // writes. The 100 ms only paces the reads; a reload that never comes is ended by the runner's --test-timeout.
+    let changed = await catalogue();
+    while (!(changed.fields.x_added && changed.capabilities.fields.x_value1.read && formShowsAdded(changed))) {
+      assert.ok(watch, 'an explicit reload applies both writes at once');
       await new Promise((resolve) => setTimeout(resolve, 100));
-    } while (performance.now() < deadline);
-    assert.ok(changed.fields.x_added);
-    assert.equal(changed.capabilities.fields.x_value1.read, true);
+      changed = await catalogue();
+    }
     assert.equal(
       (await read(recordRoute)).row.x_value1,
       'Must stay masked',
       'The next record read uses changed source security metadata.',
-    );
-    assert.ok(
-      changed.forms.some((form) =>
-        form.tabs.some((tab) =>
-          tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
-        ),
-      ),
     );
   });
 
@@ -1073,7 +1072,7 @@ test('catalogue yields to status while retaining one security read and releases 
     await handled;
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -1115,8 +1114,9 @@ test('catalogue yields to status while retaining one security read and releases 
 // docs/runtime-performance.md: the probe's defaults are its declared budgets (30,000 ms per startup and catalogue
 // response, 1,000 ms per status heartbeat and first grid or record read), while the ordinary suite checks invariants
 // instead of elapsed time. The suite therefore runs the probe with those budgets in recording mode: a miss on a loaded
-// machine is a finding, never a failure, but every finding must be an honest latency record. Only a status request may
-// end in its own timeout; a failed catalogue, first status or data read still fails the test.
+// machine is a finding, never a failure, but every finding must be an honest latency record. Recording mode aborts no
+// request at its budget, so no finding is an error; a failed request still fails the test. The runner's --test-timeout
+// is the hang guard.
 const PROBE = { budgetMs: 30000, heartbeatBudgetMs: 1000, strictBudgets: false };
 function assertLatencyFindingsOnly(report) {
   assert.deepEqual(
@@ -1126,87 +1126,103 @@ function assertLatencyFindingsOnly(report) {
   );
   for (const finding of report.findings) {
     const text = JSON.stringify(finding);
-    if (finding.error) assert.deepEqual([finding.stage, finding.error], ['status request', 'TimeoutError'], text);
+    assert.equal(finding.error, undefined, text);
     // durationMs is rounded; the probe records a finding only when the raw duration exceeded the budget.
-    else assert.ok(finding.stage && finding.durationMs >= finding.budgetMs, text);
+    assert.ok(finding.stage && finding.durationMs >= finding.budgetMs, text);
   }
 }
 
 for (const portal of [false, true])
-  test(
-    `${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`,
-    { timeout: 60000 },
-    async (t) => {
-      // The reuse assertions below concern files written moments ago.
-      settleFileTimes(t);
-      const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
-      assertLatencyFindingsOnly(report);
-      assert.deepEqual(
-        report.results.map((result) => result.generated),
-        [1, 0, 0],
-      );
-      assert.deepEqual(
-        report.results.map((result) => result.preset.applied),
-        [true, false, false],
-      );
-      assert.ok(
-        report.results.every(
-          (result) => result.rows === 16 && result.timings.stateRestoreMs >= 0 && result.timings.organizationMs >= 0,
-        ),
-      );
-      assert.ok(report.results[1].timings.solutionCache.hits > 0);
-      assert.equal(report.results[1].timings.solutionCache.misses, 0);
-      assert.equal(report.results[2].timings.stateRestore.journal, true);
-      for (const result of report.results) {
-        assert.equal(result.metadataTransport.length, 4);
-        assert.ok(result.metadataTransport.every((read) => read.bytes > 0 && read.parseMs >= 0));
-        assert.deepEqual(
-          result.progress
-            .filter((entry) =>
-              ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'].includes(
-                entry.phase,
-              ),
-            )
-            .map((entry) => entry.phase),
-          ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'],
-        );
-        assert.ok(result.progress.every((entry, i) => entry.elapsedMs >= (result.progress[i - 1]?.elapsedMs ?? 0)));
-      }
-    },
-  );
-
-test(
-  'optional source-volume probe retains every form and the exact requested records on a small fixture',
-  { timeout: 60000 },
-  async () => {
-    assert.ok(LARGE_PERFORMANCE_OPTIONS.scales[0] * (1 + LARGE_PERFORMANCE_OPTIONS.formsPerTable) + 2 > 10000);
-    // The fixture inventory and record count are settled by the first start. Restarts are covered by the cases above,
-    // and restarts with several forms per table by test/runtime-performance-options.test.mjs.
-    const report = await runtimePerformance({
-      ...PROBE,
-      scales: [2],
-      formsPerTable: 3,
-      columns: 4,
-      records: 17,
-      portal: false,
-      phases: ['fresh'],
-    });
+  test(`${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`, async (t) => {
+    // The reuse assertions below concern files written moments ago.
+    settleFileTimes(t);
+    const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
     assertLatencyFindingsOnly(report);
     assert.deepEqual(
-      report.results.map((result) => result.phase),
-      ['fresh'],
-      'The start completed its catalogue, metadata and data checks.',
+      report.results.map((result) => result.generated),
+      [1, 0, 0],
     );
+    assert.deepEqual(
+      report.results.map((result) => result.preset.applied),
+      [true, false, false],
+    );
+    assert.ok(
+      report.results.every(
+        (result) => result.rows === 16 && result.timings.stateRestoreMs >= 0 && result.timings.organizationMs >= 0,
+      ),
+    );
+    assert.ok(report.results[1].timings.solutionCache.hits > 0);
+    assert.equal(report.results[1].timings.solutionCache.misses, 0);
+    assert.equal(report.results[2].timings.stateRestore.journal, true);
     for (const result of report.results) {
-      assert.equal(result.inventory.xmlFiles, 10);
-      assert.equal(result.inventory.forms, 6);
-      assert.equal(result.actualRecords, 17);
-      assert.equal(result.rows, 9);
-      assert.ok(result.inventory.sourceBytes > 0);
-      assert.ok(result.fixtureMs >= 0);
+      assert.equal(result.metadataTransport.length, 4);
+      assert.ok(result.metadataTransport.every((read) => read.bytes > 0 && read.parseMs >= 0));
+      assert.deepEqual(
+        result.progress
+          .filter((entry) =>
+            ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'].includes(
+              entry.phase,
+            ),
+          )
+          .map((entry) => entry.phase),
+        ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'],
+      );
+      assert.ok(result.progress.every((entry, i) => entry.elapsedMs >= (result.progress[i - 1]?.elapsedMs ?? 0)));
     }
-  },
-);
+  });
+
+test('optional source-volume probe retains every form and the exact requested records on a small fixture', async () => {
+  assert.ok(LARGE_PERFORMANCE_OPTIONS.scales[0] * (1 + LARGE_PERFORMANCE_OPTIONS.formsPerTable) + 2 > 10000);
+  // The fixture inventory and record count are settled by the first start. Restarts are covered by the cases above,
+  // and restarts with several forms per table by test/runtime-performance-options.test.mjs.
+  const report = await runtimePerformance({
+    ...PROBE,
+    scales: [2],
+    formsPerTable: 3,
+    columns: 4,
+    records: 17,
+    portal: false,
+    phases: ['fresh'],
+  });
+  assertLatencyFindingsOnly(report);
+  assert.deepEqual(
+    report.results.map((result) => result.phase),
+    ['fresh'],
+    'The start completed its catalogue, metadata and data checks.',
+  );
+  for (const result of report.results) {
+    assert.equal(result.inventory.xmlFiles, 10);
+    assert.equal(result.inventory.forms, 6);
+    assert.equal(result.actualRecords, 17);
+    assert.equal(result.rows, 9);
+    assert.ok(result.inventory.sourceBytes > 0);
+    assert.ok(result.fixtureMs >= 0);
+  }
+});
+
+test('recording mode measures a request past its budget to its end and reports the miss, without aborting it', async () => {
+  // 1 ms budgets that loopback requests exceed: the requests still complete and every miss is a latency record.
+  const report = await runtimePerformance({
+    budgetMs: 1,
+    heartbeatBudgetMs: 1,
+    strictBudgets: false,
+    scales: [2],
+    columns: 4,
+    records: 8,
+    portal: false,
+    phases: ['fresh'],
+  });
+  for (const finding of report.findings) assert.equal(finding.error, undefined, JSON.stringify(finding));
+  const [result] = report.results;
+  assert.deepEqual(
+    result.catalogue.map((entry) => [entry.warmth, entry.error]),
+    [
+      ['cold', undefined],
+      ['warm', undefined],
+    ],
+  );
+  assert.equal(result.dataReads.length, 2);
+});
 
 test('the portal host stops its warm metadata compiler thread when it closes', async (t) => {
   const fixture = await performanceFixture({ tables: 128, records: 128, formsPerTable: 1 });

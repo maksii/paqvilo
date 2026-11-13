@@ -1,5 +1,5 @@
 import { runPluginPhase, pluginStepMatchesEntity, pluginPhaseRequiresCheckpoint } from './exported-plugins.mjs';
-import { prepareClrRuntime, closeClrHostPool, releaseClrRuntime } from './plugin-clr.mjs';
+import { prepareClrRuntime, closeClrHostPool, releaseClrRuntime, settleClrReleases } from './plugin-clr.mjs';
 import { releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { createAsyncPluginRunner } from './plugin-async.mjs';
 import { createFlowTriggerRunner } from './flow-triggers.mjs';
@@ -152,7 +152,8 @@ export async function createOrganizationBackend({
  * close() runs every release step even after one fails, and throws an AggregateError naming the failures after the last
  * step. The next close() runs only the steps that failed; a closed backend has none left, so closing again does nothing.
  * Only the cache directories of the runtimes this backend prepared are removed. A directory shared with a runtime it does
- * not own (its caller's) stays.
+ * not own (its caller's) stays. Close awaits only removals it owns: the releases its own steps return and those started on
+ * its runtime map (settleClrReleases); a removal another owner started is not awaited.
  */
 function backendCloser({ store, triggerRunner, asyncPluginRunner, runtimes, prepared, diagnostic, closeHostPool }) {
   const keptRuntimes = () => [...runtimes.values()].filter((runtime) => !prepared.has(runtime));
@@ -164,6 +165,8 @@ function backendCloser({ store, triggerRunner, asyncPluginRunner, runtimes, prep
     ...[...prepared].map((runtime) => ({
       run: () => releaseClrRuntime(runtime, { liveRuntimes: keptRuntimes(), diagnostic, closeHostPool }),
     })),
+    // The removals the synchronous plug-in paths started on this backend's runtime map; never another backend's.
+    { run: () => settleClrReleases(runtimes) },
   ];
   let steps = null,
     closing = null;
@@ -190,6 +193,7 @@ function backendCloser({ store, triggerRunner, asyncPluginRunner, runtimes, prep
 }
 
 async function closeRuntime(runtimes, id, runtime, { closeHostPool, diagnostic }) {
-  if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
+  // Every host pool this backend closes goes through its closeHostPool, uploaded runtimes' included.
+  if (runtime.uploaded) await releaseUploadedRuntime(runtimes, id, diagnostic, { closeHostPool });
   else await closeHostPool({ runtime, diagnostic });
 }

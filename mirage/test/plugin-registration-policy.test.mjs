@@ -1,4 +1,5 @@
 // @test-kind compatibility: Microsoft Learn step image and custom API AllowedCustomProcessingStepType registration rules
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -213,7 +214,7 @@ test('Create images require Id and retain post-image stage, type, alias and runt
   const items = () =>
     pluginCatalogue({ plugins: overlayRegisteredSteps({ assemblies: [], types: [], steps: [] }, f.store), handlers });
   const backend = await createOrganizationBackend({ store: f.store, items, handlers });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const created = await f.request('POST', '/x_items', { x_name: 'Invented post-image' });
   assert.equal(created.status, 201, await created.text());
   assert.deepEqual(seen, [40]);

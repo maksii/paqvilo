@@ -1,4 +1,5 @@
 // @test-kind contract: agent API routes, limits, deadlines and redaction designed by Paqvilo
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -89,7 +90,7 @@ async function fixture(t, options = {}) {
     runtime: { watching: true, debugPort: null },
   });
   // Registered before any assertion, so a failed discovery check still closes the server and removes its state.
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await server.close();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });

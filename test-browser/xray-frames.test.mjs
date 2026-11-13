@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -13,7 +14,7 @@ before(async () => {
 after(() => browser?.close());
 async function newPage(t, options) {
   const context = await browser.newContext(options);
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   return context.newPage();
 }
 
@@ -424,7 +425,7 @@ async function guardFixture(t, top = '<iframe id="first" src="/form"></iframe>')
     release = resolve;
   });
   const context = await browser.newContext();
-  t.after(() => {
+  ownedFixture(t).add(() => {
     release();
     return context.close();
   });
