@@ -15,11 +15,18 @@ import { panelUi } from '../lense/panel-ui.mjs';
 test('panel preserves row focus, editable slash input, filtered facets and translucent-theme contrast', async (t) => {
   const fx = createFixture();
   let browser, panel;
-  const server = http.createServer((_req, res) =>
+  // The panel reads a page's colours once, at its first draw there, and it draws by itself soon after a page loads.
+  // So each page is served with its own stylesheet instead of being restyled after it has loaded.
+  const styles = {
+    '/': 'html{background:white}body{background:rgba(0,0,0,.5)}.btn-primary{background:rgb(20,20,20);color:white}',
+    '/modern':
+      'html,body{background:color(display-p3 1 1 1)}.btn-primary{background:color(display-p3 .9 .9 .9);color:white}',
+  };
+  const server = http.createServer((req, res) =>
     res
       .writeHead(200, { 'content-type': 'text/html' })
       .end(
-        '<!doctype html><style>html{background:white}body{background:rgba(0,0,0,.5)}.btn-primary{background:rgb(20,20,20);color:white}</style><h1>Invented fixture</h1><input id="portal-input">',
+        `<!doctype html><style>${styles[req.url] ?? styles['/']}</style><h1>Invented fixture</h1><input id="portal-input">`,
       ),
   );
   ownedFixture(t).add(async () => {
@@ -220,10 +227,7 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
     'Escape remains usable after the paging button disappears',
   );
   const modern = await context.newPage();
-  await modern.goto(origin);
-  await modern.addStyleTag({
-    content: 'html,body{background:color(display-p3 1 1 1)}.btn-primary{background:color(display-p3 .9 .9 .9)}',
-  });
+  await modern.goto(`${origin}/modern`);
   await panel.draw(modern);
   const modernScope = modern.locator('#paqvilo-panel');
   await modernScope.locator('.pill').click();
