@@ -1,5 +1,6 @@
+// @test-kind contract: exact numeric arithmetic, JSON lexemes and formatting over invented values and loopback fixtures.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -19,8 +20,10 @@ import {
   compareNumeric,
   roundNumeric,
   averageNumeric,
+  formatExactNumeric,
 } from '../lib/exact-numeric.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const id = '20000000-0000-0000-0000-000000000001',
   user = '10000000-0000-0000-0000-000000000001';
 const fields = {
@@ -44,8 +47,19 @@ const profile = {
   evidence: 'Invented exact numeric column source',
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
+// A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
+
+test('formatted exact decimals never use exponent notation and keep rounding and separators', () => {
+  assert.equal(formatExactNumeric(exactNumeric('0.00000012345678901234567890123'), 10), '0.0000001235');
+  assert.equal(formatExactNumeric(exactNumeric('0.0000001'), 7), '0.0000001');
+  assert.equal(formatExactNumeric(exactNumeric('1234567.891'), 2), '1,234,567.89');
+  assert.equal(formatExactNumeric(exactNumeric('2.5'), 0), '3');
+  assert.equal(formatExactNumeric(exactNumeric('-0.125'), 2), '-0.13');
+});
 
 test('Exact numeric arithmetic bounds precision and never accepts forged JSON scalar objects', () => {
   assert.equal(compareNumeric(exactNumeric('9007199254740993', 'Int64'), '9007199254740992'), 1);
@@ -127,7 +141,7 @@ test('Source decimal aggregation stays decimal for safe values and local flow re
 });
 
 test('Typed SDK numeric columns survive persisted reload, exact bounds, OData and Fetch ordering/aggregation', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-state-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-state-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new DataStore({ state: initial, file: path.join(root, 'state.json') }),
     service = localOrganizationService(store, profile);
@@ -220,7 +234,7 @@ test('Typed SDK numeric columns survive persisted reload, exact bounds, OData an
 });
 
 test('Loopback API reads and writes numeric JSON literals without rounding their digits or quoting them', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-http-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-http-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented-precision\nadx_name: Precision\n');
   await fs.writeFile(
@@ -276,11 +290,11 @@ test('Loopback API reads and writes numeric JSON literals without rounding their
 
 test(
   'Original DLL retains Int64/Decimal/Money through service writes and actual SDK query/retrieval casts',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'PrecisionOriginal.cs'),
       assembly = path.join(root, 'PrecisionOriginal.dll');
     await fs.writeFile(
@@ -296,7 +310,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     const build = spawnSync(
       path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
       ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
+      { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
     assert.equal(build.status, 0, build.stdout + build.stderr);
     const runtime = await prepareClrRuntime({
@@ -313,7 +327,6 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const step = {
         id: '30000000-0000-0000-0000-000000000001',
@@ -356,7 +369,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     );
     const hosts = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(hosts.length, 1);
-    assert.ok(hosts.every((note) => note.absenceVerified));
+    assert.equal(hosts[0].absenceVerified, true, 'the owned CLR host is verified gone');
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>
         createHash('sha256')

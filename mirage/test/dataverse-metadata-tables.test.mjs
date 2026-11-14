@@ -1,11 +1,12 @@
 // Metadata writes: table create/update/delete, columns, alternate keys, privileges and publish actions.
 // The store is seeded with ensureSecurityModel, so principals, privileges and the seeded
 // security tables are the runtime shapes; handlers are called directly, not through the router.
+// @test-kind contract: Paqvilo's own metadata table and column writes; the column limits cite Learn where a test says so
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createMetadataService } from '../lib/dataverse-metadata.mjs';
-import { metadataWriteRoutes } from '../lib/dataverse-metadata-relationships.mjs';
+import { createOneToMany, metadataWriteRoutes } from '../lib/dataverse-metadata-relationships.mjs';
 import { parseDataverseRoute } from '../lib/dataverse-odata.mjs';
 import { handleMetadataWrite, install, reapplyCustomColumns, reset } from '../lib/dataverse-metadata-tables.mjs';
 import { createPrincipals, ensureSecurityModel, uuidV5 } from '../lib/dataverse-security.mjs';
@@ -401,6 +402,64 @@ test('delete column and table remove the definition and its data', async () => {
   assert.equal(store.state.tables.new_bankaccount, undefined);
 });
 
+// @test-kind compatibility: Microsoft Learn StringAttributeMetadata MaxSupportedLength is 4000; MemoAttributeMetadata allows 1048576
+test('column MaxLength is a whole number from 1 to the type maximum (text 4000, memo 1048576) when given', async () => {
+  const store = await fixtureStore();
+  const api = fakeApi(store);
+  await createBankAccount(api);
+  const attributes = `${entityPath('new_bankaccount')}/Attributes`;
+  const rejected = [
+    column('String', 'new_code', { MaxLength: 0 }),
+    column('String', 'new_code', { MaxLength: 4001 }),
+    column('String', 'new_code', { MaxLength: 'abc' }),
+    column('Memo', 'new_notes', { MaxLength: 1048577 }),
+  ];
+  for (const body of rejected) {
+    await assert.rejects(send(api, 'POST', attributes, { body }), { status: 400, message: /new_(code|notes)/ });
+  }
+  assert.equal(store.state.mappings.new_bankaccount.fields.new_code, undefined);
+  assert.equal(
+    (await send(api, 'POST', attributes, { body: column('String', 'new_code', { MaxLength: 4000 }) })).status,
+    204,
+  );
+  assert.equal(
+    (await send(api, 'POST', attributes, { body: column('Memo', 'new_notes', { MaxLength: 1048576 }) })).status,
+    204,
+  );
+  const codePath = `${attributes}(${readService(store).metadataId('attribute', 'new_bankaccount', 'new_code')})`;
+  await assert.rejects(send(api, 'PUT', codePath, { body: { MaxLength: 0 } }), { status: 400, message: /new_code/ });
+  await assert.rejects(send(api, 'PUT', codePath, { body: { MaxLength: 'abc' } }), { status: 400 });
+  assert.equal(store.state.mappings.new_bankaccount.fields.new_code.columnMetadata.maxLength, 4000);
+});
+
+test('deleting a lookup column is refused and names the relationship that owns it', async () => {
+  const store = await fixtureStore();
+  const api = fakeApi(store);
+  await createBankAccount(api);
+  await send(api, 'POST', ENTITIES, {
+    body: tableBody({
+      SchemaName: 'new_Branch',
+      DisplayName: label('Branch'),
+      DisplayCollectionName: label('Branches'),
+      Attributes: [primaryName()],
+    }),
+  });
+  createOneToMany(api, {
+    SchemaName: 'new_bankaccount_branch',
+    ReferencedEntity: 'new_branch',
+    ReferencedAttribute: 'new_branchid',
+    ReferencingEntity: 'new_bankaccount',
+    CascadeConfiguration: { Assign: 'NoCascade', Delete: 'RemoveLink' },
+    Lookup: { SchemaName: 'new_Branch', LogicalName: 'new_branch', DisplayName: label('Branch') },
+  });
+  const lookupPath = `${entityPath('new_bankaccount')}/Attributes(${readService(store).metadataId('attribute', 'new_bankaccount', 'new_branch')})`;
+  await assert.rejects(send(api, 'DELETE', lookupPath), {
+    status: 400,
+    message: /new_bankaccount_branch.*RelationshipDefinitions/,
+  });
+  assert.ok(store.state.mappings.new_bankaccount.fields.new_branch);
+});
+
 test('alternate keys: allowed types, column, key and 900-byte limits; DELETE removes a key', async () => {
   const store = await fixtureStore();
   const api = fakeApi(store);
@@ -469,6 +528,7 @@ test('publish actions answer 204; PublishXml needs ParameterXml; PATCH is refuse
   await assert.rejects(send(api, 'PATCH', entityPath('new_bankaccount'), { body: tableBody() }), { status: 405 });
 });
 
+// @test-kind security: a caller without customizer privileges cannot change metadata
 test('authorization: a caller without the customizer privileges is refused and the store is unchanged', async () => {
   const store = await fixtureStore();
   const api = fakeApi(store);
@@ -734,6 +794,7 @@ function recordsFor(api, store) {
   };
 }
 
+// @test-kind security: a new table denies a Basic User from the moment it exists
 test('a table created through the metadata API has its privileges at once: the administrator writes and reads a row, a Basic User is refused', async () => {
   const store = await fixtureStore();
   const api = fakeApi(store);

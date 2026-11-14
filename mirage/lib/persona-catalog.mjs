@@ -82,122 +82,12 @@ export function validatePersonaCatalog(value, source = 'State') {
   keys(value, ['version', 'groups', 'personas', 'contexts', 'scenarios'], '');
   if (value.version !== 1) fail('version must be 1');
   const groups = list(value.groups, 'groups');
-  groups.forEach((group, index) => {
-    const at = `groups[${index}]`;
-    keys(group, ['id', 'label', 'order', 'subgroups'], at);
-    id(group, 'id', at);
-    text(group, 'label', at, 60, true);
-    order(group, at);
-    const subgroups = group.subgroups === undefined ? [] : list(group.subgroups, `${at}.subgroups`);
-    subgroups.forEach((subgroup, sub) => {
-      const path = `${at}.subgroups[${sub}]`;
-      keys(subgroup, ['id', 'label', 'order'], path);
-      id(subgroup, 'id', path);
-      text(subgroup, 'label', path, 60, true);
-      order(subgroup, path);
-    });
-    unique(subgroups, 'id', `${at}.subgroups`);
-  });
+  const helpers = { fail, keys, text, id, order, list, unique };
+  validatePersonaGroups(groups, helpers);
   unique(groups, 'id', 'groups');
   const groupMap = new Map(groups.map((group) => [group.id, group]));
   const contexts = value.contexts === undefined ? [] : list(value.contexts, 'contexts');
-  contexts.forEach((context, index) => {
-    const at = `contexts[${index}]`;
-    keys(
-      context,
-      [
-        'id',
-        'label',
-        'description',
-        'order',
-        'deploymentProfile',
-        'environmentVariables',
-        'portalOverrides',
-        'preset',
-        'startPath',
-        'browser',
-        'extensions',
-      ],
-      at,
-    );
-    id(context, 'id', at);
-    text(context, 'label', at, 80, true);
-    text(context, 'description', at, 500);
-    order(context, at);
-    if (context.preset !== undefined && (typeof context.preset !== 'string' || !context.preset.trim()))
-      fail(`${at}.preset must name a preset`);
-    if (context.startPath !== undefined)
-      personaStartPath(context.startPath, `${source}: personaCatalog.${at}.startPath`);
-    if (context.deploymentProfile !== undefined) {
-      keys(context.deploymentProfile, ['profile', 'enabled'], `${at}.deploymentProfile`);
-      if (
-        context.deploymentProfile.profile !== null &&
-        (typeof context.deploymentProfile.profile !== 'string' ||
-          !/^[a-z0-9][a-z0-9._-]*$/i.test(context.deploymentProfile.profile) ||
-          ['__proto__', 'constructor', 'prototype'].includes(context.deploymentProfile.profile.toLowerCase()))
-      )
-        fail(`${at}.deploymentProfile.profile must name a configured profile or be null`);
-      if (context.deploymentProfile.enabled !== undefined) {
-        keys(
-          context.deploymentProfile.enabled,
-          ['pages', 'environmentVariables', 'connectionReferences'],
-          `${at}.deploymentProfile.enabled`,
-        );
-        if (Object.values(context.deploymentProfile.enabled).some((flag) => typeof flag !== 'boolean'))
-          fail(`${at}.deploymentProfile.enabled values must be boolean`);
-      }
-    }
-    if (context.environmentVariables !== undefined) {
-      if (!object(context.environmentVariables))
-        fail(`${at}.environmentVariables must map variable names to JSON values`);
-      for (const [key, item] of Object.entries(context.environmentVariables)) {
-        if (!key.trim() || ['__proto__', 'constructor', 'prototype'].includes(key))
-          fail(`${at}.environmentVariables has an invalid variable name`);
-        assertJson(item, `${at}.environmentVariables.${key}`, fail);
-      }
-    }
-    if (context.portalOverrides !== undefined) {
-      keys(context.portalOverrides, ['settings', 'snippets'], `${at}.portalOverrides`);
-      try {
-        validatePortalOverrides(context.portalOverrides);
-      } catch (cause) {
-        fail(`${at}.portalOverrides: ${cause.message}`);
-      }
-    }
-    if (context.browser !== undefined) {
-      keys(context.browser, ['locale', 'timezoneId', 'viewport', 'colorScheme'], `${at}.browser`);
-      text(context.browser, 'locale', `${at}.browser`, 80);
-      text(context.browser, 'timezoneId', `${at}.browser`, 120);
-      try {
-        if (context.browser.locale) Intl.getCanonicalLocales(context.browser.locale);
-      } catch {
-        fail(`${at}.browser.locale is not a valid language tag`);
-      }
-      try {
-        if (context.browser.timezoneId) new Intl.DateTimeFormat('en', { timeZone: context.browser.timezoneId });
-      } catch {
-        fail(`${at}.browser.timezoneId is not a valid time zone`);
-      }
-      if (
-        context.browser.colorScheme !== undefined &&
-        !['light', 'dark', 'no-preference'].includes(context.browser.colorScheme)
-      )
-        fail(`${at}.browser.colorScheme is invalid`);
-      if (context.browser.viewport !== undefined) {
-        keys(context.browser.viewport, ['width', 'height'], `${at}.browser.viewport`);
-        if (
-          ['width', 'height'].some(
-            (key) =>
-              !Number.isInteger(context.browser.viewport[key]) ||
-              context.browser.viewport[key] < 1 ||
-              context.browser.viewport[key] > 16384,
-          )
-        )
-          fail(`${at}.browser.viewport requires width and height from 1 to 16384`);
-      }
-    }
-    if (context.extensions !== undefined) extensions(context.extensions, `${at}.extensions`, fail);
-  });
+  validatePersonaContexts(contexts, source, helpers);
   unique(contexts, 'id', 'contexts');
   const contextIds = new Set(contexts.map((context) => context.id));
   const groupReference = (entry, at) => {
@@ -214,74 +104,231 @@ export function validatePersonaCatalog(value, source = 'State') {
       fail(`${at}.context "${entry.context}" is not a declared context`);
   };
   const personas = list(value.personas, 'personas');
-  personas.forEach((persona, index) => {
-    const at = `personas[${index}]`;
-    keys(
-      persona,
-      [
-        'key',
-        'contactId',
-        'label',
-        'group',
-        'subgroup',
-        'tags',
-        'description',
-        'order',
-        'startPath',
-        'context',
-        'extensions',
-      ],
-      at,
-    );
-    id(persona, 'key', at);
-    if (
-      typeof persona.contactId !== 'string' ||
-      !guid.test(persona.contactId) ||
-      persona.contactId.startsWith('{') !== persona.contactId.endsWith('}')
-    )
-      fail(`${at}.contactId must be a GUID with optional braces`);
-    text(persona, 'label', at, 80);
-    text(persona, 'description', at, 500);
-    order(persona, at);
-    groupReference(persona, at);
-    contextReference(persona, at);
-    if (
-      persona.tags !== undefined &&
-      (!Array.isArray(persona.tags) ||
-        persona.tags.length > 20 ||
-        Array.from(persona.tags).some(
-          (tag) => typeof tag !== 'string' || tag.length > 40 || !/^[a-z0-9][a-z0-9-]*$/.test(tag),
-        ))
-    )
-      fail(`${at}.tags must contain at most 20 lowercase tags, each at most 40 characters`);
-    if (persona.startPath !== undefined)
-      personaStartPath(persona.startPath, `${source}: personaCatalog.${at}.startPath`);
-    if (persona.extensions !== undefined) extensions(persona.extensions, `${at}.extensions`, fail);
-  });
+  validatePersonaEntries(personas, source, helpers, groupReference, contextReference);
   unique(personas, 'key', 'personas');
   const personaKeys = new Set(personas.map((persona) => persona.key));
   const scenarios = value.scenarios === undefined ? [] : list(value.scenarios, 'scenarios');
-  scenarios.forEach((scenario, index) => {
-    const at = `scenarios[${index}]`;
-    keys(
-      scenario,
-      ['id', 'label', 'description', 'order', 'group', 'subgroup', 'persona', 'startPath', 'preset', 'context'],
-      at,
-    );
-    id(scenario, 'id', at);
-    text(scenario, 'label', at, 80, true);
-    text(scenario, 'description', at, 500);
-    order(scenario, at);
-    groupReference(scenario, at);
-    contextReference(scenario, at);
-    if (!personaKeys.has(scenario.persona)) fail(`${at}.persona "${scenario.persona}" is not a declared persona`);
-    if (scenario.startPath !== undefined)
-      personaStartPath(scenario.startPath, `${source}: personaCatalog.${at}.startPath`);
-    if (scenario.preset !== undefined && (typeof scenario.preset !== 'string' || !scenario.preset.trim()))
-      fail(`${at}.preset must name a preset`);
-  });
+  validatePersonaScenarios(scenarios, source, helpers, groupReference, contextReference, personaKeys);
   unique(scenarios, 'id', 'scenarios');
   return structuredClone(value);
+}
+
+function validatePersonaGroups(groups, helpers) {
+  groups.forEach((group, index) => validatePersonaGroup(group, index, helpers));
+}
+
+function validatePersonaGroup(group, index, { keys, id, text, order, list, unique }) {
+  const at = `groups[${index}]`;
+  keys(group, ['id', 'label', 'order', 'subgroups'], at);
+  id(group, 'id', at);
+  text(group, 'label', at, 60, true);
+  order(group, at);
+  const subgroups = group.subgroups === undefined ? [] : list(group.subgroups, `${at}.subgroups`);
+  subgroups.forEach((subgroup, sub) =>
+    validatePersonaSubgroup(subgroup, `${at}.subgroups[${sub}]`, { keys, id, text, order }),
+  );
+  unique(subgroups, 'id', `${at}.subgroups`);
+}
+
+function validatePersonaSubgroup(subgroup, path, { keys, id, text, order }) {
+  keys(subgroup, ['id', 'label', 'order'], path);
+  id(subgroup, 'id', path);
+  text(subgroup, 'label', path, 60, true);
+  order(subgroup, path);
+}
+
+function validatePersonaContexts(contexts, source, helpers) {
+  contexts.forEach((context, index) => validatePersonaContext(context, index, source, helpers));
+}
+
+function validatePersonaContext(context, index, source, helpers) {
+  const { fail, keys, id, text, order } = helpers;
+  const at = `contexts[${index}]`;
+  keys(
+    context,
+    [
+      'id',
+      'label',
+      'description',
+      'order',
+      'deploymentProfile',
+      'environmentVariables',
+      'portalOverrides',
+      'preset',
+      'startPath',
+      'browser',
+      'extensions',
+    ],
+    at,
+  );
+  id(context, 'id', at);
+  text(context, 'label', at, 80, true);
+  text(context, 'description', at, 500);
+  order(context, at);
+  if (context.preset !== undefined && (typeof context.preset !== 'string' || !context.preset.trim()))
+    fail(`${at}.preset must name a preset`);
+  if (context.startPath !== undefined) personaStartPath(context.startPath, `${source}: personaCatalog.${at}.startPath`);
+  if (context.deploymentProfile !== undefined) validateContextDeployment(context.deploymentProfile, at, helpers);
+  if (context.environmentVariables !== undefined) validateContextEnvironment(context.environmentVariables, at, fail);
+  if (context.portalOverrides !== undefined) validateContextOverrides(context.portalOverrides, at, helpers);
+  if (context.browser !== undefined) validateContextBrowser(context.browser, at, helpers);
+  if (context.extensions !== undefined) extensions(context.extensions, `${at}.extensions`, fail);
+}
+
+function validateContextDeployment(deploymentProfile, at, { keys, fail }) {
+  keys(deploymentProfile, ['profile', 'enabled'], `${at}.deploymentProfile`);
+  if (
+    deploymentProfile.profile !== null &&
+    (typeof deploymentProfile.profile !== 'string' ||
+      !/^[a-z0-9][a-z0-9._-]*$/i.test(deploymentProfile.profile) ||
+      ['__proto__', 'constructor', 'prototype'].includes(deploymentProfile.profile.toLowerCase()))
+  )
+    fail(`${at}.deploymentProfile.profile must name a configured profile or be null`);
+  if (deploymentProfile.enabled !== undefined) {
+    keys(
+      deploymentProfile.enabled,
+      ['pages', 'environmentVariables', 'connectionReferences'],
+      `${at}.deploymentProfile.enabled`,
+    );
+    if (Object.values(deploymentProfile.enabled).some((flag) => typeof flag !== 'boolean'))
+      fail(`${at}.deploymentProfile.enabled values must be boolean`);
+  }
+}
+
+function validateContextEnvironment(environmentVariables, at, fail) {
+  if (!object(environmentVariables)) fail(`${at}.environmentVariables must map variable names to JSON values`);
+  for (const [key, item] of Object.entries(environmentVariables)) {
+    if (!key.trim() || ['__proto__', 'constructor', 'prototype'].includes(key))
+      fail(`${at}.environmentVariables has an invalid variable name`);
+    assertJson(item, `${at}.environmentVariables.${key}`, fail);
+  }
+}
+
+function validateContextOverrides(portalOverrides, at, { keys, fail }) {
+  keys(portalOverrides, ['settings', 'snippets'], `${at}.portalOverrides`);
+  try {
+    validatePortalOverrides(portalOverrides);
+  } catch (cause) {
+    fail(`${at}.portalOverrides: ${cause.message}`);
+  }
+}
+
+function validateContextBrowser(browser, at, { keys, text, fail }) {
+  keys(browser, ['locale', 'timezoneId', 'viewport', 'colorScheme'], `${at}.browser`);
+  text(browser, 'locale', `${at}.browser`, 80);
+  text(browser, 'timezoneId', `${at}.browser`, 120);
+  try {
+    if (browser.locale) Intl.getCanonicalLocales(browser.locale);
+  } catch {
+    fail(`${at}.browser.locale is not a valid language tag`);
+  }
+  try {
+    if (browser.timezoneId) new Intl.DateTimeFormat('en', { timeZone: browser.timezoneId });
+  } catch {
+    fail(`${at}.browser.timezoneId is not a valid time zone`);
+  }
+  if (browser.colorScheme !== undefined && !['light', 'dark', 'no-preference'].includes(browser.colorScheme))
+    fail(`${at}.browser.colorScheme is invalid`);
+  if (browser.viewport !== undefined) {
+    keys(browser.viewport, ['width', 'height'], `${at}.browser.viewport`);
+    if (
+      ['width', 'height'].some(
+        (key) => !Number.isInteger(browser.viewport[key]) || browser.viewport[key] < 1 || browser.viewport[key] > 16384,
+      )
+    )
+      fail(`${at}.browser.viewport requires width and height from 1 to 16384`);
+  }
+}
+
+function validatePersonaEntries(personas, source, helpers, groupReference, contextReference) {
+  personas.forEach((persona, index) =>
+    validatePersonaEntry(persona, index, source, helpers, groupReference, contextReference),
+  );
+}
+
+function validatePersonaEntry(
+  persona,
+  index,
+  source,
+  { fail, keys, id, text, order },
+  groupReference,
+  contextReference,
+) {
+  const at = `personas[${index}]`;
+  keys(
+    persona,
+    [
+      'key',
+      'contactId',
+      'label',
+      'group',
+      'subgroup',
+      'tags',
+      'description',
+      'order',
+      'startPath',
+      'context',
+      'extensions',
+    ],
+    at,
+  );
+  id(persona, 'key', at);
+  if (
+    typeof persona.contactId !== 'string' ||
+    !guid.test(persona.contactId) ||
+    persona.contactId.startsWith('{') !== persona.contactId.endsWith('}')
+  )
+    fail(`${at}.contactId must be a GUID with optional braces`);
+  text(persona, 'label', at, 80);
+  text(persona, 'description', at, 500);
+  order(persona, at);
+  groupReference(persona, at);
+  contextReference(persona, at);
+  if (
+    persona.tags !== undefined &&
+    (!Array.isArray(persona.tags) ||
+      persona.tags.length > 20 ||
+      Array.from(persona.tags).some(
+        (tag) => typeof tag !== 'string' || tag.length > 40 || !/^[a-z0-9][a-z0-9-]*$/.test(tag),
+      ))
+  )
+    fail(`${at}.tags must contain at most 20 lowercase tags, each at most 40 characters`);
+  if (persona.startPath !== undefined) personaStartPath(persona.startPath, `${source}: personaCatalog.${at}.startPath`);
+  if (persona.extensions !== undefined) extensions(persona.extensions, `${at}.extensions`, fail);
+}
+
+function validatePersonaScenarios(scenarios, source, helpers, groupReference, contextReference, personaKeys) {
+  scenarios.forEach((scenario, index) =>
+    validatePersonaScenario(scenario, index, source, helpers, groupReference, contextReference, personaKeys),
+  );
+}
+
+function validatePersonaScenario(
+  scenario,
+  index,
+  source,
+  { fail, keys, id, text, order },
+  groupReference,
+  contextReference,
+  personaKeys,
+) {
+  const at = `scenarios[${index}]`;
+  keys(
+    scenario,
+    ['id', 'label', 'description', 'order', 'group', 'subgroup', 'persona', 'startPath', 'preset', 'context'],
+    at,
+  );
+  id(scenario, 'id', at);
+  text(scenario, 'label', at, 80, true);
+  text(scenario, 'description', at, 500);
+  order(scenario, at);
+  groupReference(scenario, at);
+  contextReference(scenario, at);
+  if (!personaKeys.has(scenario.persona)) fail(`${at}.persona "${scenario.persona}" is not a declared persona`);
+  if (scenario.startPath !== undefined)
+    personaStartPath(scenario.startPath, `${source}: personaCatalog.${at}.startPath`);
+  if (scenario.preset !== undefined && (typeof scenario.preset !== 'string' || !scenario.preset.trim()))
+    fail(`${at}.preset must name a preset`);
 }
 
 function assertJson(value, at, fail, seen = new Set(), depth = 0) {
@@ -336,53 +383,42 @@ export function mergePersonaCatalogs(primary, fallback) {
   };
 }
 
-/** Join catalogue descriptions to authoritative active contact identities. */
-export function resolvePersonaCatalog({ contacts = [], catalogs = [], defaultContactId, defaultKey } = {}) {
-  const sources = catalogs.map((entry) => entry.source),
-    diagnostics = [];
-  const definitions = new Map(),
-    groups = new Map(),
-    contexts = new Map(),
-    scenarios = new Map();
-  for (const { source, catalog, state = false } of catalogs) {
-    if (!catalog) continue;
-    for (const group of catalog.groups) {
-      const previous = groups.get(group.id);
-      if (!previous || state) {
-        const subgroups = new Map((previous?.subgroups ?? []).map((subgroup) => [subgroup.id, subgroup]));
-        for (const subgroup of group.subgroups ?? []) subgroups.set(subgroup.id, subgroup);
-        groups.set(group.id, { ...group, subgroups: [...subgroups.values()] });
-      } else {
-        const ids = new Set((previous.subgroups ?? []).map((subgroup) => subgroup.id));
-        previous.subgroups = [
-          ...(previous.subgroups ?? []),
-          ...(group.subgroups ?? []).filter((subgroup) => !ids.has(subgroup.id)),
-        ];
-      }
+function mergeResolvedGroups(sourceGroups, groups, state) {
+  for (const group of sourceGroups) {
+    const previous = groups.get(group.id);
+    if (!previous || state) {
+      const subgroups = new Map((previous?.subgroups ?? []).map((subgroup) => [subgroup.id, subgroup]));
+      for (const subgroup of group.subgroups ?? []) subgroups.set(subgroup.id, subgroup);
+      groups.set(group.id, { ...group, subgroups: [...subgroups.values()] });
+    } else {
+      const ids = new Set((previous.subgroups ?? []).map((subgroup) => subgroup.id));
+      previous.subgroups = [
+        ...(previous.subgroups ?? []),
+        ...(group.subgroups ?? []).filter((subgroup) => !ids.has(subgroup.id)),
+      ];
     }
-    for (const entry of catalog.personas) {
-      const previous = definitions.get(entry.key);
-      if (previous && !state && personaContactId(previous.entry.contactId) !== personaContactId(entry.contactId))
-        diagnostics.push({
-          code: 'PERSONA_CATALOG_KEY_CONFLICT',
-          key: entry.key,
-          source,
-          selectedSource: previous.source,
-        });
-      if (!previous || state) definitions.set(entry.key, { entry, source, state });
-    }
-    for (const context of catalog.contexts ?? [])
-      if (!contexts.has(context.id) || state) contexts.set(context.id, { ...context, source });
-    for (const scenario of catalog.scenarios ?? [])
-      if (!scenarios.has(scenario.id) || state) scenarios.set(scenario.id, { ...scenario, source });
   }
-  const active = new Map(
-    contacts
-      .filter((contact) => contact.active !== false)
-      .map((contact) => [personaContactId(contact.contactId), contact]),
-  );
-  const represented = new Set(),
-    personas = [];
+}
+
+function mergeResolvedPersonas(entries, source, state, definitions, diagnostics) {
+  for (const entry of entries) {
+    const previous = definitions.get(entry.key);
+    if (previous && !state && personaContactId(previous.entry.contactId) !== personaContactId(entry.contactId))
+      diagnostics.push({
+        code: 'PERSONA_CATALOG_KEY_CONFLICT',
+        key: entry.key,
+        source,
+        selectedSource: previous.source,
+      });
+    if (!previous || state) definitions.set(entry.key, { entry, source, state });
+  }
+}
+
+function mergeResolvedEntries(entries, target, source, state) {
+  for (const entry of entries) if (!target.has(entry.id) || state) target.set(entry.id, { ...entry, source });
+}
+
+function resolveCatalogContacts(definitions, active, represented, personas, diagnostics) {
   let skipped = 0;
   for (const { entry, source, state } of definitions.values()) {
     const contactId = personaContactId(entry.contactId),
@@ -411,6 +447,32 @@ export function resolvePersonaCatalog({ contacts = [], catalogs = [], defaultCon
       default: false,
     });
   }
+  return skipped;
+}
+
+/** Join catalogue descriptions to authoritative active contact identities. */
+export function resolvePersonaCatalog({ contacts = [], catalogs = [], defaultContactId, defaultKey } = {}) {
+  const sources = catalogs.map((entry) => entry.source),
+    diagnostics = [];
+  const definitions = new Map(),
+    groups = new Map(),
+    contexts = new Map(),
+    scenarios = new Map();
+  for (const { source, catalog, state = false } of catalogs) {
+    if (!catalog) continue;
+    mergeResolvedGroups(catalog.groups, groups, state);
+    mergeResolvedPersonas(catalog.personas, source, state, definitions, diagnostics);
+    mergeResolvedEntries(catalog.contexts ?? [], contexts, source, state);
+    mergeResolvedEntries(catalog.scenarios ?? [], scenarios, source, state);
+  }
+  const active = new Map(
+    contacts
+      .filter((contact) => contact.active !== false)
+      .map((contact) => [personaContactId(contact.contactId), contact]),
+  );
+  const represented = new Set(),
+    personas = [];
+  const skipped = resolveCatalogContacts(definitions, active, represented, personas, diagnostics);
   personas.sort(ordered);
   const preferred =
     personas.find((persona) => persona.key === defaultKey) ??
@@ -462,5 +524,47 @@ export function resolvePersonaCatalog({ contacts = [], catalogs = [], defaultCon
     diagnostics,
     contexts: [...contexts.values()].sort(ordered),
     scenarios: [...scenarios.values()].sort(ordered),
+  };
+}
+
+const nullsFor = (entries) => Object.fromEntries(Object.keys(entries).map((key) => [key, null]));
+
+function publicPortalOverrides(overrides) {
+  const reduced = {};
+  if (overrides.snippets !== undefined) reduced.snippets = nullsFor(overrides.snippets);
+  if (overrides.settings !== undefined) reduced.settings = nullsFor(overrides.settings);
+  return reduced;
+}
+
+// The picker needs a context's text and start page, the name of its deployment profile and the key names of its
+// overrides. Values, the definition and the browser settings stay on the runtime.
+export function publicPersonaContext(context) {
+  const reduced = {};
+  for (const key of ['id', 'label', 'description', 'startPath']) {
+    if (context[key] !== undefined) reduced[key] = context[key];
+  }
+  if (context.deploymentProfile !== undefined)
+    reduced.deploymentProfile = { profile: context.deploymentProfile.profile ?? null };
+  if (context.environmentVariables !== undefined) reduced.environmentVariables = nullsFor(context.environmentVariables);
+  if (context.portalOverrides !== undefined) reduced.portalOverrides = publicPortalOverrides(context.portalOverrides);
+  return reduced;
+}
+
+const publicPersonaContexts = (contexts) => (Array.isArray(contexts) ? contexts.map(publicPersonaContext) : contexts);
+
+const publicRuntimeItem = ({ browser, origin, ...item }) => item;
+
+// The picker payload with the context definitions of its resolved, effective and state catalogues reduced, and the
+// runtime items without their browser settings and origins. The report itself, including the cached one, is not changed.
+export function publicPersonaReport(report) {
+  return {
+    ...report,
+    contexts: publicPersonaContexts(report.contexts),
+    catalog: report.catalog && { ...report.catalog, contexts: publicPersonaContexts(report.catalog.contexts) },
+    stateCatalog: report.stateCatalog && {
+      ...report.stateCatalog,
+      contexts: publicPersonaContexts(report.stateCatalog.contexts),
+    },
+    runtimes: report.runtimes && { ...report.runtimes, items: report.runtimes.items?.map(publicRuntimeItem) },
   };
 }

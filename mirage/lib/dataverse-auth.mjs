@@ -22,7 +22,7 @@ const AUTH_CODE = 'authorization_code';
 const DEVICE_GRANT = GRANT_TYPES.device_code;
 const JWT_BEARER = GRANT_TYPES.on_behalf_of;
 const SUPPORTED_GRANTS = Object.values(GRANT_TYPES);
-const ASSERTION_ALGS = ['RS256', 'PS256'];
+const ASSERTION_ALGS = new Set(['RS256', 'PS256']);
 const FEDERATED_ALG = 'RS256'; // Entra workload identity federation documents RS256 only
 const NON_INTERACTIVE = 4; // systemuser accessmode NonInteractive
 // Live Entra responses omit error_uri for these codes.
@@ -35,13 +35,23 @@ const DEVICE_LIFETIME_SECONDS = 900;
 const DEVICE_INTERVAL_SECONDS = 5;
 // Grants a public client may redeem without a secret. client_credentials and on_behalf_of are confidential-client flows (AADSTS7000218).
 const PUBLIC_GRANTS = new Set([AUTH_CODE, DEVICE_GRANT, GRANT_TYPES.refresh_token, GRANT_TYPES.password]);
+// Grants a browser origin (not the listener's own) may redeem only for a single-page application: its authorization
+// code and its refresh token. Device code, password and on-behalf-of are not listed, since each needs a human approval,
+// a password or a signed assertion, and no browser-origin rule applies to them.
+const CROSS_ORIGIN_REDEMPTION = new Set([AUTH_CODE, GRANT_TYPES.refresh_token]);
 const OIDC_SCOPES = new Set(['openid', 'profile', 'offline_access']);
 const TOKEN_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
   pragma: 'no-cache',
 };
-const HTML_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+// The sign-in pages cannot be framed, so a page on another origin cannot put the account choice behind a click.
+const HTML_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "frame-ancestors 'none'",
+};
 const AUTHORIZE_FIELDS = [
   'client_id',
   'redirect_uri',
@@ -90,6 +100,7 @@ const AAD_ERRORS = {
   900144: ['invalid_request', 400],
   9002313: ['invalid_grant', 400],
   9002325: ['invalid_request', 400],
+  9002326: ['invalid_request', 400],
 };
 const CLAIMS_SUPPORTED = [
   'sub',
@@ -114,7 +125,13 @@ const CLAIMS_SUPPORTED = [
 ];
 
 const b64json = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-const fromB64json = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+// A JWT segment must decode to a JSON object; any other JSON value throws so callers reject it as malformed.
+const fromB64json = (part) => {
+  const value = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('A JWT segment must be a JSON object.');
+  return value;
+};
 const timestamp = (ms) => `${new Date(ms).toISOString().slice(0, 19).replace('T', ' ')}Z`;
 const safeDecode = (value) => {
   try {
@@ -151,7 +168,7 @@ export function certificateThumbprints(pem) {
   }
   const der = createPublicKey(pem).export({ type: 'spki', format: 'der' });
   return {
-    thumbprint: createHash('sha1').update(der).digest('hex').toUpperCase(),
+    thumbprint: createHash('sha1').update(der).digest('hex').toUpperCase(), // NOSONAR: non-security hash used for identity or checksums
     thumbprint256: createHash('sha256').update(der).digest('hex').toUpperCase(),
   };
 }
@@ -169,10 +186,10 @@ const certificateMatches = (cert, header) => {
 };
 // Numeric dates as JSON numbers or numeric strings (MSAL.NET serialises nbf and exp as strings).
 const numeric = (value) =>
-  typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) ? Number(value) : NaN;
+  typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) ? Number(value) : Number.NaN;
 // Object id in UUID v5 layout, derived from a seed (service principal ids are deterministic per app).
 const guid = (seed) => {
-  const bytes = createHash('sha1').update(seed).digest().subarray(0, 16);
+  const bytes = createHash('sha1').update(seed).digest().subarray(0, 16); // NOSONAR: non-security hash used for identity or checksums
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString('hex');
@@ -185,6 +202,14 @@ const parseBasic = (authorization) => {
   const [id, ...secret] = Buffer.from(match[1], 'base64').toString('utf8').split(':');
   return { clientId: safeDecode(id), secret: safeDecode(secret.join(':')) };
 };
+// A client secret, a Basic secret or a client assertion presented on the token request.
+const carriesClientCredential = (form, basic) =>
+  Boolean(
+    form.client_assertion ||
+    form.client_assertion_type ||
+    form.client_secret !== undefined ||
+    basic?.secret !== undefined,
+  );
 // A registered application's own API resource (its app id or api://<appId>), for tokens it exposes to its clients.
 const apiResource = (value, apps) =>
   apps.some((app) => [app.appId, `api://${app.appId}`].some((id) => id.toLowerCase() === String(value).toLowerCase()));
@@ -215,7 +240,7 @@ const lifetimeProblem = (claims, nowMs) => {
   const exp = numeric(claims.exp);
   if (!Number.isFinite(exp)) return 'malformed';
   if (exp + SKEW_SECONDS < nowMs / 1000) return 'expired';
-  if (claims.nbf !== undefined && !(numeric(claims.nbf) - SKEW_SECONDS <= nowMs / 1000)) return 'not-yet-valid';
+  if (claims.nbf !== undefined && !(numeric(claims.nbf) - SKEW_SECONDS <= nowMs / 1000)) return 'not-yet-valid'; // NOSONAR: operand can be NaN or undefined, the negated test differs
   return null;
 };
 const hasToken = (value, token) =>
@@ -242,7 +267,7 @@ const formPost = (action, fields) =>
 // Query and form fields merged; form (POST body) wins. Accepts a URL, a query object or a string.
 const fieldsOf = ({ url, query, form }) => ({
   ...Object.fromEntries(new URLSearchParams(query ?? url?.searchParams ?? '')),
-  ...(form ?? {}),
+  ...form,
 });
 const normalizeUserCode = (value) =>
   String(value ?? '')
@@ -256,8 +281,17 @@ const pkceMatches = (entry, verifier) => {
       : String(verifier);
   return expected === entry.challenge;
 };
+const spaRedirect = (app, uri) => (app.spaRedirectUris ?? []).includes(uri);
+// The tokens of a single-page redemption are for that origin alone, so its CORS header names the origin, not the wildcard.
+const singlePageReply = (result, origin) => ({
+  ...result,
+  headers: { ...result.headers, 'access-control-allow-origin': origin, vary: 'Origin' },
+});
+// The origin a single-page redirect URI is served from; null for any other redirect URI.
+const spaOriginOf = (app, uri) => (spaRedirect(app, uri) ? new URL(uri).origin : null);
 const redirectAllowed = (app, uri) =>
   (app.redirectUris ?? []).includes(uri) ||
+  spaRedirect(app, uri) ||
   (Boolean(app.publicClient) && (LOOPBACK_REDIRECT.test(String(uri)) || uri === NATIVE_CLIENT_REDIRECT));
 
 export function hashSecret(secret, salt = randomBytes(16)) {
@@ -301,6 +335,7 @@ function aadError(
 }
 
 // federatedIssuers() returns [{ issuer, jwks: { keys } }] for verifying federated client assertions.
+// signingKey: the token signing pair { privateKey, publicKey } (RSA KeyObjects); by default every authority generates its own.
 export function createAuthority({
   tenantId,
   applications,
@@ -308,13 +343,24 @@ export function createAuthority({
   federatedIssuers = () => [],
   clock = () => Date.now(),
   accessTokenLifetimeSeconds = 3600,
+  signingKey = null,
 }) {
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const { kty, n, e } = publicKey.export({ format: 'jwk' });
-  // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
-  const kid = createHash('sha1')
-    .update(publicKey.export({ type: 'spki', format: 'der' }))
-    .digest('base64url');
+  // A generated pair is created on first use: a 2048-bit key pair blocks the event loop, and many runtimes never issue
+  // a token. A supplied pair is used as given.
+  let keys;
+  const signingKeys = () => {
+    if (!keys) {
+      const { privateKey, publicKey } = signingKey ?? generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const { kty, n, e } = publicKey.export({ format: 'jwk' });
+      // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
+      const kid = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
+        .update(publicKey.export({ type: 'spki', format: 'der' }))
+        .digest('base64url');
+      keys = { privateKey, publicKey, kty, n, e, kid };
+    }
+    return keys;
+  };
+  if (signingKey) signingKeys();
   const refreshTokens = new Map();
   const codes = new Map();
   const devices = new Map();
@@ -348,9 +394,11 @@ export function createAuthority({
   const interactiveUsers = () => (users.list?.() ?? []).filter((row) => interactive(row));
 
   const signJwt = (claims) => {
+    const { privateKey, kid } = signingKeys();
     const head = b64json({ typ: 'JWT', alg: 'RS256', kid, x5t: kid });
     const body = b64json(claims);
-    return `${head}.${body}.${sign('sha256', Buffer.from(`${head}.${body}`), privateKey).toString('base64url')}`;
+    const signingInput = `${head}.${body}`;
+    return `${signingInput}.${sign('sha256', Buffer.from(signingInput), privateKey).toString('base64url')}`;
   };
 
   // Access tokens are always v1.0 format, which Dataverse accepts regardless of the endpoint version.
@@ -422,14 +470,16 @@ export function createAuthority({
   };
 
   // userOid is null for application-only refresh tokens; those rebuild app tokens.
-  const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock() }) => {
+  // spa binds the token to a single-page origin and sets its expiry; a rotation keeps the sign-in's expiry.
+  const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock(), spa = null }) => {
     const token = randomBytes(36).toString('base64url');
     remember(refreshTokens, token, {
       appId: appId.toLowerCase(),
       userOid,
       resource,
       scope,
-      expiresAt: now + REFRESH_LIFETIME_MS,
+      spaOrigin: spa?.origin ?? null,
+      expiresAt: spa?.expiresAt ?? now + REFRESH_LIFETIME_MS,
     });
     return token;
   };
@@ -462,7 +512,20 @@ export function createAuthority({
   };
 
   // The one token response shared by every grant that acts for a user (app-only refresh reuses it without a user).
-  const delegatedReply = ({ origin, app, user, resource, scope, nonce, appidacr, version, now, reply, form = {} }) => {
+  const delegatedReply = ({
+    origin,
+    app,
+    user,
+    resource,
+    scope,
+    nonce,
+    appidacr,
+    version,
+    now,
+    reply,
+    form = {},
+    spa = null,
+  }) => {
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, user, appidacr, now });
     const refresh = issueRefreshToken({
       appId: app.appId,
@@ -470,6 +533,7 @@ export function createAuthority({
       resource,
       scope,
       now,
+      spa,
     });
     const body = tokenBody({ version, access, now, audience: resource, scope, refresh });
     if (user && hasToken(scope, 'openid')) body.id_token = issueIdToken({ origin, app, user, nonce, now });
@@ -493,6 +557,54 @@ export function createAuthority({
     }
   };
 
+  const assertionSignerFailure = ({
+    app,
+    header,
+    claims,
+    audiences,
+    data,
+    signature,
+    origin,
+    tenantSegment,
+    reject,
+  }) => {
+    const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
+    const federated = cert
+      ? null
+      : (app.federatedCredentials ?? []).find(
+          (item) =>
+            item.issuer === claims.iss &&
+            item.subject === claims.sub &&
+            audiences.some((aud) => item.audiences.includes(aud)),
+        );
+    if (cert) {
+      if (!ASSERTION_ALGS.has(header.alg) || !verifies(data, signature, cert.publicKeyPem, header.alg))
+        return { cert, failure: reject('The client assertion signature is invalid.') };
+      const subject = app.appId.toLowerCase();
+      if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject)
+        return { cert, failure: reject("The client assertion's iss and sub must be the client_id.") };
+      const endpoints = new Set(
+        [tenantSegment, tenantId].flatMap((segment) => [
+          `${origin}/${segment}/oauth2/v2.0/token`,
+          `${origin}/${segment}/oauth2/token`,
+        ]),
+      );
+      if (!audiences.some((item) => endpoints.has(item)))
+        return { cert, failure: reject("The client assertion's audience is not this token endpoint.") };
+    } else if (federated) {
+      if (
+        header.alg !== FEDERATED_ALG ||
+        !verifies(data, signature, federatedKey(claims.iss, header.kid), FEDERATED_ALG)
+      )
+        return { cert, failure: reject('The client assertion signature is invalid.') };
+    } else if ((app.federatedCredentials ?? []).length) {
+      return { cert, failure: reject('No matching federated identity record found for presented assertion.', 70021) };
+    } else {
+      return { cert, failure: reject('The client assertion is not signed with a registered certificate.') };
+    }
+    return { cert, failure: null };
+  };
+
   const verifyAssertion = (app, form, { origin, tenantSegment, now }) => {
     const reject = (description, code = 700027) => ({ code, description });
     if (form.client_assertion_type !== ASSERTION_TYPE || !form.client_assertion)
@@ -510,39 +622,20 @@ export function createAuthority({
       return reject('The client assertion is not a JSON Web Token.');
     const data = `${head}.${body}`;
     const audiences = [claims.aud].flat();
-    const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
     // A federated credential matches the assertion's issuer, subject and audience; no certificate may match first.
-    const federated = cert
-      ? null
-      : (app.federatedCredentials ?? []).find(
-          (item) =>
-            item.issuer === claims.iss &&
-            item.subject === claims.sub &&
-            audiences.some((aud) => item.audiences.includes(aud)),
-        );
-    if (cert) {
-      if (!ASSERTION_ALGS.includes(header.alg) || !verifies(data, signature, cert.publicKeyPem, header.alg))
-        return reject('The client assertion signature is invalid.');
-      const subject = app.appId.toLowerCase();
-      if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject)
-        return reject("The client assertion's iss and sub must be the client_id.");
-      const endpoints = [tenantSegment, tenantId].flatMap((segment) => [
-        `${origin}/${segment}/oauth2/v2.0/token`,
-        `${origin}/${segment}/oauth2/token`,
-      ]);
-      if (!audiences.some((item) => endpoints.includes(item)))
-        return reject("The client assertion's audience is not this token endpoint.");
-    } else if (federated) {
-      if (
-        header.alg !== FEDERATED_ALG ||
-        !verifies(data, signature, federatedKey(claims.iss, header.kid), FEDERATED_ALG)
-      )
-        return reject('The client assertion signature is invalid.');
-    } else if ((app.federatedCredentials ?? []).length) {
-      return reject('No matching federated identity record found for presented assertion.', 70021);
-    } else {
-      return reject('The client assertion is not signed with a registered certificate.');
-    }
+    const signer = assertionSignerFailure({
+      app,
+      header,
+      claims,
+      audiences,
+      data,
+      signature,
+      origin,
+      tenantSegment,
+      reject,
+    });
+    if (signer.failure) return signer.failure;
+    const { cert } = signer;
     const nowSeconds = now / 1000;
     const exp = numeric(claims.exp);
     const nbf = claims.nbf === undefined ? 0 : numeric(claims.nbf);
@@ -642,6 +735,15 @@ export function createAuthority({
           'Proof Key for Code Exchange is required for cross-origin authorization code redemption.',
         ),
       };
+    if (spaRedirect(app, input.redirect_uri) && input.code_challenge_method !== 'S256')
+      return {
+        page: errorPage(
+          origin,
+          now,
+          9002325,
+          'Proof Key for Code Exchange with the S256 method is required for a single-page application redirect URI.',
+        ),
+      };
     return { app };
   };
 
@@ -684,6 +786,7 @@ export function createAuthority({
       nonce: input.nonce,
       challenge: input.code_challenge,
       challengeMethod: input.code_challenge_method ?? 'plain',
+      spaOrigin: spaOriginOf(checked.app, input.redirect_uri),
       expiresAt: now + CODE_LIFETIME_MS,
       used: false,
     });
@@ -785,6 +888,7 @@ export function createAuthority({
       now,
       reply,
       form,
+      spa: entry.spaOrigin ? { origin: entry.spaOrigin, expiresAt: entry.expiresAt } : null,
     });
   };
 
@@ -820,6 +924,7 @@ export function createAuthority({
       now,
       reply,
       form,
+      spa: entry.spaOrigin ? { origin: entry.spaOrigin } : null,
     });
   };
 
@@ -900,7 +1005,7 @@ export function createAuthority({
     } catch {
       return reject('The assertion is not a JSON Web Token.');
     }
-    if (header.alg !== 'RS256' || !verifies(`${head}.${body}`, signature, publicKey))
+    if (header.alg !== 'RS256' || !verifies(`${head}.${body}`, signature, signingKeys().publicKey))
       return reject('Assertion failed signature validation.');
     const problem = lifetimeProblem(claims, now);
     if (problem)
@@ -945,10 +1050,7 @@ export function createAuthority({
     });
   };
 
-  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0' }) => {
-    const now = clock();
-    const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
-    const failure = (code, description) => reply(aadError(code, { description, origin, now }));
+  const validateTokenGrant = (tenantSegment, form, failure) => {
     if (!knownTenant(tenantSegment))
       return failure(
         90002,
@@ -966,24 +1068,93 @@ export function createAuthority({
         9001023,
         "The grant type isn't supported on the /common or /consumers authentication contexts. Use /organizations or a tenant ID instead.",
       );
+    return null;
+  };
+
+  const resolveTokenClient = (form, headers, failure) => {
     const basic = parseBasic(headers.authorization);
     const clientId = form.client_id ?? basic?.clientId;
-    if (!clientId) return failure(900144, "The request body must contain the following parameter: 'client_id'.");
+    if (!clientId)
+      return { result: failure(900144, "The request body must contain the following parameter: 'client_id'.") };
     const app = findApp(clientId);
     if (!app) {
-      // An unregistered client on the on-behalf-of grant is reported as no consent (AADSTS65001).
       if (form.grant_type === JWT_BEARER)
-        return failure(
-          65001,
-          `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`,
-        );
-      return failure(
-        700016,
-        `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`,
-      );
+        return {
+          result: failure(
+            65001,
+            `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`,
+          ),
+        };
+      return {
+        result: failure(
+          700016,
+          `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`,
+        ),
+      };
     }
     if (!grantAllowed(app, form.grant_type))
-      return failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`);
+      return { result: failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`) };
+    return { basic, clientId, app };
+  };
+
+  const tokenResource = (form, version, origin, failure) => {
+    if (version === 'v1.0') {
+      if (!form.resource)
+        return { result: failure(900144, "The request body must contain the following parameter: 'resource'.") };
+      if (!acceptedResource(form.resource, origin, applications()))
+        return {
+          result: failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`),
+        };
+      return { resource: form.resource };
+    }
+    if (!form.scope)
+      return { result: failure(900144, "The request body must contain the following parameter: 'scope'.") };
+    const resource = scopeResource(form.scope, origin, true, applications());
+    if (!resource)
+      return {
+        result: failure(
+          70011,
+          "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource and end in '/.default'.",
+        ),
+      };
+    return { resource };
+  };
+
+  // A code or refresh token redeemed from a browser origin is allowed only when this application's single-page redirect
+  // URI issued it and the request comes from that URI's origin. Entra permits this only for the Single-Page Application
+  // client type.
+  const spaRedemption = (browserOrigin, form, app) => {
+    const appId = app.appId.toLowerCase();
+    if (form.grant_type === AUTH_CODE) {
+      const entry = codes.get(form.code);
+      return entry?.spaOrigin === browserOrigin && entry.clientId === appId;
+    }
+    const entry = refreshTokens.get(form.refresh_token);
+    return entry?.spaOrigin === browserOrigin && entry.appId === appId;
+  };
+
+  // A browser origin (not the listener's own) may not redeem a code or refresh token unless spaRedemption allows it.
+  // The description is Learn's wording for AADSTS9002326.
+  const crossOriginRefusal = (browserOrigin, form, basic, app) => {
+    if (!browserOrigin) return null;
+    // Learn names no code for a client credential with an Origin header; 9002326 is this simulator's choice for it.
+    if (carriesClientCredential(form, basic)) return 'Client credentials are not accepted from a browser origin.';
+    if (CROSS_ORIGIN_REDEMPTION.has(form.grant_type) && !spaRedemption(browserOrigin, form, app))
+      return "Cross-origin token redemption is permitted only for the 'Single-Page Application' client-type.";
+    return null;
+  };
+
+  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0', browserOrigin = null }) => {
+    const now = clock();
+    const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
+    const failure = (code, description) => reply(aadError(code, { description, origin, now }));
+    const grantFailure = validateTokenGrant(tenantSegment, form, failure);
+    if (grantFailure) return grantFailure;
+    const client = resolveTokenClient(form, headers, failure);
+    if (client.result) return client.result;
+    const { basic, app } = client;
+    const crossOrigin = crossOriginRefusal(browserOrigin, form, basic, app);
+    if (crossOrigin) return failure(9002326, crossOrigin);
     const auth = authenticateClient(app, form, basic, { origin, tenantSegment, now });
     if (auth.code) return failure(auth.code, auth.description);
 
@@ -994,23 +1165,17 @@ export function createAuthority({
       password: passwordGrant,
       [JWT_BEARER]: onBehalfOf,
     }[form.grant_type];
-    if (grant) return grant({ origin, app, auth, form, version, now, reply, failure });
-
-    let resource;
-    if (version === 'v1.0') {
-      if (!form.resource) return failure(900144, "The request body must contain the following parameter: 'resource'.");
-      if (!acceptedResource(form.resource, origin, applications()))
-        return failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`);
-      resource = form.resource;
-    } else {
-      if (!form.scope) return failure(900144, "The request body must contain the following parameter: 'scope'.");
-      resource = scopeResource(form.scope, origin, true, applications());
-      if (!resource)
-        return failure(
-          70011,
-          "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource and end in '/.default'.",
-        );
+    if (grant) {
+      const result = grant({ origin, app, auth, form, version, now, reply, failure });
+      // A browser origin reaches these grants only as the single-page origin the code or token was issued to.
+      return browserOrigin && CROSS_ORIGIN_REDEMPTION.has(form.grant_type)
+        ? singlePageReply(result, browserOrigin)
+        : result;
     }
+
+    const resolvedResource = tokenResource(form, version, origin, failure);
+    if (resolvedResource.result) return resolvedResource.result;
+    const { resource } = resolvedResource;
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, appidacr: auth.appidacr, now });
     return reply({ status: 200, body: tokenBody({ version, access, now, audience: resource }) });
   };
@@ -1029,7 +1194,8 @@ export function createAuthority({
       return { ok: false, reason: 'malformed' };
     }
     if (jwtHeader.alg !== 'RS256') return { ok: false, reason: 'malformed' };
-    if (!verifies(`${parts[0]}.${parts[1]}`, parts[2], publicKey)) return { ok: false, reason: 'signature' };
+    if (!verifies(`${parts[0]}.${parts[1]}`, parts[2], signingKeys().publicKey))
+      return { ok: false, reason: 'signature' };
     const problem = lifetimeProblem(claims, clock());
     if (problem) return { ok: false, reason: problem };
     const audienceOk = [claims.aud]
@@ -1081,8 +1247,13 @@ export function createAuthority({
   };
 
   return {
-    kid,
-    jwks: () => ({ keys: [{ kty, use: 'sig', kid, alg: 'RS256', n, e }] }),
+    get kid() {
+      return signingKeys().kid;
+    },
+    jwks: () => {
+      const { kty, kid, n, e } = signingKeys();
+      return { keys: [{ kty, use: 'sig', kid, alg: 'RS256', n, e }] };
+    },
     openIdConfiguration,
     instanceDiscovery,
     handleToken,

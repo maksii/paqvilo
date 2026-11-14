@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo step modes, journaled saves and checkpoint/rollback persistence around plug-in phases
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
 import { runPluginPhase, pluginPhaseRequiresCheckpoint } from '../lib/exported-plugins.mjs';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
 const member = { contactId: 'own-contact', roles: ['Member'] };
@@ -62,6 +64,7 @@ const MODES = {
   handler: { calls: ['handler'], code: null, note: undefined },
   mock: { calls: [], code: null, note: 'mocked' },
 };
+// @test-kind contract+security: privilege check: every step mode keeps the table-permission gate, never invokes trusted code for an ungranted identity and never lets a secondary effect grant access
 for (const [mode, expected] of Object.entries(MODES)) {
   test(`scoped Create with ${mode} retains the table grant gate and final membership check`, async () => {
     const state = scopedState(),
@@ -118,6 +121,7 @@ for (const [mode, expected] of Object.entries(MODES)) {
   });
 }
 
+// @test-kind contract+security: privilege check: inert exported steps leave Parent-scoped form and Web API inserts gated exactly as without plug-ins
 test('exported inert Create steps leave Parent-scoped basic form and Web API inserts equivalent', async (t) => {
   const fixture = await pluginFixture(t);
   await fixture.app.close();
@@ -155,7 +159,7 @@ test('exported inert Create steps leave Parent-scoped basic form and Web API ins
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.csrf,
     headers = {
       ...signInHeaders(app, member.contactId, { roles: member.roles }),
@@ -211,7 +215,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
     watch: false,
   };
   let app = await createSimulator({ ...options, initial: fixtureApp.store.snapshot() });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.csrf,
     rowId = pluginId(80);
   const admin = (route, body) =>
@@ -259,7 +263,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
 });
 
 test('only matching executable phases promote a row transaction, and arbitrary handler writes roll back', async (t) => {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-plugin-checkpoint-'));
+  const root = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-plugin-checkpoint-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const store = await new DataStore({

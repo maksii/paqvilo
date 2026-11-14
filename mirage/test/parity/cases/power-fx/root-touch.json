@@ -1,0 +1,150 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-touch",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "IfError evaluation with a host ReflectionFunction Touch, in two independent official interpreter processes. Establishes the value and the number of Touch calls for these expressions only; Touch is supplied by the host."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "3632e05fee71ddb31f9f0e8ba36646f0036db80cc83d7f10c1a424700a8ad03e",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "ee4a5d74f5b77257b4b6154029abe9fbb99013df2b4f0831834a4961bb30de76",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "row-01",
+      "input": {
+        "expression": "IfError(1/0, \"2\", Touch(), 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Pacific Standard Time",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "hostFunctions": {
+          "Touch": {
+            "returns": 1
+          }
+        },
+        "result": {
+          "fields": ["expression", "calls", "kind", "value", "errors"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, \"2\", Touch(), 3)",
+        "calls": 0,
+        "kind": "value",
+        "value": 2,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-02",
+      "input": {
+        "expression": "Touch()",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Pacific Standard Time",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "hostFunctions": {
+          "Touch": {
+            "returns": 1
+          }
+        },
+        "result": {
+          "fields": ["expression", "calls", "kind", "value", "errors"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Touch()",
+        "calls": 1,
+        "kind": "value",
+        "value": 1,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-03",
+      "input": {
+        "expression": "IfError(1, 2, Touch())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Pacific Standard Time",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "hostFunctions": {
+          "Touch": {
+            "returns": 1
+          }
+        },
+        "result": {
+          "fields": ["expression", "calls", "kind", "value", "errors"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1, 2, Touch())",
+        "calls": 1,
+        "kind": "value",
+        "value": 1,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-04",
+      "input": {
+        "expression": "IfError(Touch()/0, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Pacific Standard Time",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "hostFunctions": {
+          "Touch": {
+            "returns": 1
+          }
+        },
+        "result": {
+          "fields": ["expression", "calls", "kind", "value", "errors"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(Touch()/0, 2)",
+        "calls": 1,
+        "kind": "value",
+        "value": 2,
+        "errors": null
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

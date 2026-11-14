@@ -8,12 +8,100 @@ import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
 import { panelVisibilityNotice } from '../panel.mjs';
-import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
+import { guardShutdownSignals, shutdownSignalCounter } from '../signal-forwarding.mjs';
+import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
 const tag = (session) => `${session.cfg.siteName ?? 'portal'}@${session.cfg.envName ?? 'env'}`;
 const short = (commit) => (typeof commit === 'string' ? commit.slice(0, 7) : null);
+
+function logHitNotes(hit, label, log) {
+  for (const note of hit.notes ?? []) log(`${time()}  ${label}  WARN   ${hit.url}  ${note.rel}: ${note.reason}`);
+}
+
+function logVerboseHit(hit, label, verbose, log) {
+  if (!verbose && hit.page) return false;
+  if (hit.type === 'file') log(`${time()}  ${label}  local  ${hit.url}  <-  ${hit.sources[0].rel}`);
+  else
+    for (const source of hit.sources ?? [])
+      log(`${time()}  ${label}  html   ${hit.url}  ${source.action}  <-  ${source.rel}`);
+  return true;
+}
+
+function prepareHitTally(hit, tallies, pageUrls, flush) {
+  if (hit.navigation) {
+    flush(hit.page);
+    pageUrls.set(hit.page, hit.url);
+    tallies.set(hit.page, { url: hit.url, files: 0, blocks: 0, patches: 0, late: false, timer: null });
+  } else if (!tallies.has(hit.page)) {
+    // sources requested after the summary of this page was printed (lazy loads, polling)
+    if (!hit.sources?.length) return null;
+    tallies.set(hit.page, {
+      url: pageUrls.get(hit.page) ?? hit.url,
+      files: 0,
+      blocks: 0,
+      patches: 0,
+      late: true,
+      timer: null,
+    });
+  }
+  return tallies.get(hit.page);
+}
+
+function countHitSources(hit, tally) {
+  if (hit.type === 'file') {
+    tally.files++;
+    return;
+  }
+  for (const source of hit.sources ?? []) {
+    if (/* NOSONAR */ /^patched/.test(source.action))
+      // NOSONAR: preserve the original string or regex dispatch
+      tally.patches++; // NOSONAR: preserve coercion of absent or non-string action metadata
+    else tally.blocks++;
+  }
+}
+
+function printMirageSummary(cfg, model, log) {
+  log(
+    'runtime     Mirage renders local sources and owns page reloads; the toolkit panel remains available for inspection and editing',
+  );
+  log(`source map  ${model.webFileByUrl.size} web-file URLs, ${model.inlineSources.length} inline sources`);
+}
+
+function printBaselineSummary(session, cfg, log) {
+  const requested = cfg.site.markup.requestedBaseline ?? cfg.site.markup.baseline;
+  let pinned = ' (unavailable)';
+  if (session.baseline.available)
+    pinned =
+      requested !== session.baseline.spec
+        ? ` (pinned at ${short(session.baseline.commit)})`
+        : ` @ ${short(session.baseline.commit)}`;
+  log(`scope       ${cfg.site.scope}, baseline ${requested}${pinned}`);
+  if (session.head) {
+    const pinHint = requested === 'HEAD' ? '; Pin HEAD in the panel to update it' : '';
+    const drift =
+      session.baseline.available && session.head.commit !== session.baseline.commit
+        ? `   (HEAD differs from the baseline${pinHint})`
+        : '';
+    const headLabel = session.head.branch ? `branch ${session.head.branch}` : 'detached HEAD';
+    log(`git         ${headLabel} @ ${short(session.head.commit)}${drift}`);
+  }
+}
+
+function printSummaryDiagnostics(session, cfg, model, rewriter, log) {
+  if (!session.baseline.available)
+    log(
+      `  WARNING: "${cfg.site.markup.baseline}" is not a git ref here, so there is no baseline: template/snippet changes cannot be shown${cfg.site.scope === 'changed' ? " and scope 'changed' overrides nothing" : ''}`,
+    );
+  for (const warning of model.warnings.slice(0, 3)) log(`  note: ${warning}`);
+  for (const unsupported of rewriter.unsupported.slice(0, 3))
+    log(`  NEEDS DEPLOY: ${unsupported.rel} - ${unsupported.reason}`);
+  if (model.warnings.length > 3 || rewriter.unsupported.length > 3)
+    log(
+      `diagnostics ${model.warnings.length} source warnings, ${rewriter.unsupported.length} deployment-only sources; full details in the panel or "paqvilo doctor"`,
+    );
+}
 
 /**
  * Compare only resources the developer actually visits, with a bounded queue and stale-result
@@ -156,35 +244,11 @@ export function logHits(
     );
   };
   const onHit = (hit) => {
-    for (const n of hit.notes ?? []) log(`${time()}  ${label}  WARN   ${hit.url}  ${n.rel}: ${n.reason}`);
-    if (verbose || !hit.page) {
-      if (hit.type === 'file') log(`${time()}  ${label}  local  ${hit.url}  <-  ${hit.sources[0].rel}`);
-      else for (const s of hit.sources ?? []) log(`${time()}  ${label}  html   ${hit.url}  ${s.action}  <-  ${s.rel}`);
-      return;
-    }
-    if (hit.navigation) {
-      flush(hit.page);
-      pageUrls.set(hit.page, hit.url);
-      tallies.set(hit.page, { url: hit.url, files: 0, blocks: 0, patches: 0, late: false, timer: null });
-    } else if (!tallies.has(hit.page)) {
-      // sources requested after the summary of this page was printed (lazy loads, polling)
-      if (!hit.sources?.length) return;
-      tallies.set(hit.page, {
-        url: pageUrls.get(hit.page) ?? hit.url,
-        files: 0,
-        blocks: 0,
-        patches: 0,
-        late: true,
-        timer: null,
-      });
-    }
-    const tally = tallies.get(hit.page);
-    if (hit.type === 'file') tally.files++;
-    else
-      for (const s of hit.sources ?? []) {
-        if (/^patched/.test(s.action)) tally.patches++;
-        else tally.blocks++;
-      }
+    logHitNotes(hit, label, log);
+    if (logVerboseHit(hit, label, verbose, log)) return;
+    const tally = prepareHitTally(hit, tallies, pageUrls, flush);
+    if (!tally) return;
+    countHitSources(hit, tally);
     clearTimeout(tally.timer);
     tally.timer = setTimeout(() => flush(hit.page), settleMs);
     tally.timer.unref?.();
@@ -217,43 +281,18 @@ export function printSummary(session, log = console.log) {
     `sources     ${cfg.sourceDir}${model.format === 'enhanced' ? '   (enhanced data model: page JS/CSS, templates and snippets are fields of the component XML)' : ''}`,
   );
   if (cfg.mirage) {
-    log(
-      'runtime     Mirage renders local sources and owns page reloads; the toolkit panel remains available for inspection and editing',
-    );
-    log(`source map  ${model.webFileByUrl.size} web-file URLs, ${model.inlineSources.length} inline sources`);
+    printMirageSummary(cfg, model, log);
     return;
   }
-  const requested = cfg.site.markup.requestedBaseline ?? cfg.site.markup.baseline;
-  const pinned = session.baseline.available
-    ? requested !== session.baseline.spec
-      ? ` (pinned at ${short(session.baseline.commit)})`
-      : ` @ ${short(session.baseline.commit)}`
-    : ' (unavailable)';
-  log(`scope       ${cfg.site.scope}, baseline ${requested}${pinned}`);
-  if (session.head) {
-    const drift =
-      session.baseline.available && session.head.commit !== session.baseline.commit
-        ? `   (HEAD differs from the baseline${requested === 'HEAD' ? '; Pin HEAD in the panel to update it' : ''})`
-        : '';
-    log(
-      `git         ${session.head.branch ? `branch ${session.head.branch}` : 'detached HEAD'} @ ${short(session.head.commit)}${drift}`,
-    );
-  }
+  printBaselineSummary(session, cfg, log);
   log(`web files   ${model.webFileByUrl.size} URLs mapped to local files`);
   log(`inline      ${rewriter.activeBlocks} custom JS/CSS blocks (pages, forms, lists)`);
   log(`markup      ${rewriter.patches.length} changed templates/snippets/page copies patched into pages`);
-  if (!session.baseline.available) {
-    log(
-      `  WARNING: "${cfg.site.markup.baseline}" is not a git ref here, so there is no baseline: template/snippet changes cannot be shown${cfg.site.scope === 'changed' ? " and scope 'changed' overrides nothing" : ''}`,
-    );
-  }
-  for (const w of model.warnings.slice(0, 3)) log(`  note: ${w}`);
-  for (const u of rewriter.unsupported.slice(0, 3)) log(`  NEEDS DEPLOY: ${u.rel} - ${u.reason}`);
-  if (model.warnings.length > 3 || rewriter.unsupported.length > 3)
-    log(
-      `diagnostics ${model.warnings.length} source warnings, ${rewriter.unsupported.length} deployment-only sources; full details in the panel or "paqvilo doctor"`,
-    );
+  printSummaryDiagnostics(session, cfg, model, rewriter, log);
 }
+
+// A source refresh is waited for until it has gone this long without progress (a hang guard, not a deadline).
+export const SOURCE_REFRESH_SILENCE_MS = 60_000;
 
 /**
  * Watches the sources and keeps session + open tabs up to date. Returns the watcher.
@@ -299,10 +338,11 @@ export function watchSources(
   let lastActivity = Date.now();
   const idleWaiters = new Set();
   // Verification must not start a no-reload probe while a previous save still has a browser
-  // refresh queued. Wait for completed work and a short quiet period, with a bounded deadline.
-  watcher.whenIdle = (timeoutMs = 30_000) =>
+  // refresh queued. Wait for completed work and a short quiet period. Progress (a refresh completing,
+  // a change queued or processed) restarts the silence guard, which is a hang guard only.
+  watcher.whenIdle = ({ silenceMs = SOURCE_REFRESH_SILENCE_MS } = {}) =>
     new Promise((resolve, reject) => {
-      const deadline = Date.now() + timeoutMs;
+      const startedAt = Date.now();
       const waiter = {
         timer: null,
         finish: (error) => {
@@ -316,8 +356,8 @@ export function watchSources(
         if (closed) return waiter.finish();
         if (!busy && !timer && !pending.size && !baselineChanged && Date.now() - lastActivity >= 200)
           return waiter.finish();
-        if (Date.now() >= deadline)
-          return waiter.finish(new Error('Source refresh did not settle before the deadline'));
+        const silentMs = Date.now() - Math.max(lastActivity, startedAt);
+        if (silentMs >= silenceMs) return waiter.finish(sourceRefreshSilenceError(silentMs, silenceMs));
         waiter.timer = setTimeout(check, 50);
       };
       idleWaiters.add(waiter);
@@ -330,6 +370,7 @@ export function watchSources(
     // save all). What arrives meanwhile stays in `pending` and goes out as one reload afterwards.
     if (closed || busy || (!pending.size && !baselineChanged)) return;
     busy = true;
+    lastActivity = Date.now();
     const files = [...pending];
     pending = new Set();
     const force = baselineChanged;
@@ -337,83 +378,31 @@ export function watchSources(
     flight = run(files, force);
     session.watchedRefresh = flight;
   };
-  const run = async (saved, force) => {
-    try {
-      const unsupportedBefore = new Set(
-        (cfg.mirage ? [] : session.rewriter.unsupported).map((u) => `${u.rel}: ${u.reason}`),
-      );
-      // Inline and structural saves wait for Git without blocking the requests of other tabs.
-      const prepared =
-        typeof session.refreshAsync === 'function'
-          ? await session.refreshAsync(force ? [] : saved, { deferChangeTracking: !force })
-          : session.refresh(force ? [] : saved, { deferChangeTracking: !force });
-      if (closed) return;
-      // A scratch file or a note in the extract is nothing the browser could show.
-      if (prepared?.ignored) {
-        if (process.env.PAQVILO_DEBUG)
-          log(
-            `${time()}  ${label}  ignored  ${saved
-              .slice(0, 3)
-              .map((f) => session.rel(f))
-              .join(', ')}${saved.length > 3 ? ` (+${saved.length - 3})` : ''}`,
-          );
-        return;
-      }
-      const files = prepared?.files ?? saved;
-      force ||= Boolean(prepared?.baselineChanged);
-      // Web-only saves in scope 'all' do not need a Git result before serving fresh bytes.
-      // Let the browser request those bytes while the badge comparison runs asynchronously.
-      const pageResults = new Map();
-      let how =
-        reload && session.liveReload !== false
-          ? await refreshPages(context, session, files, { force, outcomes: pageResults, signal: refreshAbort.signal })
-          : 'none';
-      if (prepared?.changeTrackingDeferred) {
-        const tracked = await session.refreshChangeTracking(files);
-        if (tracked.baselineChanged) {
-          force = true;
-          if (!closed && reload && session.liveReload !== false)
-            how = await refreshPages(context, session, files, {
-              force: true,
-              outcomes: pageResults,
-              signal: refreshAbort.signal,
-            });
-        }
-      }
-      if (closed) return;
-      if (force && session.baseline.available === false)
-        log(
-          `${time()}  ${label}  WARN   ${session.baseline.error ?? 'Git baseline is unavailable; baseline-dependent overrides are disabled'}`,
-        );
-      for (const u of cfg.mirage ? [] : session.rewriter.unsupported) {
-        const key = `${u.rel}: ${u.reason}`;
-        if (!unsupportedBefore.has(key)) log(`${time()}  ${label}  NEEDS DEPLOY  ${key}`);
-      }
-      const names =
-        (force ? `baseline ${session.baseline.spec}${files.length ? ', ' : ''}` : '') +
-        files
-          .slice(0, 3)
-          .map((f) => session.rel(f))
-          .join(', ') +
-        (files.length > 3 ? ` (+${files.length - 3})` : '');
-      const outcome = cfg.mirage
-        ? '  (Mirage owns page reloads)'
-        : ({
-            css: '  -> styles swapped',
-            reload: '  -> reloaded',
-            skipped: '  -> no open tab shows that page',
-            none: reload && session.liveReload === false ? '  (live reload is off)' : '',
-          }[how] ?? '');
-      log(`${time()}  ${label}  changed  ${names}${outcome}`);
-      session.emit('refreshed', { files, how, baselineChanged: force, pageResults });
-    } catch (err) {
-      log(`${time()}  ${label}  ERROR  ${err.message}`);
-    } finally {
-      busy = false;
-      lastActivity = Date.now();
-      if (!closed && (pending.size || baselineChanged) && !timer) timer = setTimeout(flush, 120);
-    }
+  const finishRefresh = () => {
+    busy = false;
+    lastActivity = Date.now();
+    if (
+      refreshIsPending(
+        () => closed,
+        () => pending.size,
+        () => baselineChanged,
+        () => timer,
+      )
+    )
+      timer = setTimeout(flush, 120);
   };
+  const run = (saved, force) =>
+    runSourceRefresh(saved, force, {
+      session,
+      cfg,
+      context,
+      reload,
+      label,
+      log,
+      refreshAbort,
+      isClosed: () => closed,
+      finish: finishRefresh,
+    });
   watcher.on('all', (_event, file) => {
     if (closed) return;
     lastActivity = Date.now();
@@ -423,7 +412,9 @@ export function watchSources(
   });
   // Initial watch enumeration ignores existing files; reconcile once it has established the
   // watch so edits during async startup/browser launch cannot disappear into that gap.
+  let resolveReady;
   watcher.ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
     watcher.once('ready', () => {
       if (closed) {
         resolve();
@@ -450,10 +441,23 @@ export function watchSources(
   let repository = null;
   let repositoryTimer = null;
   let baselineTimer = null;
+  // A Git that gives no answer is asked again on every repository check; the user is told once, and again only
+  // after Git has answered in between.
+  let gitSilent = false;
+  const gitNoAnswer = (err) => {
+    if (!gitSilent && !closed)
+      log(`${time()}  ${label}  WARN   Git did not answer (${err.message}); asking again on the next repository check`);
+    gitSilent = true;
+  };
   const checkRepository = () => {
     if (closed || baselineFlight) return;
     baselineFlight = (async () => {
-      if (tracksHead) await session.refreshHead().catch(() => null);
+      if (!located) await locate();
+      if (closed) return;
+      if (tracksHead)
+        await session.refreshHead().then(() => {
+          gitSilent = false;
+        }, gitNoAnswer);
       if (!tracksBaseline) return;
       const changed = await session.baseline.checkForUpdate();
       if (!changed || closed) return;
@@ -466,12 +470,29 @@ export function watchSources(
         baselineFlight = null;
       });
   };
-  const repositoryReady = (async () => {
-    if (!tracksBaseline && !tracksHead) return;
-    const directories = await gitDirectories(cfg.sourceDir);
+  // Whether Git has answered where the repository lives (or that there is none). Until it has, every repository
+  // check asks again, and HEAD and the baseline are polled.
+  let located = false;
+  const poll = () => {
+    clearInterval(baselineTimer);
+    baselineTimer = null;
+    if (closed || (!tracksBaseline && !tracksHead)) return;
+    baselineTimer = setInterval(checkRepository, baselinePollMs ?? (repository ? 15_000 : 2000));
+    baselineTimer.unref();
+  };
+  const locate = async () => {
+    let directories;
+    try {
+      directories = await gitDirectories(cfg.sourceDir);
+    } catch (err) {
+      gitNoAnswer(err);
+      return;
+    }
+    located = true;
+    gitSilent = false;
     if (closed) return;
-    // Outside a repository there is no HEAD to follow; do not spawn Git for it on every poll.
-    if (!directories) tracksHead = false;
+    // Git answered that there is no repository: no HEAD to follow; do not spawn Git for it on every poll.
+    if (directories === null) tracksHead = false;
     if (directories && gitWatch) {
       try {
         const roots = new Set([directories.gitDir, directories.commonDir].map((dir) => path.resolve(dir)));
@@ -501,9 +522,13 @@ export function watchSources(
         repository = null;
       }
     }
+    poll();
+  };
+  const repositoryReady = (async () => {
     if (!tracksBaseline && !tracksHead) return;
-    baselineTimer = setInterval(checkRepository, baselinePollMs ?? (repository ? 15_000 : 2000));
-    baselineTimer.unref();
+    await locate();
+    // No answer: where the repository lives is unknown, so HEAD and the baseline are polled instead of watched.
+    if (!located) poll();
   })().catch((err) => log(`${time()}  ${label}  ERROR  repository watcher: ${err.message}`));
   watcher.on('error', (err) => log(`${time()}  ${label}  ERROR  source watcher: ${err.message}`));
   const closeWatcher = watcher.close.bind(watcher);
@@ -511,6 +536,7 @@ export function watchSources(
   watcher.close = () => {
     if (closing) return closing;
     closed = true;
+    resolveReady(); // a watcher closed before it is ready ends its ready wait
     refreshAbort.abort();
     for (const waiter of idleWaiters) waiter.finish();
     clearTimeout(timer);
@@ -560,90 +586,338 @@ export default async function dev(cfg, args) {
   });
   console.log(`setup       ${setup.url}`);
   try {
-    return await develop(cfg, args, setup);
+    return await develop(args, setup);
   } finally {
     progress.close();
     await setup.close();
   }
 }
 
-async function develop(cfg, args, setup) {
+function logIgnoredRefresh(saved, session, label, log) {
+  if (!process.env.PAQVILO_DEBUG) return;
+  const more = saved.length > 3 ? ` (+${saved.length - 3})` : '';
+  log(
+    `${time()}  ${label}  ignored  ${saved
+      .slice(0, 3)
+      .map((file) => session.rel(file))
+      .join(', ')}${more}`,
+  );
+}
+
+function logNewUnsupported(session, cfg, unsupportedBefore, label, log) {
+  for (const item of cfg.mirage ? [] : session.rewriter.unsupported) {
+    const key = `${item.rel}: ${item.reason}`;
+    if (!unsupportedBefore.has(key)) log(`${time()}  ${label}  NEEDS DEPLOY  ${key}`);
+  }
+}
+
+function logRefreshResult({ session, cfg, files, force, how, pageResults, reload, label, log }) {
+  let baselineNote = '';
+  if (force) baselineNote = `baseline ${session.baseline.spec}${files.length ? ', ' : ''}`;
+  const names =
+    baselineNote +
+    files
+      .slice(0, 3)
+      .map((file) => session.rel(file))
+      .join(', ') +
+    (files.length > 3 ? ` (+${files.length - 3})` : '');
+  const outcome = cfg.mirage
+    ? '  (Mirage owns page reloads)'
+    : ({
+        css: '  -> styles swapped',
+        reload: '  -> reloaded',
+        skipped: '  -> no open tab shows that page',
+        none: reload && session.liveReload === false ? '  (live reload is off)' : '',
+      }[how] ?? '');
+  log(`${time()}  ${label}  changed  ${names}${outcome}`);
+  session.emit('refreshed', { files, how, baselineChanged: force, pageResults });
+}
+
+function warnUnavailableBaseline(force, session, label, log) {
+  if (!force || session.baseline.available !== false) return;
+  log(
+    `${time()}  ${label}  WARN   ${session.baseline.error ?? 'Git baseline is unavailable; baseline-dependent overrides are disabled'}`,
+  );
+}
+
+function trackedRefreshDecision(force, tracked, canRefresh) {
+  if (!tracked.baselineChanged) return { force, refresh: false };
+  return { force: true, refresh: canRefresh() };
+}
+
+function sourceRefreshSilenceError(silentMs, silenceMs) {
+  return new Error(
+    `Source refresh made no progress for ${silentMs} ms: no refresh completed and no change was queued or processed within the ${silenceMs} ms silence guard. This is a hang guard, not a limit on a refresh that keeps progressing.`,
+  );
+}
+
+function refreshIsPending(isClosed, pendingSize, baselineChanged, hasTimer) {
+  if (isClosed()) return false;
+  if (pendingSize() || baselineChanged()) return !hasTimer();
+  return false;
+}
+
+async function runSourceRefresh(
+  saved,
+  force,
+  { session, cfg, context, reload, label, log, refreshAbort, isClosed, finish },
+) {
+  try {
+    const unsupportedBefore = new Set(
+      (cfg.mirage ? [] : session.rewriter.unsupported).map((item) => `${item.rel}: ${item.reason}`),
+    );
+    // Inline and structural saves wait for Git without blocking the requests of other tabs.
+    const refreshFiles = force ? [] : saved;
+    const refreshOptions = { deferChangeTracking: !force };
+    const prepared =
+      typeof session.refreshAsync === 'function'
+        ? await session.refreshAsync(refreshFiles, refreshOptions)
+        : session.refresh(refreshFiles, refreshOptions);
+    if (isClosed()) return;
+    // A scratch file or a note in the extract is nothing the browser could show.
+    if (prepared?.ignored) {
+      logIgnoredRefresh(saved, session, label, log);
+      return;
+    }
+    const files = prepared?.files ?? saved;
+    force ||= Boolean(prepared?.baselineChanged);
+    // Web-only saves in scope 'all' do not need a Git result before serving fresh bytes.
+    // Let the browser request those bytes while the badge comparison runs asynchronously.
+    const pageResults = new Map();
+    let how =
+      reload && session.liveReload !== false
+        ? await refreshPages(context, session, files, { force, outcomes: pageResults, signal: refreshAbort.signal })
+        : 'none';
+    if (prepared?.changeTrackingDeferred) {
+      const tracked = await session.refreshChangeTracking(files);
+      const decision = trackedRefreshDecision(
+        force,
+        tracked,
+        () => !isClosed() && reload && session.liveReload !== false,
+      );
+      force = decision.force;
+      if (decision.refresh)
+        how = await refreshPages(context, session, files, {
+          force: true,
+          outcomes: pageResults,
+          signal: refreshAbort.signal,
+        });
+    }
+    if (isClosed()) return;
+    warnUnavailableBaseline(force, session, label, log);
+    logNewUnsupported(session, cfg, unsupportedBefore, label, log);
+    logRefreshResult({ session, cfg, files, force, how, pageResults, reload, label, log });
+  } catch (error) {
+    log(`${time()}  ${label}  ERROR  ${error.message}`);
+  } finally {
+    finish();
+  }
+}
+
+/** The address the development start opens: the start URL the Mirage command computed, else the origin and start path. */
+export function devStartUrl(config) {
+  return config.startUrl ?? config.origin + (config.site.startPath ?? '/');
+}
+
+export async function develop(args, setup, { open = openBrowser, source = process } = {}) {
+  let browserCleanupFailed = false;
   // `mirage dev` hands over a prepared selection (local Mirage origins plus live targets).
   const selection =
     args.devSelection ??
     (args.mirageTarget
       ? { mode: 'selected', initial: args.mirageTarget, targets: [args.mirageTarget] }
       : await loadDevTargets(args));
-  cfg = selection.initial;
-  for (const target of selection.targets) target.setupUrl = setup.url;
+  const config = selection.initial;
+  applySetupUrl(selection.targets, setup.url);
   const { startDevSessions } = await import('../dev-sessions.mjs');
-  if (selection.mode === 'all') {
-    console.log(
-      `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`,
-    );
-  }
-  const wantedPort = cfg.browser.debugPort;
+  logAllPortals(selection);
+  const wantedPort = config.browser.debugPort;
+  const devStop = createDevStop({ codeAppSignal: args.codeAppSignal, source });
+  const { stop, stopped } = devStop;
   args.startup?.phase('browser setup');
-  const { context, attached, close, debugPort, profile } = await openBrowser(cfg, {
-    debugPort: wantedPort,
-    cookieOrigins: selection.targets.map((target) => target.origin),
-  });
-  console.log(
-    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profile.name ? ` profile ${profile.name}` : ''}${profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : ''}`,
+  const opened = await launchUnderStop(
+    () =>
+      open(config, {
+        debugPort: wantedPort,
+        cookieOrigins: selection.targets.map((target) => target.origin),
+      }),
+    devStop,
   );
-  let stop;
-  const stopped = new Promise((resolve) => {
-    stop = resolve;
-  });
-  const browser = context.browser();
-  context.once('close', stop);
-  browser?.once('disconnected', stop);
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  if (!opened) return devExitCode(undefined, args);
+  const { context, attached, close, debugPort, profile } = opened;
+  logBrowserProfile(attached, config, profile);
+  const browser = watchBrowserEnd(context, stop);
   let runtime;
   try {
-    if (debugPort)
-      console.log(
-        `debugger    port ${debugPort} (VS Code: "paqvilo: attach to running dev browser"${debugPort === 9222 ? '' : `; set its port to ${debugPort}`})`,
-      );
+    logDebugPort(debugPort);
     args.startup?.phase('source discovery and interception');
     runtime = await startDevSessions(context, selection, { args, attached, stop, debugPort });
-    if (cfg.panel) {
-      const panel = runtime.active.get(cfg.origin).panel;
-      const { keys } = panel;
-      const visibilityNotice = panelVisibilityNotice(panel);
-      if (visibilityNotice) console.log(visibilityNotice);
-      console.log(
-        `dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`,
-      );
-    }
-    const startUrl = cfg.origin + (cfg.site.startPath ?? '/');
+    logDevPanel(runtime, config);
+    const startUrl = devStartUrl(config);
     const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
     console.log(`\nopening ${startUrl}`);
     try {
-      const loaded = await waitForStartupPage(page, startUrl, { progress: args.startup, stopped });
-      if (loaded)
-        console.log(
-          `${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`,
-        );
-    } catch (error) {
-      args.startup?.fail(error.message);
-      console.error(
-        `could not open ${startUrl}: ${error.message}. Inspect the browser and retry navigation; interception is installed.`,
+      const loaded = await waitForStartupPage(
+        page,
+        startUrl,
+        startupWaitOptions(args, { progress: args.startup, stopped }),
       );
+      logStartupReady(loaded);
+      // A closed page ends the session, whatever the browser still shows; say why it ended.
+      if (!loaded && page.isClosed()) {
+        console.log('browser closed before start-up finished');
+        stop();
+      }
+    } catch (error) {
+      reportStartupFailure(error, startUrl, args);
     }
 
     await stopped;
   } finally {
     context.off('close', stop);
     browser?.off('disconnected', stop);
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
-    try {
-      await runtime?.close();
-    } finally {
-      await close().catch(() => {});
-    }
+    devStop.release();
+    await guardShutdownSignals(async () => {
+      try {
+        await runtime?.close();
+      } finally {
+        browserCleanupFailed = await closeDevBrowser(close);
+      }
+    });
   }
-  return runtime?.failure ? 1 : 0;
+  return devExitCode(runtime, args) || (browserCleanupFailed ? 1 : 0);
+}
+
+/**
+ * Closes the dev browser. A browser that does not close is reported on stderr and fails the command;
+ * resolves to true when the close failed.
+ */
+export async function closeDevBrowser(close, { report = console.error } = {}) {
+  try {
+    await close();
+    return false;
+  } catch (error) {
+    report(`browser cleanup failed: ${String(error?.message ?? error).split('\n')[0]}`);
+    process.exitCode ||= 1;
+    return true;
+  }
+}
+
+/**
+ * The stop of a dev command. SIGINT, SIGTERM and the Code App signal request it from the moment it is created, which
+ * is before the browser launches. The first signal requests the stop, a second is absorbed and a third forces the
+ * exit. `release` removes those listeners.
+ */
+export function createDevStop({ codeAppSignal, source = process, exit = (code) => process.exit(code) } = {}) {
+  let requested = false;
+  let resolveStopped;
+  const stopped = new Promise((resolve) => {
+    resolveStopped = resolve;
+  });
+  const stop = () => {
+    requested = true;
+    resolveStopped();
+  };
+  // Every signal is handled until release(): the first requests the stop, the second is absorbed and the third forces
+  // the exit, as during shutdown, so a repeated Ctrl+C never takes Node's default action while the browser launches.
+  const absorb = shutdownSignalCounter({ onFirst: stop, exit });
+  const listeners = ['SIGINT', 'SIGTERM'].map((signal) => [signal, () => absorb(signal)]);
+  for (const [signal, listener] of listeners) source.on(signal, listener);
+  codeAppSignal?.addEventListener('abort', stop, { once: true });
+  if (codeAppSignal?.aborted) stop();
+  return {
+    source,
+    stop,
+    stopped,
+    requested: () => requested,
+    release() {
+      for (const [signal, listener] of listeners) source.off(signal, listener);
+      codeAppSignal?.removeEventListener('abort', stop);
+    },
+  };
+}
+
+/**
+ * Launches the dev browser under the command's stop. A stop requested before the launch skips it. A stop requested
+ * while the browser was launching closes the launched browser under the shutdown guard and resolves to null. A launch
+ * that fails releases the stop's listeners and rethrows.
+ */
+export async function launchUnderStop(open, devStop, { closeBrowser = closeDevBrowser } = {}) {
+  if (devStop.requested()) {
+    devStop.release();
+    return null;
+  }
+  let opened;
+  try {
+    opened = await open();
+  } catch (error) {
+    devStop.release();
+    throw error;
+  }
+  if (!devStop.requested()) return opened;
+  devStop.release();
+  await guardShutdownSignals(() => closeBrowser(opened.close), undefined, { source: devStop.source });
+  return null;
+}
+
+function applySetupUrl(targets, setupUrl) {
+  for (const target of targets) target.setupUrl = setupUrl;
+}
+
+function logAllPortals(selection) {
+  if (selection.mode !== 'all') return;
+  console.log(
+    `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`,
+  );
+}
+
+function logBrowserProfile(attached, cfg, profile) {
+  const profileName = profile.name ? ` profile ${profile.name}` : '';
+  const profileDirectory =
+    profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : '';
+  console.log(
+    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profileName}${profileDirectory}`,
+  );
+}
+
+function watchBrowserEnd(context, stop) {
+  const browser = context.browser();
+  context.once('close', stop);
+  browser?.once('disconnected', stop);
+  return browser;
+}
+
+function logDevPanel(runtime, cfg) {
+  if (!cfg.panel) return;
+  const panel = runtime.active.get(cfg.origin).panel;
+  const { keys } = panel;
+  const visibilityNotice = panelVisibilityNotice(panel);
+  if (visibilityNotice) console.log(visibilityNotice);
+  console.log(
+    `dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`,
+  );
+}
+
+function logDebugPort(debugPort) {
+  if (!debugPort) return;
+  const portHint = debugPort === 9222 ? '' : `; set its port to ${debugPort}`;
+  console.log(`debugger    port ${debugPort} (VS Code: "paqvilo: attach to running dev browser"${portHint})`);
+}
+
+function logStartupReady(loaded) {
+  if (!loaded) return;
+  console.log(
+    `${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`,
+  );
+}
+
+function reportStartupFailure(error, startUrl, args) {
+  args.startup?.fail(error.message);
+  console.error(
+    `could not open ${startUrl}: ${error.message}. Inspect the browser and retry navigation; interception is installed.`,
+  );
+}
+
+export function devExitCode(runtime, args) {
+  return runtime?.failure && !args.codeAppSignal?.aborted ? 1 : 0;
 }

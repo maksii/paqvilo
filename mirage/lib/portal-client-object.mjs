@@ -58,6 +58,9 @@ export function portalClientObject(
   identity ??= {};
   const site = String(websiteId ?? '').toLowerCase();
   const contactId = String(identity.contactId ?? identity.id ?? '');
+  let languageList = [];
+  if (Array.isArray(languages) && languages.length) languageList = languages.map(String);
+  else if (language) languageList = [language];
   return {
     User: {
       userName: String(identity.adx_identity_username ?? identity.username ?? contactId),
@@ -78,7 +81,7 @@ export function portalClientObject(
     isTelemetryEnabled: 'False',
     InstrumentationSettings: { instrumentationKey: '', collectorEndpoint: '' },
     timerProfileForBatching: 'NEAR_REAL_TIME',
-    activeLanguages: Array.isArray(languages) && languages.length ? languages.map(String) : language ? [language] : [],
+    activeLanguages: languageList,
     isClientApiEnabled: 'False',
     isSpaSite: 'False',
     dynamics365PortalAnalytics: '',
@@ -90,7 +93,7 @@ export function clientPortalObjectRuntime(identity, site) {
   const scriptJson = (value) =>
     JSON.stringify(value).replace(
       /[<>\u2028\u2029]/g,
-      (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+      (character) => String.raw`\u${character.codePointAt(0).toString(16).padStart(4, '0')}`,
     );
   const values = scriptJson(portalClientObject(identity, site));
   const keys = scriptJson(PORTAL_OBJECT_KEYS);

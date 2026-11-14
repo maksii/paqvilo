@@ -62,7 +62,7 @@ export async function verifyModelDrivenIdentity({ origin, token, objectId, reque
     location.origin === origin &&
     host?.isConnected &&
     host.__paqModelActions?.token === token &&
-    !window.__paqviloRetiredModelInspectors?.includes(token);
+    !globalThis.__paqviloRetiredModelInspectors?.includes(token);
   const live = () => sessionLive() && host.__paqModelIdentityRequest === requestId;
   const receive = (result) => {
     if (live()) host.__paqModelActions.receive(requestId, result);
@@ -73,22 +73,22 @@ export async function verifyModelDrivenIdentity({ origin, token, objectId, reque
   const controller = new AbortController();
   let timeout;
   try {
-    const context = window.Xrm?.Utility?.getGlobalContext(),
+    const context = globalThis.Xrm?.Utility?.getGlobalContext(),
       privileges = await Promise.race([
         context?.userSettings?.getSecurityRolePrivilegesInfo?.(),
         new Promise((_resolve, reject) => {
           timeout = setTimeout(() => {
             controller.abort();
-            reject(Error('Native identity verification did not finish within 10 seconds.'));
+            reject(new Error('Native identity verification did not finish within 10 seconds.'));
           }, 10000);
         }),
       ]);
     if (!live()) return false;
     if (!Object.values(privileges ?? {}).some((privilege) => privilege.privilegeName === 'prvActOnBehalfOfAnotherUser'))
-      throw Error('The signed-in user does not expose the Act on Behalf of Another User privilege.');
-    if (new URL(context.getClientUrl()).origin !== origin) throw Error('The native environment changed.');
+      throw new Error('The signed-in user does not expose the Act on Behalf of Another User privilege.');
+    if (new URL(context.getClientUrl()).origin !== origin) throw new Error('The native environment changed.');
     const version = /^(\d+)\.(\d+)(?:\.|$)/.exec(context.getVersion());
-    if (!version) throw Error('The native API version is unavailable.');
+    if (!version) throw new Error('The native API version is unavailable.');
     const url = new URL(`/api/data/v${version[1]}.${version[2]}/systemusers`, origin);
     url.search = new URLSearchParams({
       $select: 'azureactivedirectoryobjectid,fullname',
@@ -102,14 +102,14 @@ export async function verifyModelDrivenIdentity({ origin, token, objectId, reque
       headers: { accept: 'application/json' },
     });
     if (!live()) return false;
-    if (!response.ok) throw Error(`User eligibility read failed (HTTP ${response.status}).`);
+    if (!response.ok) throw new Error(`User eligibility read failed (HTTP ${response.status}).`);
     const text = await response.text();
-    if (text.length > 128 * 1024) throw Error('The user eligibility response exceeds its read limit.');
+    if (text.length > 128 * 1024) throw new Error('The user eligibility response exceeds its read limit.');
     const body = JSON.parse(text);
     if (!live()) return false;
     const user = body.value?.length === 1 && body.value[0];
     if (!user || user.azureactivedirectoryobjectid?.toLowerCase() !== objectId.toLowerCase())
-      throw Error('Select one enabled Dataverse user with a Microsoft Entra object ID.');
+      throw new Error('Select one enabled Dataverse user with a Microsoft Entra object ID.');
     Object.defineProperty(host, '__paqModelIdentityLabel', {
       configurable: true,
       writable: true,
@@ -129,7 +129,7 @@ export function modelDrivenIdentityResult({ origin, token, requestId, active }) 
   if (
     location.origin !== origin ||
     host?.__paqModelActions?.token !== token ||
-    window.__paqviloRetiredModelInspectors?.includes(token)
+    globalThis.__paqviloRetiredModelInspectors?.includes(token)
   )
     return false;
   if (active && host.__paqModelIdentityRequest !== requestId) return false;

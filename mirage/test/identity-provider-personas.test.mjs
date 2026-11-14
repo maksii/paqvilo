@@ -1,3 +1,4 @@
+// @test-kind contract: the local identity provider's persona chooser, registration modes and presentation settings are Paqvilo's design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parse } from 'parse5';
@@ -13,6 +14,7 @@ import { loadConfig } from '../../lense/config.mjs';
 import { identityProviderAssets } from '../lib/identity-provider-settings.mjs';
 import { chooserSearch, chooserSelection, chooserResults, chooserReport } from '../lib/persona-chooser.mjs';
 import { indexPersonaCatalog } from '../lib/persona-search.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const nodes = (html) => {
   const all = [];
   const visit = (node) => {
@@ -36,30 +38,33 @@ test('bounded account facets retain a selected value when URL spelling differs i
   }
 });
 
-// Wall time is compared across sizes, never against an absolute budget: 10x the personas may cost at most 30x the time.
-const chooserMs = {};
+// Work is compared across sizes: the chooser counts its index comparisons and the entries its filters examine. 10x the
+// personas may cost at most 20x the work (sorting and scanning measure about 12x; a quadratic chooser would be about 100x).
+const chooserWork = {};
 for (const count of [500, 5000])
   test(`identity chooser bounds markup and search at ${count} personas`, async (t) => {
     const { users, report, provider, params } = identityChooserFixture(count);
+    const work = { compared: 0, scanned: 0 };
     const idp = await startIdentityProvider({
       providers: () => [provider],
       users: () => users,
       personaCatalog: () => report,
       registration: () => ({ registration: false }),
+      chooserWork: work,
     });
-    t.after(() => idp.close());
+    ownedFixture(t).add(() => idp.close());
     const url = new URL(idp.authority(provider) + 'oauth2/authorize');
     url.search = new URLSearchParams(params);
-    const started = performance.now(),
-      response = await fetch(url),
-      html = await response.text();
-    chooserMs[count] = performance.now() - started;
+    const response = await fetch(url);
+    const html = await response.text();
+    chooserWork[count] = work.compared + work.scanned;
     assert.equal(response.status, 200);
     assert.ok(Buffer.byteLength(html) <= 150000);
+    assert.ok(work.compared > 0 && work.scanned >= 2 * count, 'the first page sorts the index and filters every entry');
     if (count === 5000)
       assert.ok(
-        chooserMs[5000] < Math.max(30 * chooserMs[500], 50),
-        `5000 personas took ${chooserMs[5000]}ms, 500 took ${chooserMs[500]}ms`,
+        chooserWork[5000] < 20 * chooserWork[500],
+        `5000 personas cost ${chooserWork[5000]} steps, 500 cost ${chooserWork[500]}`,
       );
     const all = nodes(html);
     assert.equal(all.filter((n) => n.tagName === 'form').length, 2);
@@ -164,7 +169,7 @@ test('runtime identity provider receives the effective state/pack catalogue and 
 });
 
 test('catalogue/default chooser settings and project-local head assets are validated', async (t) => {
-  const parent = await fs.mkdtemp(path.join(tmpdir(), 'chooser-project-'));
+  const parent = await makeTemporaryDirectory(path.join(tmpdir(), 'chooser-project-'));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, 'project');
   await fs.mkdir(root);

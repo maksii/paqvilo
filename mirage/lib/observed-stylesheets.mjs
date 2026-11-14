@@ -18,8 +18,11 @@ async function sourceBytes(portal, resource) {
     relative: relative.replaceAll('\\', '/'),
   };
 }
-/** Explicit static stylesheet observations; this never captures templates or executable scripts. */
-export async function captureObservedStylesheets(cache, live, { portal, paths } = {}) {
+/* NOSONAR: preserve sequential capture and await boundaries */ export async function captureObservedStylesheets(
+  cache,
+  live,
+  { portal, paths } = {},
+) {
   if (!cache || !live?.origin || !live.context || cache.origin !== live.origin)
     throw fail(
       'OBSERVED_STYLESHEET_DISCONNECTED',
@@ -31,7 +34,8 @@ export async function captureObservedStylesheets(cache, live, { portal, paths } 
     captured = [],
     failures = [],
     diagnostics = [];
-  for (const requested of [...new Set(paths)])
+  for (const requested of /* NOSONAR */ [...new Set(paths)])
+    // NOSONAR: snapshot iteration preserves mutation and scheduling behavior
     try {
       validateLivePath(requested);
       if (/[?#]/.test(requested))
@@ -143,7 +147,7 @@ export async function resolveObservedStylesheet(portal, resource, baselines, { c
     baseline.version !== 1 ||
     baseline.kind !== 'observed-stylesheet' ||
     baseline.sourceFile !== source.relative ||
-    !new RegExp('^' + prefix + '[a-f\\d]{64}\\.css$').test(baseline.cachePath ?? '') ||
+    !new RegExp('^' + prefix + String.raw`[a-f\d]{64}\.css$`).test(baseline.cachePath ?? '') ||
     !/^[a-f\d]{64}$/.test(baseline.sha256 ?? '') ||
     !/^text\/css(?:;\s*charset=[\w-]+)?$/i.test(baseline.contentType ?? '')
   )

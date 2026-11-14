@@ -1,0 +1,4137 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "model-driven-client",
+  "suite": "choice-continuous",
+  "oracle": {
+    "kind": "native",
+    "name": "Model-driven app UCI (hosted environment)",
+    "version": "2026-11-09",
+    "scope": "Two native UCI runs on 2026-11-09 of 15 ordered addOption and removeOption calls on one standard single-select choice control (setup: clearOptions, addOption One=1 and Two=2; the native blank option is retained). Establishes the control option list before and after each call and the returned value or the error name and message. Does not establish attribute metadata options (One and Two are control setup, not attribute metadata), the Paqvilo internal state map, or form save and dirty state."
+  },
+  "captures": [
+    {
+      "id": "native-run-1",
+      "sha256": "f72a0a4afdc50005c4ec6d123f03accfc86cc71498287c11a3da951a53beb251",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "native-run-2",
+      "sha256": "ec48948ae127e69a9f75fd639b4d4ad7c82d96d01fe1eccf32b4e2208e31a3ca",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "value.0.add",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "string",
+                      "value": "3"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "error": {
+            "name": "UciError",
+            "message": "Value should be of type: number: Parameter Name: optionSetItem.value"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.0.remove",
+      "input": {
+        "operation": "removeOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "string",
+                "value": "3"
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.1.add",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.1.remove",
+      "input": {
+        "operation": "removeOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "number",
+                "value": "NaN"
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.2.add",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "+Infinity"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "+Infinity"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.2.remove",
+      "input": {
+        "operation": "removeOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "number",
+                "value": "+Infinity"
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "+Infinity"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.3.add",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1.5
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1.5
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.3.remove",
+      "input": {
+        "operation": "removeOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "number",
+                "value": 1.5
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1.5
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.4.add",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 9007199254740992
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 9007199254740992
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value.4.remove",
+      "input": {
+        "operation": "removeOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "number",
+                "value": 9007199254740992
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 9007199254740992
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "index.0",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "number",
+                "value": -1
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "index.1",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "number",
+                "value": 0.5
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "index.2",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "string",
+                "value": "0"
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "6",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "index.3",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "number",
+                "value": 3
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "6",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "6",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "7",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "duplicate",
+      "input": {
+        "operation": "addOption",
+        "arguments": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Duplicate"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "setup": {
+          "controlDataOptions": [
+            {
+              "text": "One",
+              "value": 1
+            },
+            {
+              "text": "Two",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "output": {
+        "outcome": {
+          "returned": {
+            "type": "undefined"
+          }
+        },
+        "before": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "6",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "7",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "after": {
+          "type": "array",
+          "entries": [
+            {
+              "key": "0",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "1",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "2",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "3",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "4",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "One"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "5",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Two"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 2
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "6",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Invalid"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": "NaN"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "7",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Three"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 3
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "8",
+              "value": {
+                "type": "object",
+                "entries": [
+                  {
+                    "key": "text",
+                    "value": {
+                      "type": "string",
+                      "value": "Duplicate"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "type": "number",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

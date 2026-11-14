@@ -1,10 +1,13 @@
 // Copilot Studio (Pva*) bot and component messages and the shared workspace (lib/dataverse-addon-pva.mjs) over HTTP.
+// @test-kind contract: Paqvilo's own designed Copilot Studio message behaviour over HTTP, not confirmed natively.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { tokenFor, webApiCall } from './support/dataverse-fixtures.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { idOf } from '../lib/dataverse-addon-common.mjs';
 
 const APP_ID = '77777777-7777-7777-7777-777777777777';
 const SECRET_VAR = 'PAQVILO_PVA_SECRET';
@@ -140,6 +143,36 @@ describe('Copilot Studio and Teams messages over HTTP', () => {
     assert.match(created[0].botcomponentid, /^[0-9a-f-]{36}$/);
   });
 
+  // @test-kind contract: one message writes its components as one unit, so a refused later entry leaves no earlier component.
+  it('a component list whose second entry is refused creates no component', async () => {
+    const before = store.state.tables.botcomponent.length;
+    const result = await call(`bots(${BOT.empty})/Microsoft.Dynamics.CRM.PvaCreateBotComponents`, {
+      BotComponents: [
+        { name: 'Invented first of two', componenttype: 9 },
+        { name: 'Invented second of two', componenttype: 999 },
+      ],
+    });
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+    assert.equal(store.state.tables.botcomponent.length, before);
+    assert.equal(
+      store.state.tables.botcomponent.some((row) => row.name === 'Invented first of two'),
+      false,
+    );
+  });
+
+  it('a component with a bind on its bot is refused with a 400 that names the annotation, and creates no component', async () => {
+    const before = store.state.tables.botcomponent.length;
+    const result = await call(`bots(${BOT.empty})/Microsoft.Dynamics.CRM.PvaCreateBotComponents`, {
+      BotComponents: [
+        { 'parentbotid@odata.bind': `/bots(${BOT.seeded})`, name: 'Invented bound component', componenttype: 9 },
+      ],
+    });
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+    assert.match(result.body.error.message, /'parentbotid@odata\.bind' is not supported on PvaCreateBotComponents/);
+    assert.doesNotMatch(result.body.error.message, /is not a column/);
+    assert.equal(store.state.tables.botcomponent.length, before);
+  });
+
   it('delete bot removes components', async () => {
     const result = await call(`bots(${BOT.kill})/Microsoft.Dynamics.CRM.PvaDeleteBot`);
     assert.equal(result.status, 204);
@@ -229,5 +262,177 @@ describe('Copilot Studio and Teams messages over HTTP', () => {
     assert.equal(result.status, 501);
     assert.equal(result.body.error.code, '0x80040216');
     assert.equal(result.body.error.message, 'PvaPublish is for internal use only and is not simulated.');
+  });
+});
+
+describe('Copilot Studio messages check the caller against the row they touch', () => {
+  const BASIC_APP_ID = '88888888-8888-8888-8888-888888888888';
+  const BASIC_SECRET_VAR = 'PAQVILO_PVA_BASIC_SECRET';
+  const ADMIN_BOT = id(50);
+  const EMPTY_BOT = id(51);
+  const COLLECTION = id(52);
+  const EMPTY_COLLECTION = id(53);
+  let api;
+  let store;
+  let admin;
+  let basic;
+
+  // A Web API call or bound message as the bearer's application user, with its status and body.
+  async function request(token, method, path, body) {
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+    const result = await webApiCall(api.origin, VERSION, method, path, headers, body);
+    return { status: result.status, body: result.json };
+  }
+  const guarded = () =>
+    JSON.stringify({
+      bot: store.state.tables.bot,
+      botcomponent: store.state.tables.botcomponent,
+      botcomponentcollection: store.state.tables.botcomponentcollection,
+      sharedworkspace: store.state.tables.sharedworkspace,
+    });
+
+  before(async () => {
+    process.env[SECRET_VAR] = 'pva-secret';
+    process.env[BASIC_SECRET_VAR] = 'pva-basic-secret';
+    store = await new DataStore({ state: emptyState() }).init();
+    const settings = dataverseSettings({
+      enabled: true,
+      applications: [
+        {
+          appId: APP_ID,
+          displayName: 'Pva app',
+          secretEnvironmentVariable: SECRET_VAR,
+          roles: ['System Administrator'],
+        },
+        {
+          appId: BASIC_APP_ID,
+          displayName: 'Pva basic app',
+          secretEnvironmentVariable: BASIC_SECRET_VAR,
+          roles: ['Basic User'],
+        },
+      ],
+    });
+    api = await startDataverseApi({ store, settings, log: () => {}, extensions: EXTENSIONS });
+    admin = await tokenFor(api, APP_ID, SECRET_VAR);
+    basic = await tokenFor(api, BASIC_APP_ID, BASIC_SECRET_VAR);
+    // The rows are created as the System Administrator, so the store stamps the administrator as their owner.
+    for (const [path, body] of [
+      ['bots', { botid: ADMIN_BOT, name: 'Invented admin bot' }],
+      ['bots', { botid: EMPTY_BOT, name: 'Invented empty bot' }],
+      ['botcomponentcollections', { botcomponentcollectionid: COLLECTION, name: 'Invented admin collection' }],
+      ['botcomponentcollections', { botcomponentcollectionid: EMPTY_COLLECTION, name: 'Invented empty collection' }],
+    ]) {
+      assert.equal((await request(admin, 'POST', path, body)).status, 204, path);
+    }
+    const seeded = await request(admin, 'POST', `bots(${ADMIN_BOT})/Microsoft.Dynamics.CRM.PvaCreateBotComponents`, {
+      BotComponents: [{ name: 'Invented admin topic', componenttype: 9 }],
+    });
+    assert.equal(seeded.status, 204);
+  });
+
+  after(async () => {
+    delete process.env[SECRET_VAR];
+    delete process.env[BASIC_SECRET_VAR];
+    await api?.close();
+  });
+
+  // The Web API refusal of the same row for the Basic User, to compare against the message refusal.
+  async function directRefusal(method, path, body) {
+    const result = await request(basic, method, path, body);
+    assert.equal(result.status, 403, `${method} ${path}`);
+    return result.body.error.code;
+  }
+
+  // @test-kind security: a Basic User must not delete a bot the administrator owns, the same refusal as a direct delete.
+  it('a Basic User cannot delete an admin-owned bot through PvaDeleteBot, and nothing is removed', async () => {
+    const code = await directRefusal('DELETE', `bots(${ADMIN_BOT})`);
+    const before = guarded();
+    const result = await request(basic, 'POST', `bots(${ADMIN_BOT})/Microsoft.Dynamics.CRM.PvaDeleteBot`, {});
+    assert.equal(result.status, 403);
+    assert.equal(result.body.error.code, code);
+    assert.equal(guarded(), before);
+  });
+
+  // @test-kind security: the System Administrator keeps the bot delete, which removes the bot and its components.
+  it('the System Administrator still deletes a bot and its components through PvaDeleteBot', async () => {
+    const result = await request(admin, 'POST', `bots(${EMPTY_BOT})/Microsoft.Dynamics.CRM.PvaDeleteBot`, {});
+    assert.equal(result.status, 204);
+    assert.equal(
+      store.state.tables.bot.some((row) => row.botid === EMPTY_BOT),
+      false,
+    );
+  });
+
+  // @test-kind security: a Basic User must not delete an admin-owned component collection, the same refusal as a direct delete.
+  it('a Basic User cannot delete an admin-owned component collection, and nothing is removed', async () => {
+    const code = await directRefusal('DELETE', `botcomponentcollections(${COLLECTION})`);
+    const before = guarded();
+    const result = await request(
+      basic,
+      'POST',
+      `botcomponentcollections(${COLLECTION})/Microsoft.Dynamics.CRM.PvaDeleteBotComponentCollection`,
+      {},
+    );
+    assert.equal(result.status, 403);
+    assert.equal(result.body.error.code, code);
+    assert.equal(guarded(), before);
+  });
+
+  // @test-kind security: the System Administrator keeps the collection delete, which removes the collection.
+  it('the System Administrator still deletes a component collection through PvaDeleteBotComponentCollection', async () => {
+    const result = await request(
+      admin,
+      'POST',
+      `botcomponentcollections(${EMPTY_COLLECTION})/Microsoft.Dynamics.CRM.PvaDeleteBotComponentCollection`,
+      {},
+    );
+    assert.equal(result.status, 204);
+    assert.equal(
+      store.state.tables.botcomponentcollection.some((row) => row.botcomponentcollectionid === EMPTY_COLLECTION),
+      false,
+    );
+  });
+
+  // @test-kind security: a Basic User must not add components to an admin bot, the same refusal as a direct create.
+  it('a Basic User cannot add components to an admin-owned bot, and no component is written', async () => {
+    const code = await directRefusal('GET', `bots(${ADMIN_BOT})`);
+    const before = guarded();
+    const result = await request(basic, 'POST', `bots(${ADMIN_BOT})/Microsoft.Dynamics.CRM.PvaCreateBotComponents`, {
+      BotComponents: [{ name: 'Invented intruder' }],
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body.error.code, code);
+    assert.equal(guarded(), before);
+  });
+
+  // @test-kind security: a component is stamped with the caller as owner, and a column the table does not have is refused.
+  it('a component the System Administrator adds is owned by the caller, and an unknown column is refused', async () => {
+    const path = `bots(${ADMIN_BOT})/Microsoft.Dynamics.CRM.PvaCreateBotComponents`;
+    const unknown = await request(admin, 'POST', path, {
+      BotComponents: [{ name: 'Invented bogus', bogus_column: 'x' }],
+    });
+    assert.equal(unknown.status, 400);
+    assert.equal(
+      store.state.tables.botcomponent.some((row) => row.name === 'Invented bogus'),
+      false,
+    );
+    const result = await request(admin, 'POST', path, {
+      BotComponents: [{ name: 'Invented owned', componenttype: 9, ownerid: 'nobody' }],
+    });
+    assert.equal(result.status, 204);
+    const created = store.state.tables.botcomponent.find((row) => row.name === 'Invented owned');
+    const bot = store.state.tables.bot.find((row) => row.botid === ADMIN_BOT);
+    assert.equal(idOf(created.ownerid), idOf(bot.ownerid));
+    assert.notEqual(idOf(created.ownerid), 'nobody');
+  });
+
+  // @test-kind security: a Basic User without the create privilege on sharedworkspace is refused, and no workspace row is written.
+  it('a Basic User cannot create a shared workspace, and no row is written', async () => {
+    const before = guarded();
+    const result = await request(basic, 'POST', 'Microsoft.Dynamics.CRM.GetOrCreateSharedWorkspace', {
+      target: { name: 'Invented denied workspace' },
+    });
+    assert.equal(result.status, 403);
+    assert.equal(guarded(), before);
   });
 });

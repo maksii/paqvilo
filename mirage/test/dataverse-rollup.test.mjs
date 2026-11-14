@@ -212,7 +212,7 @@ test('a reparent or a delete marks both the old and the new parent stale', async
   store.state.tables.x_parent.forEach((row) => {
     row.x_sumall_state = 1;
   });
-  await request('DELETE', `/x_children(${CHILD_ACTIVE_2})`);
+  await json(await request('DELETE', `/x_children(${CHILD_ACTIVE_2})`), 204);
   assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall_state, 0);
   assert.equal(rowOf(store, 'x_parent', OTHER).x_sumall_state, 1);
 });

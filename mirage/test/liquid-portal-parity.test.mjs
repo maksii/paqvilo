@@ -1,4 +1,6 @@
-// Power Pages Liquid parity. Expected values follow DotLiquid (master sources at
+// @test-kind unproven: DotLiquid and Adxstudio model expectations and invented contexts that no recorded case set covers.
+
+// Power Pages Liquid compatibility. Expected values follow DotLiquid (master sources at
 // SyntaxCompatibility.DotLiquid20), the Adxstudio Liquid layer (MIT ADX sources: Web/Mvc/Liquid,
 // Cms/*DataAdapter.cs) and the documented examples; mirage/docs/liquid-parity.md lists the
 // source of each behaviour and the items that still need a live observation.
@@ -8,12 +10,21 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'parse5';
 import { importPortal } from '../lib/importer.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
+import { renderComponent } from '../lib/platform.mjs';
 import { FILTER_SIGNATURES, createFilters } from '../lib/liquid-filters.mjs';
+import { retainedResponseBody } from '../lib/render-sweep-body.mjs';
 import { expressionPaths, inventoryPortal, scanTokens } from '../liquid-inventory.mjs';
 import { ciSummary, classifyResponse, idParameterTable, renderSweep, resolveTarget } from '../render-sweep.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+import { createSimulator } from '../server.mjs';
+import { authCookieName } from '../lib/auth-session.mjs';
+import { visitorCookieName } from '../lib/visitor-session.mjs';
+import { signInHeaders } from '../testing/session.mjs';
+import { model, parentId } from './fixtures/subgrid.mjs';
 
 const SITE = '9a4d1c2e-0000-4000-8000-000000000001';
 const HOME = '9a4d1c2e-0000-4000-8000-000000000010';
@@ -93,8 +104,8 @@ const files = {
 };
 
 async function fixturePortal(t, extra = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-parity-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-parity-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries({ ...files, ...extra })) {
     const file = path.join(dir, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -135,6 +146,34 @@ function plain() {
     pageTemplates: [],
   });
   return (source, data = {}) => renderer.renderString(source, data);
+}
+
+/** Native captures execute each literal expression inside an included source template. */
+function nativeInclude() {
+  return (source, data = {}) =>
+    createPortalRenderer(
+      {
+        templates: { proof: { id: 'proof', name: 'proof', source } },
+        snippets: {},
+        settings: {},
+        pages: [],
+        webFiles: [],
+        records: [],
+        weblinks: {},
+        sitemarkers: {},
+        website: {},
+        pageTemplates: [],
+      },
+      {
+        observed: {
+          liquidRuntimeCompatibility: 'observed',
+          liquidFilterErrors: 'observed',
+          liquidHtmlVoidSerialization: 'html',
+          liquidPathAndQueryFragment: 'query',
+          evidence: 'Repeated native 2026-11-08 language include captures; frontend-parity-evidence.json.',
+        },
+      },
+    ).renderString("{% include 'proof' %}", data);
 }
 
 test('DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it', async () => {
@@ -226,12 +265,12 @@ test('if/elsif/elseif/unless/case follow DotLiquid block rules', async () => {
 });
 
 test('for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue', async () => {
-  const render = plain();
+  const render = nativeInclude();
   assert.equal(
     await render(
       '{% for i in (1..5) limit: 2 offset: 1 %}{{ i }}{% endfor %}|{% for i in (1..3) reversed %}{{ i }}{% endfor %}|{% for i in missing %}x{% else %}none{% endfor %}',
     ),
-    '23|321|none',
+    'Liquid syntax error: for tag does not expect else tag',
   );
   assert.equal(await render('{% assign n = 3 %}{% for i in (1..n) %}{{ i }}{% endfor %}'), '123');
   assert.equal(
@@ -250,12 +289,12 @@ test('for loops support limit, offset, reversed, variable ranges, else, forloop,
     await render(
       '{% for i in (1..2) %}{% else whatever %}{% endfor %}{% for i in none %}{% else whatever %}e{% endfor %}',
     ),
-    'e',
+    'Liquid syntax error: for tag does not expect else tag',
   );
 });
 
 test('cycle, tablerow, increment and decrement keep DotLiquid output', async () => {
-  const render = plain();
+  const render = nativeInclude();
   assert.equal(
     await render(
       "{% for i in (1..4) %}{% cycle 'a', 'b', 'c' %}{% endfor %}|{% cycle 'g': 'x', 'y' %}{% cycle 'g': 'x', 'y' %}",
@@ -271,7 +310,7 @@ test('cycle, tablerow, increment and decrement keep DotLiquid output', async () 
   );
   assert.equal(
     await render('{% increment c %}{% increment c %}{% decrement d %}{% decrement d %}|{{ c }}'),
-    '01-1-2|2',
+    "Liquid syntax error: Unknown tag 'increment'",
   );
 });
 
@@ -353,14 +392,17 @@ test('string and escape filters match .NET encoders', async () => {
 });
 
 test('math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros', async () => {
-  const render = plain();
+  const render = nativeInclude();
   // DotLiquid >= 2.1 DoMathsOperation (the Power Pages docs still list the 2.0 truncating examples).
   assert.equal(await render('{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}'), '11.1|8.9|22');
   assert.equal(
     await render('{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}'),
     '3|3.3333333333333333333333333333|1|2.5',
   );
-  assert.equal(await render('{{ 1 | divided_by: 0 }}'), 'Liquid error: Attempted to divide by zero.');
+  assert.equal(
+    await render('{{ 1 | divided_by: 0 }}'),
+    'Liquid error: Exception has been thrown by the target of an invocation.',
+  );
   assert.equal(
     await render(
       '{{ 4.5612 | round: 2 }}|{{ 2.5 | round }}|{{ 3.5 | round }}|{{ 2.675 | round: 2 }}|{{ nil | round }}',
@@ -371,10 +413,7 @@ test('math filters promote real operands to decimal, divide integers, round to e
   assert.equal(await render("{{ 1.2 | ceil }}|{{ 1.8 | floor }}|{{ '3.7' | floor }}|{{ nil | ceil }}"), '2|1|3|0');
   assert.equal(await render('{{ 1.50 }}|{{ 12.5 | times: 10 }}|{{ 0.1 | plus: 0.2 }}'), '1.5|125|0.3');
   // Plus concatenates string input; other mismatches raise the expression error.
-  assert.equal(
-    await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"),
-    "11|Liquid error: The binary operator Add is not defined for the types 'System.Int32' and 'System.String'.",
-  );
+  assert.equal(await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"), '11|Liquid error: Parameter count mismatch.');
   assert.equal(await render('{{ -5 | abs }}|{{ 5 | at_least: 7 }}|{{ 5 | at_most: 3 }}'), '5|7|3');
 });
 
@@ -1165,6 +1204,54 @@ test('render sweep classifies Liquid errors and local injection into non-documen
   assert.equal(idParameterTable(['{{ request.params.page }}']), null);
 });
 
+test('render sweep samples authored content after oversized runtime injection without hiding response classification', () => {
+  const authored =
+    '<!doctype html><html><body>[]rows=2<script>const marker="data-paqvilo-mirage-runtime";</script></body></html>';
+  const injected = `<script data-paqvilo-mirage-runtime>${'/* local runtime */'.repeat(1500)}</script><script src="/__sim-static/pages.js" data-paqvilo-mirage-runtime></script>`;
+  assert.ok(injected.length > 20_000);
+  assert.deepEqual(retainedResponseBody(injected + authored, 'text/html; charset=utf-8'), {
+    body: authored,
+    bodyTruncated: false,
+    bodyOmittedRuntimeScripts: 2,
+  });
+  assert.deepEqual(retainedResponseBody('a'.repeat(20_001), 'text/plain'), {
+    body: 'a'.repeat(20_000),
+    bodyTruncated: true,
+    bodyOmittedRuntimeScripts: 0,
+  });
+  const classified = classifyResponse({
+    status: 200,
+    contentType: 'application/json',
+    body: injected + '{"rows":2}',
+    diagnostics: [],
+  });
+  assert.equal(classified.document, false);
+  assert.deepEqual(classified.injected, ['sim-static', 'sim-runtime']);
+  assert.equal(classified.bytes, Buffer.byteLength(injected + '{"rows":2}'));
+});
+
+test('render sweep body sampling handles deeply nested authored markup before the sample limit', () => {
+  const authored = '<div>'.repeat(12_000) + 'synthetic' + '</div>'.repeat(12_000);
+  const sample = retainedResponseBody(authored, 'text/html');
+  assert.equal(sample.body, authored.slice(0, 20_000));
+  assert.equal(sample.bodyTruncated, true);
+  assert.equal(sample.bodyOmittedRuntimeScripts, 0);
+});
+
+test('render sweep preserves literal runtime marker markup in non-HTML samples', () => {
+  const markup = '<script data-paqvilo-mirage-runtime>synthetic</script>';
+  for (const [body, contentType] of [
+    [JSON.stringify({ markup }), 'application/json'],
+    [markup, 'text/plain'],
+    [markup, null],
+  ])
+    assert.deepEqual(retainedResponseBody(body, contentType), {
+      body,
+      bodyTruncated: false,
+      bodyOmittedRuntimeScripts: 0,
+    });
+});
+
 test("user web-role relationship and enhanced attribute aliases follow the site's data model", async (t) => {
   // Standard model: adx_webrole_contact lists adx_webrole records.
   const { render } = await setup(
@@ -1187,8 +1274,8 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
   );
   // Enhanced model: powerpagecomponent_mspp_webrole_contact lists powerpagecomponent rows, and
   // bare content columns are readable with adx_ and mspp_ prefixes.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-enhanced-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-enhanced-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const component = (id, type, name, content) =>
     `<powerpagecomponent powerpagecomponentid="${id}"><content>${JSON.stringify(content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</content><name>${name}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`;
   const write = async (name, body) => {
@@ -1240,8 +1327,8 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
 });
 
 test('render sweep resolves export directories and Mirage projects and summarises each persona for CI', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-target-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-target-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'portal'));
   await fs.mkdir(path.join(dir, 'solution'));
   const fromSource = await resolveTarget({
@@ -1295,8 +1382,8 @@ test('render sweep resolves export directories and Mirage projects and summarise
 });
 
 test("render sweep personas change only the identity and keep the state's rows", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-personas-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-personas-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portalFiles = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Personas`,
     'webrole.yml':
@@ -1341,7 +1428,17 @@ test("render sweep personas change only the identity and keep the state's rows",
     keepBodies: true,
   });
   const bodies = Object.fromEntries(
-    report.runs.map((run) => [run.persona, run.results.find((result) => result.url === '/').body]),
+    report.runs.map((run) => {
+      const result = run.results.find((result) => result.url === '/');
+      assert.equal(result.bodyTruncated, false);
+      const text = (node) =>
+        ['script', 'style'].includes(node.tagName)
+          ? ''
+          : node.nodeName === '#text'
+            ? node.value
+            : (node.childNodes ?? []).map(text).join('');
+      return [run.persona, text(parse(result.body))];
+    }),
   );
   assert.match(bodies.anonymous, /\[\]rows=2/);
   assert.match(bodies.authenticated, /\[Authenticated Users\]rows=2/);
@@ -1563,3 +1660,458 @@ test('the observed bootstrapStylesheet setting is validated with its evidence', 
   );
   assert.throws(() => observedConfig({ bootstrapStylesheet: 'web-file' }), /evidence/);
 });
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue', async () => {
+  const render = plain();
+  assert.equal(
+    await render(
+      '{% for i in (1..5) limit: 2 offset: 1 %}{{ i }}{% endfor %}|{% for i in (1..3) reversed %}{{ i }}{% endfor %}|{% for i in missing %}x{% else %}none{% endfor %}',
+    ),
+    '23|321|none',
+  );
+  assert.equal(await render('{% assign n = 3 %}{% for i in (1..n) %}{{ i }}{% endfor %}'), '123');
+  assert.equal(
+    await render(
+      '{% for i in (1..3) %}{{ forloop.index }}{{ forloop.index0 }}{{ forloop.rindex }}{{ forloop.rindex0 }}{{ forloop.first }}{{ forloop.last }}{{ forloop.length }},{% endfor %}',
+    ),
+    '1032truefalse3,2121falsefalse3,3210falsetrue3,',
+  );
+  assert.equal(
+    await render(
+      '{% for i in (1..5) %}{% if i == 2 %}{% continue %}{% endif %}{% if i == 4 %}{% break %}{% endif %}{{ i }}{% endfor %}',
+    ),
+    '13',
+  );
+  assert.equal(
+    await render(
+      '{% for i in (1..2) %}{% else whatever %}{% endfor %}{% for i in none %}{% else whatever %}e{% endfor %}',
+    ),
+    'e',
+  );
+});
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: cycle, tablerow, increment and decrement keep DotLiquid output', async () => {
+  const render = plain();
+  assert.equal(
+    await render(
+      "{% for i in (1..4) %}{% cycle 'a', 'b', 'c' %}{% endfor %}|{% cycle 'g': 'x', 'y' %}{% cycle 'g': 'x', 'y' %}",
+    ),
+    'abca|xy',
+  );
+  // TableRow uses TextWriter.WriteLine (CRLF on the Windows host).
+  assert.equal(
+    await render(
+      '{% tablerow i in (1..3) cols: 2 %}{{ i }}{{ tablerowloop.col }}{{ tablerowloop.col_last }}{% endtablerow %}',
+    ),
+    '<tr class="row1">\r\n<td class="col1">11false</td><td class="col2">22true</td></tr>\r\n<tr class="row2"><td class="col1">31false</td></tr>\r\n',
+  );
+  assert.equal(
+    await render('{% increment c %}{% increment c %}{% decrement d %}{% decrement d %}|{{ c }}'),
+    '01-1-2|2',
+  );
+});
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros', async () => {
+  const render = plain();
+  // DotLiquid >= 2.1 DoMathsOperation (the Power Pages docs still list the 2.0 truncating examples).
+  assert.equal(await render('{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}'), '11.1|8.9|22');
+  assert.equal(
+    await render('{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}'),
+    '3|3.3333333333333333333333333333|1|2.5',
+  );
+  assert.equal(await render('{{ 1 | divided_by: 0 }}'), 'Liquid error: Attempted to divide by zero.');
+  assert.equal(
+    await render(
+      '{{ 4.5612 | round: 2 }}|{{ 2.5 | round }}|{{ 3.5 | round }}|{{ 2.675 | round: 2 }}|{{ nil | round }}',
+    ),
+    '4.56|2|4|2.68|0',
+  );
+  // Adxstudio MathFilters.Ceil/Floor return int; nil is 0.
+  assert.equal(await render("{{ 1.2 | ceil }}|{{ 1.8 | floor }}|{{ '3.7' | floor }}|{{ nil | ceil }}"), '2|1|3|0');
+  assert.equal(await render('{{ 1.50 }}|{{ 12.5 | times: 10 }}|{{ 0.1 | plus: 0.2 }}'), '1.5|125|0.3');
+  // Plus concatenates string input; other mismatches raise the expression error.
+  assert.equal(
+    await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"),
+    "11|Liquid error: The binary operator Add is not defined for the types 'System.Int32' and 'System.String'.",
+  );
+  assert.equal(await render('{{ -5 | abs }}|{{ 5 | at_least: 7 }}|{{ 5 | at_most: 3 }}'), '5|7|3');
+});
+
+// @test-kind contract: request.params is the request's cookies, then form values, then query values (ASP.NET order), and the runtime's own session, visitor and anti-forgery cookies never reach a template.
+test('request.params carries cookies below form and query values and never the runtime cookies', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-params-cookies-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
+  const files = {
+    'website.yml':
+      'adx_name: Params\nadx_websiteid: params-site\nadx_defaultlanguage: lang-en\nadx_website_language: 1033',
+    'websitelanguage.yml': '- adx_websitelanguageid: lang-en\n  adx_name: English',
+    'web-pages/home/Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
+    'page-templates/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
+    'web-templates/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
+    'web-templates/Main.webtemplate.source.html':
+      '<p id="theme">{{ request.params.theme }}</p>{% for pair in request.params %}[{{ pair[0] | escape }}={{ pair[1] | escape }}]{% endfor %}',
+  };
+  for (const [name, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+    await fs.writeFile(path.join(dir, name), body);
+  }
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false });
+  ownedFixture(t).add(() => app.close());
+  const port = new URL(app.url).port;
+  const sessionName = authCookieName(port);
+  const visitorName = visitorCookieName(port);
+  const visitor = '5b1c2d3e-0000-4000-8000-00000000f00d';
+  const cookie = [
+    'theme=dark',
+    'color=blue',
+    `${sessionName}=session-secret-7f3a`,
+    `${visitorName}=${visitor}`,
+    '__RequestVerificationToken=antiforgery-secret-91c2',
+  ].join('; ');
+  const cookieOnly = await (await fetch(`${app.url}/`, { headers: { cookie: 'theme=dark' } })).text();
+  assert.match(cookieOnly, /<p id="theme">dark<\/p>/);
+  const page = await (await fetch(`${app.url}/?theme=light`, { headers: { cookie } })).text();
+  assert.match(page, /<p id="theme">light<\/p>/);
+  assert.match(page, /\[color=blue\]/);
+  assert.doesNotMatch(page, /\[theme=dark\]/);
+  for (const secret of [
+    sessionName,
+    'session-secret-7f3a',
+    visitorName,
+    visitor,
+    '[__RequestVerificationToken=',
+    'antiforgery-secret-91c2',
+  ]) {
+    assert.equal(page.includes(secret), false, `request.params exposed ${secret}`);
+  }
+});
+
+// @test-kind unproven: the culture currency patterns come from Intl and the culture table, not from a recorded portal case.
+test('currency formats in the culture of its language argument and refuses a culture with no resources', () => {
+  const { currency } = createFilters({});
+  assert.equal(currency(10), '$10.00');
+  assert.equal(currency(10, 'en-US'), '$10.00');
+  assert.equal(currency(1234.5, 'de-DE').replaceAll(' ', ' '), '1.234,50 €');
+  assert.throws(
+    () => currency(10, 'xx-XX'),
+    (error) =>
+      error.netType === 'System.Globalization.CultureNotFoundException' &&
+      error.message.startsWith('Culture is not supported.'),
+  );
+});
+
+// @test-kind contract: en-US and the tag-less currency path give the same .NET en-US string for a negative amount.
+test('currency with en-US matches the tag-less path for a negative amount', () => {
+  const { currency } = createFilters({});
+  assert.equal(currency(-12.5, ''), '($12.50)');
+  assert.equal(currency(-12.5, 'en-US'), currency(-12.5, ''));
+});
+
+// @test-kind unproven: the .NET negative currency pattern 8 (-n $) is confirmed on Microsoft Learn for de-DE; the no-break space before the symbol is ICU output, not confirmed from Learn.
+test('de-DE negative currency puts the symbol after the number, with a no-break space', () => {
+  const { currency } = createFilters({});
+  assert.equal(currency(-12.5, 'de-DE'), `-12,50${String.fromCharCode(0xa0)}€`);
+});
+
+// @test-kind unproven: fr-FR negative currency is ICU output; its .NET NLS group separator and symbol spacing are not confirmed from Microsoft Learn.
+test('fr-FR negative currency puts the symbol after the number, with a no-break space', () => {
+  const { currency } = createFilters({});
+  assert.equal(currency(-12.5, 'fr-FR'), `-12,50${String.fromCharCode(0xa0)}€`);
+});
+
+// ---- Multi-select columns on the Liquid paths, and attribute_type names
+// The same selection (3, 1, 2): an array as a plug-in or SDK write keeps it, and the comma text another writer keeps.
+// `tags` is an array column that is not a multi-select column; it must stay an array on every path.
+const CHOICE_ROW_ID = { a: '1a2b0000-0000-4000-8000-0000000000a1', b: '1a2b0000-0000-4000-8000-0000000000b1' };
+const ARRAY_ROW = { hobbies: [3, 1, 2], tags: ['x', 'y'] };
+const TEXT_ROW = { hobbies: '3,1,2', tags: ['x', 'y'] };
+const CHOICE_FIELDS = { hobbies: { dataverseType: 'multiselectpicklist' }, tags: { dataverseType: 'nvarchar' } };
+const CHOICE_METADATA = {
+  entities: Object.fromEntries(
+    ['widget', 'contact', 'knowledgearticle', 'adx_webrole'].map((name) => [name, { fields: CHOICE_FIELDS }]),
+  ),
+};
+const htmlOf = async (render, source) => (await render(source)).html;
+
+// @test-kind contract: a multi-select column of a record reached by id reads as its string-stored text; other arrays stay arrays
+test('a record reached by id reads a multi-select array as its string-stored text', async (t) => {
+  const rows = {
+    [CHOICE_ROW_ID.a]: { widgetid: CHOICE_ROW_ID.a, ...ARRAY_ROW },
+    [CHOICE_ROW_ID.b]: { widgetid: CHOICE_ROW_ID.b, ...TEXT_ROW },
+  };
+  const { render } = await setup(t, { metadata: CHOICE_METADATA, entity: async (table, id) => rows[id] ?? null });
+  const row = (id) => `entities.widget['${id}']`;
+  const shown = (id) => `{{ ${row(id)}.hobbies }}|{% for t in ${row(id)}.tags %}{{ t }}{% endfor %}`;
+  assert.equal(await htmlOf(render, shown(CHOICE_ROW_ID.a)), '3,1,2|xy');
+  assert.equal(await htmlOf(render, shown(CHOICE_ROW_ID.b)), '3,1,2|xy');
+});
+
+// @test-kind contract: FetchXML result rows read a multi-select array as its string-stored text; other arrays stay arrays
+test('FetchXML result rows read a multi-select array as its string-stored text', async (t) => {
+  const { render } = await setup(t, {
+    metadata: CHOICE_METADATA,
+    fetchXml: async () => ({ entities: [ARRAY_ROW, TEXT_ROW] }),
+  });
+  const source =
+    "{% fetchxml found %}<fetch><entity name='widget'><attribute name='hobbies'/></entity></fetch>{% endfetchxml %}" +
+    '{% for r in found.results.entities %}{{ r.hobbies }}/{% for t in r.tags %}{{ t }}{% endfor %}|{% endfor %}';
+  assert.equal(await htmlOf(render, source), '3,1,2/xy|3,1,2/xy|');
+});
+
+// @test-kind contract: a lazily executed FetchXML result reads a multi-select array as its string-stored text; other arrays stay arrays
+test('a lazily executed FetchXML result reads a multi-select array as its string-stored text', async (t) => {
+  const { observedConfig } = await import('../lib/project-config.mjs');
+  const observed = observedConfig({
+    liquidFetchExecution: 'lazy-query-drop',
+    liquidFetchErrorMessage: 'target-invocation',
+    tablePermissionQueryPipeline: 'native-classic',
+    evidence: 'Invented deferred query-drop contracts; native timing requires separate qualification',
+  });
+  const { render } = await setup(t, {
+    metadata: CHOICE_METADATA,
+    observed,
+    previewFetchXml: (xml) => ({ xml, permissionGranted: true }),
+    fetchXml: async () => ({ entities: [ARRAY_ROW, TEXT_ROW] }),
+  });
+  const source =
+    "{% fetchxml found %}<fetch><entity name='widget'><attribute name='hobbies'/></entity></fetch>{% endfetchxml %}" +
+    '{% for r in found.results.entities %}{{ r.hobbies }}/{% for t in r.tags %}{{ t }}{% endfor %}|{% endfor %}';
+  assert.equal(await htmlOf(render, source), '3,1,2/xy|3,1,2/xy|');
+});
+
+// @test-kind contract: knowledge article rows read a multi-select array as its string-stored text; other arrays stay arrays
+test('knowledge article rows read a multi-select array as its string-stored text', async (t) => {
+  const { render } = await setup(t, {
+    metadata: CHOICE_METADATA,
+    fetchXml: async () => ({ entities: [ARRAY_ROW, TEXT_ROW], more_records: false }),
+  });
+  const source =
+    '{% for a in knowledge.articles %}{{ a.hobbies }}/{% for t in a.tags %}{{ t }}{% endfor %}|{% endfor %}';
+  assert.equal(await htmlOf(render, source), '3,1,2/xy|3,1,2/xy|');
+});
+
+// @test-kind contract: the signed-in user's record reads a multi-select array as its string-stored text; other arrays stay arrays
+test('the signed-in user record reads a multi-select array as its string-stored text', async (t) => {
+  const { render } = await setup(t, { metadata: CHOICE_METADATA });
+  const source = '{{ user.hobbies }}/{% for t in user.tags %}{{ t }}{% endfor %}';
+  const user = (selection) => ({ id: CHOICE_ROW_ID.a, authenticated: true, ...selection });
+  assert.equal(
+    (await render(source, { user: user(ARRAY_ROW) })).html,
+    (await render(source, { user: user(TEXT_ROW) })).html,
+  );
+  assert.equal((await render(source, { user: user(ARRAY_ROW) })).html, '3,1,2/xy');
+  // The grid pages iterate the user's roles, an array that is not a multi-select column.
+  const roles = '{% for r in user.roles %}{{ r }}{% endfor %}';
+  assert.equal(
+    (await render(roles, { user: { ...user(ARRAY_ROW), roles: ['Editor', 'Viewer'] } })).html,
+    'EditorViewer',
+  );
+});
+
+// @test-kind contract: web role records of the signed-in user read a multi-select array as its string-stored text; other arrays stay arrays
+test('web role records of the user read a multi-select array as its string-stored text', async (t) => {
+  const { render, portal } = await setup(t, { metadata: CHOICE_METADATA });
+  const role = (id, selection) => ({ kind: 'webrole', id, name: 'Editor', statecode: 0, ...selection });
+  portal.records = [role(CHOICE_ROW_ID.a, ARRAY_ROW), role(CHOICE_ROW_ID.b, TEXT_ROW)];
+  const source =
+    '{% for r in user.adx_webrole_contact %}{{ r.hobbies }}/{% for t in r.tags %}{{ t }}{% endfor %}|{% endfor %}';
+  assert.equal(
+    (await render(source, { user: { id: CHOICE_ROW_ID.a, authenticated: true, roles: ['Editor'] } })).html,
+    '3,1,2/xy|3,1,2/xy|',
+  );
+});
+
+// @test-kind contract: rows reached through a relationship read a multi-select array as its string-stored text; other arrays stay arrays
+test('related rows reached through a relationship read a multi-select array as its string-stored text', async (t) => {
+  const { state } = model();
+  state.mappings.child.fields = {
+    hobbies: { dataverseType: 'multiselectpicklist' },
+    tags: { dataverseType: 'nvarchar' },
+  };
+  state.tables.child = [
+    { childkey: CHOICE_ROW_ID.a, parentlookup: parentId, name: 'Array choice', hobbies: [3, 1, 2], tags: ['x', 'y'] },
+    { childkey: CHOICE_ROW_ID.b, parentlookup: parentId, name: 'Text choice', hobbies: '3,1,2', tags: ['x', 'y'] },
+  ];
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-related-choice-'));
+  const files = {
+    'website.yml': 'adx_websiteid: site\nadx_name: Test',
+    'Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template',
+    'Main.pagetemplate.yml':
+      'adx_pagetemplateid: template\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: true',
+    'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
+    'Main.webtemplate.source.html': `{% assign parent = entities.parent['${parentId}'] %}{% for c in parent.children %}{{ c.hobbies }}|{% for t in c.tags %}{{ t }}{% endfor %}/{% endfor %}`,
+  };
+  for (const [name, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+    await fs.writeFile(path.join(dir, name), body);
+  }
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(dir, 'state.json'),
+    initial: state,
+    watch: false,
+  });
+  ownedFixture(t).add(async () => {
+    await app.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const html = await (
+    await fetch(`${app.url}/`, { headers: signInHeaders(app, 'editor', { roles: ['Editor'] }) })
+  ).text();
+  assert.match(html, /3,1,2\|xy\/3,1,2\|xy\//);
+  assert.doesNotMatch(html, /312\|/);
+});
+
+const VIEW_METADATA = {
+  entities: {
+    contact: {
+      fields: {
+        birthdate: { dataverseType: 'datetime' },
+        parentcustomerid: { dataverseType: 'lookup', targets: ['account'] },
+        gendercode: { dataverseType: 'picklist' },
+        fullname: { dataverseType: 'nvarchar' },
+        donotemail: { dataverseType: 'bit' },
+        hobbies: { dataverseType: 'multiselectpicklist' },
+      },
+    },
+  },
+};
+const VIEW_COLUMNS = ['birthdate', 'parentcustomerid', 'gendercode', 'fullname', 'donotemail', 'hobbies'];
+/** The platform's view component fixture over the given rows: the portal, store, read provider and list schema. */
+function viewFixture(rows = []) {
+  const portal = {
+    website: { id: SITE },
+    pages: [],
+    forms: [],
+    lists: [{ id: 'list', name: 'Contacts', entityName: 'contact', metadata: {} }],
+    records: [],
+  };
+  const store = {
+    resolveMapping: (name) =>
+      name === 'contact'
+        ? { entitySet: 'contacts', idColumn: 'contactid', relationships: {} }
+        : { entitySet: 'accounts', idColumn: 'accountid', nameColumn: 'name' },
+  };
+  const readProvider = {
+    get: async () => ({}),
+    query: async () => ({ value: [] }),
+    fetchXml: async () => ({ entities: rows, total_record_count: rows.length }),
+  };
+  const fetch = `<fetch><entity name="contact">${VIEW_COLUMNS.map((name) => `<attribute name="${name}"/>`).join('')}</entity></fetch>`;
+  const schemas = { list: { entity: 'contact', fetchXml: fetch, fields: VIEW_COLUMNS.map((name) => ({ name })) } };
+  return { portal, store, readProvider, schemas, args: {}, metadata: VIEW_METADATA };
+}
+/** The entity view of the platform's view component over the fixture's rows (the view's own columns). */
+async function entityViewOf(rows = []) {
+  const { context } = await renderComponent('entityview', 'list', { entitylist: { id: 'list' } }, viewFixture(rows));
+  return context.entityview;
+}
+
+// @test-kind compatibility: attribute_type is the AttributeTypeCode name of the column's type in the entity list views too, as Microsoft documents the Liquid list view column attributes (https://learn.microsoft.com/power-pages/configure/liquid/liquid-objects#list-view-column-attributes) and the AttributeTypeCode enum (https://learn.microsoft.com/dotnet/api/microsoft.xrm.sdk.metadata.attributetypecode?view=dataverse-sdk-latest)
+test('entity list views name the AttributeTypeCode of their column types in attribute_type', async () => {
+  const { context } = await renderComponent('entitylist', 'list', {}, viewFixture());
+  const renderer = createPortalRenderer(emptyPortalForParity(), {});
+  assert.equal(
+    await renderer.renderString(
+      '{% for v in entitylist.views %}{% for c in v.columns %}{{ c.logical_name }}={{ c.attribute_type }};{% endfor %}{% endfor %}',
+      { entitylist: context.entitylist },
+    ),
+    'birthdate=DateTime;parentcustomerid=Lookup;gendercode=Picklist;fullname=String;donotemail=Boolean;hobbies=Virtual;',
+  );
+});
+
+// @test-kind contract: entity view records read a multi-select array as its string-stored text
+test('entity view records read a multi-select array as its string-stored text', async () => {
+  const view = await entityViewOf([
+    { contactid: CHOICE_ROW_ID.a, fullname: 'Ada', hobbies: [3, 1, 2] },
+    { contactid: CHOICE_ROW_ID.b, fullname: 'Bo', hobbies: '3,1,2' },
+  ]);
+  const renderer = createPortalRenderer(emptyPortalForParity(), {});
+  assert.equal(
+    await renderer.renderString('{% for r in entityview.records %}{{ r.hobbies }}/{% endfor %}', { entityview: view }),
+    '3,1,2/3,1,2/',
+  );
+});
+
+// @test-kind compatibility: attribute_type is the AttributeTypeCode name of the column's type, as Microsoft documents the Liquid list view column attributes (https://learn.microsoft.com/power-pages/configure/liquid/liquid-objects#list-view-column-attributes) and the AttributeTypeCode enum (https://learn.microsoft.com/dotnet/api/microsoft.xrm.sdk.metadata.attributetypecode?view=dataverse-sdk-latest)
+test('entity view columns name the AttributeTypeCode of their types in attribute_type', async () => {
+  const view = await entityViewOf();
+  const renderer = createPortalRenderer(emptyPortalForParity(), {});
+  assert.equal(
+    await renderer.renderString(
+      '{% for c in entityview.columns %}{{ c.logical_name }}={{ c.attribute_type }};{% endfor %}',
+      { entityview: view },
+    ),
+    'birthdate=DateTime;parentcustomerid=Lookup;gendercode=Picklist;fullname=String;donotemail=Boolean;hobbies=Virtual;',
+  );
+});
+
+// The example's entity view cell template (examples/project/portal/web-templates/liquid-view-cell), verbatim.
+const VIEW_CELL_TEMPLATE =
+  "{% assign cell_value = record[column.logical_name] %}{% if column.logical_name == primary_name %}<a href=\"/approach/web-api/account/?id={{ record[primary_key] | escape }}\">{{ cell_value | escape }}</a>{% elsif cell_value.label %}{{ cell_value.label | escape }}{% elsif cell_value.name %}{{ cell_value.name | escape }}{% elsif column.attribute_type == 'DateTime' %}{{ cell_value | date: 'yyyy-MM-dd' | escape }}{% else %}{{ cell_value | escape }}{% endif %}";
+
+// @test-kind compatibility: the example's view cell takes its DateTime branch for a column whose attribute_type is DateTime, as Microsoft documents attribute_type (https://learn.microsoft.com/power-pages/configure/liquid/liquid-objects#list-view-column-attributes)
+test('the example view cell template takes its DateTime branch for a DateTime column', async () => {
+  const view = await entityViewOf();
+  const column = view.columns.find((candidate) => candidate.logical_name === 'birthdate');
+  const renderer = createPortalRenderer(emptyPortalForParity(), {});
+  assert.equal(
+    await renderer.renderString(VIEW_CELL_TEMPLATE, {
+      column,
+      record: { birthdate: '2026-01-02T00:00:00Z' },
+      primary_name: 'fullname',
+      primary_key: 'contactid',
+    }),
+    '2026-01-02',
+  );
+});
+
+/** The view fixture with a file and an image column added to the contact view, as an exported solution declares them. */
+function mediaViewFixture() {
+  const fixture = viewFixture();
+  const media = ['resume', 'photo'];
+  const fields = {
+    ...VIEW_METADATA.entities.contact.fields,
+    resume: { dataverseType: 'file' },
+    photo: { dataverseType: 'image' },
+  };
+  fixture.metadata = { entities: { contact: { fields } } };
+  const list = fixture.schemas.list;
+  list.fetchXml = list.fetchXml.replace(
+    '</entity>',
+    `${media.map((name) => `<attribute name="${name}"/>`).join('')}</entity>`,
+  );
+  list.fields = [...list.fields, ...media.map((name) => ({ name }))];
+  return fixture;
+}
+
+// @test-kind compatibility: a file and an image column name Virtual in attribute_type and a DateTime column still names DateTime, as Microsoft documents the Liquid list view column attributes (https://learn.microsoft.com/power-pages/configure/liquid/liquid-objects#list-view-column-attributes) and the AttributeTypeCode enum (https://learn.microsoft.com/dotnet/api/microsoft.xrm.sdk.metadata.attributetypecode?view=dataverse-sdk-latest)
+test('entity view columns of file and image columns name Virtual in attribute_type, and DateTime still names DateTime', async () => {
+  const { context } = await renderComponent('entityview', 'list', { entitylist: { id: 'list' } }, mediaViewFixture());
+  const renderer = createPortalRenderer(emptyPortalForParity(), {});
+  assert.equal(
+    await renderer.renderString(
+      '{% for c in entityview.columns %}{{ c.logical_name }}={{ c.attribute_type }};{% endfor %}',
+      { entityview: context.entityview },
+    ),
+    'birthdate=DateTime;parentcustomerid=Lookup;gendercode=Picklist;fullname=String;donotemail=Boolean;hobbies=Virtual;resume=Virtual;photo=Virtual;',
+  );
+});
+
+function emptyPortalForParity() {
+  return {
+    templates: {},
+    snippets: {},
+    settings: {},
+    pages: [],
+    webFiles: [],
+    lists: [],
+    entityForms: [],
+    advancedForms: [],
+  };
+}

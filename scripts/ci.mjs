@@ -1,32 +1,42 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { availableParallelism, totalmem } from 'node:os';
+import { availableParallelism, tmpdir, totalmem } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
-import { dependencyReadiness } from './ensure-dependencies.mjs';
-import { downloadVerifiedArchive } from './verified-download.mjs';
+import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
+import { ensureVerifiedArchive } from './verified-download.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState } from './ci-workspace-lease.mjs';
+import { npmCliPath } from './npm-cli.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SDK_VERSION = '9.0.2.60';
+const SDK_VERSION = '9.0.2.60'; // NOSONAR: version string or loopback address, not a network target
 const SDK_SHA256 = '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f';
 // SHA-256 of lib/net462/Microsoft.Xrm.Sdk.dll inside that verified public archive.
 const SDK_DLL_SHA256 = 'f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9';
+const SDK_URL = `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${SDK_VERSION}/microsoft.crmsdk.coreassemblies.${SDK_VERSION}.nupkg`;
 const defaults = { cwd: root, stdio: 'inherit', windowsHide: true };
+const seconds = (start) => `${((performance.now() - start) / 1000).toFixed(1)} s`;
 function execute(command, args, options = {}) {
+  const start = performance.now();
   const result = spawnSync(command, args, { ...defaults, ...options });
   if (result.status !== 0)
     throw new Error(`${command} ${args.join(' ')} failed (${result.status ?? result.error?.message}).`, {
       cause: result.error,
     });
+  console.log(`[ci] ${path.basename(command)} ${args.join(' ')} (${seconds(start)})`);
   return result;
 }
+export { npmCliPath };
 function npm(args) {
-  const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
-  if (!fs.existsSync(cli)) throw new Error('Run CI commands through npm run ci:prepare or npm run ci:verify.');
+  const cli = npmCliPath();
+  if (!fs.existsSync(cli))
+    throw new Error(
+      'Run CI commands through npm run ci:prepare, npm run ci:verify, npm run ci:sdk:prepare or npm run ci:sdk.',
+    );
   execute(process.execPath, [cli, ...args]);
 }
 function npmScript(script) {
@@ -41,30 +51,33 @@ export function verifyClrSdk(sdk) {
     throw new Error('CLR SDK fixture DLL digest mismatch; run ci:prepare to restore the verified public fixture.');
 }
 
+/**
+ * True when `actual` is the pinned SDK or a later patch of its feature band (10.0.1xx), the servicing updates
+ * global.json's latestPatch roll-forward accepts. A different band, major or minor is a different compiler.
+ */
+export function dotnetSatisfies(expected, actual) {
+  const parse = (version) => /^(\d+)\.(\d+)\.(\d)(\d{2})$/.exec(version)?.slice(1).map(Number);
+  const [want, have] = [parse(expected), parse(actual)];
+  if (!want || !have) return false;
+  return want.slice(0, 3).every((part, index) => part === have[index]) && have[3] >= want[3];
+}
+
 function requireDotnet() {
   const expected = JSON.parse(fs.readFileSync(path.join(root, 'global.json'), 'utf8')).sdk.version;
-  const version = spawnSync('dotnet', ['--version'], { cwd: root, encoding: 'utf8', windowsHide: true });
-  if (version.status !== 0 || version.stdout.trim() !== expected)
+  const version = spawnSync('dotnet', ['--version'], { cwd: root, encoding: 'utf8', windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+  if (version.status !== 0 || !dotnetSatisfies(expected, version.stdout.trim()))
     throw new Error(
-      `Incomplete CI validation: .NET SDK ${expected} is required; install the SDK pinned in global.json.`,
+      `Incomplete CI validation: .NET SDK ${expected} or a later ${expected.replace(/\d{2}$/, 'xx')} patch is required; install it as global.json specifies.`,
     );
 }
 
 async function clrFixture() {
-  const directory = path.join(root, '.paqvilo/ci/sdk-reference');
+  const directory = assertOwnedCiState(root, 'sdk-reference');
   const sdk = path.join(directory, 'reference/lib/net462/Microsoft.Xrm.Sdk.dll');
   // Re-verify the archive even on a warm local run; the fixture is never taken from a portal export.
   fs.mkdirSync(directory, { recursive: true });
   const archive = path.join(directory, 'sdk.zip');
-  if (!fs.existsSync(archive)) {
-    await downloadVerifiedArchive(
-      `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${SDK_VERSION}/microsoft.crmsdk.coreassemblies.${SDK_VERSION}.nupkg`,
-      archive,
-      SDK_SHA256,
-    );
-  }
-  if (createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== SDK_SHA256)
-    throw new Error('SDK fixture archive digest mismatch.');
+  await ensureVerifiedArchive(SDK_URL, archive, SDK_SHA256);
   let validSdk = false;
   try {
     verifyClrSdk(sdk);
@@ -73,6 +86,10 @@ async function clrFixture() {
     /* Re-extract a missing or changed DLL from the verified archive. */
   }
   if (!validSdk) {
+    const destination = assertOwnedCiState(root, 'sdk-reference', 'reference');
+    // Retire only the checked owned tree, including stale nested links, before extraction.
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.mkdirSync(destination);
     // Expand-Archive requires .zip; all arguments are fixed paths under this checkout.
     execute(
       'powershell.exe',
@@ -83,7 +100,7 @@ async function clrFixture() {
         'Expand-Archive -LiteralPath $env:PAQVILO_CI_ARCHIVE -DestinationPath $env:PAQVILO_CI_DESTINATION -Force',
       ],
       {
-        env: { ...process.env, PAQVILO_CI_ARCHIVE: archive, PAQVILO_CI_DESTINATION: path.join(directory, 'reference') },
+        env: { ...process.env, PAQVILO_CI_ARCHIVE: archive, PAQVILO_CI_DESTINATION: destination },
       },
     );
   }
@@ -91,6 +108,127 @@ async function clrFixture() {
   verifyClrSdk(sdk);
   environment('PAQ_TEST_XRM_SDK', sdk);
 }
+
+// Public MIT-licensed exports for the ecosystem import checks in this suite file, pinned by
+// commit and archive digest. Only the listed subtrees are extracted.
+const ECOSYSTEM_TEST = 'test/short-key-fixtures.test.mjs';
+const ECOSYSTEM = [
+  [
+    'microsoft/power-pages-samples',
+    'da7f1bc128c11ff11c23fc814be4a2b10cfd82ef',
+    '4dcb914b21b89dc8a543b217564c6a2347eea9c1e399685f1aafc4642f1ff172',
+    ['samples', 'templates'],
+  ],
+  [
+    'microsoft/gov-apptemplates',
+    '64dabc2652a13a2423ee3fb1d6f4bfe8f33fe1d9',
+    '5b2e3dc640d17f371fd3ba63e3d2220b5619d46c5b5a722eeb9fbd677f9025b7',
+    ['portals/core-portal'],
+  ],
+  [
+    'microsoft/contoso-real-estate-power-platform',
+    'dbd5f76d8098d838f8cbdd050134ea6094b68cf5',
+    'af122e203c50a194e83e625b3d82e7bf503d4f0cf3da7aaeeb54adf43a723649',
+    ['src/portal/solution/ContosoRealEstatePortal/src'],
+  ],
+  [
+    '365Evergreen/WorkmateProSWA',
+    '6e83e55120638992684bb74bd2000cac14326dc6',
+    'fa82507f2b321b2694fde63c9e836aa6e82d5972ca2cb0f3a5490bad1f6cbdb4',
+    ['dataverse/hired-schemas/HiRedAUstartersolution'],
+  ],
+  [
+    'tonipohl/PowerPagesCodeMagazine',
+    '2fe359cc37ad546aead7437942b222ce9e697e8f',
+    '4094027be41fb4bf5f71e771e2af38fb4889e92a2a1e88dbcdf330c7f86ae047',
+    ['ContosoCoursesRegistrationSite_1_0_0_0'],
+  ],
+];
+const ecosystemRoot = () => path.join(root, '.paqvilo/ci/ecosystem');
+const ecosystemUrl = (repository, commit) => `https://codeload.github.com/${repository}/tar.gz/${commit}`;
+
+/** CI cache keys of the pinned fixture archives: a SHA-256 over each set's URLs and digests, so only a pin change
+ * changes a key, and any other edit of this script keeps the caches. */
+export function fixtureCacheKeys() {
+  const key = (pins) => createHash('sha256').update(JSON.stringify(pins)).digest('hex');
+  return {
+    ecosystem_key: key(ECOSYSTEM.map(([repository, commit, digest]) => [ecosystemUrl(repository, commit), digest])),
+    sdk_reference_key: key([[SDK_URL, SDK_SHA256]]),
+  };
+}
+// Windows ships bsdtar in System32; another tar earlier on PATH (such as MSYS) misreads drive paths.
+const tar = () =>
+  process.platform === 'win32'
+    ? path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'tar.exe')
+    : 'tar';
+
+async function ecosystemFixtures() {
+  const directory = assertOwnedCiState(root, 'ecosystem');
+  fs.mkdirSync(directory, { recursive: true });
+  for (const [repository, commit, digest, members] of ECOSYSTEM) {
+    const name = repository.replace('/', '__');
+    const archive = path.join(directory, name + '.tar.gz');
+    // A persistent runner or a restored cache keeps the archive; one that does not match its pin is downloaded again.
+    await ensureVerifiedArchive(ecosystemUrl(repository, commit), archive, digest, {
+      maxBytes: 256 * 1024 * 1024,
+    });
+    // Extract afresh from the verified archive so no earlier run's edits survive.
+    const target = path.join(directory, name);
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(target);
+    const prefix = `${repository.split('/')[1]}-${commit}/`;
+    execute(tar(), [
+      '-xzf',
+      archive,
+      '-C',
+      target,
+      '--strip-components=1',
+      ...members.map((member) => prefix + member),
+    ]);
+  }
+}
+
+function requireEcosystemFixtures() {
+  for (const [repository, , , members] of ECOSYSTEM)
+    for (const member of members)
+      if (!fs.existsSync(path.join(ecosystemRoot(), repository.replace('/', '__'), member)))
+        throw new Error('Incomplete CI validation: public ecosystem fixtures missing; run ci:prepare.');
+  // Not a PAQVILO_ name: the toolkit rejects unknown PAQVILO_ settings in every spawned CLI.
+  environment('PAQ_TEST_ECOSYSTEM_FIXTURES', ecosystemRoot());
+}
+
+// Shards partition a package's `node --test [flags] <glob>` script by sorted file index, as node:test does.
+function packageTests(directory, script) {
+  const command = JSON.parse(fs.readFileSync(path.join(root, directory, 'package.json'), 'utf8')).scripts[script];
+  const words = command.split(' ');
+  const flags = words.slice(2, -1);
+  if (words[0] !== 'node' || words[1] !== '--test' || flags.some((flag) => !flag.startsWith('--')))
+    throw new Error(`Cannot shard the ${directory || 'root'} ${script} script.`);
+  return { flags, files: fs.globSync(words.at(-1), { cwd: path.join(root, directory) }).sort() };
+}
+
+export function shardFiles(files, shard) {
+  const [index, total] = shard.split('/').map(Number);
+  return files.filter((_, position) => position % total === index - 1);
+}
+
+function runPackageTests(directory, script, shard) {
+  if (!shard) return npm([...(directory ? ['--prefix', directory] : []), 'run', script]);
+  const { flags, files } = packageTests(directory, script);
+  if (!files.length)
+    throw new Error(`Cannot shard the ${directory || 'root'} ${script} script: test glob matched no files.`);
+  const total = Number(shard.split('/')[1]);
+  if (total > files.length)
+    throw new Error(
+      `Cannot shard the ${directory || 'root'} ${script} script: ${total} shards exceed the ${files.length} matched test files.`,
+    );
+  execute(process.execPath, ['--test', ...flags, ...shardFiles(files, shard)], { cwd: path.join(root, directory) });
+}
+
+export const needsEcosystem = (suite, unit, shard) =>
+  unit &&
+  ['mirage', 'all'].includes(suite) &&
+  (!shard || shardFiles(packageTests('mirage', 'test').files, shard).includes(path.normalize(ECOSYSTEM_TEST)));
 
 export function requiresClrFixture(suite, platform = process.platform) {
   return platform === 'win32' && ['mirage', 'examples', 'all'].includes(suite);
@@ -114,6 +252,28 @@ export function resetExampleModules(checkout = root) {
   else fs.rmSync(modules, { recursive: true, force: true });
 }
 
+/** npm ci can traverse a linked top-level node_modules directory on Windows.
+ * Unlink only the generated dependency entry before the owned installation. */
+export function resetLinkedDependencyDirectory(directory, checkout = root) {
+  const owner = fs.realpathSync(checkout);
+  let project;
+  try {
+    project = fs.realpathSync(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  const relative = path.relative(owner, project);
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
+    throw new Error('Dependency preparation escaped the owned checkout.');
+  const modules = path.join(project, 'node_modules');
+  try {
+    if (fs.lstatSync(modules).isSymbolicLink()) fs.unlinkSync(modules);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
 export function requireExampleBrowserDependency(project, checkout = root) {
   const lock = JSON.parse(fs.readFileSync(path.join(checkout, 'npm-shrinkwrap.json'), 'utf8'));
   // Probe in a fresh process, as the suite does: Node caches resolutions across fixture cleanup.
@@ -130,16 +290,30 @@ export function requireExampleBrowserDependency(project, checkout = root) {
     );
 }
 
-export async function prepareLane(suite, { browser = false, quality = false, sdk = false } = {}) {
-  if (!['lense', 'mirage', 'examples', 'all', 'quality'].includes(suite)) throw new Error(`Unknown CI suite: ${suite}`);
+const PREPARE_SUITES = new Set(['lense', 'mirage', 'examples', 'all', 'quality', 'sdk']);
+export async function prepareLane(
+  suite,
+  { browser = false, unit = true, quality = false, sdk = false, shard = null } = {},
+) {
+  if (!PREPARE_SUITES.has(suite)) throw new Error(`Unknown CI suite: ${suite}`);
   if (!['lense', 'quality'].includes(suite)) requireDotnet();
   quality ||= suite === 'quality';
+  for (const project of [
+    '',
+    'mirage',
+    'mirage/test-sdk/tds',
+    'mirage/test-sdk/dynamics-web-api',
+    'mirage/test-sdk/cert-auth',
+    'examples/company-operations',
+  ])
+    resetLinkedDependencyDirectory(path.join(root, project));
   npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund']);
   npm(['ci', '--prefix', 'mirage', '--ignore-scripts', '--no-audit', '--no-fund']);
-  if (suite === 'mirage' || suite === 'all' || quality) {
+  if (suite === 'mirage' || suite === 'all' || quality || sdk) {
     npm(['ci', '--prefix', 'mirage/test-sdk/tds', '--ignore-scripts', '--no-audit', '--no-fund']);
   }
   if (requiresClrFixture(suite)) await clrFixture();
+  if (needsEcosystem(suite, unit, shard)) await ecosystemFixtures();
   if (suite === 'all' || quality || sdk) {
     for (const project of ['mirage/test-sdk/dynamics-web-api', 'mirage/test-sdk/cert-auth'])
       npm(['ci', '--prefix', project, '--ignore-scripts', '--no-audit', '--no-fund']);
@@ -176,17 +350,80 @@ export async function prepareLane(suite, { browser = false, quality = false, sdk
         '--locked-mode',
         '--disable-build-servers',
       ]);
-      environment('PAQ_TEST_SDK_PROBES_RESTORED', '1');
+      // Compile once here: a cold MSBuild run inside the test budget times out on loaded runners.
+      execute('dotnet', [
+        'build',
+        'examples/company-operations/plugins/SdkProbes/SdkProbes.csproj',
+        '--no-restore',
+        '--configuration',
+        'Release',
+        '--disable-build-servers',
+      ]);
     }
   }
-  if (browser) {
-    execute(process.execPath, [
-      'node_modules/playwright-core/cli.js',
-      'install',
-      ...(process.platform === 'linux' ? ['--with-deps'] : []),
-      'chromium',
-    ]);
+  if (browser) installChromium();
+  if (sdk || suite === 'all' || suite === 'sdk') {
+    const { prepareSdkFixtures } = await import('./sdk-preparation.mjs');
+    await prepareSdkFixtures({ root, execute });
   }
+}
+
+// System libraries need root. Use passwordless sudo when available (GitHub-hosted Linux);
+// otherwise the runner must already provide them (CONTRIBUTING.md) and a launch reports what is missing.
+export function chromiumInstallArguments(platform = process.platform, canInstallSystemDependencies = rootAvailable) {
+  return [
+    'node_modules/playwright-core/cli.js',
+    'install',
+    ...(platform === 'linux' && canInstallSystemDependencies() ? ['--with-deps'] : []),
+    'chromium',
+  ];
+}
+function rootAvailable() {
+  if (process.getuid?.() === 0) return true;
+  return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 10_000 }).status === 0; // NOSONAR: fixed tool name resolved through PATH by developer tooling
+}
+function installChromium() {
+  const args = chromiumInstallArguments();
+  if (args.includes('--with-deps')) prepareHostedApt();
+  execute(process.execPath, args);
+}
+
+/** Bound hosted Ubuntu mirror failures before Playwright invokes apt as root. */
+export function prepareHostedApt({
+  platform = process.platform,
+  env = process.env,
+  read = (file) => fs.readFileSync(file, 'utf8'),
+  run = execute,
+  uid = process.getuid?.(),
+} = {}) {
+  if (platform !== 'linux' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted') return;
+  const write = (file, input) =>
+    run(uid === 0 ? '/usr/bin/tee' : '/usr/bin/sudo', uid === 0 ? [file] : ['-n', '--', '/usr/bin/tee', file], {
+      input,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    });
+  const mirrors = '/etc/apt/apt-mirrors.txt';
+  let before;
+  try {
+    before = read(mirrors);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (before !== undefined) {
+    // The hosted mirror list can fall back for InRelease yet retain the failed
+    // Azure mirror for package indexes. Use the official mirror that succeeded.
+    const after = before.replace(
+      /(^|\n)([ \t]*)https?:\/\/azure\.archive\.ubuntu\.com\/ubuntu(\/?)(?=[ \t\r\n]|$)/g,
+      '$1$2https://archive.ubuntu.com/ubuntu$3',
+    );
+    if (after !== before) write(mirrors, after);
+  }
+  write(
+    // Runner images also install zz-retries; our bounded settings must sort later.
+    '/etc/apt/apt.conf.d/zzz-paqvilo-ci',
+    'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "1";\nAPT::Update::Error-Mode "any";\n',
+  );
+  run('/usr/bin/apt-config', ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout']);
 }
 
 function requireSdkClients() {
@@ -217,84 +454,540 @@ function requireQualityDependencies() {
   }
 }
 
-function requireFixtures(suite, browser) {
+function requireFixtures(suite, { unit = true, browser = true, shard = null } = {}) {
   if (suite !== 'lense') requireDotnet();
   if (suite === 'mirage') {
+    if (unit) environment('PAQ_TEST_REQUIRE_TLS_TOOLS', '1');
     if (!fs.existsSync(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/lib/tedious.js')))
       throw new Error('Incomplete CI validation: install the locked TDS fixture with ci:prepare.');
   }
-  if (requiresClrFixture(suite)) {
-    const sdk =
-      process.env.PAQ_TEST_XRM_SDK ||
-      path.join(root, '.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll');
-    if (!fs.existsSync(sdk)) throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
-    verifyClrSdk(sdk);
-    environment('PAQ_TEST_XRM_SDK', sdk);
+  if (needsEcosystem(suite, unit, shard)) requireEcosystemFixtures();
+  if (requiresClrFixture(suite)) requireClrFixtureFile();
+  if (suite === 'examples') requireExampleFixtures();
+  if (browser) environment('PAQVILO_BROWSER', ciBrowser());
+}
+
+function requireClrFixtureFile() {
+  const sdk =
+    process.env.PAQ_TEST_XRM_SDK ||
+    path.join(root, '.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll');
+  if (!fs.existsSync(sdk)) throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
+  verifyClrSdk(sdk);
+  environment('PAQ_TEST_XRM_SDK', sdk);
+}
+
+function requireExampleFixtures() {
+  for (const project of ['examples/project', 'examples/company-operations']) {
+    const dependency = path.join(root, project, 'node_modules/paqvilo');
+    if (!fs.existsSync(path.join(dependency, 'package.json')) || fs.realpathSync(dependency) !== fs.realpathSync(root))
+      throw new Error(`Incomplete CI validation: ${project} must link to this checkout; run ci:prepare.`);
+    requireExampleBrowserDependency(project);
   }
-  if (suite === 'examples') {
-    for (const project of ['examples/project', 'examples/company-operations']) {
-      const dependency = path.join(root, project, 'node_modules/paqvilo');
-      if (
-        !fs.existsSync(path.join(dependency, 'package.json')) ||
-        fs.realpathSync(dependency) !== fs.realpathSync(root)
-      )
-        throw new Error(`Incomplete CI validation: ${project} must link to this checkout; run ci:prepare.`);
-      requireExampleBrowserDependency(project);
+  if (unitPlatformNeedsSdk()) requireSdkProjectionDriver();
+}
+
+function requireSdkProjectionDriver() {
+  if (!fs.existsSync(path.join(root, 'examples/company-operations/plugins/SdkProbes/bin/Release/net462/SdkProbes.exe')))
+    throw new Error('Incomplete CI validation: SDK projection driver build missing; run ci:prepare.');
+}
+
+/** Recheck mutable prerequisites before reusing evidence for an otherwise identical source tree. */
+export async function verificationFixturesReady(
+  scope,
+  suites,
+  { unit = true, browser = true, shard = null, quality = true, platform = process.platform } = {},
+  checks = {},
+) {
+  try {
+    if (quality && scope.quality) (checks.quality ?? requireQualityDependencies)();
+    for (const selected of suites) (checks.suite ?? requireFixtures)(selected, { unit, browser, shard });
+    if (unit && suites.includes('mirage')) {
+      const requireTls =
+        checks.tls ??
+        (async () => {
+          const { tlsTools } = await import('../mirage/test/tls-tools-fixture.mjs');
+          tlsTools({ required: true });
+        });
+      await requireTls();
     }
-    if (unitPlatformNeedsSdk()) {
-      if (!fs.existsSync(path.join(root, 'examples/company-operations/plugins/SdkProbes/obj/project.assets.json')))
-        throw new Error('Incomplete CI validation: SDK projection driver restore missing; run ci:prepare.');
-      environment('PAQ_TEST_SDK_PROBES_RESTORED', '1');
+    if (fullSdkGate(scope, platform)) {
+      const requireSdk =
+        checks.sdk ??
+        (async () => {
+          const { requireSdkFixtures } = await import('./sdk-preparation.mjs');
+          requireSdkFixtures(root);
+        });
+      await requireSdk();
     }
+    return true;
+  } catch {
+    return false; // A missing or modified fixture requires preparation and fresh verification.
   }
-  if (browser) environment('PAQVILO_BROWSER', 'chromium');
+}
+
+export function ciBrowser(env = process.env, platform = process.platform) {
+  const channel = env.PAQ_CI_BROWSER || 'chromium';
+  if (!['chromium', 'msedge'].includes(channel) || (channel === 'msedge' && platform !== 'win32'))
+    throw new Error('PAQ_CI_BROWSER must select chromium, or msedge on Windows.');
+  return channel;
+}
+
+/** Local validation covers every hosted browser lane of its platform: Windows runs both Chromium and Edge. */
+export const localBrowserChannels = (platform = process.platform) =>
+  platform === 'win32' ? ['chromium', 'msedge'] : ['chromium'];
+
+/**
+ * Hosted Windows runners expose TEMP through an 8.3 alias (C:\Users\RUNNER~1\...), so os.tmpdir() differs from its
+ * real path there. Local Windows validation runs under the short alias of a long-named directory to reproduce that;
+ * a volume without 8.3 names keeps the long path.
+ */
+export function runnerTemporaryDirectory({ platform = process.platform, env = process.env, base = tmpdir() } = {}) {
+  if (platform !== 'win32' || env.GITHUB_ACTIONS === 'true') return null;
+  const directory = path.join(base, 'paqvilo-validation-temporary');
+  fs.mkdirSync(directory, { recursive: true });
+  const result = spawnSync(
+    'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:PAQ_CI_TEMPORARY).ShortPath',
+    ],
+    { env: { ...process.env, PAQ_CI_TEMPORARY: directory }, encoding: 'utf8', windowsHide: true },
+  );
+  const short = result.status === 0 ? result.stdout.trim() : '';
+  return short || directory;
 }
 
 export function fullSdkGate(scope, platform = process.platform) {
-  return Boolean(scope.full) && platform === 'win32';
+  return Boolean(scope.full || scope.sdk) && ['win32', 'linux'].includes(platform);
 }
 
-function verifySdkGates() {
+async function verifySdkGates() {
   requireDotnet();
   requireSdkClients();
+  const { requireSdkFixtures, auditServiceClientDependencies } = await import('./sdk-preparation.mjs');
+  await requireSdkFixtures(root); // NOSONAR: await kept: the value may be a thenable and timing matters
+  environment('PAQ_TEST_REQUIRE_SDK_GATES', '1');
   execute('dotnet', ['restore', 'mirage/test-sdk/cert-auth/Gate/Gate.csproj', '--locked-mode']);
   for (const project of ['tds', 'dynamics-web-api', 'cert-auth'])
     npm(['--prefix', 'mirage/test-sdk/' + project, 'test']);
+  execute('dotnet', ['restore', 'mirage/test-sdk/serviceclient/Gate/Gate.csproj', '--locked-mode']);
+  await auditServiceClientDependencies({ root, execute });
+  execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs'], {
+    env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
+  });
+  execute(
+    process.execPath,
+    [
+      '--test',
+      '--test-timeout=600000',
+      'mirage/test-sdk/python-dataverse/gate.test.mjs',
+      'mirage/test-sdk/webapi-samples/gate.test.mjs',
+    ],
+    {
+      env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
+    },
+  );
+  // The shipped verify-storage check: 600,000 rows past the engine string limit, about 1 GiB of temporary disk.
+  execute(process.execPath, ['--expose-gc', '--max-old-space-size=4096', 'mirage/test-volume/state-storage.mjs']);
 }
 
 const unitPlatformNeedsSdk = () => process.platform === 'win32';
 
-export function verifyLane(suite, { unit = true, browser = true } = {}) {
-  requireFixtures(suite, browser);
-  if (unit) {
-    if (suite === 'lense') npmScript('test');
-    if (suite === 'mirage') npm(['--prefix', 'mirage', 'test']);
-    if (suite === 'examples') {
-      npmScript('test:example');
-      npmScript('test:company');
-      if (process.platform === 'win32') {
-        for (const project of ['Tests', 'QueryObservation', 'PipelineTests']) {
-          const file = `examples/company-operations/plugins/${project}/${project}.csproj`;
-          execute('dotnet', ['restore', file, '--locked-mode']);
-          execute('dotnet', ['build', file, '--no-restore', '-c', 'Release']);
-          if (project === 'Tests')
-            execute(path.join(root, 'examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe'), []);
-        }
+export function verifyLane(suite, { unit = true, browser = true, shard = null } = {}) {
+  requireFixtures(suite, { unit, browser, shard });
+  if (unit) verifyUnitLane(suite, shard);
+  if (browser) verifyBrowserLane(suite, shard);
+}
+
+function verifyUnitLane(suite, shard) {
+  if (suite === 'lense') runPackageTests('', 'test', shard);
+  if (suite === 'mirage') {
+    runPackageTests('mirage', 'test', shard);
+    // In-process gates without extra installs: size ratios, never absolute times, and the toolkit's own client.
+    // A sharded lane runs them once, beside the first shard.
+    for (const command of mirageUnitExtraCommands(shard)) execute(process.execPath, command);
+  }
+  if (suite === 'examples') {
+    npmScript('test:example');
+    npmScript('test:company');
+    if (process.platform === 'win32') verifyExampleDotnetProjects();
+  }
+}
+
+function verifyExampleDotnetProjects() {
+  for (const project of ['Tests', 'QueryObservation', 'PipelineTests']) {
+    const file = `examples/company-operations/plugins/${project}/${project}.csproj`;
+    execute('dotnet', ['restore', file, '--locked-mode']);
+    execute('dotnet', ['build', file, '--no-restore', '-c', 'Release']);
+    if (project === 'Tests')
+      execute(path.join(root, 'examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe'), []);
+  }
+}
+
+export function mirageUnitExtraCommands(shard) {
+  if (shard && !shard.startsWith('1/')) return [];
+  return [['--test', 'mirage/test-volume/write-volume.test.mjs', 'mirage/test-sdk/toolkit-client/gate.test.mjs']];
+}
+
+function verifyBrowserLane(suite, shard) {
+  if (suite === 'lense') runPackageTests('', 'test:browser', shard);
+  if (suite === 'mirage') runPackageTests('mirage', 'test:browser', shard);
+  if (suite === 'examples') {
+    npmScript('test:example:browser');
+    npmScript('test:company:browser');
+  }
+}
+
+/**
+ * The independent steps of a scoped or full run, longest first so a parallel run ends on short steps. Each lane is
+ * its own `ci.mjs verify --suite` process, so it runs exactly as the matching hosted job does. Local unit lanes also
+ * run under Node coverage, as the hosted SonarQube lanes do (`coverage: true`: runSteps gives each such command its own
+ * NODE_V8_COVERAGE directory); hosted lanes keep the plain mode.
+ */
+export function validationSteps(
+  scope,
+  suites,
+  { unit = true, browser = true, changed = [], repeat = 0, env = process.env, base = 'origin/main' } = {},
+  platform = process.platform,
+) {
+  const npmRun = (script) => [npmCliPath(), 'run', script];
+  const coverage = env.GITHUB_ACTIONS !== 'true';
+  const verify = (suite, kind, channel = 'chromium') => ({
+    args: ['scripts/ci.mjs', 'verify', '--suite', suite, `--${kind}`, '--prepared'],
+    env: { PAQ_CI_BROWSER: channel },
+    ...(kind === 'unit' && coverage ? { coverage } : {}),
+  });
+  const channels = browser ? localBrowserChannels(platform) : [];
+  const steps = [];
+  // CodeQL uses all CPUs (--threads=0), as its dedicated hosted job does. It
+  // must not compete with timed CLR/browser lanes in a local parallel run.
+  if (scope.codeql && env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'codeql', exclusive: true, commands: [['scripts/codeql.mjs']] });
+  // The hosted change-scope job checks test kinds over the whole pull request range. A release line's own pull
+  // request targets the default branch, so local validation compares with it, not only with the staged index.
+  if (env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'test kinds', commands: [['scripts/check-test-tags.mjs', '--base', base]] });
+  // The hosted SonarQube gate is a server that local validation cannot reach. Its rule profile is approximated on the
+  // files that differ from the same base, so new findings appear before a push; hosted CI keeps the server only.
+  if (env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'sonar rules', commands: [['scripts/sonar-rules.mjs', '--base', base]] });
+  for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
+    appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify, coverage });
+  }
+  // Example unit and browser tests share one installed project, so they stay in one ordered step.
+  if (suites.includes('examples')) appendExampleSteps(steps, { unit, browser, channels, verify });
+  appendAdditionalSteps(steps, { scope, platform, npmRun });
+  return steps;
+}
+
+function appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify, coverage }) {
+  if (unit)
+    steps.push({
+      label: `${suite} unit`,
+      commands: [
+        verify(suite, 'unit'),
+        ...changedTests(changed, repeat, suite).map((command) => (coverage ? { ...command, coverage } : command)),
+      ],
+    });
+  for (const channel of channels)
+    steps.push({
+      label: channel === 'chromium' ? `${suite} browser` : `${suite} browser ${channel}`,
+      commands: [
+        verify(suite, 'browser', channel),
+        ...(channel === 'chromium' ? changedTests(changed, repeat, suite, true) : []),
+      ],
+    });
+}
+
+function appendExampleSteps(steps, { unit, browser, channels, verify }) {
+  let label = 'examples';
+  if (!browser) label = 'examples unit';
+  else if (!unit) label = 'examples browser';
+  steps.push({
+    label,
+    commands: [
+      ...(unit ? [verify('examples', 'unit')] : []),
+      ...channels.map((channel) => verify('examples', 'browser', channel)),
+    ],
+  });
+}
+
+function appendAdditionalSteps(steps, { scope, platform, npmRun }) {
+  if (fullSdkGate(scope, platform)) steps.push({ label: 'sdk gates', commands: [['scripts/ci.mjs', 'sdk']] });
+  // Hosted runners start from a lockfile-keyed npm cache; a contributor's warm cache would hide a missing prime.
+  if (scope.smoke)
+    steps.push({
+      label: 'package smoke',
+      env: { npm_config_cache: path.join(root, '.paqvilo', 'ci', 'npm-cache-smoke') },
+      commands: [
+        ['-e', "require('node:fs').rmSync(process.env.npm_config_cache, { recursive: true, force: true })"],
+        npmRun('cache:package'),
+        npmRun('release:smoke'),
+      ],
+    });
+  if (scope.quality) {
+    const parts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+      .scripts.quality.split('&&')
+      .map((part) => /^npm run (\S+)$/.exec(part.trim())?.[1]);
+    if (!parts.every(Boolean)) throw new Error('The quality script must be a chain of `npm run <script>` steps.');
+    for (const part of parts) steps.push({ label: part, commands: [npmRun(part)] });
+  }
+  if (scope.runtime) steps.push({ label: 'check', commands: [npmRun('check')] });
+  if (scope.package) steps.push({ label: 'release:check', commands: [npmRun('release:check')] });
+  if (scope.site) steps.push({ label: 'site:build', commands: [npmRun('site:build')] });
+}
+
+/**
+ * Changed test files of one package script, rerun `repeat` more times after their lane passes, so a timing-dependent
+ * test fails locally before the hosted matrix runs it on slower runners.
+ */
+export function changedTests(changed, repeat, suite, browser = false) {
+  if (!repeat) return [];
+  const directory = suite === 'mirage' ? 'mirage' : '';
+  const { flags, files } = packageTests(directory, browser ? 'test:browser' : 'test');
+  const selected = files.filter((file) => changed.includes(path.posix.join(directory, file.replaceAll('\\', '/'))));
+  if (!selected.length) return [];
+  return Array.from({ length: repeat }, () => ({
+    args: ['--test', ...flags, ...selected],
+    cwd: path.join(root, directory),
+    env: browser ? { PAQVILO_BROWSER: 'chromium' } : {},
+  }));
+}
+
+/**
+ * Files changed by commits no remote branch contains: what a push introduces. The suite selection compares with the
+ * base branch instead, which on a release branch spans nearly every test.
+ */
+export function unpushedFiles(directory = root) {
+  const log = spawnSync(
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    ['--no-optional-locks', 'log', '--format=', '--name-only', '--no-renames', '-z', 'HEAD', '--not', '--remotes'],
+    { cwd: directory, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (log.status !== 0) throw new Error('Cannot list unpushed changes.', { cause: log.error });
+  return [...new Set(log.stdout.split(/[\0\n]/).filter(Boolean))];
+}
+
+/** Extra runs of changed test files: PAQ_CI_REPEAT, else `git config paqvilo.ci.repeat`, else 2; 0 disables. */
+export function validationRepeat(env = process.env, configured = gitConfig('paqvilo.ci.repeat')) {
+  const value = env.PAQ_CI_REPEAT || configured || '2';
+  if (!/^\d+$/.test(value)) throw new Error('PAQ_CI_REPEAT or paqvilo.ci.repeat must be a non-negative integer.');
+  return Number(value);
+}
+
+function gitConfig(key) {
+  /* NOSONAR */ const result = spawnSync('git', ['--no-optional-locks', 'config', '--get', key], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/**
+ * How many validation steps run at once: PAQ_CI_JOBS, else `git config paqvilo.ci.jobs`, else one per four CPUs and
+ * 4 GiB of memory. Hosted CI runs one lane per job, so it keeps one.
+ */
+export function validationJobs(env = process.env, configured = gitConfig('paqvilo.ci.jobs'), machine = {}) {
+  const value = env.PAQ_CI_JOBS || configured;
+  if (value) {
+    if (!/^[1-9]\d*$/.test(value)) throw new Error(`PAQ_CI_JOBS or paqvilo.ci.jobs must be a positive integer.`);
+    return Number(value);
+  }
+  if (env.GITHUB_ACTIONS === 'true') return 1;
+  const { cpus = availableParallelism(), memory = totalmem() } = machine;
+  return Math.max(1, Math.min(Math.floor(cpus / 4), Math.floor(memory / 2 ** 32)));
+}
+
+/**
+ * Runs every step, at most `jobs` at a time, so one pass reports every failure. With one job the output streams as
+ * before; otherwise each step writes its own log, and a failed step's log tail is printed when it ends.
+ */
+export async function runSteps(
+  steps,
+  jobs,
+  { cwd = root, logs, cpus = availableParallelism(), removeDirectory = removeCoverageDirectory } = {},
+) {
+  const parallel = jobs > 1 && steps.length > 1;
+  const coverage = steps.some((step) => step.commands.some((command) => command.coverage));
+  if (coverage) removeLeftoverCoverage(assertOwnedCiState(cwd, 'runs'), removeDirectory);
+  if (!logs) {
+    if (parallel || coverage) {
+      const parent = assertOwnedCiState(cwd, 'runs');
+      logs = path.join(fs.mkdtempSync(path.join(parent, `run-${process.pid}-`)), 'logs');
+    } else logs = path.join(cwd, '.paqvilo/ci/runs/serial-logs');
+  }
+  const run = path.dirname(logs);
+  if (parallel) {
+    fs.mkdirSync(logs, { recursive: true });
+    console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
+  }
+  const failed = [],
+    timings = [];
+  await runStepBatches(steps, jobs, async (step) => {
+    const start = performance.now();
+    const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
+    const { output, logError } = openStepLog(parallel, log);
+    // A suite already runs four test files concurrently. Divide the process pool
+    // by outer lanes too, rather than letting every file claim the whole machine.
+    const slots = Math.max(1, Math.floor(cpus / (step.exclusive ? 1 : jobs) / 4));
+    const inherited = process.env.PAQ_TEST_PROCESS_SLOTS;
+    const budget = inherited === undefined ? slots : Math.min(slots, Number(inherited));
+    const boundedStep = {
+      ...step,
+      env: { PAQ_TEST_PROCESS_SLOTS: String(budget), ...step.env },
+    };
+    const code = await executeStepCommands(boundedStep, output, cwd, logError, run, removeDirectory);
+    reportStepResult(step, code, start, log, parallel, failed, timings);
+  });
+  if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);
+  if (failed.length) throw new Error(`Validation failed: ${failed.join(', ')}.`);
+}
+
+export async function runStepBatches(steps, jobs, runStep) {
+  let queued = [];
+  const drain = async () => {
+    const queue = queued;
+    queued = [];
+    const worker = async () => {
+      for (let step = queue.shift(); step; step = queue.shift()) await runStep(step);
+    };
+    await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, worker));
+  };
+  for (const step of steps) {
+    if (!step.exclusive) {
+      queued.push(step);
+      continue;
+    }
+    await drain();
+    console.log(`[ci] Exclusive step: ${step.label}`);
+    await runStep(step);
+  }
+  await drain();
+}
+
+function openStepLog(parallel, log) {
+  let output = 'inherit',
+    logError;
+  if (parallel) {
+    try {
+      output = fs.openSync(log, 'w');
+    } catch (error) {
+      logError = error;
+      console.log(`[ci] Step log cannot be opened (${error.code}): ${log}`);
+    }
+  }
+  return { output, logError };
+}
+
+async function executeStepCommands(step, output, cwd, logError, run, removeDirectory) {
+  let code = 0;
+  try {
+    for (const command of step.commands) {
+      // A command is node arguments, or { args, env, cwd, coverage } for one lane's browser channel, package
+      // directory or coverage mode.
+      const { args, env = {}, cwd: directory = cwd } = Array.isArray(command) ? { args: command } : command;
+      const environment = { ...process.env, ...step.env, ...env };
+      code = command.coverage
+        ? await withCoverageDirectory(run, environment, removeDirectory, () =>
+            spawnStepCommand(args, directory, environment, output),
+          )
+        : await spawnStepCommand(args, directory, environment, output);
+      if (code !== 0) break;
+    }
+  } catch (error) {
+    code = error.code ?? 'execution error';
+    console.log(`[ci] Step execution failed: ${error.message}`);
+  } finally {
+    if (typeof output === 'number') {
+      try {
+        fs.closeSync(output);
+      } catch (error) {
+        logError ??= error;
       }
     }
   }
-  if (browser) {
-    if (suite === 'lense') npmScript('test:browser');
-    if (suite === 'mirage') npm(['--prefix', 'mirage', 'run', 'test:browser']);
-    if (suite === 'examples') {
-      npmScript('test:example:browser');
-      npmScript('test:company:browser');
-    }
+  if (code === 0 && logError) code = logError.code ?? 'log error';
+  return code;
+}
+
+/** Runs a command with NODE_V8_COVERAGE set to a new directory of its own under the run folder, never the caller's
+ * value, and removes that directory when the command ends, whatever its result. */
+async function withCoverageDirectory(run, environment, removeDirectory, command) {
+  fs.mkdirSync(run, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(run, 'v8-coverage-'));
+  try {
+    environment.NODE_V8_COVERAGE = directory;
+    return await command();
+  } finally {
+    removeCoverage(directory, removeDirectory);
+  }
+}
+
+function removeCoverageDirectory(directory) {
+  fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
+}
+
+/** A failed removal is reported and left to the next run; it never replaces the command's result. */
+function removeCoverage(directory, removeDirectory) {
+  try {
+    removeDirectory(directory);
+  } catch (error) {
+    console.log(
+      `[ci] Could not remove ${directory} (${error.code ?? error.message}); the next coverage run removes it.`,
+    );
+  }
+}
+
+/** Coverage directories of earlier runs under .paqvilo/ci/runs/<run>/: an interrupted run leaves its own, and a
+ * process that outlives its lane writes one again when it exits. The caller holds the checkout's validation lease,
+ * so no other run of this checkout is writing them. */
+function removeLeftoverCoverage(runs, removeDirectory) {
+  for (const run of fs.readdirSync(runs, { withFileTypes: true })) {
+    if (!run.isDirectory()) continue;
+    for (const entry of fs.readdirSync(path.join(runs, run.name), { withFileTypes: true }))
+      if (entry.isDirectory() && entry.name.startsWith('v8-coverage-'))
+        removeCoverage(path.join(runs, run.name, entry.name), removeDirectory);
+  }
+}
+
+function spawnStepCommand(args, cwd, env, output) {
+  const child = spawn(process.execPath, args, {
+    cwd,
+    env,
+    stdio: ['ignore', output, output],
+    windowsHide: true,
+  });
+  return new Promise((resolve) => {
+    child.once('error', () => resolve('spawn error'));
+    child.once('close', (status, signal) => resolve(status ?? signal));
+  });
+}
+
+function reportStepResult(step, code, start, log, parallel, failed, timings) {
+  timings.push([step.label, seconds(start)]);
+  if (code === 0) {
+    console.log(`[ci] ✔ ${step.label} (${seconds(start)})`);
+    return;
+  }
+  failed.push(step.label);
+  if (parallel) reportStepLog(log);
+  const fullLog = () => (parallel ? '; full log: ' + log : '');
+  console.log(`[ci] ✖ ${step.label} failed (${code}) after ${seconds(start)}${fullLog()}`);
+}
+
+function reportStepLog(log) {
+  try {
+    console.log(fs.readFileSync(log, 'utf8').split('\n').slice(-200).join('\n'));
+  } catch (error) {
+    console.log(`[ci] Step log unavailable (${error.code}): ${log}`);
   }
 }
 
 export function checkedGitStatus(directory = root) {
-  const status = spawnSync('git', ['--no-optional-locks', 'status', '--porcelain'], {
+  /* NOSONAR */ const status = spawnSync('git', ['--no-optional-locks', 'status', '--porcelain'], {
     cwd: directory,
     encoding: 'utf8',
     windowsHide: true,
@@ -306,7 +999,7 @@ export function checkedGitStatus(directory = root) {
 
 export function validationTree({ allowStaged = false, directory = root } = {}) {
   const git = (args) =>
-    spawnSync('git', ['--no-optional-locks', ...args], { cwd: directory, encoding: 'utf8', windowsHide: true });
+    spawnSync('git', ['--no-optional-locks', ...args], { cwd: directory, encoding: 'utf8', windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
   if (allowStaged) {
     const unstaged = git(['diff', '--no-ext-diff', '--quiet', '--']);
     const untracked = git(['ls-files', '--others', '--exclude-standard', '-z']);
@@ -320,21 +1013,63 @@ export function validationTree({ allowStaged = false, directory = root } = {}) {
   return tree.status === 0 ? tree.stdout.trim() : null;
 }
 
-function verificationIdentity(allowStaged = false) {
+function chromiumHeadlessExecutable() {
+  try {
+    const require = createRequire(path.join(root, 'package.json'));
+    return (
+      require('playwright-core/lib/coreBundle')
+        .registry.registry.findExecutable('chromium-headless-shell')
+        ?.executablePath() ?? null
+    );
+  } catch {
+    return null; // Preparation installs the pinned registry and browser cache.
+  }
+}
+
+/** Qualify receipts against the selected channel and both Chromium launch modes. */
+export async function verificationBrowser({
+  env = process.env,
+  platform = process.platform,
+  locate = browserExecutable,
+  locateHeadless = chromiumHeadlessExecutable,
+} = {}) {
+  const channel = ciBrowser(env, platform);
+  const located = await locate(channel, { env, platform });
+  const fingerprint = (executable) => {
+    const browser = executable && fs.existsSync(executable) ? fs.statSync(executable) : null;
+    return browser ? `${fs.realpathSync(executable)}:${browser.size}:${browser.mtimeMs}` : null;
+  };
+  return {
+    channel,
+    executable: fingerprint(located.path),
+    headlessShell: channel === 'chromium' ? fingerprint(await locateHeadless()) : null,
+  };
+}
+
+async function verificationIdentity(allowStaged = false) {
   const tree = validationTree({ allowStaged });
   if (!tree) return null;
-  const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+  const cli = npmCliPath();
   const npmVersion = spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8', windowsHide: true });
   if (npmVersion.status !== 0) return null;
   const require = createRequire(path.join(root, 'package.json'));
-  let playwright;
   try {
-    playwright = require('playwright-core');
+    require('playwright-core');
   } catch {
     return null; /* Preparation installs the locked package before validation. */
   }
-  const executable = playwright.chromium.executablePath();
-  const browser = fs.existsSync(executable) ? fs.statSync(executable) : null;
+  const selectedBrowser = await verificationBrowser();
+  // Local validation runs every channel of this platform, so a changed Edge also requires a fresh pass.
+  const localBrowsers = [];
+  for (const channel of localBrowserChannels()) {
+    let browser;
+    try {
+      browser = await verificationBrowser({ env: { ...process.env, PAQ_CI_BROWSER: channel } });
+    } catch {
+      browser = { channel, executable: null, headlessShell: null };
+    }
+    localBrowsers.push(`${browser.channel}:${browser.executable}:${browser.headlessShell}`);
+  }
   const readPackageVersion = (file) => {
     try {
       return JSON.parse(fs.readFileSync(file, 'utf8')).version;
@@ -345,7 +1080,7 @@ function verificationIdentity(allowStaged = false) {
   const sdk =
     process.env.PAQ_TEST_XRM_SDK ||
     path.join(root, '.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll');
-  const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8', windowsHide: true });
+  const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8', windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
   return {
     tree,
     node: process.version,
@@ -354,7 +1089,10 @@ function verificationIdentity(allowStaged = false) {
     arch: process.arch,
     nodeOptions: process.env.NODE_OPTIONS ?? '',
     playwright: require('playwright-core/package.json').version,
-    chromium: browser ? `${executable}:${browser.size}:${browser.mtimeMs}` : null,
+    browserChannel: selectedBrowser.channel,
+    browserExecutable: selectedBrowser.executable,
+    browserHeadlessShell: selectedBrowser.headlessShell,
+    localBrowsers: localBrowsers.join('|'),
     tedious: readPackageVersion(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/package.json')),
     clrSdk: fs.existsSync(sdk) ? createHash('sha256').update(fs.readFileSync(sdk)).digest('hex') : null,
     dotnet: dotnet.status === 0 ? dotnet.stdout.trim() : null,
@@ -388,22 +1126,7 @@ function saveVerificationReceipt(file, receipt) {
   fs.writeFileSync(file, JSON.stringify(receipt, null, 2) + '\n');
 }
 
-async function main() {
-  const [command, ...args] = process.argv.slice(2);
-  const { values } = parseArgs({
-    args,
-    options: {
-      full: { type: 'boolean' },
-      suite: { type: 'string' },
-      base: { type: 'string' },
-      browser: { type: 'boolean' },
-      unit: { type: 'boolean' },
-      prepared: { type: 'boolean' },
-      quality: { type: 'boolean' },
-      sdk: { type: 'boolean' },
-    },
-    strict: true,
-  });
+function validateRunOptions(command, values) {
   if (
     values.quality &&
     (command !== 'prepare' || values.suite || values.unit || values.browser || values.full || values.base)
@@ -419,31 +1142,85 @@ async function main() {
       values.quality ||
       values.base)
   )
-    throw new Error('--sdk prepares full Windows client gates; combine only with prepare --suite mirage --unit.');
+    throw new Error('--sdk prepares full client gates; combine only with prepare --suite mirage --unit.');
   if (values.unit && values.browser)
     throw new Error('--unit and --browser are mutually exclusive. Omit both to run both.');
   if (values.full && (values.unit || values.browser))
     throw new Error('--full requires unit and browser validation; use --suite for a partial run.');
   if (values.full && values.suite) throw new Error('--full selects every suite and cannot be combined with --suite.');
   if (values.base && values.suite) throw new Error('--base cannot be combined with an explicit --suite.');
-  if (command === 'sdk') {
-    if (Object.values(values).some(Boolean)) throw new Error('The SDK gate command takes no options.');
-    return verifySdkGates();
+  if (values.shard !== undefined) validateShard(values);
+}
+
+function validateShard(values) {
+  const [index, total] = values.shard.split('/').map(Number);
+  if (
+    !/^[1-9]\d*\/[1-9]\d*$/.test(values.shard) ||
+    index > total ||
+    !['lense', 'mirage'].includes(values.suite) ||
+    !(values.unit || values.browser)
+  )
+    throw new Error('--shard <index>/<total> splits only --suite lense|mirage with --unit or --browser.');
+}
+
+function dispatchSpecialCommand(command, values) {
+  if (command === 'sdk') return { handled: true, result: verifySdkGates() };
+  if (command === 'sdk-prepare')
+    return { handled: true, result: prepareLane('sdk', { unit: false, browser: false, sdk: true }) };
+  if (command === 'browser') {
+    installChromium();
+    return { handled: true };
   }
-  const full = values.full;
-  const suite = values.suite;
-  const browser = !values.unit;
-  const unit = !values.browser;
-  if (command === 'prepare')
-    return prepareLane(values.quality ? 'quality' : (suite ?? 'all'), {
-      browser: values.quality ? false : browser,
+  if (command === 'prepare') return { handled: true, result: prepareLane(...prepareSelection(values)) };
+  return { handled: false };
+}
+
+// The suite and lane options `prepare` runs for its parsed arguments.
+function prepareSelection(values) {
+  return [
+    values.quality ? 'quality' : (values.suite ?? 'all'),
+    {
+      browser: values.quality ? false : !values.unit,
+      unit: values.quality ? false : !values.browser,
       sdk: values.sdk,
-    });
-  if (command !== 'verify')
-    throw new Error(
-      'Use prepare or verify, with --suite lense|mirage|examples, --unit, --browser, --prepared, --base <ref>, or --full.',
-    );
+      shard: values.shard,
+    },
+  ];
+}
+
+/**
+ * Which pinned fixture archives `prepare` downloads for the same arguments, decided by the same functions prepare
+ * uses. CI writes the answer to the step outputs so a lane restores and saves only the fixture caches it uses.
+ */
+export function laneFixtures(args, platform = process.platform) {
+  const values = parseRunArgs(args);
+  validateRunOptions('prepare', values);
+  const [suite, { unit, shard }] = prepareSelection(values);
+  if (!PREPARE_SUITES.has(suite)) throw new Error(`Unknown CI suite: ${suite}`);
+  return { ecosystem: needsEcosystem(suite, unit, shard), sdk_reference: requiresClrFixture(suite, platform) };
+}
+
+function parseRunArgs(args) {
+  return parseArgs({
+    args,
+    options: {
+      full: { type: 'boolean' },
+      suite: { type: 'string' },
+      base: { type: 'string' },
+      browser: { type: 'boolean' },
+      unit: { type: 'boolean' },
+      prepared: { type: 'boolean' },
+      quality: { type: 'boolean' },
+      sdk: { type: 'boolean' },
+      shard: { type: 'string' },
+    },
+    strict: true,
+  }).values;
+}
+
+function selectVerificationScope(suite, full, values) {
   let scope;
+  let changed = [];
   if (suite) {
     if (!['lense', 'mirage', 'examples'].includes(suite)) throw new Error(`Unknown CI suite: ${suite}`);
     scope = { [suite]: true };
@@ -451,7 +1228,7 @@ async function main() {
   else {
     const base = values.base ?? 'origin/main';
     const diff = spawnSync(
-      'git',
+      'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
       ['--no-optional-locks', 'diff', '--name-only', '--no-renames', '-z', `${base}...HEAD`, '--'],
       {
         cwd: root,
@@ -463,74 +1240,106 @@ async function main() {
     if (checkedGitStatus(root))
       throw new Error('Scoped pre-push validation requires a clean checkout; commit changes or use --full.');
     scope = classifyChanges(diff.stdout.split('\0').filter(Boolean));
+    changed = unpushedFiles();
   }
-  const suites = suitesForScope(scope);
-  console.log(
-    `CI selection: ${JSON.stringify({ ...scope, suites, node: process.version, platform: process.platform, availableParallelism: availableParallelism(), totalMemoryMiB: Math.floor(totalmem() / 1024 / 1024) })}`,
-  );
-  const startingTree = validationTree({ allowStaged: Boolean(full) });
-  if (!suite && !startingTree)
-    throw new Error(
-      'Validation requires worktree files to match the index and no untracked files; stage the full tree for --full, or commit before scoped validation.',
-    );
-  const identity = verificationIdentity(Boolean(full));
-  const receiptFile = path.join(root, '.paqvilo/ci/verification.json');
-  const receipt = consumeVerificationReceipt(receiptFile);
-  let securityChecked = false;
-  const onlineChecks = () => {
-    npmScript('audit:dependencies');
-    npm(['audit', 'signatures']);
-    npm(['audit', 'signatures', '--prefix', 'mirage']);
-    securityChecked = true;
-  };
-  const ready = dependencyReadiness(root).ready;
-  if (!suite && ready) onlineChecks();
-  let fixturesReady = true;
-  try {
-    if (!suite && scope.quality) requireQualityDependencies();
-    for (const selected of suites) requireFixtures(selected, browser);
-  } catch {
-    fixturesReady = false; /* Missing fixtures require preparation, never a cached pass. */
-  }
-  if (
+  return { scope, changed };
+}
+
+function runOnlineChecks() {
+  npmScript('audit:dependencies');
+  npm(['audit', 'signatures']);
+  npm(['audit', 'signatures', '--prefix', 'mirage']);
+}
+
+function canReuseVerification({ suite, full, unit, browser, ready, fixturesReady, receipt, identity, scope }) {
+  return (
     !suite &&
+    !full &&
     process.env.GITHUB_ACTIONS !== 'true' &&
     unit &&
     browser &&
     ready &&
     fixturesReady &&
     matchingVerification(receipt, identity, scope)
-  ) {
-    if (!matchingVerification(receipt, verificationIdentity(Boolean(full)), scope))
+  );
+}
+
+async function verificationPreflight({
+  scope,
+  suites,
+  suite,
+  full,
+  unit,
+  browser,
+  shard,
+  receipt,
+  identity,
+  receiptFile,
+}) {
+  let securityChecked = false;
+  const ready = dependencyReadiness(root).ready;
+  if (!suite && ready) {
+    runOnlineChecks();
+    securityChecked = true;
+  }
+  const fixturesReady = await verificationFixturesReady(scope, suites, {
+    unit,
+    browser,
+    shard,
+    quality: !suite,
+  });
+  if (canReuseVerification({ suite, full, unit, browser, ready, fixturesReady, receipt, identity, scope })) {
+    if (!matchingVerification(receipt, await verificationIdentity(Boolean(full)), scope))
       throw new Error('Source, toolchain or fixtures changed during dependency audits; rerun validation.');
     saveVerificationReceipt(receiptFile, receipt);
     console.log(
       `Refreshed dependency audits/signatures and reused ${receipt.full ? 'full' : 'scoped'} deterministic validation for the identical source tree ${identity.tree}, toolchain and fixtures.`,
     );
-    return;
+    return { reused: true, securityChecked };
   }
-  if (!values.prepared && (suites.length || scope.quality))
-    await prepareLane(suites.length === 0 ? 'quality' : suites.length === 1 ? suites[0] : 'all', {
+  return { reused: false, securityChecked };
+}
+
+function prepareVerification({ values, suites, scope, suite, browser, unit, shard }) {
+  if (values.prepared || !(suites.length || scope.quality)) return { shouldPrepare: false };
+  let lane;
+  if (suites.length === 0) lane = 'quality';
+  else if (suites.length === 1) lane = suites[0];
+  else lane = 'all';
+  return {
+    shouldPrepare: true,
+    result: prepareLane(lane, {
       browser: Boolean((suites.length && browser) || scope.smoke),
+      unit,
       quality: !suite && Boolean(scope.quality),
-    });
-  const baselineIdentity = verificationIdentity(Boolean(full));
-  if (!suite && !baselineIdentity)
-    throw new Error('Source or toolchain changed during preparation; review the staged tree and rerun validation.');
-  if (!suite) {
-    if (!securityChecked) onlineChecks();
-    if (scope.quality) npmScript('quality');
-    if (scope.runtime) npmScript('check');
-    if (scope.package) npmScript('release:check');
+      shard,
+      sdk: !suite && fullSdkGate(scope),
+    }),
+  };
+}
+
+function runVerificationLanes({ suite, suites, scope, changed, unit, browser, shard, securityChecked, base }) {
+  if (suite) {
+    verifyLane(suite, { unit, browser, shard });
+    return null;
   }
-  for (const selected of suites) verifyLane(selected, { unit, browser });
-  if (fullSdkGate(scope)) verifySdkGates();
-  if (scope.smoke) {
-    npmScript('cache:package');
-    npmScript('release:smoke');
+  if (!securityChecked) runOnlineChecks();
+  // Repeated changed tests run outside their lane process, so this process carries the lane fixture settings.
+  for (const selected of suites) requireFixtures(selected, { unit, browser, shard });
+  const temporary = runnerTemporaryDirectory();
+  if (temporary) {
+    process.env.TEMP = process.env.TMP = temporary; // NOSONAR: process temp directory override for tooling
+    console.log(`[ci] Temporary files use ${temporary}, as hosted Windows runners use an 8.3 TEMP alias.`);
   }
-  if (scope.site) npmScript('site:build');
-  const completedIdentity = verificationIdentity(Boolean(full));
+  if (scope.smoke) assertOwnedCiState(root, 'npm-cache-smoke');
+  return runSteps(
+    validationSteps(scope, suites, { unit, browser, changed, repeat: validationRepeat(), base }),
+    validationJobs(),
+  );
+}
+
+async function completeVerification({ suite, unit, browser, full, scope, baselineIdentity, receiptFile }) {
+  const completedIdentity = await verificationIdentity(Boolean(full));
   if (!suite && JSON.stringify(baselineIdentity) !== JSON.stringify(completedIdentity))
     throw new Error('Source, toolchain or fixtures changed during validation; review the tree and rerun.');
   if (!suite && unit && browser && baselineIdentity && completedIdentity) {
@@ -542,6 +1351,107 @@ async function main() {
     });
   }
   console.log('Selected CI validation completed without errors.');
+}
+
+async function runVerification({ values, suite, full, unit, browser, scope, suites, changed, receipt, receiptFile }) {
+  console.log(
+    `CI selection: ${JSON.stringify({ ...scope, suites, node: process.version, platform: process.platform, availableParallelism: availableParallelism(), totalMemoryMiB: Math.floor(totalmem() / 1024 / 1024) })}`,
+  );
+  const startingTree = validationTree({ allowStaged: Boolean(full) });
+  if (!suite && !startingTree)
+    throw new Error(
+      'Validation requires worktree files to match the index and no untracked files; stage the full tree for --full, or commit before scoped validation.',
+    );
+  const identity = await verificationIdentity(Boolean(full));
+  const preflight = await verificationPreflight({
+    scope,
+    suites,
+    suite,
+    full,
+    unit,
+    browser,
+    shard: values.shard,
+    receipt,
+    identity,
+    receiptFile,
+  });
+  if (preflight.reused) return;
+  const preparation = prepareVerification({ values, suites, scope, suite, browser, unit, shard: values.shard });
+  if (preparation.shouldPrepare) await preparation.result;
+  const baselineIdentity = await verificationIdentity(Boolean(full));
+  if (!suite && !baselineIdentity)
+    throw new Error('Source or toolchain changed during preparation; review the staged tree and rerun validation.');
+  const laneRun = runVerificationLanes({
+    suite,
+    suites,
+    scope,
+    changed,
+    unit,
+    browser,
+    shard: values.shard,
+    securityChecked: preflight.securityChecked,
+    base: values.base,
+  });
+  if (laneRun) await laneRun; // NOSONAR: optional pending promise, awaited only when set
+  await completeVerification({ suite, unit, browser, full, scope, baselineIdentity, receiptFile });
+}
+
+async function runMain() {
+  const [command, ...args] = process.argv.slice(2);
+  const receiptFile = path.join(assertOwnedCiState(root, 'runs'), 'verification.json');
+  const receipt = ['verify', 'sdk'].includes(command) ? consumeVerificationReceipt(receiptFile) : undefined;
+  const values = parseRunArgs(args);
+  validateRunOptions(command, values);
+  if (['sdk', 'sdk-prepare', 'browser'].includes(command) && Object.values(values).some(Boolean)) {
+    if (command === 'sdk') throw new Error('The SDK gate command takes no options.');
+    if (command === 'sdk-prepare') throw new Error('SDK preparation takes no options.');
+    throw new Error('The browser installation command takes no options.');
+  }
+  const special = dispatchSpecialCommand(command, values);
+  if (special.handled) return special.result;
+  const full = values.full;
+  const suite = values.suite;
+  const browser = !values.unit;
+  const unit = !values.browser;
+  if (command !== 'verify')
+    throw new Error(
+      'Use prepare or verify, with --suite lense|mirage|examples, --unit, --browser, --prepared, --base <ref>, or --full.',
+    );
+  const selected = selectVerificationScope(suite, full, values);
+  const { scope, changed } = selected;
+  const suites = suitesForScope(scope);
+  await runVerification({ values, suite, full, unit, browser, scope, suites, changed, receipt, receiptFile });
+}
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+  // Read-only: answers without the workspace lease, before any dependency is installed.
+  if (command === 'fixtures') {
+    const lines = Object.entries({ ...laneFixtures(args), ...fixtureCacheKeys() })
+      .map(([name, value]) => `${name}=${value}\n`)
+      .join('');
+    process.stdout.write(lines);
+    if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, lines);
+    return;
+  }
+  const inherit =
+    command === 'sdk' || (command === 'verify' && args.includes('--prepared') && !args.includes('--full'));
+  const release = await acquireCiWorkspaceLease(root, process.env, { inherit });
+  let failure;
+  try {
+    await runMain();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await release();
+  } catch (error) {
+    if (failure)
+      throw new AggregateError([failure, error], `${failure.message}; workspace cleanup failed: ${error.message}`, {
+        cause: error,
+      });
+    throw error;
+  }
+  if (failure) throw failure;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {

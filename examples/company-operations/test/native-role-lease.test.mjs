@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { beginRoleLease, setLeasedRoles, recoverRoleLease } from '../portal-harness/native-role-lease.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 test('native role lease restores after unknown commit and preserves unrelated memberships', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'paqvilo-role-')),
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-role-')),
     file = path.join(dir, 'lease.json'),
     roles = new Set(['one', 'foreign']);
   let stop = false;

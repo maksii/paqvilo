@@ -16,8 +16,11 @@ const dataOf = (pack, name) => {
   const property = Object.getOwnPropertyDescriptor(pack, name);
   return property && 'value' in property ? property.value : undefined;
 };
-const sizeOf = (value) =>
-  Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : 0;
+const sizeOf = (value) => {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === 'object') return Object.keys(value).length;
+  return 0;
+};
 const slash = (file) => file.split(path.sep).join('/');
 
 /**
@@ -53,7 +56,10 @@ export function createPackRoutes({
         ...(await packModules({ project: registration.project, explicit: registration.dataPacks ?? [] })),
         ...supplied,
       ]) {
-        const source = entry.api ? 'api' : projectModules.has(entry.module) ? 'project' : 'explicit';
+        let source;
+        if (entry.api) source = 'api';
+        else if (projectModules.has(entry.module)) source = 'project';
+        else source = 'explicit';
         try {
           entries.push({ pack: await loadPack(entry.module), module: entry.module, source });
         } catch (error) {

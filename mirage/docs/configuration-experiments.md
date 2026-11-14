@@ -1,6 +1,6 @@
 # Platform rules and portal overrides
 
-Mirage exposes two dedicated administration pages:
+Mirage exposes two dedicated administration pages on the administration address (`adminUrl`):
 
 - `/_sim/#platform`: **Platform rules**, with real administration classification, Microsoft references, source/effective values, instance overrides and explicit simulation coverage.
 - `/_sim/#overrides`: **Settings & snippet overrides**, with exported and effective values side by side. Edit, add, remove locally or reset without changing source files. Boolean-looking values have one-click **Set True / Set False** actions. Portal values remain strings, including `False`, `True` and empty strings; `null` removes the local effective value. Snippet name overrides cover all request languages in this instance, and reset restores each source translation.

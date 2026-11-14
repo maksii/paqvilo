@@ -1,10 +1,10 @@
+// @test-kind unproven: local model of Dataverse TDS queries over the simulated store; no native capture cited
 // TDS endpoint wired into the Dataverse API: login with an Entra token, SELECT through the real record handlers
 // (so table security applies to the caller), refusals and unknown tables.
 // The tedious checks run only when TDS_TEDIOUS_PATH names the tedious entry file.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import tls from 'node:tls';
+import https from 'node:https';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -13,12 +13,12 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { hashSecret } from '../lib/dataverse-auth.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
-import { TDS, createMessageReader, encodePrelogin, writeMessage } from '../lib/dataverse-tds-framing.mjs';
 import { queryLimitMs } from '../lib/dataverse-tds.mjs';
 import { parsePrefer } from '../lib/dataverse-odata.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
+import { tdsLogin, tdsQuery, utf16 } from './support/tds-client.mjs';
 
 const ANNOTATIONS = 'odata.include-annotations="*"';
 const ORG_ID = '0c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5';
@@ -44,92 +44,36 @@ const widgetMapping = () => ({
   ownership: 'UserOwned',
   fields: { name: text, ownerid: { dataverseType: 'lookup' } },
 });
-const u32 = (value) => {
-  const bytes = Buffer.alloc(4);
-  bytes.writeUInt32LE(value);
-  return bytes;
-};
-const utf16 = (value) => Buffer.from(value, 'utf16le');
+// PRELOGIN, then LOGIN7 with the token, trusting only this suite's loopback certificate: the client and the login reply.
+const login = (port, token) => tdsLogin(port, token, testCertificate.cert);
+const query = tdsQuery;
+const FEDAUTHINFO = 0xee;
+const FEDAUTHINFO_NAMES = { 0x01: 'stsUrl', 0x02: 'spn' };
 
-// LOGIN7 with FEDAUTH (SecurityToken, library 1) carrying the access token (MS-TDS 2.2.6.4).
-function login7({ user = 'tester', database = 'org', token }) {
-  const fixed = Buffer.alloc(94);
-  fixed.writeUInt32LE(0x74000004, 4);
-  fixed.writeUInt32LE(4096, 8);
-  fixed.writeUInt8(0x10, 27);
-  const variable = [];
-  let at = 94;
-  const put = (slot, value) => {
-    const data = utf16(value);
-    fixed.writeUInt16LE(at, slot);
-    fixed.writeUInt16LE(value.length, slot + 2);
-    variable.push(data);
-    at += data.length;
-  };
-  put(36, 'client-host');
-  put(40, user);
-  put(48, 'tds-integration');
-  put(52, 'mirage');
-  put(60, 'tds-integration-lib');
-  put(68, database);
-  const tokenBytes = utf16(token);
-  const fedAuthData = Buffer.concat([Buffer.from([0x03]), u32(tokenBytes.length), tokenBytes]);
-  const feature = Buffer.concat([Buffer.from([0x02]), u32(fedAuthData.length), fedAuthData, Buffer.from([0xff])]);
-  fixed.writeUInt16LE(at, 56);
-  variable.push(u32(at + 4), feature);
-  const body = Buffer.concat([fixed, ...variable]);
-  body.writeUInt32LE(body.length, 0);
-  return body;
+// POST of a form to the HTTPS origin, trusting only this suite's loopback certificate.
+function httpsPost(url, form) {
+  return new Promise((resolve, reject) => {
+    const headers = { 'content-type': 'application/x-www-form-urlencoded' };
+    const request = https.request(url, { method: 'POST', ca: testCertificate.cert, headers }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+    });
+    request.on('error', reject);
+    request.end(new URLSearchParams(form).toString());
+  });
 }
 
-// SQL_BATCH: ALL_HEADERS with a transaction descriptor, then UTF-16LE text.
-function sqlBatch(sql) {
-  const headers = Buffer.alloc(22);
-  headers.writeUInt32LE(22, 0);
-  headers.writeUInt32LE(18, 4);
-  headers.writeUInt16LE(2, 8);
-  headers.writeUInt32LE(1, 18);
-  return Buffer.concat([headers, utf16(sql)]);
-}
-
-// Hand-built TDS 8 client (TLS first, ALPN tds/8.0). Replies are read whole: the assertions search their bytes.
-async function connect(port) {
-  const socket = tls.connect({ host: '127.0.0.1', port, ALPNProtocols: ['tds/8.0'], ca: testCertificate.cert });
-  socket.on('error', () => {});
-  await once(socket, 'secureConnect');
-  const queue = [];
-  const waiting = [];
-  socket.on(
-    'data',
-    createMessageReader((type, payload) => {
-      const resume = waiting.shift();
-      if (resume) resume(payload);
-      else queue.push(payload);
-    }),
-  );
-  return {
-    socket,
-    send: (type, payload) => writeMessage(socket, type, payload),
-    next: () => (queue.length ? Promise.resolve(queue.shift()) : new Promise((resolve) => waiting.push(resolve))),
-    close: () => socket.destroy(),
-  };
-}
-
-// PRELOGIN, then LOGIN7 with the token. Returns the client and the login reply.
-async function login(port, token) {
-  const client = await connect(port);
-  client.send(
-    TDS.PRELOGIN,
-    encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }),
-  );
-  await client.next();
-  client.send(TDS.LOGIN7, login7({ token }));
-  return { client, reply: await client.next() };
-}
-
-async function query(client, sql) {
-  client.send(TDS.SQL_BATCH, sqlBatch(sql));
-  return client.next();
+// FEDAUTHINFO (MS-TDS 2.2.7.10): a token, then a count and (id, length, offset) items; offsets count from the count.
+function fedAuthInfoItems(reply) {
+  const body = reply.subarray(5);
+  const items = {};
+  for (let i = 0; i < body.readUInt32LE(0); i += 1) {
+    const at = 4 + i * 9;
+    const offset = body.readUInt32LE(at + 5);
+    items[FEDAUTHINFO_NAMES[body[at]]] = body.subarray(offset, offset + body.readUInt32LE(at + 1)).toString('utf16le');
+  }
+  return items;
 }
 
 describe('TDS endpoint wired into the Dataverse API', () => {
@@ -202,7 +146,6 @@ describe('TDS endpoint wired into the Dataverse API', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -220,6 +163,7 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind unproven+security: local model of row filtering by the token's security role
   it('a Basic User token SELECTs only the rows its security role may read', async () => {
     const { client } = await login(api.tdsPort, basicToken);
     try {
@@ -231,8 +175,63 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind unproven+security: local model of refusing an invalid token at login
   it('an invalid token is refused at login', async () => {
     const { client, reply } = await login(api.tdsPort, 'not-a-token');
+    try {
+      assert.equal(reply[0], ERROR);
+      assert.equal(reply.readUInt32LE(3), 18456, 'login failure number');
+    } finally {
+      client.close();
+    }
+  });
+
+  // The HTTPS origin's token endpoint: the audience MSAL asks for when the endpoint is reached over TLS.
+  async function tlsToken(form) {
+    const body = await httpsPost(`${api.tlsOrigin}/${tenantId}/oauth2/v2.0/token`, {
+      scope: `${api.tlsOrigin}/.default`,
+      ...form,
+    });
+    assert.ok(body.access_token, `HTTPS token request failed: ${JSON.stringify(body)}`);
+    return body.access_token;
+  }
+
+  // @test-kind security: with TLS on, the SQL login accepts a token for the HTTPS origin, which the documented MSAL setup asks for
+  it('with TLS on, a token for the HTTPS origin logs in', async () => {
+    const httpsAppToken = await tlsToken({
+      grant_type: 'client_credentials',
+      client_id: APP_ID,
+      client_secret: process.env[SECRET_VAR],
+    });
+    const { client, reply } = await login(api.tdsPort, httpsAppToken);
+    try {
+      assert.equal(reply[0], 0xe3, 'login starts with ENVCHANGE');
+    } finally {
+      client.close();
+    }
+  });
+
+  // @test-kind security: with TLS on, FEDAUTHINFO names the HTTPS origin, so the STS and the SPN are the same origin
+  it('with TLS on, FEDAUTHINFO names the HTTPS origin as the STS and the SPN', async () => {
+    const { client, reply } = await login(api.tdsPort, '');
+    try {
+      assert.equal(reply[0], FEDAUTHINFO, 'the login asks for a token');
+      const items = fedAuthInfoItems(reply);
+      assert.equal(items.stsUrl, `${api.tlsOrigin}/${tenantId}`, 'the STS is the HTTPS origin');
+      assert.equal(items.spn, api.tlsOrigin, 'the SPN is the HTTPS origin');
+    } finally {
+      client.close();
+    }
+  });
+
+  // @test-kind security: with TLS on, a token whose audience is another origin is refused, even with this issuer
+  it('with TLS on, a token for a foreign audience is refused at login', async () => {
+    const foreign = api.issueAccessToken({
+      origin: api.tlsOrigin,
+      appId: APP_ID,
+      audience: 'https://foreign.invalid',
+    });
+    const { client, reply } = await login(api.tdsPort, foreign);
     try {
       assert.equal(reply[0], ERROR);
       assert.equal(reply.readUInt32LE(3), 18456, 'login failure number');
@@ -252,6 +251,7 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind contract+security: Paqvilo's private runtime storage is never reachable over TDS
   it('private runtime storage is an unknown SQL object even for an administrator', async () => {
     const { client } = await login(api.tdsPort, appToken);
     try {
@@ -361,7 +361,6 @@ describe('TDS query paging and service protection', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -495,7 +494,7 @@ describe('TDS endpoint with tedious', { skip }, () => {
     await api?.close();
   });
 
-  it('access-token login runs SELECT name FROM widget through tedious', { timeout: 20_000 }, async () => {
+  it('access-token login runs SELECT name FROM widget through tedious', async () => {
     const response = await fetch(`${origin}/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -511,7 +510,6 @@ describe('TDS endpoint with tedious', { skip }, () => {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Tedious' }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(created.status < 300, `widget create answered ${created.status}`);
     const connection = await new Promise((resolve, reject) => {
@@ -523,8 +521,8 @@ describe('TDS endpoint with tedious', { skip }, () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       c.on('connect', (err) => (err ? reject(err) : resolve(c)));

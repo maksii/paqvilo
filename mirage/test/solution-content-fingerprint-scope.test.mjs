@@ -6,6 +6,7 @@ import path from 'node:path';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-777777777777';
 const files = {
@@ -20,7 +21,7 @@ const files = {
 };
 
 async function solution(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-fingerprint-scope-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-fingerprint-scope-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'InventedFingerprint');
   const write = async (name, text) => {

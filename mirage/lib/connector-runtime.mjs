@@ -14,13 +14,14 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { DataError } from './data-error.mjs';
+import { compileDefinition, markConnectorDataverseSpan, validateDefinition } from './connector-definition.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
 import { parseExpand, parseSelect } from './odata-query.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { registerPackExport } from './pack-exports.mjs';
-import { createScheduler, storeScheduler } from './runtime-clock.mjs';
+import { createScheduler, MAX_TIMER_DELAY, storeScheduler } from './runtime-clock.mjs';
 import {
   applyResponsePolicies,
   assertContinuationOrigin,
@@ -34,10 +35,20 @@ import { createScriptHost, SDK_MISSING, UNTRUSTED } from './custom-connector-scr
 import { flowVault } from './flow-vault.mjs';
 import { packFlowActions } from './flow-actions.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+
+// Own properties only, for the maps keyed by flow-author, connector or request text: a name such as constructor, __proto__
+// or toString is then not found, and a write defines that name as data instead of replacing a prototype.
+const ownValue = (map, key) => (map && Object.hasOwn(map, key) ? map[key] : null);
+const setOwn = (map, key, value) => {
+  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+  return value;
+};
 
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
   ConnectorNotConfigured: 501,
+  ConnectorNotSimulated: 501,
   ConnectionNotBound: 409,
   ConnectionUnauthorized: 401,
   PermissionDenied: 403,
@@ -50,6 +61,29 @@ const connectorError = (code, message) => new DataError(message, CODES[code], co
 const fail = (code, message) => {
   throw connectorError(code, message);
 };
+// The span error of a provider's own exception (connector-runtime invoke): its code (else the mapped one), message and cause.
+const providerFailure = (error, mapped, secure) => ({
+  code: typeof error?.code === 'string' && error.code ? error.code : mapped.code,
+  message: (!secure && (typeof error === 'string' ? error : error?.message)) || mapped.message,
+  status: mapped.status,
+  ...(!secure && error?.cause && typeof error.cause === 'object'
+    ? { cause: { code: error.cause.code ?? error.cause.name ?? 'Error', message: String(error.cause.message ?? '') } }
+    : {}),
+});
+// The span error of a provider answer of 400 or more: its body's error code and message (an OData/ARM { error: { code,
+// message } } or a flat { code, message }); a sealed call (secure) keeps only the status.
+function answerError(answer, secure) {
+  const status = answer.statusCode,
+    body = answer.body;
+  let inner = null;
+  if (body && typeof body === 'object') inner = body.error && typeof body.error === 'object' ? body.error : body;
+  const generic = { code: 'Http' + status, message: `The connector answered status ${status}.` };
+  if (secure || !inner) return generic;
+  return {
+    code: typeof inner.code === 'string' && inner.code ? inner.code : generic.code,
+    message: typeof inner.message === 'string' && inner.message ? inner.message : generic.message,
+  };
+}
 const same = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const clone = (value) => (value === undefined ? null : structuredClone(value));
@@ -58,8 +92,7 @@ const clone = (value) => (value === undefined ? null : structuredClone(value));
 export const connectorOf = (apiId) =>
   String(apiId ?? '')
     .split('/')
-    .filter(Boolean)
-    .pop() ?? '';
+    .findLast(Boolean) ?? '';
 /** The connection reference logical name a flow's connectionReferences entry names, or null. */
 export const referenceOf = (connectionReferences, connectionName) => {
   const entry = connectionName == null ? null : connectionReferences?.[connectionName];
@@ -151,7 +184,7 @@ function relatedRow(store, value) {
       bad('The related row URL names another organization; only this local organization is related.');
     path = url.pathname;
   }
-  const match = /(?:^|\/)([A-Za-z_][\w]*)\(\{?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\}?\)\/?$/i.exec(path);
+  const match = /(?:^|\/)([a-z_]\w*)\(\{?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\}?\)\/?$/i.exec(path);
   if (!match) bad('The related row URL must end with <entity set>(<row id>).');
   return { logicalName: store.resolveMapping(match[1]).logicalName, id: match[2].toLowerCase() };
 }
@@ -218,6 +251,291 @@ const selected = (store, logical, row, select, navigations) => {
 // and plug-in stages as its write (plugin-association.mjs executeAssociationAsync); without one, executeAssociationAsync alone,
 // so a synchronous service endpoint step's post is awaited in process. Files and bound/unbound actions need organization entries
 // (store.recordPipeline.fileContentInternal, executeMessageInternal); without them they answer OperationUnsupported (501).
+// The span operation of a Dataverse connector call (docs/design/tracing.md span model, D-R3-9): the canonical Dataverse
+// verb. UpdateRecord ("Update a row") is an update; when it created the missing row its span says so with created: true.
+const DATAVERSE_SPAN_OPERATION = Object.freeze({
+  CreateRecord: 'create',
+  UpdateRecord: 'update',
+  UpdateOnlyRecord: 'update',
+  DeleteRecord: 'delete',
+  GetItem: 'retrieve',
+  ListRecords: 'retrievemultiple',
+  AssociateEntities: 'associate',
+  DisassociateEntities: 'disassociate',
+  GetEntityFileImageFieldContent: 'retrieve',
+  UpdateEntityFileImageFieldContent: 'update',
+  ExecuteChangeset: 'changeset',
+});
+// The logical name of a connector entityName (an entity set name), or null when it names no table.
+function dataverseLogicalName(store, entityName) {
+  if (typeof entityName !== 'string') return null;
+  try {
+    return store.resolveMapping(entityName).logicalName ?? null;
+  } catch {
+    return null;
+  }
+}
+// The full-level input of a Dataverse connector span: the written values (item and item/<column> parameters) as item, the
+// other parameters (table, record id, query options, FetchXML, action name) as they are.
+function dataverseInput(p) {
+  const item = {},
+    rest = {};
+  for (const [key, value] of Object.entries(p))
+    if (key === 'item' && isMap(value)) {
+      for (const [column, cell] of Object.entries(value)) setOwn(item, column, cell);
+    } else if (key.startsWith('item/')) setOwn(item, key.slice(5), value);
+    else setOwn(rest, key, value);
+  return Object.keys(item).length ? { ...rest, item } : rest;
+}
+// A column named __proto__ is refused as an invalid name, as constructor and prototype already are (data.mjs safeName): a
+// row write would otherwise set a prototype instead of a column.
+function refuseProtoColumn(values) {
+  if (Object.hasOwn(values, '__proto__'))
+    throw new DataError('Invalid entity or field name: __proto__', 400, 'InvalidRequest');
+  return values;
+}
+// What a Dataverse connector answer says: its status, the written or read row's id, and the row count of a list.
+function dataverseFacts(store, entity, answer) {
+  const body = answer?.body,
+    rows = Array.isArray(body?.value) ? body.value : null;
+  let id = null;
+  if (!rows && isMap(body) && entity)
+    try {
+      const value = body[store.resolveMapping(entity).idColumn];
+      id = value == null ? null : String(value);
+    } catch {
+      id = null;
+    }
+  let rowCount = null;
+  if (rows) rowCount = rows.length;
+  else if (Array.isArray(body?.responses)) rowCount = body.responses.length;
+  return {
+    statusCode: answer?.statusCode ?? null,
+    id,
+    rowCount,
+    ...(rows ? { moreRecords: Boolean(answer?.nextLink ?? body?.['@odata.nextLink']) } : {}),
+  };
+}
+
+function updateDataverseRecord(service, store, entity, p, values) {
+  let exists = true;
+  try {
+    service.get(entity, p.recordId);
+  } catch (error) {
+    if (error.code !== 'NotFound') throw error;
+    exists = false;
+  }
+  if (exists)
+    return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
+  return service
+    .createAsync(entity, { ...values, [store.resolveMapping(entity).idColumn]: p.recordId })
+    .then((row) => ({ statusCode: 201, body: clone(row) }));
+}
+
+function getDataverseItem(service, entity, p) {
+  if (p.$select != null && typeof p.$select !== 'string')
+    throw new DataError('GetItem select columns require a comma-separated string.', 400, 'LocalFlowExpression');
+  const selected = parseSelect(p.$select);
+  if (selected?.some((name) => /^_(.+)_value$/.test(name)))
+    throw new DataError(
+      'GetItem lookup aliases require an explicit connector projection adapter.',
+      501,
+      'LocalFlowUnsupported',
+    );
+  return {
+    statusCode: 200,
+    body: service.get(
+      entity,
+      p.recordId,
+      selected ? { allColumns: false, columns: selected } : undefined,
+      p.partitionId != null ? { partitionId: p.partitionId } : {},
+    ),
+  };
+}
+
+function withoutFetchPage(attrs) {
+  const valuePattern = /\s*=\s*(["'])[^"']*\1/y;
+  for (const match of attrs.matchAll(/page/gi)) {
+    if (match.index === 0 || !/\s/.test(attrs[match.index - 1])) continue;
+    valuePattern.lastIndex = match.index + 4;
+    const value = valuePattern.exec(attrs);
+    if (!value) continue;
+    let start = match.index;
+    while (start > 0 && /\s/.test(attrs[start - 1])) start--;
+    return attrs.slice(0, start) + attrs.slice(match.index + 4 + value[0].length);
+  }
+  return attrs;
+}
+function listDataverseRecords(store, service, entity, p) {
+  const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
+  /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(page >= 1))
+    throw new DataError('The skip token is not one a List rows answer issued.', 400, 'LocalFlowExpression');
+  const answer = (rows, more, rest = {}) => {
+    const cookie = `<cookie pagenumber="${page + 1}" />`;
+    const link = more ? `${store.resolveMapping(entity).entitySet}?$skiptoken=${encodeURIComponent(cookie)}` : null;
+    return {
+      statusCode: 200,
+      body: { ...rest, value: rows, ...(link ? { '@odata.nextLink': link } : {}) },
+      ...(link ? { nextLink: link } : {}),
+    };
+  };
+  if (p.fetchXml != null) {
+    if (['$select', '$filter', '$orderby', '$top', '$expand'].some((key) => p[key] !== undefined))
+      throw new DataError(
+        'A FetchXML query is not combined with $select, $filter, $orderby, $top or $expand.',
+        400,
+        'LocalFlowExpression',
+      );
+    const xml = String(p.fetchXml).replace(
+      /<fetch\b([^>]*?)(\/?)>/i,
+      (_, attrs, close) => `<fetch${withoutFetchPage(attrs)} page="${page}"${close}>`,
+    );
+    const fetched = service.fetch(xml);
+    return answer(fetched.entities, fetched.more_records === true);
+  }
+  const q = {};
+  for (const key of ['$filter', '$orderby', '$top', ...(p.$expand ? [] : ['$select'])])
+    if (p[key] !== undefined) q[key] = p[key];
+  const { value: all, ...rest } = service.query(entity, q);
+  const rows = all.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
+  if (p.$expand) expandRows(store, service, entity, rows, parseExpand(p.$expand), p.$select);
+  return answer(rows, all.length > page * LIST_PAGE, rest);
+}
+
+function associateDataverseEntities(store, service, operationId, entity, p) {
+  const related = relatedRow(store, operationId === 'AssociateEntities' ? p['@odata.id'] : p.$id);
+  if (typeof p.associationEntityRelationship !== 'string' || !p.associationEntityRelationship)
+    throw new DataError('The relationship name is missing.', 400, 'LocalFlowExpression');
+  return service[operationId === 'AssociateEntities' ? 'associateAsync' : 'disassociateAsync'](
+    entity,
+    String(p.recordId ?? ''),
+    { $type: 'Relationship', schemaName: p.associationEntityRelationship },
+    {
+      $type: 'EntityReferenceCollection',
+      values: [{ $type: 'EntityReference', logicalName: related.logicalName, id: related.id }],
+    },
+  ).then(() => ({ statusCode: 204, body: {} }));
+}
+
+function runDataverseFileAction(store, operationId, context, entity, p, notWired) {
+  const entry = store.recordPipeline?.fileContentInternal;
+  if (typeof entry !== 'function') notWired('A Dataverse file or image column action');
+  return entry({
+    principal: context.principal,
+    operation: operationId === 'GetEntityFileImageFieldContent' ? 'download' : 'upload',
+    entity,
+    id: p.recordId,
+    column: p.fileImageFieldName,
+    size: p.size ?? null,
+    content: p.item ?? null,
+    fileName: p['x-ms-file-name'] ?? null,
+  });
+}
+
+function runDataverseBoundAction(store, operationId, context, entity, p, values, notWired) {
+  const entry = store.recordPipeline?.executeMessageInternal;
+  if (typeof entry !== 'function') notWired('A Dataverse bound or unbound action');
+  if (typeof p.actionName !== 'string' || !p.actionName)
+    throw new DataError('The action name is missing.', 400, 'LocalFlowExpression');
+  return entry({
+    principal: context.principal,
+    name: p.actionName,
+    target: operationId === 'PerformBoundAction' ? { entity, id: p.recordId } : null,
+    parameters: values,
+  });
+}
+
+function executeDataverseChangeset(store, service, p, context, run) {
+  const requests = p.requests;
+  if (
+    !Array.isArray(requests) ||
+    !requests.length ||
+    requests.some((request) => !isMap(request) || !CHANGESET_OPERATIONS.includes(request.operationId))
+  )
+    throw new DataError(
+      'A changeset holds only Add, Update, Upsert and Delete row requests.',
+      400,
+      'LocalFlowExpression',
+    );
+  return store
+    .sdkMutationAsync(async () => {
+      store.promoteRowTransaction();
+      const joined = store.pluginInTransaction;
+      store.pluginInTransaction = true;
+      try {
+        const responses = [];
+        for (const request of requests)
+          responses.push({
+            name: request.name ?? null,
+            ...(await run(service, request.operationId, request.parameters ?? {}, context)),
+          });
+        return responses;
+      } finally {
+        store.pluginInTransaction = joined;
+      }
+    })
+    .then((responses) => ({ statusCode: 200, body: { responses } }));
+}
+
+function traceDataverseCall(traces, operationId, p, context, call, store, entity) {
+  return traces.wrap(
+    {
+      kind: 'dataverse',
+      name: `${operationId}${entity ? ' ' + entity : ''}`,
+      module: 'dataverse',
+      operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
+      entity,
+      recordId: p.recordId == null ? null : String(p.recordId),
+      attributes: {
+        operationId,
+        connector: 'commondataserviceforapps',
+        ...(p.fetchXml != null ? { query: 'fetchxml' } : {}),
+        ...(p.actionName ? { message: String(p.actionName) } : {}),
+      },
+      ...(context.secure ? {} : { input: () => dataverseInput(p) }),
+    },
+    (span) => {
+      markConnectorDataverseSpan(span);
+      const answered = (answer) => {
+        const facts = dataverseFacts(store, entity, answer);
+        if (facts.id && !span.recordId) span.setEntity(span.entity, facts.id);
+        span.set({
+          statusCode: facts.statusCode,
+          ...(facts.rowCount == null ? {} : { rowCount: facts.rowCount }),
+          ...(operationId === 'UpdateRecord' && facts.statusCode === 201 ? { created: true } : {}),
+        });
+        if (!context.secure) span.output(() => facts);
+        return answer;
+      };
+      const answer = call();
+      return typeof answer?.then === 'function' ? answer.then(answered) : answered(answer);
+    },
+  );
+}
+
+function invokeDataverseFlow(store, diagnostic, run, { operationId, parameters, nextLink }, context) {
+  if (!context.principal)
+    throw new DataError(
+      'Dataverse flow actions require an explicit project backend identity/security profile.',
+      409,
+      'LocalBackendIdentityRequired',
+    );
+  const spec = dataverseParameters(operationId);
+  const p = nextLink
+    ? { ...parameters, $skiptoken: new URL(nextLink, 'http://localhost/').searchParams.get('$skiptoken') }
+    : (parameters ?? {});
+  if (!spec) throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
+  for (const key of Object.keys(p))
+    if (!spec.allowed(key))
+      throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
+  const call = () =>
+    run(localOrganizationService(store, context.principal, undefined, { diagnostic }), operationId, p, context);
+  const traces = store?.traces;
+  if (!traces?.enabled) return call();
+  const entity = dataverseLogicalName(store, p.entityName);
+  return traceDataverseCall(traces, operationId, p, context, call, store, entity);
+}
+
 function dataverseProvider(store, diagnostic) {
   const notWired = (what) => {
     throw new DataError(
@@ -230,14 +548,14 @@ function dataverseProvider(store, diagnostic) {
     const entity = p.entityName;
     if (!['PerformUnboundAction', 'ExecuteChangeset'].includes(operationId) && typeof entity !== 'string')
       throw new DataError('Dataverse action entityName is missing.', 400, 'LocalFlowExpression');
-    const values = {
+    const values = refuseProtoColumn({
       ...(isMap(p.item) ? p.item : {}),
       ...Object.fromEntries(
         Object.entries(p)
           .filter(([k]) => k.startsWith('item/'))
           .map(([k, v]) => [k.slice(5), v]),
       ),
-    };
+    });
     switch (operationId) {
       // Row writes run on the asynchronous pipeline (a flow action is not nested inside a plug-in): a synchronous service
       // endpoint step's post is awaited in process, so Mirage keeps serving while it waits and an in-process receiver answers.
@@ -247,161 +565,39 @@ function dataverseProvider(store, diagnostic) {
         return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
       case 'UpdateRecord': {
         // Assumed: the status codes of the upsert answers (201 created, 200 updated).
-        let exists = true;
-        try {
-          service.get(entity, p.recordId);
-        } catch (error) {
-          if (error.code !== 'NotFound') throw error;
-          exists = false;
-        }
-        if (exists)
-          return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
-        return service
-          .createAsync(entity, { ...values, [store.resolveMapping(entity).idColumn]: p.recordId })
-          .then((row) => ({ statusCode: 201, body: clone(row) }));
+        return updateDataverseRecord(service, store, entity, p, values);
       }
       case 'DeleteRecord':
         return service
           .removeAsync(entity, p.recordId, p.partitionId != null ? { partitionId: p.partitionId } : {})
           .then(() => ({ statusCode: 204, body: {} }));
       case 'GetItem': {
-        if (p.$select != null && typeof p.$select !== 'string')
-          throw new DataError('GetItem select columns require a comma-separated string.', 400, 'LocalFlowExpression');
-        const selected = parseSelect(p.$select);
-        if (selected?.some((name) => /^_(.+)_value$/.test(name)))
-          throw new DataError(
-            'GetItem lookup aliases require an explicit connector projection adapter.',
-            501,
-            'LocalFlowUnsupported',
-          );
-        return {
-          statusCode: 200,
-          body: service.get(
-            entity,
-            p.recordId,
-            selected ? { allColumns: false, columns: selected } : undefined,
-            p.partitionId != null ? { partitionId: p.partitionId } : {},
-          ),
-        };
+        return getDataverseItem(service, entity, p);
       }
       case 'ListRecords': {
         // 5,000 rows per page; without the pagination setting the answer carries
         // @odata.nextLink, whose skip token ($skiptoken) the next List rows call passes back.
         // Assumed: the skip token's format (a paging cookie with the page number) and the nextLink's host (relative here).
-        const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
-        if (!(page >= 1))
-          throw new DataError('The skip token is not one a List rows answer issued.', 400, 'LocalFlowExpression');
-        const answer = (rows, more, rest = {}) => {
-          const link = more
-            ? `${store.resolveMapping(entity).entitySet}?$skiptoken=${encodeURIComponent(`<cookie pagenumber="${page + 1}" />`)}`
-            : null;
-          return {
-            statusCode: 200,
-            body: { ...rest, value: rows, ...(link ? { '@odata.nextLink': link } : {}) },
-            ...(link ? { nextLink: link } : {}),
-          };
-        };
-        if (p.fetchXml != null) {
-          // Native behaviour when FetchXML is combined with the OData options is not known; refused here.
-          if (['$select', '$filter', '$orderby', '$top', '$expand'].some((key) => p[key] !== undefined))
-            throw new DataError(
-              'A FetchXML query is not combined with $select, $filter, $orderby, $top or $expand.',
-              400,
-              'LocalFlowExpression',
-            );
-          const xml = String(p.fetchXml).replace(
-            /<fetch\b([^>]*?)(\/?)>/i,
-            (_, attrs, close) => `<fetch${attrs.replace(/\s+page\s*=\s*(["'])[^"']*\1/i, '')} page="${page}"${close}>`,
-          );
-          const fetched = service.fetch(xml);
-          return answer(fetched.entities, fetched.more_records === true);
-        }
-        const q = {};
-        for (const key of ['$filter', '$orderby', '$top', ...(p.$expand ? [] : ['$select'])])
-          if (p[key] !== undefined) q[key] = p[key];
-        const { value: all, ...rest } = service.query(entity, q);
-        // ponytail: every page re-reads the whole filtered list; store keyset paging when lists outgrow memory.
-        const rows = all.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
-        if (p.$expand) expandRows(store, service, entity, rows, parseExpand(p.$expand), p.$select);
-        return answer(rows, all.length > page * LIST_PAGE, rest);
+        return listDataverseRecords(store, service, entity, p);
       }
       case 'AssociateEntities':
       case 'DisassociateEntities': {
-        const related = relatedRow(store, operationId === 'AssociateEntities' ? p['@odata.id'] : p.$id);
-        if (typeof p.associationEntityRelationship !== 'string' || !p.associationEntityRelationship)
-          throw new DataError('The relationship name is missing.', 400, 'LocalFlowExpression');
-        return service[operationId === 'AssociateEntities' ? 'associateAsync' : 'disassociateAsync'](
-          entity,
-          String(p.recordId ?? ''),
-          { $type: 'Relationship', schemaName: p.associationEntityRelationship },
-          {
-            $type: 'EntityReferenceCollection',
-            values: [{ $type: 'EntityReference', logicalName: related.logicalName, id: related.id }],
-          },
-        ).then(() => ({ statusCode: 204, body: {} }));
+        return associateDataverseEntities(store, service, operationId, entity, p);
       }
       case 'GetEntityFileImageFieldContent':
       case 'UpdateEntityFileImageFieldContent': {
-        const entry = store.recordPipeline?.fileContentInternal;
-        if (typeof entry !== 'function') notWired('A Dataverse file or image column action');
-        return entry({
-          principal: context.principal,
-          operation: operationId === 'GetEntityFileImageFieldContent' ? 'download' : 'upload',
-          entity,
-          id: p.recordId,
-          column: p.fileImageFieldName,
-          size: p.size ?? null,
-          content: p.item ?? null,
-          fileName: p['x-ms-file-name'] ?? null,
-        });
+        return runDataverseFileAction(store, operationId, context, entity, p, notWired);
       }
       case 'PerformBoundAction':
       case 'PerformUnboundAction': {
-        const entry = store.recordPipeline?.executeMessageInternal;
-        if (typeof entry !== 'function') notWired('A Dataverse bound or unbound action');
-        if (typeof p.actionName !== 'string' || !p.actionName)
-          throw new DataError('The action name is missing.', 400, 'LocalFlowExpression');
-        return entry({
-          principal: context.principal,
-          name: p.actionName,
-          target: operationId === 'PerformBoundAction' ? { entity, id: p.recordId } : null,
-          parameters: values,
-        });
+        return runDataverseBoundAction(store, operationId, context, entity, p, values, notWired);
       }
       case 'ExecuteChangeset': {
-        const requests = p.requests;
-        if (
-          !Array.isArray(requests) ||
-          !requests.length ||
-          requests.some((r) => !isMap(r) || !CHANGESET_OPERATIONS.includes(r.operationId))
-        )
-          throw new DataError(
-            'A changeset holds only Add, Update, Upsert and Delete row requests.',
-            400,
-            'LocalFlowExpression',
-          );
         // One SDK savepoint: a failed request rolls back every earlier request of the changeset. The savepoint is promoted to
         // a full state copy because each request is itself a nested SDK call whose row journal ends with it.
         // ponytail: O(state) copy per changeset; a nested row journal in DataStore.sdkMutation would make it O(rows written).
         // Each request joins that savepoint (pluginInTransaction) instead of committing on its own.
-        return store
-          .sdkMutationAsync(async () => {
-            store.promoteRowTransaction();
-            const joined = store.pluginInTransaction;
-            store.pluginInTransaction = true;
-            try {
-              const responses = [];
-              for (const r of requests)
-                responses.push({
-                  name: r.name ?? null,
-                  ...(await run(service, r.operationId, r.parameters ?? {}, context)),
-                });
-              return responses;
-            } finally {
-              store.pluginInTransaction = joined;
-            }
-          })
-          .then((responses) => ({ statusCode: 200, body: { responses } }));
+        return executeDataverseChangeset(store, service, p, context, run);
       }
       default:
         throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
@@ -420,37 +616,32 @@ function dataverseProvider(store, diagnostic) {
       principal: 'required',
       stateOwner: 'store',
     }),
-    invoke({ operationId, parameters, nextLink }, context) {
-      if (!context.principal)
-        throw new DataError(
-          'Dataverse flow actions require an explicit project backend identity/security profile.',
-          409,
-          'LocalBackendIdentityRequired',
-        );
-      const spec = dataverseParameters(operationId);
-      // A later page (pagination policy) is the same List rows call with the nextLink's skip token.
-      const p = nextLink
-        ? { ...parameters, $skiptoken: new URL(nextLink, 'http://localhost/').searchParams.get('$skiptoken') }
-        : (parameters ?? {});
-      if (!spec) throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
-      for (const key of Object.keys(p))
-        if (!spec.allowed(key))
-          throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
-      return run(
-        localOrganizationService(store, context.principal, undefined, { diagnostic }),
-        operationId,
-        p,
-        context,
-      );
+    invoke(request, context) {
+      // Tracing (docs/design/tracing.md): one dataverse span per call, under the connector span. Its store reads (pre-images,
+      // projections) and the organization's internal entries it drives open none of their own (data.mjs COVERED_READS,
+      // dataverse-records.mjs traced), so a changeset or an upsert is one span too.
+      // Module dataverse with the canonical operation (D-R3-9), so module/operation/entity filters find flow writes; the
+      // connector span above it stays module connectors. At level full the written values and the query are its input and
+      // { statusCode, id, rowCount, moreRecords } its output (none for a sealed run: context.secure).
+      return invokeDataverseFlow(store, diagnostic, run, request, context);
     },
   };
 }
 
 // URL rewrites (custom-connector.mjs): the longest matching prefix wins, applied before the loopback check.
 export { rewrite };
+function appendHttpQueries(url, queries) {
+  try {
+    const parsed = new URL(url);
+    for (const [key, value] of Object.entries(queries)) parsed.searchParams.append(key, String(value));
+    return parsed.href;
+  } catch {
+    fail('ProviderFailed', 'The http request uri is invalid.');
+  }
+}
 // The Http action request: method, uri, headers, body, queries (nextLink replaces uri for later pages, on the uri's host
 // only: assertContinuationOrigin, the rule custom connector pages use).
-function httpRequest({ parameters, nextLink }, settings) {
+/* NOSONAR */ function httpRequest({ parameters, nextLink }, settings) {
   const p = parameters ?? {};
   let raw = p.uri ?? p.url;
   if (typeof raw !== 'string' || !raw) fail('ProviderFailed', 'The http request uri is missing.');
@@ -461,27 +652,53 @@ function httpRequest({ parameters, nextLink }, settings) {
       fail(CODES[error.code] ? error.code : 'ProviderFailed', error.message);
     }
   let url = rewrite(raw, settings?.rewrites);
-  if (!nextLink && isMap(p.queries)) {
-    try {
-      const parsed = new URL(url);
-      for (const [k, v] of Object.entries(p.queries)) parsed.searchParams.append(k, String(v));
-      url = parsed.href;
-    } catch {
-      fail('ProviderFailed', 'The http request uri is invalid.');
-    }
-  }
+  if (!nextLink && isMap(p.queries)) url = appendHttpQueries(url, p.queries);
   const headers = isMap(p.headers) ? Object.fromEntries(Object.entries(p.headers).map(([k, v]) => [k, String(v)])) : {};
   const json = p.body !== undefined && p.body !== null && typeof p.body !== 'string';
   if (json && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type'))
     headers['content-type'] = 'application/json';
+  let requestBody;
+  if (p.body != null) requestBody = json ? JSON.stringify(p.body) : p.body;
   return {
     method: String(nextLink ? 'GET' : (p.method ?? 'GET')).toUpperCase(),
     url,
     headers,
-    body: p.body == null ? undefined : json ? JSON.stringify(p.body) : p.body,
+    body: requestBody,
   };
 }
 const nextLinkOf = (body) => (isMap(body) ? (body['@odata.nextLink'] ?? body.nextLink ?? undefined) : undefined);
+
+// The budget of a loopback call and of an asynchronous operation when the caller supplies no timeoutMs (a flow passes its
+// action deadline; a Code App or Canvas call passes none).
+export const DEFAULT_CONNECTOR_TIMEOUT_MS = 120000;
+// A budget in milliseconds: a non-finite one takes the default. A budget above the timer limit is kept whole; armDeadline
+// arms it in steps.
+const timeBudgetMs = (value) => Math.max(1, Number.isFinite(value) ? value : DEFAULT_CONNECTOR_TIMEOUT_MS);
+// Calls fire after budget ms. setTimeout fires a longer delay at once, so each step is at most the timer limit and arms
+// the next one for what remains. The returned function clears the step that is pending.
+function armDeadline(fire, budget) {
+  let timer = null;
+  const arm = (remaining) => {
+    const step = Math.min(remaining, MAX_TIMER_DELAY);
+    timer = setTimeout(() => (step < remaining ? arm(remaining - step) : fire()), step);
+  };
+  arm(budget);
+  return () => clearTimeout(timer);
+}
+
+// The rejection loopbackFetch gives for a redirect answer (dataverse-webhooks.mjs), on the error or on its cause.
+const isRedirectRefusal = (error) => error?.code === 'LoopbackRedirect' || error?.cause?.code === 'LoopbackRedirect';
+
+// Throws the failure of a loopback call, classified by the state of its signals: the budget's own deadline is a timeout,
+// the caller's cancellation is not.
+function failLoopbackCall(error, deadline, callerSignal) {
+  if (deadline.signal.aborted)
+    fail('ProviderTimeout', 'The local http service did not answer within the action time limit.');
+  if (callerSignal?.aborted) throw aborted(callerSignal);
+  if (isRedirectRefusal(error))
+    fail('ProviderFailed', 'The local http service answered with a redirect; redirects are refused.');
+  fail('ProviderUnavailable', 'The local http service is unreachable.');
+}
 
 // Sends one built request to a loopback URL (the http provider and compiled custom connectors share it).
 async function sendLoopback({ method, url, headers, body }, context) {
@@ -490,26 +707,24 @@ async function sendLoopback({ method, url, headers, body }, context) {
       'ProviderUnavailable',
       'The http provider reaches only loopback URLs; declare a connection rewrite to a local service.',
     );
-  const signal = AbortSignal.any([
-    AbortSignal.timeout(Math.max(1, context.timeoutMs ?? 2000)),
-    ...(context.signal ? [context.signal] : []),
-  ]);
-  let response;
+  // A timer rather than AbortSignal.timeout, so the budget is a setTimeout that is cleared once the call settles.
+  const deadline = new AbortController();
+  const disarm = armDeadline(() => deadline.abort(), timeBudgetMs(context.timeoutMs));
+  const signal = AbortSignal.any([deadline.signal, ...(context.signal ? [context.signal] : [])]);
+  let response, text;
   try {
     response = await loopbackFetch(url, {
       method,
-      headers,
+      headers: { ...headers, ...context.traceHeaders },
       ...(body === undefined || ['GET', 'HEAD'].includes(method) ? {} : { body }),
       signal,
     });
+    text = await response.text();
   } catch (error) {
-    if (['TimeoutError', 'AbortError'].includes(error.name))
-      fail('ProviderTimeout', 'The local http service did not answer within the action time limit.');
-    if (/redirect/i.test(String(error.cause?.message ?? error.message)))
-      fail('ProviderFailed', 'The local http service answered with a redirect; redirects are refused.');
-    fail('ProviderUnavailable', 'The local http service is unreachable.');
+    failLoopbackCall(error, deadline, context.signal);
+  } finally {
+    disarm();
   }
-  const text = await response.text();
   let parsed = text;
   if (/json/i.test(response.headers.get('content-type') ?? '') && text) {
     try {
@@ -601,7 +816,13 @@ async function fixtureAnswer(fixtures, req) {
 // The preflight note of a trusted script: its host build reaches the network once (custom-connector-script.mjs).
 const SCRIPT_RESTORE =
   'CONNECTOR_SCRIPT_NUGET_RESTORE: the first build of the trusted script host restores Newtonsoft.Json and Microsoft.Extensions.Logging.Abstractions from nuget.org (not loopback; offline it fails); the host runs with your user rights, unsandboxed.';
-function customConnectorProvider(connector, fixtures, store, { tokens, scripts, now, diagnostic = () => {} }) {
+
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ function customConnectorProvider(
+  connector,
+  fixtures,
+  store,
+  { tokens, scripts, now, diagnostic = () => {}, pendingSignIns },
+) {
   const cached = new Map();
   const send = (req, context) =>
     Promise.resolve(fixtureAnswer(fixtures, req)).then((answer) => answer ?? sendLoopback(req, context));
@@ -687,9 +908,9 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
   const scripted = (operationId) => scriptRuns(connector, operationId);
   const gap = !connector.script
     ? null
-    : !scripts.trusts(connector.name, connector.script)
+    : !scripts.trusts(connector.name, connector.script) // NOSONAR: preserve lazy branch evaluation and coercion
       ? UNTRUSTED
-      : !scripts.available()
+      : !scripts.available() // NOSONAR: preserve lazy branch evaluation and coercion
         ? SDK_MISSING
         : null;
   const gapMessage = () =>
@@ -745,9 +966,10 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
                 resolved,
                 tokens,
                 now,
-                tokenRequest,
+                tokenRequest: options.tokenRequest ?? tokenRequest,
                 form,
                 scope,
+                pendingSignIns,
               }),
           }
         : null,
@@ -776,11 +998,14 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
         ],
         requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
       }),
-      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}),
+      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}), // NOSONAR: preserve lazy branch evaluation and coercion
     },
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);
       // The script replaces the backend request; Context.SendAsync goes through the same rewrites, fixtures and loopback rule.
+      // Tracing: the script runs in a dotnet child process, which no span context crosses; the connector span (current here)
+      // is marked script: true, and the script's SendAsync requests carry its trace headers (sendLoopback).
+      if (scripted(operationId) && !nextLink) store?.traces?.current()?.set({ script: true });
       const answer =
         scripted(operationId) && !nextLink
           ? await scripts.run({
@@ -789,7 +1014,7 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
               operationId,
               correlationId: context.correlationId ?? null,
               request: req,
-              timeoutMs: context.timeoutMs ?? 120000,
+              timeoutMs: context.timeoutMs ?? DEFAULT_CONNECTOR_TIMEOUT_MS,
               signal: context.signal ?? null,
               send: (outgoing) => exchange(outgoing, context),
             })
@@ -814,7 +1039,7 @@ async function beginAuthorization(
   connector,
   connectionId,
   settings,
-  { resolved, tokens, now, tokenRequest, form, scope, timeoutMs = 10 * 60000 },
+  { resolved, tokens, now, tokenRequest, form, scope, pendingSignIns, timeoutMs = 10 * 60000 },
 ) {
   const auth = connector.auth,
     credentials = resolved(settings.auth);
@@ -833,6 +1058,8 @@ async function beginAuthorization(
     challenge = encode(createHash('sha256').update(verifier).digest()),
     state = encode(randomBytes(16));
   const server = http.createServer();
+  // A forgotten sign-in never keeps the process alive; the host's close() cancels it through pendingSignIns.
+  server.unref();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -850,62 +1077,119 @@ async function beginAuthorization(
     ...scope(),
   }))
     url.searchParams.set(k, v);
+  // Every page this sign-in writes; the listener's connections close only after each of them has finished.
+  const pages = new Set();
   const page = (res, status, text) => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    pages.add(
+      new Promise((resolve) => {
+        res.once('finish', resolve);
+        res.once('close', resolve);
+      }),
+    );
     res.end(`<!doctype html><title>Mirage connection</title><p>${text}</p>`);
   };
-  let timer;
+  // The token exchange of a callback runs under controller's signal; inFlight holds the callback answers still running.
+  const controller = new AbortController(),
+    inFlight = new Set();
+  let timer,
+    settled = false,
+    committing = false,
+    drained = null;
   const completion = new Promise((resolve, reject) => {
+    // Settles the sign-in once and aborts the token request it may still run.
+    // The listener closes after its written pages.
     const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
       clearTimeout(timer);
-      server.close();
+      drained = closeListener(server, [...pages]).then(() => pendingSignIns.delete(record));
       error ? reject(error) : resolve(value);
     };
-    timer = setTimeout(
-      () =>
-        finish(
-          new DataError('The connection sign-in was not completed in time.', 408, 'ConnectionAuthorizationExpired'),
-        ),
-      timeoutMs,
-    );
-    timer.unref?.();
-    server.on('request', async (req, res) => {
+    // Once the token write has started, the sign-in finishes as signed in: a cancel, expiry or refusal is ignored.
+    const stop = (error) => {
+      if (!committing) finish(error);
+    };
+    const exchange = async (res, code) => {
+      const body = await tokenRequest(
+        form('authorization_code', credentials, { code, redirect_uri: redirectUri, code_verifier: verifier }),
+        { settings, timeoutMs: 10000, signal: controller.signal },
+      );
+      // A sign-in that settled while the exchange ran (cancelled, expired or refused) stores no token.
+      if (settled) return;
+      const stored = storedToken(body, now());
+      committing = true;
+      await tokens.set(connectionId, stored);
+      page(res, 200, 'The connection is signed in. You can close this window.');
+      finish(null, {
+        connectionId,
+        expiresAt: stored.expiresAt == null ? null : new Date(stored.expiresAt).toISOString(),
+      });
+    };
+    const answer = async (req, res) => {
       const query = new URL(req.url, redirectUri).searchParams;
       if (new URL(req.url, redirectUri).pathname !== '/callback') return page(res, 404, 'Not found.');
       if (query.get('state') !== state) return page(res, 400, 'The sign-in answer does not belong to this request.');
       if (query.get('error')) {
         page(res, 400, 'The sign-in was refused.');
-        return finish(new DataError('The authorization server refused the sign-in.', 401, 'ConnectionUnauthorized'));
+        return stop(new DataError('The authorization server refused the sign-in.', 401, 'ConnectionUnauthorized'));
       }
       try {
-        const body = await tokenRequest(
-          form('authorization_code', credentials, {
-            code: query.get('code') ?? '',
-            redirect_uri: redirectUri,
-            code_verifier: verifier,
-          }),
-          { settings, timeoutMs: 10000 },
-        );
-        const at = now(),
-          stored = {
-            access_token: body.access_token,
-            refresh_token: body.refresh_token ?? null,
-            expiresAt: body.expires_in ? at + Number(body.expires_in) * 1000 : null,
-          };
-        await tokens.set(connectionId, stored);
-        page(res, 200, 'The connection is signed in. You can close this window.');
-        finish(null, {
-          connectionId,
-          expiresAt: stored.expiresAt == null ? null : new Date(stored.expiresAt).toISOString(),
-        });
+        await exchange(res, query.get('code') ?? '');
       } catch (error) {
         page(res, 401, 'The sign-in could not be completed.');
-        finish(error.code ? error : connectorError('ConnectionUnauthorized', 'The token exchange failed.'));
+        finish(exchangeFailure(error));
       }
+    };
+    const cancel = () => {
+      stop(
+        new DataError(
+          'The connection sign-in was cancelled because the runtime is closing.',
+          503,
+          'ConnectionAuthorizationCancelled',
+        ),
+      );
+    };
+    // Waits for the callback answers still running, then for the listener to close (finish).
+    const record = { cancel, drained: () => Promise.allSettled(inFlight).then(() => drained) };
+    pendingSignIns.add(record);
+    timer = setTimeout(
+      () =>
+        stop(new DataError('The connection sign-in was not completed in time.', 408, 'ConnectionAuthorizationExpired')),
+      timeoutMs,
+    );
+    timer.unref?.();
+    server.on('request', (req, res) => {
+      const run = answer(req, res).finally(() => inFlight.delete(run));
+      inFlight.add(run);
     });
   });
   completion.catch(() => {});
-  return { authorizeUrl: url.href, redirectUri, expiresAt, completion };
+  return { authorizeUrl: url.href, redirectUri, expiresAt, completion, listener: server };
+}
+
+// Stops the listener accepting at once. Its connections close once the written pages have finished, so the browser has each
+// page in full; the promise answers when the listener has closed.
+function closeListener(server, pages) {
+  const closed = new Promise((resolve) => server.close(() => resolve()));
+  return Promise.allSettled(pages).then(() => {
+    server.closeAllConnections();
+    return closed;
+  });
+}
+
+// The failure a callback reports: a coded error as it is, any other error as a failed token exchange.
+const exchangeFailure = (error) =>
+  error.code ? error : connectorError('ConnectionUnauthorized', 'The token exchange failed.');
+
+// The token a successful exchange stores; expires_in counts from the answer time `at`.
+function storedToken(body, at) {
+  return {
+    access_token: body.access_token,
+    refresh_token: body.refresh_token ?? null,
+    expiresAt: body.expires_in ? at + Number(body.expires_in) * 1000 : null,
+  };
 }
 
 function packProvider(pack) {
@@ -940,22 +1224,107 @@ const levelled = (operations, parity) => [
   ...operations.map((name) => ({ name, level: 'behaviour' })),
   { name: parity, level: 'contract' },
 ];
-const param = (p, key, wrapper) =>
-  p[key] ?? (wrapper ? (p[`${wrapper}/${key}`] ?? (isMap(p[wrapper]) ? p[wrapper][key] : undefined)) : undefined);
+const param = (p, key, wrapper) => {
+  const value = p[key];
+  if (value != null) return value;
+  if (!wrapper) return undefined;
+  return p[`${wrapper}/${key}`] ?? (isMap(p[wrapper]) ? p[wrapper][key] : undefined);
+};
 
 // Approvals (shared_approvals): CreateAnApproval (approvalType + ApprovalCreationInput), StartAndWaitForAnApproval
 // (approvalType + WebhookApprovalCreationInput), WaitForAnApproval (approvalName). Output field names follow the documented
 // TextSuggestionApprovalCreationOutput (name, title, details, outcome, requestDate, completionDate, responses[] with
 // responder, requestDate, responseDate, approverResponse, comments); "Approve"/"Reject" are case-sensitive.
-// Assumed: the outputs of the dynamic operations, their status codes, and the per-type completion rules (only the
-// Basic "first to respond" rule is applied: the first response completes the approval).
+// Assumed: the outputs of the dynamic operations and their status codes. The per-type completion rules follow the
+// product documentation (completionOf).
 // A waiting operation answers { suspended: { kind: 'approval', id, timeoutAt, assignedTo } }; only a caller that sets
 // context.canSuspend (the flow run store integration) receives it, any other caller gets 501 FlowSuspendNotWired.
 const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'WaitForAnApproval'];
 // Power Automate runs end after 30 days.
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
-const APPROVAL_STATUS = { Approve: 'Approved', Reject: 'Rejected' };
-const approvalsOf = (store) => ((store.state.simulator ??= {}).approvals ??= {});
+// A Map, not an object: a Custom response option is flow-author text and may be named like an Object.prototype member.
+const APPROVAL_STATUS = new Map([
+  ['Approve', 'Approved'],
+  ['Reject', 'Rejected'],
+]);
+const approvalsOf = (store) => {
+  store.state.simulator ??= {};
+  store.state.simulator.approvals ??= {};
+  return store.state.simulator.approvals;
+};
+// Own keys only: a name such as __proto__ or constructor is not an approval.
+const approvalNamed = (all, id) => (all && Object.hasOwn(all, id) ? all[id] : null);
+const APPROVAL_TYPES = new Set(['Basic', 'AwaitAll', 'Custom', 'CustomAwaitAll']);
+const isCustomType = (type) => type === 'Custom' || type === 'CustomAwaitAll';
+const answeredBy = (approval) => approval.answeredBy ?? [];
+const acceptedOutcomesOf = (approval) =>
+  isCustomType(approval.type) ? (approval.options ?? []) : [...APPROVAL_STATUS.keys()];
+// The response options of a Custom approval (a semicolon-separated text or a list).
+const responseOptionsOf = (p, wrapper) => {
+  const value = param(p, 'responseOptions', wrapper);
+  const list = Array.isArray(value) ? value : String(value ?? '').split(';');
+  return list.map((option) => String(option).trim()).filter(Boolean);
+};
+// The approval type and its response options. A type the provider does not model, or a Custom type without options, is
+// refused at creation.
+const approvalTypeOf = (p, wrapper) => {
+  const type = p.approvalType ?? 'Basic';
+  const options = responseOptionsOf(p, wrapper);
+  if (!APPROVAL_TYPES.has(type))
+    throw new DataError(`The approval type ${String(type)} is not supported.`, 400, 'ProviderFailed');
+  if (isCustomType(type) && options.length === 0)
+    throw new DataError('The Custom approval types need responseOptions.', 400, 'ProviderFailed');
+  return { type, options };
+};
+// The assignees of a semicolon-separated list: trimmed, empty entries dropped, and a name repeated in another letter case
+// kept once (its first spelling), so one responder never answers two assignees.
+const assigneesOf = (text) => {
+  const seen = new Set();
+  return text
+    .split(';')
+    .map((name) => name.trim())
+    .filter((name) => {
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+// The identities a responder answers as: the email or the id (case-insensitive), or the plain value given.
+const identityKeysOf = (responder) =>
+  (isMap(responder) ? [responder.email, responder.id] : [responder])
+    .filter((key) => key != null && String(key).trim() !== '')
+    .map((key) => String(key).trim().toLowerCase());
+const hasIdentity = (responder) => identityKeysOf(responder).length > 0;
+// The assignee a response answers as: the named responder, or the only assignee when the response names none.
+const answeringAssignee = (approval, responder) => {
+  if (!hasIdentity(responder)) {
+    if (approval.assignedTo.length === 1) return approval.assignedTo[0];
+    throw new DataError(
+      `The responder is required: the approval is assigned to ${approval.assignedTo.join(', ')}.`,
+      400,
+      'InvalidRequest',
+    );
+  }
+  const keys = identityKeysOf(responder);
+  const assignee = approval.assignedTo.find((name) => keys.includes(name.toLowerCase()));
+  if (!assignee)
+    throw new DataError('The responder is not assigned to this approval.', 403, 'ApprovalResponderNotAssigned');
+  return assignee;
+};
+// The outcome that completes an approval after a response, or null while it stays Pending. Basic and Custom complete on
+// the first response; AwaitAll completes on a Reject or once every assignee approved; CustomAwaitAll completes once every
+// assignee answered, with the responses joined as its outcome.
+const completionOf = (approval, outcome) => {
+  const everyoneAnswered = approval.assignedTo.every((name) => answeredBy(approval).includes(name));
+  if (approval.type === 'AwaitAll')
+    return outcome === 'Reject' || everyoneAnswered ? { outcome, status: APPROVAL_STATUS.get(outcome) } : null;
+  if (approval.type === 'CustomAwaitAll') {
+    if (!everyoneAnswered) return null;
+    return { outcome: approval.responses.map((r) => r.approverResponse).join(', '), status: 'Completed' };
+  }
+  return { outcome, status: APPROVAL_STATUS.get(outcome) ?? 'Completed' };
+};
 const approvalOutputs = (a) => ({
   statusCode: 200,
   body: {
@@ -999,18 +1368,18 @@ function approvalsProvider(store, { now, uuid }) {
     const title = param(p, 'title', wrapper),
       assignedTo = param(p, 'assignedTo', wrapper);
     if (typeof title !== 'string' || !title.trim()) fail('ProviderFailed', 'The approval title is missing.');
-    if (typeof assignedTo !== 'string' || !assignedTo.trim())
+    if (typeof assignedTo !== 'string' || assigneesOf(assignedTo).length === 0)
       fail('ProviderFailed', 'The approval assignedTo is missing.');
+    const { type, options } = approvalTypeOf(p, wrapper);
     const at = now(),
       id = uuid();
     const approval = {
       id,
-      type: p.approvalType ?? 'Basic',
+      type,
+      options,
+      answeredBy: [],
       title,
-      assignedTo: assignedTo
-        .split(';')
-        .map((s) => s.trim())
-        .filter(Boolean),
+      assignedTo: assigneesOf(assignedTo),
       details: param(p, 'details', wrapper) ?? null,
       itemLink: param(p, 'itemLink', wrapper) ?? null,
       itemLinkDescription: param(p, 'itemLinkDescription', wrapper) ?? null,
@@ -1033,7 +1402,7 @@ function approvalsProvider(store, { now, uuid }) {
       return suspended(await create(p, 'WebhookApprovalCreationInput', context), context);
     },
     WaitForAnApproval: (p, context) => {
-      const approval = approvalsOf(requireStore())[p.approvalName];
+      const approval = approvalNamed(approvalsOf(requireStore()), p.approvalName);
       if (!approval) throw new DataError('The approval does not exist.', 404, 'ApprovalNotFound');
       return approval.status === 'Pending' ? suspended(approval, context) : approvalOutputs(approval);
     },
@@ -1048,40 +1417,52 @@ function approvalsProvider(store, { now, uuid }) {
       stateOwner: 'state:simulator.approvals',
     }),
     invoke: async ({ operationId, parameters }, context) => operations[operationId](parameters ?? {}, context),
-    get: (id) =>
-      store?.state?.simulator?.approvals?.[id] ? structuredClone(store.state.simulator.approvals[id]) : null,
+    get: (id) => {
+      const approval = approvalNamed(store?.state?.simulator?.approvals, id);
+      return approval ? structuredClone(approval) : null;
+    },
     list: ({ status } = {}) =>
       Object.values(store?.state?.simulator?.approvals ?? {})
         .filter((a) => !status || a.status === status)
         .map((a) => structuredClone(a)),
-    /** Records one response; the first response completes a Basic approval. Returns the action outputs { statusCode, body }. */
+    /**
+     * Records one assignee's response and completes the approval when its type says so. Returns the action outputs
+     * { statusCode, body } with completed: true, or completed: false (statusCode 202) while the approval stays Pending.
+     */
     async respond(id, { outcome, responder, comments = null } = {}) {
-      if (!Object.hasOwn(APPROVAL_STATUS, outcome))
-        throw new DataError("The approval outcome must be 'Approve' or 'Reject'.", 400, 'InvalidRequest');
       return write((all) => {
-        const approval = all[id];
+        const approval = approvalNamed(all, id);
         if (!approval) throw new DataError('The approval does not exist.', 404, 'ApprovalNotFound');
         if (approval.status !== 'Pending')
           throw new DataError('The approval is already completed.', 409, 'ApprovalCompleted');
+        const assignee = answeringAssignee(approval, responder);
+        if (answeredBy(approval).includes(assignee))
+          throw new DataError('The assignee has already responded to this approval.', 409, 'ApprovalAlreadyAnswered');
+        const accepted = acceptedOutcomesOf(approval);
+        if (!accepted.includes(outcome))
+          throw new DataError(`The approval outcome must be one of: ${accepted.join(', ')}.`, 400, 'InvalidRequest');
         const at = new Date(now()).toISOString();
+        approval.answeredBy = [...answeredBy(approval), assignee];
         approval.responses.push({
-          responder: responderOf(responder),
+          responder: responderOf(hasIdentity(responder) ? responder : assignee),
           requestDate: approval.requestDate,
           responseDate: at,
           approverResponse: outcome,
           comments: comments == null ? null : String(comments),
         });
-        Object.assign(approval, { status: APPROVAL_STATUS[outcome], outcome, completionDate: at });
-        return approvalOutputs(approval);
+        const completed = completionOf(approval, outcome);
+        if (completed) Object.assign(approval, { ...completed, completionDate: at });
+        return { ...approvalOutputs(approval), statusCode: completed ? 200 : 202, completed: completed !== null };
       });
     },
     /** Marks a pending approval TimedOut or Cancelled (called by the flow run store); a completed one is left as is. */
     close(id, status) {
-      if (!store?.state?.simulator?.approvals?.[id]) return Promise.resolve(false);
+      if (!approvalNamed(store?.state?.simulator?.approvals, id)) return Promise.resolve(false);
       return write((all) => {
-        if (all[id]?.status !== 'Pending') return false;
-        all[id].status = status;
-        all[id].completionDate = new Date(now()).toISOString();
+        const approval = approvalNamed(all, id);
+        if (approval?.status !== 'Pending') return false;
+        approval.status = status;
+        approval.completionDate = new Date(now()).toISOString();
         return true;
       });
     },
@@ -1201,7 +1582,7 @@ function childFlowProvider() {
 
 // Action retryPolicy: type fixed | exponential | none, count, interval as an ISO 8601 duration. Locally count is at most 4.
 // ponytail: exponential waits interval * 2^(attempt-1) without the native random range or minimum/maximumInterval.
-const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 /** Milliseconds of an ISO 8601 day-time duration (PnDTnHnMnS), or null. */
 export function durationMs(value) {
   const parts = typeof value === 'string' && value !== 'P' && !value.endsWith('T') ? DURATION.exec(value) : null;
@@ -1259,6 +1640,109 @@ function principals(packs) {
   return result;
 }
 
+function packFlowTriggers(packs) {
+  const flowTriggers = {};
+  for (const pack of packs)
+    for (const [connectorId, ops] of Object.entries(pack.flowTriggers ?? {}))
+      for (const [operationId, entry] of Object.entries(ops)) {
+        if (ownValue(ownValue(flowTriggers, connectorId), operationId))
+          throw new Error(
+            `Data pack ${pack.id}: flowTriggers.${connectorId}.${operationId} is declared by more than one pack`,
+          );
+        const byOperation = ownValue(flowTriggers, connectorId) ?? setOwn(flowTriggers, connectorId, {});
+        setOwn(byOperation, operationId, { pack: pack.id, ...entry });
+      }
+  return flowTriggers;
+}
+
+function connectorCallOnce(provider, request, ctx, context, followAsync) {
+  return typeof provider.poll === 'function' && context.asyncPattern !== false
+    ? () => Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
+    : () => provider.invoke(request, ctx);
+}
+
+function dispatchConnectorResponse({ provider, request, ctx, pagination, retry, span, retried, paginate, once }) {
+  const first = retry?.count ? retried(once, retry, ctx, span) : once();
+  if (!pagination?.minimumItemCount) return first;
+  return typeof first?.then === 'function'
+    ? first.then((value) => paginate(provider, request, ctx, value, pagination, span))
+    : paginate(provider, request, ctx, first, pagination, span);
+}
+
+function dispatchConnectorCall({
+  connectorId,
+  operationId,
+  method,
+  path,
+  parameters,
+  connection,
+  context,
+  pagination,
+  retry,
+  span,
+  traces,
+  setResolved,
+  setOperationId,
+  validateOperation,
+  definitions,
+  connections,
+  defaultProvider,
+  resolve,
+  registry,
+  supportsOperation,
+  clock,
+  now,
+  followAsync,
+  retried,
+  paginate,
+}) {
+  const operation = validateOperation(connectorId, { operationId, method, path, parameters });
+  if (operation) {
+    operationId = operation.operationId;
+    setOperationId(operationId);
+  }
+  if (
+    !connection &&
+    definitions.has(connectorId) &&
+    !Object.hasOwn(connections, connectorId) &&
+    !defaultProvider(connectorId)
+  )
+    fail('ConnectorNotSimulated', 'The connector operation has a definition but no simulated behaviour.');
+  const resolved = connection ?? resolve({ connectorId, principal: context.principal });
+  setResolved(resolved);
+  const provider = registry.get(resolved.provider);
+  if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
+  if (!supportsOperation(provider, connectorId, operationId))
+    fail(
+      definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'OperationUnsupported',
+      provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
+    );
+  const ctx = {
+    ...context,
+    principal: resolved.principal,
+    settings: resolved.settings ?? {},
+    clock: clock ?? { now },
+    connectionId: resolved.connectionId ?? null,
+    ...(span ? { traceHeaders: traces.headers(span) } : {}),
+  };
+  const request = { connectorId, operationId, parameters };
+  const once = connectorCallOnce(provider, request, ctx, context, followAsync);
+  const dispatch = () =>
+    dispatchConnectorResponse({ provider, request, ctx, pagination, retry, span, retried, paginate, once });
+  return span ? traces.run(span, dispatch) : dispatch();
+}
+
+// The merged body: every page's items, and the body's continuation key(s) naming `link` (the latest page's), or none.
+function linked(body, items, link) {
+  const { '@odata.nextLink': odata, nextLink, ...rest } = body;
+  return {
+    ...rest,
+    value: items,
+    ...(link && odata !== undefined ? { '@odata.nextLink': link } : {}),
+    ...(link && nextLink !== undefined ? { nextLink: link } : {}),
+  };
+}
+
 /**
  * customConnectors: compiled Solution custom connectors (custom-connector.mjs customConnectorsOf), an array or a function
  * answering the current array (sources reload); useCustomConnectors() replaces it later. Pack flowActions and flowTriggers
@@ -1289,6 +1773,17 @@ export function createConnectorRuntime({
     if (registry.has(provider.id)) throw new Error('Ambiguous connector provider: ' + provider.id);
     registry.set(provider.id, provider);
   };
+  const definitions = new Map();
+  for (const pack of packs)
+    for (const [id, document] of Object.entries(pack.connectorDefinitions ?? {})) {
+      if (definitions.has(id))
+        throw new Error(`Data pack ${pack.id}: connectorDefinitions.${id} is declared by more than one pack`);
+      definitions.set(id, compileDefinition(document));
+    }
+  const validateOperation = (connectorId, request) => {
+    const definition = definitions.get(connectorId);
+    return definition ? validateDefinition(definition, request) : null;
+  };
   const fixtures = packs.flatMap((pack) => pack.httpFixtures ?? []);
   // Connection OAuth tokens (authorization code flow) per connection id: sealed in state.simulator.connectionTokens (flow-vault.mjs),
   // or in this runtime's memory without a store.
@@ -1296,7 +1791,7 @@ export function createConnectorRuntime({
     memoryTokens = new Map();
   const tokens = {
     get(id) {
-      const sealed = store?.state ? store.state.simulator?.connectionTokens?.[id] : memoryTokens.get(id);
+      const sealed = store?.state ? ownValue(store.state.simulator?.connectionTokens, id) : memoryTokens.get(id);
       return sealed ? (vault.open(sealed) ?? null) : null;
     },
     set(id, value) {
@@ -1306,8 +1801,10 @@ export function createConnectorRuntime({
       }
       return store.transact(
         () => {
-          const all = ((store.state.simulator ??= {}).connectionTokens ??= {});
-          if (value) all[id] = vault.seal(value);
+          store.state.simulator ??= {};
+          store.state.simulator.connectionTokens ??= {};
+          const all = store.state.simulator.connectionTokens;
+          if (value) setOwn(all, id, vault.seal(value));
           else delete all[id];
         },
         { nested: true },
@@ -1315,6 +1812,8 @@ export function createConnectorRuntime({
     },
   };
   const scripts = createScriptHost({ stateDirectory, command: dotnet, trusted: trustedScripts });
+  // { cancel, drained } of every sign-in whose loopback listener or token exchange has not finished (beginAuthorization).
+  const pendingSignIns = new Set();
   [
     dataverseProvider(store, diagnostic),
     httpProvider(),
@@ -1324,8 +1823,12 @@ export function createConnectorRuntime({
     childFlowProvider(),
   ].forEach(add);
   let ownScheduler = null;
-  const tasks = () =>
-    scheduler ?? (store ? storeScheduler(store) : (ownScheduler ??= createScheduler({ clock: { now } })));
+  const tasks = () => {
+    if (scheduler != null) return scheduler;
+    if (store) return storeScheduler(store);
+    ownScheduler ??= createScheduler({ clock: { now } });
+    return ownScheduler;
+  };
   // A wait on the scheduler that the caller's signal (a run cancellation) ends at once.
   const pause = (ms, signal = null, name = 'connector-retry') =>
     new Promise((resolve, reject) => {
@@ -1345,9 +1848,11 @@ export function createConnectorRuntime({
       if (handle === null) return reject(connectorError('ProviderUnavailable', 'The runtime is closing.'));
       signal?.addEventListener('abort', onAbort, { once: true });
     });
+  const retryDelay = (policy, attempt) =>
+    policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs;
   // Retries a provider call on ProviderUnavailable/ProviderTimeout or an HTTP 429/5xx answer; each attempt is reported
   // through context.onAttempt and the waits run on the scheduler (the store's one by default), never a bare timer.
-  async function retried(call, policy, ctx) {
+  async function retried(call, policy, ctx, span = null) {
     for (let attempt = 1; ; attempt++) {
       if (ctx.signal?.aborted) throw aborted(ctx.signal);
       let answer, error;
@@ -1360,28 +1865,32 @@ export function createConnectorRuntime({
         attempt,
         ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
       });
+      span?.set({ attempts: attempt });
       if (!transient(answer, error) || attempt > policy.count) {
         if (error) throw error;
         return answer;
       }
-      await pause(
-        policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs,
-        ctx.signal,
-      );
+      span?.event('retry', {
+        attributes: {
+          attempt,
+          ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
+        },
+      });
+      await pause(retryDelay(policy, attempt), ctx.signal);
     }
   }
   // The asynchronous operation pattern of HTTP-based providers (http, fixture, custom connectors): an answer of 202 with a
   // Location header is polled with GET after Retry-After (1 second by default) until a non-202 answer, which is the result.
-  // The run-level deadline (context.timeoutMs) bounds it and the run's cancellation ends it; context.asyncPattern false (the
-  // action's DisableAsyncPattern operation option) answers the 202 as is.
+  // The budget is context.timeoutMs when the caller supplies one, else DEFAULT_CONNECTOR_TIMEOUT_MS; the run's cancellation
+  // ends it; context.asyncPattern false (the action's DisableAsyncPattern operation option) answers the 202 as is.
   // Assumed: a 202 without a Location header is answered as is. A relative Location resolves against the URI of the
   // response that carried it (RFC 9110 section 10.2.2): the first against the request, a later one against the previous
   // status URL (a provider's poll answers it as statusUrl).
   async function followAsync(provider, request, ctx, answer) {
     const started = Date.now(),
-      budget = Math.max(1, ctx.timeoutMs ?? 2000);
+      budget = timeBudgetMs(ctx.timeoutMs);
     let base = null;
-    for (let polls = 0; answer?.statusCode === 202 && header(answer.headers, 'location'); polls++) {
+    /* NOSONAR */ for (let polls = 0; answer?.statusCode === 202 && header(answer.headers, 'location'); polls++) {
       if (polls >= MAX_POLLS)
         fail('ProviderTimeout', 'The asynchronous operation did not finish within ' + MAX_POLLS + ' status polls.');
       const wait = retryAfterMs(header(answer.headers, 'retry-after'), Date.now()) ?? 1000;
@@ -1389,9 +1898,10 @@ export function createConnectorRuntime({
         fail('ProviderTimeout', 'The asynchronous operation did not finish within the action time limit.');
       await pause(wait, ctx.signal, 'connector-async-poll');
       const location = header(answer.headers, 'location');
+      // A poll takes at most the timer limit; the operation's budget is checked here, between polls, unclamped.
       const { statusUrl, ...polled } = await provider.poll(base ? new URL(location, base).href : location, request, {
         ...ctx,
-        timeoutMs: Math.max(1, budget - (Date.now() - started)),
+        timeoutMs: Math.min(MAX_TIMER_DELAY, Math.max(1, budget - (Date.now() - started))),
       });
       answer = polled;
       base = statusUrl ?? base;
@@ -1403,16 +1913,7 @@ export function createConnectorRuntime({
   for (const provider of providers) add(provider);
   const named = principals(packs);
   const flowActions = Object.freeze(packFlowActions(packs));
-  const flowTriggers = {};
-  for (const pack of packs)
-    for (const [connectorId, ops] of Object.entries(pack.flowTriggers ?? {}))
-      for (const [operationId, entry] of Object.entries(ops)) {
-        if (flowTriggers[connectorId]?.[operationId])
-          throw new Error(
-            `Data pack ${pack.id}: flowTriggers.${connectorId}.${operationId} is declared by more than one pack`,
-          );
-        (flowTriggers[connectorId] ??= {})[operationId] = { pack: pack.id, ...entry };
-      }
+  const flowTriggers = packFlowTriggers(packs);
   // Compiled custom connectors follow the current sources: their providers are replaced when the compiled list changes.
   let customSource = customConnectors,
     customList = null,
@@ -1424,7 +1925,13 @@ export function createConnectorRuntime({
     customIds = [];
     customList = list;
     for (const connector of list) {
-      const provider = customConnectorProvider(connector, fixtures, store, { tokens, scripts, now, diagnostic });
+      const provider = customConnectorProvider(connector, fixtures, store, {
+        tokens,
+        scripts,
+        now,
+        diagnostic,
+        pendingSignIns,
+      });
       if (registry.has(provider.id)) {
         diagnostic({ code: 'CONNECTOR_CUSTOM_DUPLICATE', connector: connector.name });
         continue;
@@ -1494,31 +2001,43 @@ export function createConnectorRuntime({
       if (principal && connectorId === DATAVERSE_CONNECTOR) return result('dataverse', null, null); // flowIdentities override
       fail('ConnectionNotBound', message);
     };
-    if (connectionId == null && connectionName != null) {
-      if (!referenceLogicalName)
-        return unbound('The action connection is not declared in the flow connectionReferences.');
-      const row = (store?.state?.tables?.connectionreference ?? []).find((r) =>
-        same(r.connectionreferencelogicalname, referenceLogicalName),
-      );
-      if (!row?.connectionid) return unbound('The connection reference has no bound connection id.');
-      connectionId = row.connectionid;
-    } else if (connectionId == null && Object.hasOwn(connections, connectorId)) connectionId = connectorId;
-    if (connectionId != null) {
-      const connection = Object.hasOwn(connections, connectionId) ? connections[connectionId] : null;
-      if (!connection) return unbound('The bound connection id is not declared in the project connections.');
-      if (connection.connector && connection.connector !== connectorId)
-        return unbound('The bound connection belongs to another connector.');
-      return result(
-        connection.provider ??
-          defaultProvider(connectorId)?.id ??
-          fail('ConnectorNotConfigured', 'No provider serves this connector.'),
-        connection,
-        connectionId,
-      );
-    }
+    const selection = selectConnectionId(connectionId, connectionName, referenceLogicalName, connectorId, unbound);
+    if (selection.result) return selection.result;
+    connectionId = selection.connectionId;
+    if (connectionId != null) return resolveBoundConnection(connectionId, connectorId, result, unbound);
     const provider = defaultProvider(connectorId);
     if (!provider) fail('ConnectorNotConfigured', 'No local provider or project connection serves this connector.');
     return result(provider.id, null, null);
+  }
+
+  function selectConnectionId(connectionId, connectionName, referenceLogicalName, connectorId, unbound) {
+    if (connectionId == null && connectionName != null) {
+      if (!referenceLogicalName)
+        return { result: unbound('The action connection is not declared in the flow connectionReferences.') };
+      const row = (store?.state?.tables?.connectionreference ?? []).find((item) =>
+        same(item.connectionreferencelogicalname, referenceLogicalName),
+      );
+      if (!row?.connectionid) return { result: unbound('The connection reference has no bound connection id.') };
+      connectionId = row.connectionid;
+    } else if (connectionId == null && Object.hasOwn(connections, connectorId)) connectionId = connectorId;
+    return { connectionId };
+  }
+
+  function resolveBoundConnection(connectionId, connectorId, result, unbound) {
+    const connection = Object.hasOwn(connections, connectionId) ? connections[connectionId] : null;
+    if (!connection) return unbound('The bound connection id is not declared in the project connections.');
+    if (connection.connector && connection.connector !== connectorId)
+      return unbound('The bound connection belongs to another connector.');
+    return result(
+      connection.provider ??
+        defaultProvider(connectorId)?.id ??
+        fail(
+          definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'ConnectorNotConfigured',
+          'No provider serves this connector.',
+        ),
+      connection,
+      connectionId,
+    );
   }
 
   const supports = (connectorId, operationId, providerId) => {
@@ -1531,7 +2050,13 @@ export function createConnectorRuntime({
   const unsupportedReason = (connectorId, operationId) => {
     syncCustom();
     const custom = customIds.map((id) => registry.get(id)).find((p) => p.connectors.includes(connectorId));
-    if (!custom) return null;
+    if (!custom) {
+      const definition = definitions.get(connectorId);
+      if (!definition) return null;
+      return definition.operations.has(operationId)
+        ? 'ConnectorNotSimulated: the operation has no simulated behaviour.'
+        : 'CONNECTOR_OPERATION_UNKNOWN: the connector definition has no such operation.';
+    }
     if (custom.blocked) return `${custom.blocked.code}: ${custom.blocked.message}`;
     return custom.operations.includes(operationId)
       ? null
@@ -1544,6 +2069,8 @@ export function createConnectorRuntime({
   function invoke({
     connectorId,
     operationId,
+    method,
+    path,
     parameters = {},
     connection,
     context = {},
@@ -1553,9 +2080,39 @@ export function createConnectorRuntime({
     const started = now();
     syncCustom();
     let resolved;
+    // Tracing (docs/design/tracing.md): one connector span per call (never per page or attempt); the provider runs inside it, so
+    // Dataverse provider writes nest under it. context.secure (a sealed flow run) captures no parameters or result.
+    const traces = store?.traces?.enabled ? store.traces : null,
+      span =
+        traces?.start({
+          kind: 'connector',
+          name: connectorId + '/' + (operationId ?? [method, path].filter(Boolean).join(' ')),
+          module: 'connectors',
+          operation: 'invoke',
+          attributes: {
+            connectorId: connectorId ?? null,
+            operationId: operationId ?? null,
+            caller: context.caller ?? null,
+            runId: context.runId ?? null,
+            actionPath: context.actionPath ?? null,
+            ...(context.secure ? { secure: true } : {}),
+          },
+          ...(context.secure ? {} : { input: () => parameters }),
+        }) ?? null;
+    const facts = (status) => ({
+      operationId: operationId ?? null,
+      provider: resolved?.provider ?? null,
+      connectionId: resolved?.connectionId ?? null,
+      status,
+    });
+    const errorDetail = (error) => (error?.message ? `: ${error.message}` : '');
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
+        // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
+        name: operationId ?? connectorId,
+        entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
+        message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${errorDetail(error)}.`,
         connectorId,
         operationId,
         reference: resolved?.referenceLogicalName ?? null,
@@ -1568,49 +2125,63 @@ export function createConnectorRuntime({
         durationMs: now() - started,
         correlationId: context.correlationId ?? null,
       });
+    // A provider's own exception is answered as ProviderFailed (or ProviderTimeout) with the exception as its (non-enumerable)
+    // cause; the span keeps the provider's own code (else the mapped one), message and cause (D-R3-4) and names the mapped
+    // code. A sealed call (context.secure) keeps the mapped message, since the provider's may echo a sealed value.
     const failed = (error) => {
-      const mapped =
-        error instanceof DataError
-          ? error
-          : ['TimeoutError', 'AbortError'].includes(error?.name)
-            ? connectorError('ProviderTimeout', 'The connector provider timed out.')
-            : connectorError('ProviderFailed', 'The connector provider failed.');
+      let mapped;
+      if (error instanceof DataError) mapped = error;
+      else if (['TimeoutError', 'AbortError'].includes(error?.name))
+        mapped = connectorError('ProviderTimeout', 'The connector provider timed out.');
+      else mapped = connectorError('ProviderFailed', 'The connector provider failed.');
+      if (mapped !== error)
+        Object.defineProperty(mapped, 'cause', { value: error, configurable: true, writable: true });
       note(mapped.status, mapped.code);
+      span
+        ?.set({ ...facts(mapped.status), ...(mapped === error ? {} : { mappedCode: mapped.code }) })
+        .fail(mapped === error ? error : providerFailure(error, mapped, context.secure));
       throw mapped;
     };
+    // An answer of 400 or more records the provider's own error (its body's error code and message) on the span.
     const finish = (answer) => {
       note(answer?.statusCode ?? null);
+      if (span) {
+        if (!context.secure) span.output(() => answer);
+        if (Number(answer?.statusCode) >= 400)
+          recordHttpError(span, answer.statusCode, answerError(answer, context.secure));
+        span.end({ status: statusFromHttp(answer?.statusCode), attributes: facts(answer?.statusCode ?? null) });
+      }
       return answer;
     };
     let answer;
     try {
-      resolved = connection ?? resolve({ connectorId, principal: context.principal });
-      const provider = registry.get(resolved.provider);
-      if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
-      if (!supportsOperation(provider, connectorId, operationId))
-        fail(
-          'OperationUnsupported',
-          provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
-        );
-      const ctx = {
-        ...context,
-        principal: resolved.principal,
-        settings: resolved.settings ?? {},
-        clock: clock ?? { now },
-        connectionId: resolved.connectionId ?? null,
-      };
-      const request = { connectorId, operationId, parameters };
-      const once =
-        typeof provider.poll === 'function' && context.asyncPattern !== false
-          ? () =>
-              Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
-          : () => provider.invoke(request, ctx);
-      answer = retry?.count ? retried(once, retry, ctx) : once();
-      if (pagination?.minimumItemCount)
-        answer =
-          typeof answer?.then === 'function'
-            ? answer.then((first) => paginate(provider, request, ctx, first, pagination))
-            : paginate(provider, request, ctx, answer, pagination);
+      answer = dispatchConnectorCall({
+        connectorId,
+        operationId,
+        method,
+        path,
+        parameters,
+        connection,
+        context,
+        pagination,
+        retry,
+        span,
+        traces,
+        setResolved: (value) => (resolved = value),
+        setOperationId: (value) => (operationId = value),
+        validateOperation,
+        definitions,
+        connections,
+        defaultProvider,
+        resolve,
+        registry,
+        supportsOperation,
+        clock,
+        now,
+        followAsync,
+        retried,
+        paginate,
+      });
     } catch (error) {
       return failed(error);
     }
@@ -1618,7 +2189,7 @@ export function createConnectorRuntime({
   }
 
   // Follow nextLink until minimumItemCount items or maxPages pages; a first page without nextLink stays synchronous.
-  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }) {
+  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }, span = null) {
     if (!first?.nextLink || !Array.isArray(first.body?.value)) return first;
     return (async () => {
       const items = [...first.body.value];
@@ -1643,22 +2214,12 @@ export function createConnectorRuntime({
         if (!Array.isArray(last?.body?.value)) fail('ProviderFailed', 'A later page has no value array.');
         items.push(...last.body.value);
         pages++;
+        span?.event('page', { attributes: { page: pages, items: items.length } }).set({ pages });
       }
       const { nextLink, ...rest } = first;
       return { ...rest, body: linked(first.body, items, null) };
     })();
   }
-  // The merged body: every page's items, and the body's continuation key(s) naming `link` (the latest page's), or none.
-  function linked(body, items, link) {
-    const { '@odata.nextLink': odata, nextLink, ...rest } = body;
-    return {
-      ...rest,
-      value: items,
-      ...(link && odata !== undefined ? { '@odata.nextLink': link } : {}),
-      ...(link && nextLink !== undefined ? { nextLink: link } : {}),
-    };
-  }
-
   const flowActionRecord = () =>
     Object.keys(flowActions).length
       ? [
@@ -1684,12 +2245,14 @@ export function createConnectorRuntime({
   return {
     resolve,
     supports,
+    validateOperation,
+    hasDefinition: (connectorId) => definitions.has(connectorId),
     invoke,
     unsupportedReason,
     /** Pack flowActions handlers by action type (flow-actions.mjs). */
     flowActions: () => flowActions,
     /** The pack flowTriggers entry { pack, subscribe, unsubscribe, poll? } for a connector trigger operation, or null. */
-    flowTriggers: (connectorId, operationId) => flowTriggers[connectorId]?.[operationId] ?? null,
+    flowTriggers: (connectorId, operationId) => ownValue(ownValue(flowTriggers, connectorId), operationId),
     /** Replaces the compiled custom connectors (an array or a function answering the current array). */
     useCustomConnectors(value) {
       customSource = value;
@@ -1739,6 +2302,13 @@ export function createConnectorRuntime({
     },
     /** Approval records (state.simulator.approvals); respond() answers the outputs of the waiting action. */
     approvals: { get: approvals.get, list: approvals.list, respond: approvals.respond, close: approvals.close },
+    /** Cancels every pending sign-in: its completion rejects, and the close answers once each sign-in's loopback listener has
+     * closed and its token exchange has returned. */
+    async close() {
+      const signIns = [...pendingSignIns];
+      for (const { cancel } of signIns) cancel();
+      await Promise.allSettled(signIns.map(({ drained }) => drained()));
+    },
     providers: () => {
       syncCustom();
       return [...registry.values()].map((p) => ({
@@ -1775,8 +2345,81 @@ function credentialFree(value, label, depth = 0) {
 }
 const PROVIDER = /^(?:dataverse|http|fixture|memory-queue|approvals|pack:[\w.-]+|custom-connector:[\w.-]+)$/;
 const AUTH_KEYS = ['apiKey', 'username', 'password', 'token', 'clientId', 'clientSecret'];
+function validateConnectionPrincipalAndEvidence(entry, at) {
+  const principal = entry.principal;
+  if (
+    principal !== undefined &&
+    !(typeof principal === 'string' && principal.trim()) &&
+    !(
+      isMap(principal) &&
+      Object.keys(principal).every((key) => ['pack', 'identity'].includes(key)) &&
+      typeof principal.identity === 'string' &&
+      principal.identity.trim() &&
+      (principal.pack === undefined || typeof principal.pack === 'string')
+    )
+  )
+    throw new Error(`${at}.principal must name a pack connection principal ({ pack, identity } or a name)`);
+  if (entry.evidence !== undefined && typeof entry.evidence !== 'string')
+    throw new Error(`${at}.evidence must be text`);
+}
+
+function validateConnectionAuth(at, auth) {
+  if (
+    auth !== undefined &&
+    (!isMap(auth) ||
+      Object.entries(auth).some(
+        ([key, value]) => !AUTH_KEYS.includes(key) || typeof value !== 'string' || !REFERENCE.test(value),
+      ))
+  )
+    throw new Error(`${at}.settings.auth takes ${AUTH_KEYS.join(', ')} as env:NAME or variable:NAME references only`);
+}
+
+function validateConnectionParameters(at, parameters) {
+  if (
+    parameters !== undefined &&
+    (!isMap(parameters) ||
+      Object.values(parameters).some((value) => !['string', 'number', 'boolean'].includes(typeof value)))
+  )
+    throw new Error(`${at}.settings.parameters must map connection parameter names to text, numbers or booleans`);
+}
+
+function validateConnectionRewrites(at, rewrites) {
+  if (!isMap(rewrites)) throw new Error(`${at}.settings.rewrites must map URL prefixes to local URL prefixes`);
+  for (const [from, to] of Object.entries(rewrites))
+    for (const url of [from, to]) {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new Error(`${at}.settings.rewrites needs absolute http(s) URL prefixes`);
+      }
+      if (
+        !['http:', 'https:'].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.search ||
+        parsed.hash
+      )
+        throw new Error(
+          `${at}.settings.rewrites prefixes must be plain http(s) URLs without credentials, query or fragment`,
+        );
+    }
+}
+
+function validateConnectionSettings(entry, at) {
+  const settings = entry.settings ?? {};
+  if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
+  for (const key of Object.keys(settings))
+    if (!['rewrites', 'auth', 'parameters'].includes(key))
+      throw new Error(`${at}.settings.${key} is not a connection setting`);
+  validateConnectionAuth(at, settings.auth);
+  validateConnectionParameters(at, settings.parameters);
+  validateConnectionRewrites(at, settings.rewrites ?? {});
+  return settings;
+}
+
 /** Validates the project `connections` map; returns a plain copy. Credentials are never accepted as literals. */
-export function connectionSettings(value, label = 'connections') {
+/* NOSONAR */ export function connectionSettings(value, label = 'connections') {
   if (value === undefined) return {};
   if (!isMap(value)) throw new Error(`${label} must map connection ids to local connections`);
   const result = {};
@@ -1797,62 +2440,8 @@ export function connectionSettings(value, label = 'connections') {
       throw new Error(
         `${at}.provider must be dataverse, http, fixture, memory-queue, approvals, pack:<id> or custom-connector:<name>`,
       );
-    const principal = entry.principal;
-    if (
-      principal !== undefined &&
-      !(typeof principal === 'string' && principal.trim()) &&
-      !(
-        isMap(principal) &&
-        Object.keys(principal).every((k) => ['pack', 'identity'].includes(k)) &&
-        typeof principal.identity === 'string' &&
-        principal.identity.trim() &&
-        (principal.pack === undefined || typeof principal.pack === 'string')
-      )
-    )
-      throw new Error(`${at}.principal must name a pack connection principal ({ pack, identity } or a name)`);
-    if (entry.evidence !== undefined && typeof entry.evidence !== 'string')
-      throw new Error(`${at}.evidence must be text`);
-    const settings = entry.settings ?? {};
-    if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
-    for (const key of Object.keys(settings))
-      if (!['rewrites', 'auth', 'parameters'].includes(key))
-        throw new Error(`${at}.settings.${key} is not a connection setting`);
-    // Custom connector credentials (auth) are always env:NAME or variable:NAME references; parameters are plain values or references.
-    if (
-      settings.auth !== undefined &&
-      (!isMap(settings.auth) ||
-        Object.entries(settings.auth).some(
-          ([k, v]) => !AUTH_KEYS.includes(k) || typeof v !== 'string' || !REFERENCE.test(v),
-        ))
-    )
-      throw new Error(`${at}.settings.auth takes ${AUTH_KEYS.join(', ')} as env:NAME or variable:NAME references only`);
-    if (
-      settings.parameters !== undefined &&
-      (!isMap(settings.parameters) ||
-        Object.values(settings.parameters).some((v) => !['string', 'number', 'boolean'].includes(typeof v)))
-    )
-      throw new Error(`${at}.settings.parameters must map connection parameter names to text, numbers or booleans`);
-    const rewrites = settings.rewrites ?? {};
-    if (!isMap(rewrites)) throw new Error(`${at}.settings.rewrites must map URL prefixes to local URL prefixes`);
-    for (const [from, to] of Object.entries(rewrites))
-      for (const url of [from, to]) {
-        let parsed;
-        try {
-          parsed = new URL(url);
-        } catch {
-          throw new Error(`${at}.settings.rewrites needs absolute http(s) URL prefixes`);
-        }
-        if (
-          !['http:', 'https:'].includes(parsed.protocol) ||
-          parsed.username ||
-          parsed.password ||
-          parsed.search ||
-          parsed.hash
-        )
-          throw new Error(
-            `${at}.settings.rewrites prefixes must be plain http(s) URLs without credentials, query or fragment`,
-          );
-      }
+    validateConnectionPrincipalAndEvidence(entry, at);
+    const settings = validateConnectionSettings(entry, at);
     credentialFree({ principal: entry.principal, evidence: entry.evidence, parameters: settings.parameters }, at);
     result[id] = structuredClone(entry);
   }
@@ -1864,6 +2453,19 @@ const packFail = (packId, message) => {
 };
 /** Per-export validators for the pack-export registry; each throws an Error naming the pack. */
 export const CONNECTOR_PACK_EXPORTS = {
+  connectorDefinitions: {
+    check(value, packId) {
+      if (!isMap(value)) packFail(packId, 'connectorDefinitions must map connector ids to Swagger 2.0 documents');
+      for (const [id, document] of Object.entries(value)) {
+        if (!/^[\w.-]{1,250}$/.test(id)) packFail(packId, `connectorDefinitions.${id} is not a connector id`);
+        try {
+          compileDefinition(document);
+        } catch (error) {
+          packFail(packId, `connectorDefinitions.${id}: ${error.message}`);
+        }
+      }
+    },
+  },
   connectors: {
     check(value, packId) {
       if (!isMap(value)) packFail(packId, 'connectors must map connector ids to { operations }');

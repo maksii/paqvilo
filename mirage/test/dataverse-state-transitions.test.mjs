@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of status transitions (TransitionData, EnforceStateTransitions, IsValidStateTransition); 0x8004F00E name documented, 400 status assumed
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, validateTransitions } from '../lib/dataverse-state-transitions.mjs';
@@ -217,6 +218,7 @@ test('IsValidStateTransition follows explicit transitions on a table that enforc
   assert.equal(await isValid(fixture, 'x_plains', PLAIN, 5, '0'), true, 'the explicit map lists 5');
 });
 
+// @test-kind contract: Paqvilo's transition map validation (configuration shape and refusal messages)
 test('the validator accepts the documented shape and rejects bad shapes', () => {
   assert.deepEqual(validateTransitions(undefined), {});
   assert.deepEqual(validateTransitions({ X_Ticket: { 1: [2, 2, 5], 3: [] } }), { x_ticket: { 1: [2, 5], 3: [] } });
@@ -230,6 +232,7 @@ test('the validator accepts the documented shape and rejects bad shapes', () => 
   assert.throws(() => validateTransitions({ x_ticket: {}, X_TICKET: {} }), /repeats table/);
 });
 
+// @test-kind contract: the extension's capability record (Paqvilo design)
 test('describe reports a behaviour level with the metadata requirement', () => {
   const record = EXTENSION.describe();
   assert.equal(record.level, 'behaviour');

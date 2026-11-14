@@ -19,6 +19,52 @@ export { argsOf, idOf } from './dataverse-message-context.mjs';
 import { DataError } from './data-error.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
+
+// Columns the store stamps for the caller (owner, audit and version columns): a caller's value for one of them is not stored.
+export const STAMPED_COLUMNS = new Set([
+  'ownerid',
+  'owninguser',
+  'owningteam',
+  'owningbusinessunit',
+  'createdby',
+  'createdon',
+  'createdonbehalfby',
+  'modifiedby',
+  'modifiedon',
+  'modifiedonbehalfby',
+  'versionnumber',
+  'organizationid',
+]);
+
+// An OData annotation key of a payload entry: any key with '@' other than a bind ("<nav>@odata.bind"). That covers "@odata.type"
+// and the value annotations on a column ("<column>@odata.type"). A bind is not an annotation: the caller decides what it means.
+const isAnnotationKey = (name) => name.includes('@') && !name.endsWith('@odata.bind');
+
+// The entry's keys that are not OData annotations, with their values.
+function withoutAnnotations(entry) {
+  return Object.fromEntries(Object.entries(entry ?? {}).filter(([name]) => !isAnnotationKey(name)));
+}
+
+// The columns a caller's entry sets on a row the operation creates: its keys without annotations, the stamped ones dropped.
+// A "<nav>@odata.bind" key is refused with a 400 that names it and the operation, and any other key the table does not declare
+// is a 400 too. `reason` says why the caller cannot set that navigation.
+export function callerColumns(store, table, entry, { operation, reason }) {
+  const known = store.fieldDefinitions(table);
+  const columns = {};
+  for (const [name, value] of Object.entries(withoutAnnotations(entry))) {
+    if (name.endsWith('@odata.bind'))
+      throw new DataError(`'${name}' is not supported on ${operation}: ${reason}.`, 400, 'InvalidRequest', {
+        innerCode: '0x80040203',
+      });
+    if (!Object.hasOwn(known, name))
+      throw new DataError(`'${name}' is not a column of ${table}.`, 400, 'InvalidRequest', {
+        innerCode: '0x80040203',
+      });
+    if (!STAMPED_COLUMNS.has(name)) columns[name] = value;
+  }
+  return columns;
+}
 
 // A response with the native @odata.context for the <name>Response complex type.
 export function respond(c, name, payload) {
@@ -70,7 +116,7 @@ export function registerAddon(api, spec) {
       const packed = api.addonHandlers?.get(name);
       let result;
       if (packed) {
-        result = await packed.handler({
+        result = await invokeTrustedHandler(api, packed.handler, {
           name,
           args: argsOf(c),
           target: c.target
@@ -80,7 +126,6 @@ export function registerAddon(api, spec) {
           user: c.user,
           origin: c.origin,
           version: c.version,
-          api,
         });
       } else if (own) result = await own(c);
       else throw fallback();

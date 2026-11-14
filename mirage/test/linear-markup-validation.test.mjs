@@ -1,3 +1,4 @@
+// @test-kind contract: required rich-text validation and observed page-copy comment handling are Paqvilo's own lexical rules, with work linear in the input.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -31,7 +32,11 @@ async function formOptions() {
     identity: { roles: [] },
   };
 }
-const submit = (value, options) => submitPortalForm('entityform', 'create', { values: { narrative: value } }, options);
+// Work is counted, not timed: each scan reports the characters it passes over. A linear scan passes over each character
+// a few times; a quadratic rescan of 10^5 characters passes over about 10^10.
+const LINEAR_FACTOR = 4;
+const submit = (value, options, validationWork) =>
+  submitPortalForm('entityform', 'create', { values: { narrative: value } }, { ...options, validationWork });
 
 test('required rich text keeps lexical comment, tag, image and malformed-input semantics', async () => {
   const options = await formOptions();
@@ -71,12 +76,14 @@ test('required rich text handles repeated unterminated tags and comments with bo
     ['<!--'.repeat(40000), false],
     ['<!-- >'.repeat(30000), true],
   ]) {
-    const started = performance.now();
-    if (requiredEmpty) await assert.rejects(submit(value, options), (error) => error.code === 'FormFieldRequired');
-    else assert.equal((await submit(value, options)).record.narrative, value);
+    const work = { scanned: 0 };
+    if (requiredEmpty)
+      await assert.rejects(submit(value, options, work), (error) => error.code === 'FormFieldRequired');
+    else assert.equal((await submit(value, options, work)).record.narrative, value);
+    assert.ok(work.scanned > 0, 'the check reports its scan');
     assert.ok(
-      performance.now() - started < 5000,
-      `required text validation exceeded its 5 s bound for ${value.length} characters`,
+      work.scanned <= LINEAR_FACTOR * value.length,
+      `required text validation scanned ${work.scanned} characters for ${value.length}`,
     );
   }
 });
@@ -86,11 +93,12 @@ const observed =
   '<div class="page-copy"><div class="xrm-attribute-value">' +
   visible +
   '<div class="row sectionBlockLayout"><div class="container"></div></div></div></div>';
-const capture = (source) =>
+const capture = (source, work = null) =>
   observedPageCopyLayout(observed, {
     portal: { pages: [{ id: 'invented', url: '/owned/', html: source }] },
     path: '/owned/',
     origin: 'https://invented.example.test',
+    work,
   });
 
 test('observed page copy strips only complete supported Liquid comments and preserves malformed boundaries', () => {
@@ -122,11 +130,12 @@ test('observed page copy rejects repeated unclosed Liquid comments with bounded 
     '{% comment %}' + '{% endcommentX %}{% comment %}'.repeat(20000) + visible,
     '{%' + ' '.repeat(300000),
   ]) {
-    const started = performance.now();
-    assert.equal(capture(source), undefined);
+    const work = { scanned: 0 };
+    assert.equal(capture(source, work), undefined);
+    assert.ok(work.scanned > 0, 'the comment scan reports its work');
     assert.ok(
-      performance.now() - started < 5000,
-      `page-copy comment validation exceeded its 5 s bound for ${source.length} characters`,
+      work.scanned <= LINEAR_FACTOR * source.length,
+      `page-copy comment validation scanned ${work.scanned} characters for ${source.length}`,
     );
   }
 });

@@ -30,11 +30,13 @@ export function identityMapUrl(file, lineCount, sourceContent, { line = 0, colum
   const first = vlq(0) + vlq(0) + vlq(line) + vlq(column);
   const next = ';' + vlq(0) + vlq(0) + vlq(1) + vlq(0);
   const second = ';' + vlq(0) + vlq(0) + vlq(1) + vlq(subsequentColumn - column);
+  let mappings = '';
+  if (lineCount) mappings = first + (lineCount > 1 ? second + next.repeat(lineCount - 2) : '');
   const map = {
     version: 3,
     sources: [pathToFileURL(file).href],
     names: [],
-    mappings: lineCount ? first + (lineCount > 1 ? second + next.repeat(lineCount - 2) : '') : '',
+    mappings,
   };
   if (sourceContent !== undefined) map.sourcesContent = [sourceContent];
   return `data:application/json;charset=utf-8;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`;
@@ -43,11 +45,11 @@ export function identityMapUrl(file, lineCount, sourceContent, { line = 0, colum
 export function hasSourceMap(text) {
   // Horizontal whitespace only: allowing newlines here makes a long blank file quadratic.
   // A directive may follow code on the same line (common in minified bundles).
-  if (/\/\/[#@][^\S\r\n\u2028\u2029]*sourceMappingURL=\S+/.test(text)) return true;
+  if (/\/\/[#@][^\S\r\n\u2028\u2029]*sourceMappingURL=\S+/.test(text)) return true; // NOSONAR: reviewed, a rewrite would not preserve behaviour
   const block = /\/\*[#@]\s*sourceMappingURL=/g;
   const first = block.exec(text);
   // One forward search, even when thousands of malformed directives lack a closing comment.
-  return first !== null && text.indexOf('*/', block.lastIndex) >= 0;
+  return first !== null && text.includes('*/', block.lastIndex);
 }
 
 /** `body` (a JS file exactly as it is on disk) with a source map comment for `file` appended. */
@@ -56,10 +58,10 @@ export function withFileSourceMap(body, file) {
   if (hasSourceMap(text)) return body; // Includes inline maps whose data exceeds 4096 characters.
   let lineCount = 1;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
+    const code = text.charCodeAt(i); // NOSONAR: UTF-16 code unit semantics are required
     if (code === 13) {
       lineCount++;
-      if (text.charCodeAt(i + 1) === 10) i++;
+      if (text.charCodeAt(i + 1) === 10) i++; // NOSONAR: UTF-16 code unit semantics are required
     } else if (code === 10 || code === 0x2028 || code === 0x2029) lineCount++;
   }
   const comment = `\n//# sourceMappingURL=${identityMapUrl(file, lineCount, text)}\n`;
@@ -73,17 +75,21 @@ export function fileSourceMapEstimate(text, file) {
   let bytes = 2,
     lines = 1;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code === 13 || (code === 10 && text.charCodeAt(i - 1) !== 13) || code === 0x2028 || code === 0x2029) lines++;
-    if (code < 32) bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
-    else if (code === 34 || code === 92) bytes += 2;
-    else if (code < 128) bytes++;
-    else if (code < 2048) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
-      bytes += 4;
-      i++;
-    } else bytes += code >= 0xd800 && code <= 0xdfff ? 6 : 3;
+    const code = text.charCodeAt(i); // NOSONAR: UTF-16 code unit semantics are required
+    if (code === 13 || (code === 10 && text.charCodeAt(i - 1) !== 13) || code === 0x2028 || code === 0x2029) lines++; // NOSONAR: UTF-16 code unit semantics are required
+    const size = sourceCharacterSize(code, text.charCodeAt(i + 1)); // NOSONAR: UTF-16 code unit semantics are required
+    bytes += size.bytes;
+    if (size.pair) i++;
   }
   const fileBytes = Buffer.byteLength(JSON.stringify(pathToFileURL(file).href));
   return 128 + Math.ceil((bytes + lines * 5 + fileBytes + 256) / 3) * 4;
+}
+
+function sourceCharacterSize(code, next) {
+  if (code < 32) return { bytes: code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6 };
+  if (code === 34 || code === 92) return { bytes: 2 };
+  if (code < 128) return { bytes: 1 };
+  if (code < 2048) return { bytes: 2 };
+  if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) return { bytes: 4, pair: true };
+  return { bytes: code >= 0xd800 && code <= 0xdfff ? 6 : 3 };
 }

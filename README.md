@@ -23,7 +23,7 @@
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Use it to           | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change                                                                                                             | Develop independently with local rendering, identities and test data                                                                                                                                            |
 | How it works        | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online                                                                                                                            | Renders exported sources locally; simulates Dataverse, forms, lists and permissions                                                                                                                             |
-| Inspect and compare | **Inspect** separates selected owners, local sources and candidates with [explicit evidence states](docs/lense.md#selection-evidence); **Online / Local** compares responses                               | **Inspect** for selected evidence and page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration                                                                                     |
+| Inspect and compare | **Inspect** separates selected owners, local sources and candidates with [explicit evidence states](docs/lense.md#selection-evidence); **Online / Local** compares responses                               | **Inspect** for selected evidence and page dependencies, **Tweaks** for identity and scenarios, the `adminUrl` address for administration                                                                       |
 | Learn more          | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
@@ -87,6 +87,8 @@ npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal -
 
 Run one development command at a time. **Alt+Shift+P** opens the panel. Add `.paqvilo/` and personal configuration to your project's ignore file.
 
+Review declared Power Platform sources with `npx --no-install paqvilo analyze --config ./paqvilo.config.yml --all --json`, including standalone Dataverse/model-driven projects. Direct `--source PATH` and `--project FILE` also work without a portal. Doctor includes the same findings as advice; `--fail-on warning` enforces a stricter source gate. See [offline static analysis](docs/static-analysis.md) for source domains, rules, limits and evidence boundaries.
+
 ## Scope
 
 Paqvilo supports standard and enhanced portal exports and imports `.powerpages-site` code-site exports. Its local Liquid simulation is intended for traditional portal development; code-site import does not provide SPA build tooling.
@@ -94,6 +96,8 @@ Paqvilo supports standard and enhanced portal exports and imports `.powerpages-s
 Lense interactions use the live portal's backend and can change live data. Mirage supports selected platform contracts; the [coverage guide](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md) identifies capabilities and limits. Verify important scenarios against Power Pages before release. Exporting, uploading and deploying remain part of your existing [Power Platform CLI workflow](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/pages). Paqvilo is an independent project with no Microsoft affiliation.
 
 ## Documentation
+
+See the [CLI guide](docs/cli.md) for command help, quoting, paths, JSON output and exit codes.
 
 | Task                                          | Guide                                                                                                                                                                           |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

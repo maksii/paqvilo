@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { recordedStamp } from '../../lense/file-cache.mjs';
 import { readLocalFileSync } from '../../lense/local-file.mjs';
 import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
 
@@ -10,11 +11,15 @@ import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-sol
  */
 const SOLUTION_SIDE_FOLDERS =
   /^(?:workflows|webresources|customapis|fxexpressions|duplicaterules|controls|powerpagecomponents|pluginassemblies)$/i;
-const byName = (left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+const byName = (left, right) => {
+  if (left.name < right.name) return -1;
+  if (left.name > right.name) return 1;
+  return 0;
+};
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const stampOf = (file) => {
   const stat = fs.statSync(file, { bigint: true });
-  return `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`;
+  return recordedStamp(stat, `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`);
 };
 
 function directoryFiles(dir, folders) {
@@ -84,32 +89,33 @@ export function solutionLayerFiles(layer, folders = SOLUTION_SIDE_FOLDERS) {
 }
 
 // ponytail: one entry per physical side file or archive this process has hashed; prune by root if a host watches unbounded source sets.
-const sideHashes = new Map();
+const hashByStamp = new Map();
 const cachedHash = (key, stamp, compute) => {
-  const hit = sideHashes.get(key);
+  const hit = hashByStamp.get(key);
   if (hit?.stamp === stamp) return hit.value;
   const value = compute();
-  sideHashes.set(key, { stamp, value });
+  hashByStamp.set(key, { stamp, value });
   return value;
 };
+// The side-file listing of one Solution ZIP, stored with the archive's solution cache entry.
+const SIDE_LISTING = 'side-files@1';
 
-/** [relative name, byte hash] of the side files of one scanned layer; unchanged files reuse their hash by stat stamp. */
-function sideFileHashes(layer) {
+/** [relative name, byte hash] of the side files of one scanned layer; unchanged files reuse their hash by stat
+ * stamp, across restarts through the scan's solution cache (a SolutionFileCache) when there is one. */
+function sideFileHashes(layer, cache) {
   if (!layer.type || !layer.dir) return [];
   try {
     if (layer.type === 'zip') {
-      return cachedHash(layer.dir, stampOf(layer.dir), () =>
-        solutionLayerFiles(layer).map((file) => [file.name, sha256(file.read())]),
-      );
+      const listing = () => solutionLayerFiles(layer).map((file) => [file.name, sha256(file.read())]),
+        stamp = stampOf(layer.dir);
+      return cache ? cache.knownResult(layer.dir, stamp, SIDE_LISTING, listing) : cachedHash(layer.dir, stamp, listing);
     }
     return directoryFiles(layer.dir, SOLUTION_SIDE_FOLDERS).map(({ name, file }) => {
       try {
-        return [
-          name,
-          cachedHash(file, stampOf(file), () =>
+        const bytes = () =>
             sha256(readLocalFileSync(file, { root: layer.dir, maxBytes: SOLUTION_ASSET_LIMITS.entryBytes })),
-          ),
-        ];
+          stamp = stampOf(file);
+        return [name, cache ? cache.knownHash(file, stamp, bytes) : cachedHash(file, stamp, bytes)];
       } catch {
         return [name, 'unreadable'];
       }
@@ -117,6 +123,14 @@ function sideFileHashes(layer) {
   } catch {
     return [['', 'unreadable']];
   }
+}
+
+/**
+ * Side-file hashes of every layer, keyed by layer.dir: one walk of each side folder per load. Pass the result as
+ * `sideHashes` to solutionContentFingerprint and to the importers of the same load. Computed fresh on every call.
+ */
+export function solutionSideFileHashes(layers, cache = null) {
+  return new Map(layers.map((layer) => [layer.dir, sideFileHashes(layer, cache)]));
 }
 
 /** A logical source name; absolute checkout/archive locations never enter this identity. */
@@ -130,9 +144,11 @@ export function solutionContentPath(layer, file) {
 
 /**
  * Ordered layer identities, relative file names and byte hashes of the scanned documents and of the side files the
- * runtime imports (SOLUTION_SIDE_FOLDERS). Retain physical cache keys separately.
+ * runtime imports (SOLUTION_SIDE_FOLDERS). Retain physical cache keys separately. `cache`: the scan's
+ * SolutionFileCache, which keeps side-file hashes across restarts so unchanged side files are only stat'ed.
+ * `sideHashes`: the result of solutionSideFileHashes for the same layers, which replaces the walk per layer.
  */
-export function solutionContentFingerprint(layers, { lcid = 1033, files = [] } = {}) {
+export function solutionContentFingerprint(layers, { lcid = 1033, files = [], cache = null, sideHashes = null } = {}) {
   const digest = createHash('sha256');
   digest.update(JSON.stringify(['solution-content-v2', lcid]));
   for (const [index, layer] of layers.entries()) {
@@ -143,8 +159,13 @@ export function solutionContentFingerprint(layers, { lcid = 1033, files = [] } =
       if (members.has(file.path)) documents.set(file.path, file.hash ?? documents.get(file.path) ?? '');
     }
     const entries = new Map([...documents].map(([file, hash]) => [solutionContentPath(layer, file), hash]));
-    for (const [name, hash] of sideFileHashes(layer)) if (!entries.has(name)) entries.set(name, hash);
-    const sorted = [...entries].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    const side = sideHashes ? (sideHashes.get(layer.dir) ?? []) : sideFileHashes(layer, cache);
+    for (const [name, hash] of side) if (!entries.has(name)) entries.set(name, hash);
+    const sorted = [...entries].sort(([left], [right]) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    });
     for (const entry of sorted) digest.update(JSON.stringify(entry));
   }
   return digest.digest('hex');

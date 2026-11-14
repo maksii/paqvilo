@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { DataStore } from '../lib/data.mjs';
 import { validatePack, presetLibrary } from '../lib/preset-registry.mjs';
 import { mergeDataset } from '../lib/data-generation.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const catalog = (key = 'one', contact = 1) => ({
@@ -42,7 +43,7 @@ test('pack validation preserves legacy personas and validates only a data-proper
 });
 
 test('preset catalogue bodies remain lazy, replace stored metadata and survive restart', async (t) => {
-  const directory = await fs.mkdtemp(join(tmpdir(), 'mirage-persona-preset-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'mirage-persona-preset-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   let loads = 0;
   const library = presetLibrary({

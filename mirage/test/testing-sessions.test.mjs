@@ -5,11 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession, runSessionMatrix, connectRuntime } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (index) => `10000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
 async function fixture(t, { liveBridge, template } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-many-visitors-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-many-visitors-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const sources = {
     'website.yml': 'adx_name: Concurrent fixture\nadx_websiteid: site',
@@ -83,7 +83,7 @@ test('ten cookie-isolated visitors read and write through real portal handlers w
     sessions = await Promise.all(
       contacts.map((contact) => runtime.createSession({ id: contact.contactid, contactId: contact.contactid })),
     );
-  t.after(() => sessions.forEach((session) => session.close()));
+  ownedFixture(t).add(() => sessions.forEach((session) => session.close()));
   const cases = [
     {
       id: 'liquid',
@@ -184,7 +184,7 @@ test('local-only visitor refuses outbound reads when mode changes during its ren
     template = `{% fetchxml first %}${query}{% endfetchxml %}{% fetchxml second %}${query}{% endfetchxml %}`;
   const { app, contacts } = await fixture(t, { liveBridge, template }),
     visitor = await createPortalSession({ origin: app.url, contactId: contacts[0].contactid });
-  t.after(() => visitor.close());
+  ownedFixture(t).add(() => visitor.close());
   let changed = false;
   app.store.setPluginPipeline(({ stage }) => {
     if (stage === 40) {
@@ -224,13 +224,15 @@ test('documented identity scopes preserve cookie precedence and configured fallb
 });
 
 test('runtime experiment controls change local policy and keep concurrent instances independent', async (t) => {
-  const left = await fixture(t),
-    right = await fixture(t),
-    runtime = await connectRuntime({ origin: left.app.url }),
-    other = await connectRuntime({ origin: right.app.url });
+  // The two independent runtimes start concurrently; each owns its directory and closes before it is removed.
+  const [left, right] = await Promise.all([fixture(t), fixture(t)]),
+    [runtime, other] = await Promise.all([
+      connectRuntime({ origin: left.app.url }),
+      connectRuntime({ origin: right.app.url }),
+    ]);
   const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
     otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
-  t.after(() => {
+  ownedFixture(t).add(() => {
     visitor.close();
     otherVisitor.close();
   });

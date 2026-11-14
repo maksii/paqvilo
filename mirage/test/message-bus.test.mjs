@@ -1,6 +1,9 @@
+// @test-kind contract: the local message bus behaviour Paqvilo designs for queues, locks, dead-letters and restarts.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { DataStore } from '../lib/data.mjs';
 import {
   createLocalMessageBus,
@@ -141,10 +144,38 @@ test('messages survive a restart through the store state, and a rolled-back tran
   assert.equal(redelivered.deliveryCount, locked.deliveryCount + 1);
 });
 
+test('sequence numbers of an entity only increase after completion and across a restart with an empty queue', async () => {
+  const { store, bus, clock } = busFixture();
+  const first = await bus.send('fx-orders', { n: 1 });
+  const [done] = await bus.receive('fx-orders');
+  await bus.complete(done.lockToken);
+  const second = await bus.send('fx-orders', { n: 2 });
+  assert.ok(
+    second.sequenceNumber > first.sequenceNumber,
+    `${second.sequenceNumber} is not after ${first.sequenceNumber}`,
+  );
+
+  const [last] = await bus.receive('fx-orders');
+  await bus.complete(last.lockToken);
+  const restarted = createLocalMessageBus({
+    store: new DataStore({ state: store.snapshot() }),
+    clock,
+    lockDurationMs: 30_000,
+  });
+  assert.deepEqual(restarted.peek('fx-orders'), []);
+  const third = await restarted.send('fx-orders', { n: 3 });
+  assert.ok(
+    third.sequenceNumber > second.sequenceNumber,
+    `${third.sequenceNumber} is not after ${second.sequenceNumber}`,
+  );
+});
+
 test('receive waits for a message sent during waitMs', async () => {
   const { bus } = busFixture();
-  setTimeout(() => bus.send('fx-orders', { n: 7 }), 30);
-  const [message] = await bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 2000 });
+  // Store transactions run in call order, so the receive's first poll finds the queue empty before the send lands.
+  const waiting = bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 30_000 });
+  await bus.send('fx-orders', { n: 7 });
+  const [message] = await waiting;
   assert.equal(message.body.n, 7);
 });
 
@@ -169,6 +200,7 @@ test('descriptors declare the local bus and the core emulator transport as behav
   );
 });
 
+// @test-kind security: a non-loopback endpoint is refused without being contacted
 test('emulator preflight refuses non-emulator and non-loopback endpoints without contacting them', async () => {
   const secret = 'SharedAccessKey=invented-key-value';
   const missing = await serviceBusEmulatorPreflight({});
@@ -217,7 +249,10 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
     response.end('ok');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const connectionString =
     'Endpoint=sb://127.0.0.1;SharedAccessKeyName=x;SharedAccessKey=invented-key-value;UseDevelopmentEmulator=true;';
   const healthy = await serviceBusEmulatorPreflight({ connectionString, healthPort: server.address().port });
@@ -225,18 +260,20 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
   assert.equal(healthy.reachable, true);
   assert.equal(healthy.endpoint, 'sb://127.0.0.1');
   assert.doesNotMatch(JSON.stringify(healthy), /invented-key-value/);
-  const closedPort = await new Promise((resolve) => {
-    const probe = http.createServer();
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
+  // A port this test owns that closes every connection unanswered.
+  const refusing = net.createServer((socket) => socket.destroy());
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => new Promise((resolve) => refusing.close(resolve)));
+  const down = await serviceBusEmulatorPreflight({
+    connectionString,
+    healthPort: refusing.address().port,
+    timeoutMs: 1000,
   });
-  const down = await serviceBusEmulatorPreflight({ connectionString, healthPort: closedPort, timeoutMs: 1000 });
   assert.equal(down.ready, false);
   assert.ok(down.diagnostics.some((item) => item.code === 'SERVICEBUS_EMULATOR_UNREACHABLE'));
 });
 
+// @test-kind security: literal credentials in messaging settings are refused
 test('messagingSettings normalises providers and rejects literal credentials', () => {
   const settings = messagingSettings({
     queue: { kind: 'local-queue', retry: { maxAttempts: 3, backoffMs: [100, 1000] } },

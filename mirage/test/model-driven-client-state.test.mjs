@@ -1,3 +1,4 @@
+// @test-kind unproven: this file tests local Mirage client-state models and reads no recorded native result.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,7 +10,7 @@ import { compileForm } from '../lib/model-driven/solution.mjs';
 import { staffContext, USER_SETTINGS_EXTENSION } from '../lib/staff-session.mjs';
 import { createModelDrivenWebApi } from '../lib/dataverse-model-driven.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('$batch answers split on their declared boundaries only, so a body holding -- stays whole', () => {
   const body = [
@@ -112,7 +113,7 @@ test('the en-US staff short date pattern is the .NET M/d/yyyy', () => {
 });
 
 test('usersettingscollection answers GET and PATCH for the caller and feeds the staff context', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'usersettings-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'usersettings-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution', 'Other');
   await fs.mkdir(solution, { recursive: true });

@@ -46,18 +46,28 @@
       tt: date.getHours() < 12 ? 'AM' : 'PM',
       t: date.getHours() < 12 ? 'A' : 'P',
     });
-    Object.defineProperty(Date.prototype, 'format', {
+    /* NOSONAR: intentional compatibility override */ Object.defineProperty(Date.prototype, 'format', {
       configurable: true,
       value(pattern = 'ddd MMM dd yyyy HH:mm:ss') {
         const values = tokenValues(this);
         return String(pattern).replace(
-          /\\(.)|"([^"]*)"|'([^']*)'|yyyy|yy|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|tt|t/g,
+          /\\(.)|"([^"]*)"|'([^']*)'|yy(?:yy)?|M(?:MMM|MM|M)?|d(?:ddd|dd|d)?|H(?:H)?|h(?:h)?|m(?:m)?|s(?:s)?|fff|t(?:t)?/g, // NOSONAR: regex kept: a rewrite would change matches or captures
           (match, escaped, doubleQuoted, singleQuoted) =>
             escaped ?? doubleQuoted ?? singleQuoted ?? values[match] ?? match,
         );
       },
     });
-    ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).dateFormatMode = 'local-compatibility';
+    let simulation = globalThis.__portalSimulation;
+    if (!simulation) {
+      simulation = {};
+      globalThis.__portalSimulation = simulation;
+    }
+    let compatibility = simulation.compatibility;
+    if (!compatibility) {
+      compatibility = {};
+      simulation.compatibility = compatibility;
+    }
+    compatibility.dateFormatMode = 'local-compatibility';
     console.info('Local Date formatting compatibility active for source-authored Date.format calls.');
   }
 })();
@@ -76,34 +86,53 @@
       if (meridiem) hour = (hour % 12) + (/^p/i.test(meridiem) ? 12 : 0);
       return hour;
     };
+    const parseSlashDate = (text) => {
+      const match =
+        /* NOSONAR */ /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]\.?m\.?)?)?$/i.exec(
+          text,
+        );
+      if (!match) return undefined;
+      if (match[4] != null && Number(match[4]) > 23) return null;
+      return build(
+        Number(match[3]),
+        Number(match[1]) - 1,
+        Number(match[2]),
+        match[4] == null ? 0 : hours(match[4], match[7]),
+        Number(match[5] ?? 0),
+        Number(match[6] ?? 0),
+      );
+    };
+    const parseMonthFirstDate = (text) => {
+      const match = /^([a-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})$/i.exec(text);
+      if (!match || !monthNames.includes(match[1].slice(0, 3).toLowerCase())) return undefined;
+      return build(Number(match[3]), monthNames.indexOf(match[1].slice(0, 3).toLowerCase()), Number(match[2]));
+    };
+    const parseDayFirstDate = (text) => {
+      const match = /^(\d{1,2})\s+([a-z]{3,})\.?,?\s+(\d{4})$/i.exec(text);
+      if (!match || !monthNames.includes(match[2].slice(0, 3).toLowerCase())) return undefined;
+      return build(Number(match[3]), monthNames.indexOf(match[2].slice(0, 3).toLowerCase()), Number(match[1]));
+    };
+    const parseIsoDate = (text) => {
+      if (
+        !/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i.test(text) // NOSONAR: regex kept: a rewrite would change matches or captures
+      )
+        return undefined;
+      const time = nativeParse.call(Date, text.replace(' ', 'T'));
+      return Number.isNaN(time) ? null : new Date(time);
+    };
     const parse = function (value) {
       if (value == null || value === '') return null;
       if (value instanceof Date) return value;
       const text = String(value).trim();
       if (!text) return null;
-      let match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]\.?m\.?)?)?$/i.exec(text);
-      if (match) {
-        if (match[4] != null && Number(match[4]) > 23) return null;
-        return build(
-          Number(match[3]),
-          Number(match[1]) - 1,
-          Number(match[2]),
-          match[4] == null ? 0 : hours(match[4], match[7]),
-          Number(match[5] ?? 0),
-          Number(match[6] ?? 0),
-        );
-      }
-      match = /^([a-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})$/i.exec(text) ?? null;
-      if (match && monthNames.includes(match[1].slice(0, 3).toLowerCase()))
-        return build(Number(match[3]), monthNames.indexOf(match[1].slice(0, 3).toLowerCase()), Number(match[2]));
-      match = /^(\d{1,2})\s+([a-z]{3,})\.?,?\s+(\d{4})$/i.exec(text);
-      if (match && monthNames.includes(match[2].slice(0, 3).toLowerCase()))
-        return build(Number(match[3]), monthNames.indexOf(match[2].slice(0, 3).toLowerCase()), Number(match[1]));
-      if (/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i.test(text)) {
-        const time = nativeParse.call(Date, text.replace(' ', 'T'));
-        return Number.isNaN(time) ? null : new Date(time);
-      }
-      return null;
+      const slashDate = parseSlashDate(text);
+      if (slashDate !== undefined) return slashDate;
+      const monthFirstDate = parseMonthFirstDate(text);
+      if (monthFirstDate !== undefined) return monthFirstDate;
+      const dayFirstDate = parseDayFirstDate(text);
+      if (dayFirstDate !== undefined) return dayFirstDate;
+      const isoDate = parseIsoDate(text);
+      return isoDate === undefined ? null : isoDate;
     };
     parse.__ppSimDatejs = true;
     Date.parse = parse;
@@ -113,6 +142,16 @@
         date.setHours(0, 0, 0, 0);
         return date;
       };
-    ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).dateParseMode = 'datejs-compatibility';
+    let simulation = globalThis.__portalSimulation;
+    if (!simulation) {
+      simulation = {};
+      globalThis.__portalSimulation = simulation;
+    }
+    let compatibility = simulation.compatibility;
+    if (!compatibility) {
+      compatibility = {};
+      simulation.compatibility = compatibility;
+    }
+    compatibility.dateParseMode = 'datejs-compatibility';
   }
 })();

@@ -14,7 +14,7 @@ const ARM =
   /^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.KeyVault\/vaults\/([^/]+)\/secrets\/([^/]+)(?:\/([^/]+))?\/?$/i;
 const VAULT_URI = /^https:\/\/([^./]+)\.vault\.azure\.net(?::443)?\/secrets\/([^/?#]+)(?:\/([^/?#]+))?\/?$/i;
 const KEY = /^[A-Za-z0-9-]+\/[A-Za-z0-9-]+$/;
-const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const VARIABLE = /^[A-Za-z_]\w{0,127}$/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENTRY_KEYS = new Set([
   'source',
@@ -38,60 +38,68 @@ export function parseSecretReference(reference) {
   return { vault: lower(vault), name: lower(name), version, key: `${lower(vault)}/${lower(name)}` };
 }
 
+function secretSource(entry, at, normal, source) {
+  if (source === 'environment') {
+    if (typeof entry.variable !== 'string' || !VARIABLE.test(entry.variable))
+      throw new Error(`${at}.variable must name an environment variable`);
+    normal.variable = entry.variable;
+  } else if (source === 'protected') {
+    if (typeof entry.protectedValue !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(entry.protectedValue))
+      throw new Error(`${at}.protectedValue must be the base64 DPAPI blob`);
+    normal.protectedValue = entry.protectedValue;
+  } else throw new Error(`${at}.source must be 'environment' or 'protected'`);
+}
+
+function secretMetadata(entry, at, normal) {
+  if (entry.versions !== undefined) {
+    if (
+      !plainObject(entry.versions) ||
+      typeof entry.versions.current !== 'string' ||
+      !entry.versions.current ||
+      Object.keys(entry.versions).some((k) => k !== 'current')
+    )
+      throw new Error(`${at}.versions must be { current: <version> }`);
+    normal.versions = { current: entry.versions.current };
+  }
+  if (entry.expiresOn !== undefined) {
+    const time = Date.parse(entry.expiresOn instanceof Date ? entry.expiresOn.toISOString() : String(entry.expiresOn));
+    if (!Number.isFinite(time)) throw new Error(`${at}.expiresOn must be an ISO date`);
+    normal.expiresOn = new Date(time).toISOString();
+  }
+  if (entry.allow !== undefined) {
+    if (!Array.isArray(entry.allow) || entry.allow.some((id) => typeof id !== 'string' || !GUID.test(id)))
+      throw new Error(`${at}.allow must be a list of principal ids (GUIDs)`);
+    normal.allow = entry.allow.map(lower);
+  }
+  if (entry.disabled !== undefined) {
+    if (typeof entry.disabled !== 'boolean') throw new Error(`${at}.disabled must be a boolean`);
+    normal.disabled = entry.disabled;
+  }
+  if (entry.description !== undefined) normal.description = String(entry.description);
+}
+
+function secretSettingEntry(key, entry, label) {
+  const at = `${label}.${key}`;
+  if (!KEY.test(key)) throw new Error(`${at}: keys are <vault>/<secret> (letters, digits and hyphens)`);
+  if (!plainObject(entry)) throw new Error(`${at} must be an object`);
+  if (Object.hasOwn(entry, 'value') || Object.hasOwn(entry, 'secret'))
+    throw new Error(
+      `${at}: secret values never live in config; name an environment variable (source: environment) or a protected value`,
+    );
+  for (const name of Object.keys(entry)) if (!ENTRY_KEYS.has(name)) throw new Error(`Unknown ${at} key '${name}'`);
+  const source = entry.source ?? 'environment';
+  const normal = { source, allow: [], disabled: false };
+  secretSource(entry, at, normal, source);
+  secretMetadata(entry, at, normal);
+  return normal;
+}
+
 /** Validates and normalises the project `secrets` config. Throws on a literal value: values never live in config. */
 export function secretSettings(value, label = 'secrets') {
   if (value === undefined || value === null) return {};
   if (!plainObject(value)) throw new Error(`${label} must be an object keyed by <vault>/<secret>`);
   const result = {};
-  for (const [key, entry] of Object.entries(value)) {
-    const at = `${label}.${key}`;
-    if (!KEY.test(key)) throw new Error(`${at}: keys are <vault>/<secret> (letters, digits and hyphens)`);
-    if (!plainObject(entry)) throw new Error(`${at} must be an object`);
-    if (Object.hasOwn(entry, 'value') || Object.hasOwn(entry, 'secret'))
-      throw new Error(
-        `${at}: secret values never live in config; name an environment variable (source: environment) or a protected value`,
-      );
-    for (const name of Object.keys(entry)) if (!ENTRY_KEYS.has(name)) throw new Error(`Unknown ${at} key '${name}'`);
-    const source = entry.source ?? 'environment';
-    const normal = { source, allow: [], disabled: false };
-    if (source === 'environment') {
-      if (typeof entry.variable !== 'string' || !VARIABLE.test(entry.variable))
-        throw new Error(`${at}.variable must name an environment variable`);
-      normal.variable = entry.variable;
-    } else if (source === 'protected') {
-      if (typeof entry.protectedValue !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(entry.protectedValue))
-        throw new Error(`${at}.protectedValue must be the base64 DPAPI blob`);
-      normal.protectedValue = entry.protectedValue;
-    } else throw new Error(`${at}.source must be 'environment' or 'protected'`);
-    if (entry.versions !== undefined) {
-      if (
-        !plainObject(entry.versions) ||
-        typeof entry.versions.current !== 'string' ||
-        !entry.versions.current ||
-        Object.keys(entry.versions).some((k) => k !== 'current')
-      )
-        throw new Error(`${at}.versions must be { current: <version> }`);
-      normal.versions = { current: entry.versions.current };
-    }
-    if (entry.expiresOn !== undefined) {
-      const time = Date.parse(
-        entry.expiresOn instanceof Date ? entry.expiresOn.toISOString() : String(entry.expiresOn),
-      );
-      if (!Number.isFinite(time)) throw new Error(`${at}.expiresOn must be an ISO date`);
-      normal.expiresOn = new Date(time).toISOString();
-    }
-    if (entry.allow !== undefined) {
-      if (!Array.isArray(entry.allow) || entry.allow.some((id) => typeof id !== 'string' || !GUID.test(id)))
-        throw new Error(`${at}.allow must be a list of principal ids (GUIDs)`);
-      normal.allow = entry.allow.map(lower);
-    }
-    if (entry.disabled !== undefined) {
-      if (typeof entry.disabled !== 'boolean') throw new Error(`${at}.disabled must be a boolean`);
-      normal.disabled = entry.disabled;
-    }
-    if (entry.description !== undefined) normal.description = String(entry.description);
-    result[lower(key)] = normal;
-  }
+  for (const [key, entry] of Object.entries(value)) result[lower(key)] = secretSettingEntry(key, entry, label);
   return result;
 }
 
@@ -100,13 +108,21 @@ const dpapi = {
   unprotect: async (blob) => (await import('../../lense/dataverse/connection.mjs')).protectSecret(blob, true),
 };
 
-/** Resolves Key Vault references from the `secrets` config. resolve() is the only place a value is read. */
+/** Resolves Key Vault references from the `secrets` config. resolve() is the only place a value is read.
+ * traces: the trace store (or a getter of it, read per call): each resolve() is a secret span with the key name, purpose,
+ * principal and status only, never the value (docs/design/tracing.md). */
+const spanStatusOf = (status) => {
+  if (status === 'resolved') return 'ok';
+  return status === 'denied' ? 'denied' : 'error';
+};
+
 export function createSecretResolver({
   secrets = {},
   env = process.env,
   protect = dpapi,
   clock = systemClock.now,
   diagnostic = () => {},
+  traces = null,
 } = {}) {
   const settings = secretSettings(secrets);
   const now = () => {
@@ -140,7 +156,42 @@ export function createSecretResolver({
     });
     return { status: state.status, reason: state.reason };
   };
-  return {
+  const traced = async (reference, options, read) => {
+    const store = typeof traces === 'function' ? traces() : traces;
+    if (!store?.enabled) return read();
+    const parsed = parseSecretReference(reference),
+      key = parsed?.key ?? null;
+    // The vault and secret name of the reference (never its value): which secret was asked for, by whom, and the outcome.
+    const span = store.start({
+      kind: 'secret',
+      name: `Secret ${key ?? 'reference'}`,
+      module: 'secrets',
+      operation: 'resolve',
+      attributes: {
+        key,
+        vault: parsed?.vault ?? null,
+        secretName: parsed?.name ?? null,
+        version: parsed?.version ?? null,
+        purpose: options.purpose ?? null,
+        principalId: options.principalId ?? null,
+      },
+    });
+    try {
+      const answer = await read();
+      span.end({
+        status: spanStatusOf(answer.status),
+        attributes: { status: answer.status, ...(answer.version ? { resolvedVersion: answer.version } : {}) },
+        ...(answer.status === 'resolved'
+          ? {}
+          : { error: { code: `SECRET_${answer.status.toUpperCase()}`, message: answer.reason } }),
+      });
+      return answer;
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+  };
+  const resolver = {
     async resolve(reference, { principalId, purpose } = {}) {
       const state = inspect(reference);
       if (state.status !== 'available') return refuse(state, purpose);
@@ -187,6 +238,9 @@ export function createSecretResolver({
     },
     keys: () => Object.keys(settings),
   };
+  const resolve = resolver.resolve;
+  resolver.resolve = (reference, options = {}) => traced(reference, options, () => resolve(reference, options));
+  return resolver;
 }
 
 const rowsOf = (state, logical) => state?.tables?.[logical] ?? [];
@@ -203,34 +257,35 @@ const isSecretDefinition = (row) =>
  * Non-secret entries: { schemaName, id, type, value }. Secret entries: { schemaName, id, type, secret: true, reference }, where
  * reference is the Key Vault reference (null when the store holds the secret itself); resolve it with the resolver.
  */
+const secretReferenceOf = (definition, value) => {
+  if (Number(definition.secretstore ?? KEY_VAULT_STORE) === 1) return null;
+  return value == null ? null : String(value);
+};
+
 export function effectiveEnvironmentVariables(state, { overrides = [] } = {}) {
   const layers = (Array.isArray(overrides) ? overrides : [overrides]).map(
     (layer) => new Map(Object.entries(layer ?? {}).map(([name, value]) => [lower(name), value])),
   );
   const values = rowsOf(state, 'environmentvariablevalue');
   const result = {};
-  for (const definition of rowsOf(state, 'environmentvariabledefinition')) {
-    const schemaName = definition.schemaname ?? definition.schemaName;
-    if (!schemaName) continue;
-    const id = idOf(definition.environmentvariabledefinitionid);
-    const row = values.find(
-      (v) => idOf(v.environmentvariabledefinitionid ?? v._environmentvariabledefinitionid_value) === id,
-    );
-    let value = row ? (row.value ?? null) : (definition.defaultvalue ?? null);
-    for (const layer of layers) if (layer.has(lower(schemaName))) value = layer.get(lower(schemaName));
-    const type = definition.type == null ? null : Number(definition.type);
-    result[lower(schemaName)] = isSecretDefinition(definition)
-      ? {
-          schemaName,
-          id,
-          type,
-          secret: true,
-          reference:
-            Number(definition.secretstore ?? KEY_VAULT_STORE) === 1 ? null : value == null ? null : String(value),
-        }
-      : { schemaName, id, type, value: value == null ? null : String(value) };
-  }
+  for (const definition of rowsOf(state, 'environmentvariabledefinition'))
+    addEffectiveEnvironmentVariable(result, definition, values, layers);
   return result;
+}
+
+function addEffectiveEnvironmentVariable(result, definition, values, layers) {
+  const schemaName = definition.schemaname ?? definition.schemaName;
+  if (!schemaName) return;
+  const id = idOf(definition.environmentvariabledefinitionid);
+  const row = values.find(
+    (v) => idOf(v.environmentvariabledefinitionid ?? v._environmentvariabledefinitionid_value) === id,
+  );
+  let value = row ? (row.value ?? null) : (definition.defaultvalue ?? null);
+  for (const layer of layers) if (layer.has(lower(schemaName))) value = layer.get(lower(schemaName));
+  const type = definition.type == null ? null : Number(definition.type);
+  result[lower(schemaName)] = isSecretDefinition(definition)
+    ? { schemaName, id, type, secret: true, reference: secretReferenceOf(definition, value) }
+    : { schemaName, id, type, value: value == null ? null : String(value) };
 }
 
 /** The workerData.environmentVariables map for server logic: lower-case schema name → text, or { secret: true }. */

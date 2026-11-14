@@ -29,21 +29,27 @@ export const YAML_ROOTS = Object.freeze({
  * optionsets/*.yml and entityrelationships/**.yml.
  */
 export function classifyYamlPath(relative) {
-  const parts = String(relative).replace(/\\/g, '/').split('/').filter(Boolean);
+  const parts = String(relative).replaceAll('\\', '/').split('/').filter(Boolean);
   const lower = parts.map((part) => part.toLowerCase());
   if (!YAML_FILE.test(lower.at(-1) ?? '')) return null;
-  if (lower[0] === 'entities' && parts.length >= 3) {
-    const entityDir = parts[1];
-    if (parts.length === 3 && /^entity\.ya?ml$/.test(lower[2])) return { kind: 'yaml', part: 'entity', entityDir };
-    if (lower[2] === 'attributes' && parts.length === 4) return { kind: 'yaml', part: 'attribute', entityDir };
-    if (lower[2] === 'formxml' && parts.length >= 4)
-      return { kind: 'yaml', part: 'form', entityDir, ...(parts.length === 5 ? { formType: lower[3] } : {}) };
-    if (lower[2] === 'savedqueries' && parts.length === 4) return { kind: 'yaml', part: 'view', entityDir };
-    return null;
-  }
+  if (lower[0] === 'entities' && parts.length >= 3) return classifyYamlEntityPath(parts, lower);
   if (lower[0] === 'optionsets' && parts.length === 2) return { kind: 'yaml', part: 'optionset' };
   if (lower[0] === 'entityrelationships' && parts.length >= 2) return { kind: 'yaml', part: 'relationship' };
   return null;
+}
+
+function classifyYamlEntityPath(parts, lower) {
+  const entityDir = parts[1];
+  if (parts.length === 3 && /^entity\.ya?ml$/.test(lower[2])) return { kind: 'yaml', part: 'entity', entityDir };
+  if (lower[2] === 'attributes' && parts.length === 4) return { kind: 'yaml', part: 'attribute', entityDir };
+  if (lower[2] === 'formxml' && parts.length >= 4)
+    return { kind: 'yaml', part: 'form', entityDir, ...(parts.length === 5 ? { formType: lower[3] } : {}) };
+  if (lower[2] === 'savedqueries' && parts.length === 4) return { kind: 'yaml', part: 'view', entityDir };
+  return null;
+}
+
+function appendElementChildren(node, key, item) {
+  for (const entry of Array.isArray(item) ? item : [item]) node.children.push(element(key, entry));
 }
 
 function element(name, value) {
@@ -62,7 +68,7 @@ function element(name, value) {
       node.text = item == null ? '' : String(item);
       continue;
     }
-    for (const entry of Array.isArray(item) ? item : [item]) node.children.push(element(key, entry));
+    appendElementChildren(node, key, item);
   }
   return node;
 }

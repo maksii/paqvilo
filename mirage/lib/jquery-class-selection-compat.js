@@ -25,4 +25,4 @@
       get: () => (name, context) => select('.' + CSS.escape(name), context),
       set: () => {},
     });
-})(window.jQuery);
+})(globalThis.jQuery);

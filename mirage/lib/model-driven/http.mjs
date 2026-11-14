@@ -3,6 +3,12 @@ import { setImmediate } from 'node:timers/promises';
 import { createOfflineSessions } from './offline.mjs';
 import { encodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate } from '../../../lense/source-map.mjs';
+import { metadataResponseChunks } from './metadata-response.mjs';
+import { metadataWorkerResponseChunks, createMetadataWorkers, indexFields } from './metadata-worker-response.mjs';
+import { acceptsGzip } from '../http-content-encoding.mjs';
+import { currentRequest, runWithRequest } from '../request-context.mjs';
+import { recordHttpError, statusFromHttp } from '../trace-store.mjs';
+import { sameToken } from '../admin-origin.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -23,15 +29,90 @@ const assets = {
   'style.css': 'text/css; charset=utf-8',
   'controls.css': 'text/css; charset=utf-8',
 };
+export const modelDrivenAssetNames = Object.keys(assets);
+// Shared lib modules that the browser modules import relatively: from /_apps/assets/ the path `../x.mjs` names these.
+const sharedModules = new Map([['/_apps/date-only-format.mjs', new URL('../date-only-format.mjs', import.meta.url)]]);
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
-const metadataOnly = async (catalogue, data, actor, res, { index = false, entity } = {}) => {
-  const tables = {};
+const decodeRecordId = (encodedId) => {
+  try {
+    return decodeURIComponent(encodedId);
+  } catch {
+    throw fail('Invalid record ID.', 400);
+  }
+};
+const cancelled = () => fail('Catalogue request was cancelled.', 499);
+// One trace header of the root (the host set it on the response before routing), as page text; empty without one.
+const traceHeader = (res, name) => {
+  const value = res.getHeader?.(name);
+  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : '';
+};
+const escapeHtml = (value) =>
+  String(value).replaceAll(
+    /[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+  );
+// The request root's error for a thrown error answered with status: a plug-in fault keeps the identity its spans carry
+// (the non-enumerable traceError, D-R3-19: type, code, pluginType, step, stage, depth); any other error the answer's code.
+const recordRootError = (span, status, error, answer) => {
+  if (!error?.traceError) return recordHttpError(span, status, answer);
+  if (span?.enabled && status >= 400) span.setStatus(statusFromHttp(status)).setError(error);
+  return span;
+};
+const RIGHTS = ['read', 'create', 'update', 'delete'];
+// Under the host's read: the principal's rights for every requested table. Rights
+// are small; table bodies are compiled and encoded after the read is released.
+// Tracing (D-R3-11): the evaluation is one aggregated `permission` event on the current span (result 'evaluated', tables,
+// allowed and denied decisions), not four per table: each table's checks run where the store finds no current span
+// (detached, under a copy of the request context that names none), so the security model records nothing for them.
+function untracedRunner(traces, span, request) {
+  if (!span) return (fn) => fn();
+  if (request) return (fn) => runWithRequest({ ...request, traceId: null, spanId: null }, () => traces.detached(fn));
+  return (fn) => traces.detached(fn);
+}
+const fieldsForTable = (catalogue, name, index, entity) => {
+  if (index) return {};
+  if (!entity && catalogue.tableIndex) return indexFields(catalogue, name);
+  return catalogue.tables[name].fields;
+};
+/* NOSONAR */ const tableRights = async (catalogue, data, actor, res, { index, entity, compact }, traces) => {
+  const rights = new Map();
+  if (!data.capabilities) return rights;
+  const span = traces?.enabled ? traces.current() : null;
+  const request = span ? currentRequest() : null;
+  const untraced = untracedRunner(traces, span, request);
+  let allowed = 0,
+    denied = 0;
   let yieldedAt = performance.now();
-  for (const [name, { rows: _rows, ...table }] of Object.entries(catalogue.tables)) {
-    if (entity && name !== entity) continue;
-    if (res.destroyed) throw fail('Catalogue request was cancelled.', 499);
+  for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
+    if (res.destroyed) throw cancelled();
+    const fields = fieldsForTable(catalogue, name, index, entity);
+    const value = untraced(() => data.capabilities(name, actor, undefined, fields, compact ? { compact } : undefined));
+    rights.set(name, value);
+    if (span && value) for (const right of RIGHTS) value[right] ? allowed++ : denied++;
+    if (performance.now() - yieldedAt >= 8) {
+      await setImmediate();
+      yieldedAt = performance.now();
+    }
+  }
+  span?.event('permission', {
+    attributes: { result: 'evaluated', operation: 'rights', model: 'dataverse', tables: rights.size, allowed, denied },
+  });
+  return rights;
+};
+// The 0.9.8 root: every catalogue key in its own order, `tables` in place.
+const rootOf = (catalogue, tables, wire) => {
+  const root = { ...catalogue, tables: undefined };
+  const value = wire ? encodeModelDrivenProvenance(root) : root;
+  value.tables = tables;
+  return value;
+};
+const metadataOnly = (catalogue, rights, res, { index = false, entity, wire = false, lazy = false }) => {
+  const tables = {};
+  const project = (name) => {
+    if (res.destroyed) throw cancelled();
+    const { rows: _rows, ...table } = (index ? catalogue.tableIndex?.[name] : undefined) ?? catalogue.tables[name]; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected } = table;
-    tables[name] = {
+    const result = {
       ...(index
         ? {
             entity: logical,
@@ -46,16 +127,15 @@ const metadataOnly = async (catalogue, data, actor, res, { index = false, entity
             metadata: 'lazy',
           }
         : table),
-      capabilities: data.capabilities?.(name, actor, undefined, index ? {} : table.fields),
+      capabilities: rights.get(name),
     };
-    // Keep the serialized read epoch across yields: writes cannot change the
-    // principal or field security halfway through the resulting catalogue.
-    if (performance.now() - yieldedAt >= 8) {
-      await setImmediate();
-      yieldedAt = performance.now();
-    }
+    return wire ? encodeModelDrivenProvenance(result) : result;
+  };
+  for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
+    if (!index && !entity && lazy) Object.defineProperty(tables, name, { enumerable: true, get: () => project(name) });
+    else tables[name] = project(name);
   }
-  return { ...catalogue, tables };
+  return rootOf(catalogue, tables, false);
 };
 
 // Admin-adjacent route, listed in status `adminAdjacentRoutes` on both hosts (status `routes` holds /_sim/api prefixes only): any Web API request as the selected staff user, or as the
@@ -80,6 +160,22 @@ export function createModelDrivenHandler({
   sourceMapLimits = {},
   webApi = null,
   offlineState = null,
+  // Hosts whose JSON writer consumes chunks can compile/project one table at a
+  // time. Custom complete-value writers retain cooperative eager preparation.
+  streamMetadata = false,
+  workerMetadata = false,
+  // The host trace store: the request root's actor is traceActor(principal) (default: a staff or local administrator principal
+  // is the `staff` actor), every error answer is recorded on it (recordHttpError), the shell page names the root so its
+  // calls join the page trace, and table rights are one aggregated permission event.
+  traces = null,
+  traceActor = (principal) =>
+    ['staff', 'local-admin'].includes(principal?.kind)
+      ? { kind: 'staff', id: principal.principalId, name: null }
+      : null,
+  // The portal the shell links to ("Open portal"); null means the host has none and the link is hidden.
+  portalUrl = () => '/',
+  // The origin of the listener that received the request (req → origin or null): a table read names it in its continuation.
+  listenerOrigin = () => null,
 }) {
   const mapLimits = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
   for (const [key, value] of Object.entries(sourceMapLimits)) {
@@ -87,6 +183,16 @@ export function createModelDrivenHandler({
       throw new Error(`Invalid model-driven debugger map limit ${key}.`);
     mapLimits[key] = value;
   }
+  const workers = workerMetadata ? createMetadataWorkers() : null;
+  workers?.events.on('exit', ({ code, reason, error }) => {
+    if (error)
+      diagnostic({
+        code: 'MODEL_METADATA_COMPILER_EXIT',
+        reason,
+        exitCode: code,
+        message: `The metadata compiler thread stopped: ${error.message}`,
+      });
+  });
   let debugAssets = new WeakMap(),
     debugCatalogue;
   let remainingMapBytes = mapLimits.totalBytes;
@@ -127,7 +233,7 @@ export function createModelDrivenHandler({
   });
   // handler.offlineSessions(): every staff session's offline summary, for the /_sim/ administration.
   return Object.assign(
-    async (req, res, url) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ async (req, res, url) => {
       const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
       const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
       const api = /^\/_apps\/api(?:\/(.*))?$/.exec(url.pathname);
@@ -147,6 +253,13 @@ export function createModelDrivenHandler({
       })();
       const dataApi = Boolean(webApi) && fromAppPage && /^\/api\/data\/v9\.\d(?:\/|$)/.test(url.pathname);
       if (!shell && !asset && !api && !dataApi && !url.pathname.startsWith('/_apps/')) return false;
+      // The root's actor is the session's principal; an unusable session is answered by the paths that need one.
+      if (traces?.enabled)
+        try {
+          traces.current()?.setActor(traceActor(principal(req)));
+        } catch {
+          /* no actor */
+        }
       res.setHeader('cache-control', 'no-store');
       res.setHeader('x-content-type-options', 'nosniff');
       res.setHeader('x-frame-options', 'SAMEORIGIN');
@@ -161,12 +274,15 @@ export function createModelDrivenHandler({
           }
           const resource = catalogue.get(url.pathname);
           // A web resource page may take the native ?data= parameter; every other asset is served without a query.
-          if (!resource || (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))))
+          if (
+            !resource ||
+            (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))) // NOSONAR: preserve regex coercion
+          )
             throw fail('Trusted client asset not found.', 404);
           // A trusted HTML web resource page opens inside the app (navigateTo, side panes, SiteMap) and runs its own scripts.
           res.setHeader(
             'content-security-policy',
-            /^text\/html/.test(resource.mime)
+            /^text\/html/.test(resource.mime) // NOSONAR: preserve regex coercion
               ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
               : "default-src 'none'; frame-ancestors 'none'",
           );
@@ -174,12 +290,26 @@ export function createModelDrivenHandler({
           res.end(req.method === 'HEAD' ? undefined : debugBody(resource));
           return true;
         }
+        const shared = sharedModules.get(url.pathname);
+        if (shared) {
+          if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
+          res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+          res.end(req.method === 'HEAD' ? undefined : await fs.readFile(shared));
+          return true;
+        }
         if (shell || asset) {
           if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
           if (asset && !assets[asset[1]]) throw fail('Asset not found.', 404);
           const name = shell ? 'index.html' : asset[1];
           let content = await fs.readFile(new URL(name, import.meta.url), 'utf8');
-          if (shell) content = content.replace('__MIRAGE_CSRF__', csrf());
+          // The shell names its root (its response's trace headers) so the app's calls join the page trace.
+          if (shell)
+            content = content
+              // Function replacements: a string replacement would read $&, $' and $` in a value as replacement patterns.
+              .replace('__MIRAGE_CSRF__', () => escapeHtml(csrf()))
+              .replace('__MIRAGE_TRACE_ID__', () => traceHeader(res, 'x-trace-id'))
+              .replace('__MIRAGE_TRACE_PARENT__', () => traceHeader(res, 'x-sim-span-id'))
+              .replace('__MIRAGE_PORTAL__', () => escapeHtml(portalUrl() ?? ''));
           // Only explicitly trusted local Solution scripts are served by the resource allowlist.
           res.setHeader(
             'content-security-policy',
@@ -227,19 +357,17 @@ export function createModelDrivenHandler({
         if (!api) throw fail('Model-driven resource not found.', 404);
         const method = req.method;
         if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw fail('Method not allowed.', 405);
-        if (method !== 'GET' && req.headers['x-sim-csrf'] !== csrf()) throw fail('Missing simulator CSRF token.', 403);
+        if (method !== 'GET' && !sameToken(req.headers['x-sim-csrf'], csrf()))
+          throw fail('Missing simulator CSRF token.', 403);
         const actor = principal(req);
         if (api[1] === 'offline') {
           if (!['staff', 'local-admin'].includes(actor?.kind))
             throw Object.assign(fail('Mobile offline needs a staff session or the local administrator.', 401), {
               code: 'StaffPrincipalUnavailable',
             });
-          const input =
-            method === 'GET'
-              ? { app: url.searchParams.get('app'), action: 'status' }
-              : method === 'POST'
-                ? await readBody(req)
-                : null;
+          let input = null;
+          if (method === 'GET') input = { app: url.searchParams.get('app'), action: 'status' };
+          else if (method === 'POST') input = await readBody(req);
           if (
             !input ||
             typeof input !== 'object' ||
@@ -255,25 +383,23 @@ export function createModelDrivenHandler({
           )
             throw fail('Provide a table logical name, a GUID record id and text query options.', 400);
           const host = req.headers.host;
-          const result =
-            input.action === 'status'
-              ? await offline.status(actor, input.app, host)
-              : input.action === 'mode'
-                ? await offline.setMode(actor, input.app, input.mode, host)
-                : input.action === 'sync'
-                  ? await offline.sync(actor, input.app, host)
-                  : await offline.execute(
-                      actor,
-                      input.app,
-                      {
-                        operation: input.action,
-                        entity: input.entity,
-                        id: input.id,
-                        options: input.options ?? '',
-                        data: input.data,
-                      },
-                      host,
-                    );
+          let result;
+          if (input.action === 'status') result = await offline.status(actor, input.app, host);
+          else if (input.action === 'mode') result = await offline.setMode(actor, input.app, input.mode, host);
+          else if (input.action === 'sync') result = await offline.sync(actor, input.app, host);
+          else
+            result = await offline.execute(
+              actor,
+              input.app,
+              {
+                operation: input.action,
+                entity: input.entity,
+                id: input.id,
+                options: input.options ?? '',
+                data: input.data,
+              },
+              host,
+            );
           json(res, 200, result);
           return true;
         }
@@ -322,29 +448,60 @@ export function createModelDrivenHandler({
           json(res, 200, { status: result.status, headers: result.headers ?? {}, body: result.body ?? '' });
           return true;
         }
-        const tableMetadata = /^metadata\/([a-z][\w]*)$/i.exec(api[1] ?? '');
+        const tableMetadata = /^metadata\/([a-z]\w*)$/i.exec(api[1] ?? '');
         if (!api[1] || api[1] === 'index' || tableMetadata) {
           if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
-          const result = await read(async () => {
+          const entity = tableMetadata?.[1],
+            index = api[1] === 'index',
+            wire = req.headers['x-mirage-provenance-format'] === '1';
+          // The read covers the catalogue snapshot and the principal's rights only.
+          // Compilation, encoding and transfer run after it: a slow or stalled reader
+          // never holds portal pages, Web API calls, grids or writes behind it. A host
+          // catalogue compiles its bodies from inputs it owns (storeCatalogue), so a
+          // later write never changes a response already admitted.
+          const { source, rights, worker } = await read(async () => {
             const source = await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue());
-            const entity = tableMetadata?.[1];
             if (entity && !Object.hasOwn(source.tables, entity)) throw fail('Table metadata not found.', 404);
-            const result = await metadataOnly(source, data, actor, res, { index: api[1] === 'index', entity });
-            return entity ? result.tables[entity] : result;
+            const worker = Boolean(
+              workers && streamMetadata && !api[1] && source.tableInput && Object.keys(source.tables).length >= 128,
+            );
+            const rights = await tableRights(source, data, actor, res, { index, entity, compact: worker }, traces);
+            return { source, rights, worker };
           });
-          if (!res.destroyed)
-            json(
+          if (res.destroyed) return true;
+          if (worker) {
+            const gzip = acceptsGzip(req);
+            const root = rootOf(source, source.tables, wire);
+            await json(
               res,
               200,
-              req.headers['x-mirage-provenance-format'] === '1' ? encodeModelDrivenProvenance(result) : result,
+              root,
+              { vary: 'Accept-Encoding', ...(gzip ? { 'content-encoding': 'gzip' } : {}) },
+              {
+                chunks: metadataWorkerResponseChunks(source, root, (name) => rights.get(name), res, {
+                  wire,
+                  gzip,
+                  workers,
+                }),
+              },
             );
+            return true;
+          }
+          const result = metadataOnly(source, rights, res, { index, entity, wire, lazy: streamMetadata });
+          let payload = result;
+          if (entity) payload = result.tables[entity];
+          else if (wire) payload = rootOf(source, result.tables, true);
+          await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
           return true;
         }
-        const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
+        const route = /^tables\/([a-z]\w*)(?:\/([^/]+))?$/i.exec(api[1]);
         if (!route) throw fail('Model-driven endpoint not found.', 404);
         const [, entity, encodedId] = route,
-          id = encodedId ? decodeURIComponent(encodedId) : null;
+          id = encodedId ? decodeRecordId(encodedId) : null;
         if (id && !/^[\w{}-]{1,128}$/.test(id)) throw fail('Invalid record ID.', 400);
+        // The root names its table and record (a create's once saved) and a grid read's view, page and search.
+        const root = traces?.enabled ? traces.current() : null;
+        root?.setEntity(entity, id);
         // The shell names its app (x-mirage-app): while that staff session is offline, records come from its offline copy.
         const records =
           typeof req.headers['x-mirage-app'] === 'string'
@@ -360,22 +517,40 @@ export function createModelDrivenHandler({
           }
           if (!query || typeof query !== 'object' || Array.isArray(query))
             throw fail('Provide a grid query object.', 400);
-          if (id) json(res, 200, await data.get(entity, id, reader, query));
-          else json(res, 200, await data.list(entity, query, reader));
+          if (root)
+            root.set(
+              Object.fromEntries(
+                ['view', 'page', 'pageSize', 'search']
+                  .filter((key) => ['string', 'number'].includes(typeof query[key]))
+                  .map((key) => [key, query[key]]),
+              ),
+            );
+          const readerAt = { ...reader, origin: listenerOrigin(req) };
+          if (id) json(res, 200, await data.get(entity, id, readerAt, query));
+          else json(res, 200, await data.list(entity, query, readerAt));
         } else {
           if ((method === 'POST' && id) || (method !== 'POST' && !id)) throw fail('Invalid record operation.', 405);
           const values = method === 'DELETE' ? {} : await readBody(req);
           const write = () =>
             data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'], ...reader });
           const result = records ? await write() : await change(write);
+          if (method === 'POST' && typeof result?.id === 'string') root?.setEntity(entity, result.id);
           json(res, method === 'POST' ? 201 : 200, result);
         }
       } catch (error) {
-        if (!res.destroyed)
-          json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
+        const status = error.status ?? 500,
+          code = error.code ?? 'ModelDrivenError';
+        if (res.headersSent) res.destroy(error);
+        else if (!res.destroyed) json(res, status, { error: { message: error.message, code } });
+        // After the answer (whose writer may record its envelope): a plug-in fault keeps its identity on the root.
+        recordRootError(traces?.current() ?? null, status, error, { code, message: error.message });
       }
       return true;
     },
-    { offlineSessions: () => offline.list() },
+    {
+      offlineSessions: () => offline.list(),
+      // Stops the warm metadata compiler thread, if any.
+      close: () => workers?.close(),
+    },
   );
 }

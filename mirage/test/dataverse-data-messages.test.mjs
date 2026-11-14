@@ -1,5 +1,6 @@
 // Recycle bin (delete hook, Restore, EmptyRecycleBin), the classic import job (ParseImport, TransformImport, ImportRecordsImport)
 // and the annotation and attachment block messages, over HTTP through the full extension list.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { test, describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -8,6 +9,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { parseCsv } from '../lib/dataverse-data-messages.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
+// @test-kind contract: the file exercises the designed Dataverse data-message behaviour over HTTP; security cases are tagged per test.
 
 const APP_ID = '55555555-5555-5555-5555-555555555555';
 const SECRET_VAR = 'PAQVILO_DATA_MESSAGES_TEST_SECRET';
@@ -34,8 +36,13 @@ function fixtureState() {
   return state;
 }
 
+// The applications read their secret from this variable; it is set for the file and removed after it.
+process.env[SECRET_VAR] = 'data-messages-secret';
+after(() => {
+  delete process.env[SECRET_VAR];
+});
+
 async function startServer({ extendState = () => {}, extraExtensions = [], roles = ['System Administrator'] } = {}) {
-  process.env[SECRET_VAR] = 'data-messages-secret';
   const initial = fixtureState();
   extendState(initial);
   const store = await new DataStore({ state: initial }).init();
@@ -62,24 +69,27 @@ async function startServer({ extendState = () => {}, extraExtensions = [], roles
     }),
   });
   const authorization = `Bearer ${(await token.json()).access_token}`;
-  const timed = (init) => ({ ...init, signal: AbortSignal.timeout(5000) });
   return {
     server,
     store,
     origin: server.origin,
-    get: (path) => fetch(`${server.origin}${API}${path}`, timed({ headers: { authorization } })),
+    get: (path) => fetch(`${server.origin}${API}${path}`, { headers: { authorization } }),
     send: (method, path, body) =>
-      fetch(
-        `${server.origin}${API}${path}`,
-        timed({
-          method,
-          headers: { authorization, 'content-type': 'application/json' },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        }),
-      ),
+      fetch(`${server.origin}${API}${path}`, {
+        method,
+        headers: { authorization, 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
     close: () => server.close(),
   };
 }
+
+// The default organization for the cases that replace only their own tables (importfile, annotation, the retained
+// store) and leave contoso_widget at its single fixture row: each server is a whole Dataverse API, so they share one.
+// A case that adds rows or mappings, or needs other settings, starts its own. node:test runs these cases one at a time.
+let shared = null;
+const sharedServer = () => (shared ??= startServer());
+after(async () => (await shared)?.close());
 
 const target = (logical, key, id) => ({ '@odata.type': `${CRM}${logical}`, [key]: id });
 const b64 = (text) => Buffer.from(text).toString('base64');
@@ -87,7 +97,7 @@ const mapXml = `<Map Name="Invented map" Source="CSV"><Description>Offline map</
 
 test('import maps round-trip their column/picklist metadata and drive persisted CSV writes', async (t) => {
   const h = await startServer();
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   const imported = await h.send('POST', '/ImportMappingsImportMap', { MappingsXml: mapXml, ReplaceIds: true });
   assert.equal(imported.status, 200, JSON.stringify(await imported.clone().json()));
   const map = await imported.json();
@@ -169,7 +179,7 @@ test('imported rows use typed record writes, caller stamps and atomic real-time 
     ]),
   });
   const h = await startServer({ extraExtensions: [workflow] });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   h.store.state.tables.import = [{ importid: IMPORT, name: 'Workflow import' }];
   h.store.state.tables.importfile = [
     {
@@ -197,6 +207,7 @@ test('imported rows use typed record writes, caller stamps and atomic real-time 
   assert.match(h.store.state.tables.importlog[0].errordescription, /real-time validation/);
 });
 
+// @test-kind security: an import cannot write a secured column the caller lacks create permission on
 test('CSV imports enforce secured-column create permissions for a customizer', async (t) => {
   const h = await startServer({
     roles: ['System Customizer'],
@@ -204,7 +215,7 @@ test('CSV imports enforce secured-column create permissions for a customizer', a
       state.mappings.contoso_widget.fields.secret = { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } };
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   h.store.state.tables.import = [{ importid: IMPORT, name: 'Secured import' }];
   h.store.state.tables.importfile = [
     {
@@ -242,7 +253,7 @@ test('mapped lookup imports enforce AppendTo access instead of assigning inacces
       };
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   h.store.state.tables.account = [{ accountid: GONE, name: "Other owner's account", ownerid: IMPORT }];
   h.store.state.tables.importmap = [{ importmapid: IMPORT, name: 'Lookup map' }];
   h.store.state.tables.columnmapping = [
@@ -287,9 +298,8 @@ test('mapped lookup imports enforce AppendTo access instead of assigning inacces
   );
 });
 
-test('parsed-file functions return headings, distinct pages and row collections, then refuse disposed parse data', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('parsed-file functions return headings, distinct pages and row collections, then refuse disposed parse data', async () => {
+  const h = await sharedServer();
   h.store.state.tables.importfile = [
     {
       importfileid: IMPORT_FILE,
@@ -317,7 +327,7 @@ test('parsed-file functions return headings, distinct pages and row collections,
 
 test('AutoMapEntity replaces stale mappings with matching names and types, and refuses an unknown map', async (t) => {
   const h = await startServer();
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   h.store.state.mappings.contoso_other = {
     logicalName: 'contoso_other',
     entitySet: 'contoso_others',
@@ -338,19 +348,18 @@ test('AutoMapEntity replaces stale mappings with matching names and types, and r
     [['name', 'name']],
   );
   const basic = await startServer({ roles: ['Basic User'] });
-  t.after(() => basic.close());
+  ownedFixture(t).add(() => basic.close());
   assert.equal((await basic.send('POST', '/AutoMapEntity', { EntityMapId: IMPORT })).status, 403);
   const customizer = await startServer({ roles: ['System Customizer'] });
-  t.after(() => customizer.close());
+  ownedFixture(t).add(() => customizer.close());
   customizer.store.state.tables.entitymap = [
     { entitymapid: IMPORT, sourceentityname: 'contoso_widget', targetentityname: 'contoso_widget' },
   ];
   assert.equal((await customizer.send('POST', '/AutoMapEntity', { EntityMapId: IMPORT })).status, 204);
 });
 
-test('signed note download works without an API bearer but minting and nonempty FileAttributeName are checked', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('signed note download works without an API bearer but minting and nonempty FileAttributeName are checked', async () => {
+  const h = await sharedServer();
   h.store.state.tables.annotation = [
     {
       annotationid: IMPORT_FILE,
@@ -363,13 +372,11 @@ test('signed note download works without an API bearer but minting and nonempty 
   const mint = await h.get(`/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`);
   assert.equal(mint.status, 200, JSON.stringify(await mint.clone().json()));
   const result = (await mint.json()).Result;
-  const download = await fetch(result.SasUrl, { signal: AbortSignal.timeout(5000) });
+  const download = await fetch(result.SasUrl);
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'anonymous download');
   assert.equal((await h.get(`/GetFileSasUrl(Target=@t,FileAttributeName='documentbody')?@t=${args}`)).status, 400);
-  const unauthenticated = await fetch(`${h.origin}${API}/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`, {
-    signal: AbortSignal.timeout(5000),
-  });
+  const unauthenticated = await fetch(`${h.origin}${API}/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`, {});
   assert.equal(unauthenticated.status, 401);
 });
 
@@ -379,19 +386,18 @@ test('a signed upload PUT reads its bounded anonymous request stream and commits
       state.mappings.contoso_widget.fields.attachment = { dataverseType: 'file', MaxSizeInKB: 1 };
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   const args = encodeURIComponent(JSON.stringify({ '@odata.id': `contoso_widgets(${WIDGET})` }));
   const minted = await h.get(
     `/GetFileSasUrlForUpload(Target=@t,FileAttributeName='attachment',FileName='stream.txt')?@t=${args}`,
   );
   assert.equal(minted.status, 200, JSON.stringify(await minted.clone().json()));
   const { SasUrl, FileContinuationToken } = (await minted.json()).Result;
-  const oversized = await fetch(SasUrl, { method: 'PUT', body: Buffer.alloc(1025), signal: AbortSignal.timeout(5000) });
+  const oversized = await fetch(SasUrl, { method: 'PUT', body: Buffer.alloc(1025) });
   assert.equal(oversized.status, 400);
   const uploaded = await fetch(SasUrl, {
     method: 'PUT',
     body: Buffer.from('stream body'),
-    signal: AbortSignal.timeout(5000),
   });
   assert.equal(uploaded.status, 201);
   const commit = await h.send('POST', '/CommitFileBlocksUpload', {
@@ -430,7 +436,7 @@ test('a cascade creates one bin snapshot, restores through the root Target, and 
       state.tables.contoso_part = [{ contoso_partid: child, name: 'Part', widgetid: WIDGET }];
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   h.store.state.tables.recyclebinconfig = [{ name: 'contoso_widget', statecode: 0, isreadyforrecyclebin: true }];
   assert.equal((await h.send('DELETE', `/contoso_widgets(${WIDGET})`)).status, 204);
   assert.equal(h.store.state.tables.deleteditemreference.length, 1);
@@ -459,8 +465,7 @@ test('a cascade creates one bin snapshot, restores through the root Target, and 
 });
 
 test('retained export reads the separate datasource and internal retention events require an explicit pack', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+  const h = await sharedServer();
   h.store.state.dataverse.retained = { contoso_widget: [{ contoso_widgetid: GONE, name: 'Archived' }] };
   const response = await h.send('POST', '/ExportRetainedData', {
     FetchXml: '<fetch><entity name="contoso_widget"><attribute name="name"/></entity></fetch>',
@@ -489,7 +494,7 @@ test('retained export reads the separate datasource and internal retention event
       },
     ],
   });
-  t.after(() => packed.close());
+  ownedFixture(t).add(() => packed.close());
   assert.equal((await packed.send('POST', '/Retain', {})).status, 200);
 });
 
@@ -513,7 +518,7 @@ test('Restore distinguishes alternate-key, removed-choice and missing-lookup con
       state.tables.recyclebinconfig = [{ name: 'contoso_widget', statecode: 0, isreadyforrecyclebin: true }];
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   await h.send('DELETE', `/contoso_widgets(${WIDGET})`);
   const restore = async () =>
     (await (await h.send('POST', '/Restore', { Target: target('contoso_widget', 'contoso_widgetid', WIDGET) })).json())
@@ -534,6 +539,220 @@ test('Restore distinguishes alternate-key, removed-choice and missing-lookup con
   assert.equal(h.store.state.tables.deleteditemreference.length, 0);
 });
 
+// A recycle bin snapshot written the way a delete writes it: the store's delete collector takes the cascade entries, root last.
+const OTHER_OWNER = 'ffffffff-0000-0000-0000-000000000002';
+const BOUND = 'aaaaaaaa-0000-0000-0000-0000000000b4';
+const PARENT = 'cccccccc-0000-0000-0000-0000000000d1';
+function seedSnapshot(h, row) {
+  h.store.state.tables.recyclebinconfig = [{ name: 'contoso_widget', statecode: 0, isreadyforrecyclebin: true }];
+  h.store.recycleDeleted([{ logicalName: 'contoso_widget', row }], {});
+}
+const restoreGone = (h, extra = {}) =>
+  h.send('POST', '/Restore', { Target: { ...target('contoso_widget', 'contoso_widgetid', GONE), ...extra } });
+
+// @test-kind security: a Basic User cannot restore a record it could not read, and the bin entry stays restorable.
+test('Restore refuses a Basic User a snapshot row it cannot read and keeps the bin entry', async (t) => {
+  const h = await startServer({
+    roles: ['Basic User'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.ownership = 'UserOwned';
+    },
+  });
+  ownedFixture(t).add(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: OTHER_OWNER });
+  const denied = await restoreGone(h);
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: the owner of a snapshot row restores it, so the refusal above is the row check and not a blanket one.
+test('Restore lets a Basic User restore a snapshot row it owns', async (t) => {
+  const h = await startServer({
+    roles: ['Basic User'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.ownership = 'UserOwned';
+    },
+  });
+  ownedFixture(t).add(() => h.close());
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Own archived', ownerid: user });
+  const restored = await restoreGone(h);
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(row.name, 'Own archived');
+  assert.equal(h.store.state.tables.deleteditemreference.length, 0);
+});
+
+// @test-kind security: Target overrides pass the create reader: unknown columns, mistyped values and undeclared binds are
+// refused with the entry kept; valid overrides are stored, and a valid bind is stored as the resolved lookup.
+test('Restore validates Target overrides through the create reader and keeps the bin entry on refusal', async (t) => {
+  const h = await startServer({
+    extendState: (state) => {
+      state.mappings.contoso_widget.fields.parentid = { dataverseType: 'lookup', targets: ['contoso_parent'] };
+      state.mappings.contoso_parent = {
+        logicalName: 'contoso_parent',
+        entitySet: 'contoso_parents',
+        idColumn: 'contoso_parentid',
+        fields: { name: { dataverseType: 'nvarchar' } },
+      };
+      state.tables.contoso_parent = [{ contoso_parentid: PARENT, name: 'Parent' }];
+    },
+  });
+  ownedFixture(t).add(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', status: 1 });
+  for (const extra of [
+    { bogus_column: 'x' },
+    { status: 'not-a-number' },
+    { 'nothing@odata.bind': `/contoso_parents(${PARENT})` },
+  ]) {
+    const refused = await restoreGone(h, extra);
+    assert.equal(refused.status, 400, JSON.stringify(extra));
+    assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+    assert.equal(
+      h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+      false,
+    );
+  }
+  const named = await restoreGone(h, { name: 'Restored' });
+  assert.equal(named.status, 200, JSON.stringify(await named.clone().json()));
+  assert.equal(h.store.state.tables.contoso_widget.find((row) => row.contoso_widgetid === GONE).name, 'Restored');
+
+  seedSnapshot(h, { contoso_widgetid: BOUND, name: 'Bound' });
+  const bound = await h.send('POST', '/Restore', {
+    Target: {
+      ...target('contoso_widget', 'contoso_widgetid', BOUND),
+      'parentid@odata.bind': `/contoso_parents(${PARENT})`,
+    },
+  });
+  assert.equal(bound.status, 200, JSON.stringify(await bound.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === BOUND);
+  assert.equal(row['parentid@odata.bind'], undefined);
+  assert.equal(String(row.parentid?.id ?? row.parentid).toLowerCase(), PARENT);
+});
+
+// The Target of a Restore is written as a create: a secured column needs the create permission on that column, and a bind
+// needs append on the table and appendto on the bound row, as a create checks them.
+const accountBindFixture = (state) => {
+  state.mappings.contoso_widget.fields.secret = { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } };
+  state.mappings.contoso_widget.fields.accountref = { dataverseType: 'lookup', targets: ['account'] };
+  state.mappings.contoso_widget.relationships.accountref = {
+    entity: 'account',
+    from: 'accountref',
+    to: 'accountid',
+    many: false,
+  };
+  state.tables.account = [{ accountid: PARENT, name: "Other owner's account", ownerid: IMPORT }];
+};
+
+// @test-kind security: a Target override of a secured column needs that column's create permission; a refusal keeps the bin.
+test('Restore refuses a System Customizer a Target override of a secured column and keeps the bin entry', async (t) => {
+  const h = await startServer({
+    roles: ['System Customizer'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.fields.secret = { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } };
+    },
+  });
+  ownedFixture(t).add(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const denied = await restoreGone(h, { secret: 'injected' });
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: a Target bind to a record the caller cannot append to is refused as a create refuses it.
+test('Restore refuses a System Customizer a Target bind to a record it cannot append to', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: accountBindFixture });
+  ownedFixture(t).add(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const denied = await restoreGone(h, { 'accountref@odata.bind': `/accounts(${PARENT})` });
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.match((await denied.json()).error.message, /AppendToAccess/);
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: a System Administrator passes both the secured-column and the bind checks.
+test('Restore lets a System Administrator set a secured column and bind a record it does not own', async (t) => {
+  const h = await startServer({ extendState: accountBindFixture });
+  ownedFixture(t).add(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const restored = await restoreGone(h, { secret: 'injected', 'accountref@odata.bind': `/accounts(${PARENT})` });
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(row.secret, 'injected');
+  assert.equal(String(row.accountref?.id ?? row.accountref).toLowerCase(), PARENT);
+  assert.equal(h.store.state.tables.deleteditemreference.length, 0);
+});
+
+// The role holds no assign privilege on contoso_widget: the grant rows of that privilege are removed from the role.
+async function withoutAssignOnWidget(h, roleName) {
+  await h.store.transact(() => {
+    const role = h.store.tableRows('role').find((r) => r.name === roleName);
+    const assign = new Set(
+      h.store
+        .tableRows('privilege')
+        .filter((p) => /^prvassign.*contoso_widget$/i.test(p.name))
+        .map((p) => String(p.privilegeid).toLowerCase()),
+    );
+    assert.ok(assign.size > 0, 'the fixture has an assign privilege on contoso_widget');
+    const grants = h.store.tableRows('roleprivileges');
+    for (const grant of grants.filter(
+      (g) =>
+        String(g.roleid?.id ?? g.roleid).toLowerCase() === String(role.roleid).toLowerCase() &&
+        assign.has(String(g.privilegeid?.id ?? g.privilegeid).toLowerCase()),
+    ))
+      h.store.removeRow('roleprivileges', grants, grants.indexOf(grant));
+  });
+}
+const otherOwnerState = (state) => {
+  state.mappings.contoso_widget.ownership = 'UserOwned';
+  state.tables.systemuser = [
+    ...(state.tables.systemuser ?? []),
+    { systemuserid: OTHER_OWNER, fullname: 'Other owner' },
+  ];
+};
+
+// @test-kind security: an override that assigns the restored row to another user needs the assign right, as an ordinary create with that owner does.
+test('Restore refuses a Target override that assigns the row to another user as a create does', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: otherOwnerState });
+  ownedFixture(t).add(() => h.close());
+  await withoutAssignOnWidget(h, 'System Customizer');
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: user });
+  const bind = { 'ownerid@odata.bind': `/systemusers(${OTHER_OWNER})` };
+  const created = await h.send('POST', '/contoso_widgets', { name: 'Created', ...bind });
+  const createdError = (await created.clone().json()).error;
+  const denied = await restoreGone(h, bind);
+  const deniedError = (await denied.clone().json()).error;
+  assert.equal(created.status, 403, JSON.stringify(createdError));
+  assert.equal(denied.status, created.status, JSON.stringify(deniedError));
+  assert.equal(deniedError.code, createdError.code);
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: the assign right lets a Restore override assign the restored row to another user.
+test('Restore lets a caller with the assign right assign the restored row to another user', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: otherOwnerState });
+  ownedFixture(t).add(() => h.close());
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: user });
+  const restored = await restoreGone(h, { 'ownerid@odata.bind': `/systemusers(${OTHER_OWNER})` });
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(String(row.ownerid?.id ?? row.ownerid).toLowerCase(), OTHER_OWNER);
+});
+
 test("retained FetchXML applies the caller's record ownership filter", async (t) => {
   const h = await startServer({
     roles: ['Basic User'],
@@ -541,7 +760,7 @@ test("retained FetchXML applies the caller's record ownership filter", async (t)
       state.mappings.contoso_widget.ownership = 'UserOwned';
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   const user = (await (await h.get('/WhoAmI')).json()).UserId;
   h.store.state.dataverse.retained = {
     contoso_widget: [
@@ -558,9 +777,8 @@ test("retained FetchXML applies the caller's record ownership filter", async (t)
   );
 });
 
-test('retained FetchXML refuses joins and aggregates while the ordinary portal query remains valid', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('retained FetchXML refuses joins and aggregates while the ordinary portal query remains valid', async () => {
+  const h = await sharedServer();
   h.store.state.dataverse.retained = { contoso_widget: [{ contoso_widgetid: WIDGET, name: 'Archived' }] };
   const joined =
     '<fetch datasource="retained"><entity name="contoso_widget"><attribute name="name"/><link-entity name="contoso_widget" from="contoso_widgetid" to="contoso_widgetid" alias="peer"><attribute name="name"/></link-entity></entity></fetch>';
@@ -581,13 +799,11 @@ test('retained FetchXML refuses joins and aggregates while the ordinary portal q
   );
 });
 
-// Polls until an asynchronous import file reaches the expected processing status.
+// The import messages answer with an asyncoperation and run their work as a system job on the organization's scheduler
+// (dataverse-async.mjs, the store's scheduler): drain() returns once that job settled, so the file's status is final.
 async function waitForStatus(store, status) {
-  for (let i = 0; i < 200; i++) {
-    if ((store.state.tables.importfile ?? [])[0]?.processingstatus === status) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`import file did not reach processingstatus ${status}`);
+  await store.scheduler.drain();
+  assert.equal(store.state.tables.importfile?.[0]?.processingstatus, status);
 }
 
 test('recycle eligibility excludes exact elastic and virtual table types', async (t) => {
@@ -610,7 +826,7 @@ test('recycle eligibility excludes exact elastic and virtual table types', async
       }
     },
   });
-  t.after(() => h.close());
+  ownedFixture(t).add(() => h.close());
   const response = await h.send('POST', '/GetEntitiesEligibleForRecycleBin', {});
   assert.equal(response.status, 200);
   const names = JSON.parse((await response.json()).Result);
@@ -730,7 +946,12 @@ describe('import: ParseImport, TransformImport and ImportRecordsImport', () => {
   it('parse, transform and import create the rows and finish the file as Import Complete', async () => {
     const parsed = await h.send('POST', `/imports(${IMPORT})/Microsoft.Dynamics.CRM.ParseImport`, {});
     assert.equal(parsed.status, 200);
-    assert.ok((await parsed.json()).asyncoperationid);
+    const job = (await parsed.json()).asyncoperationid;
+    assert.equal(
+      h.store.state.tables.asyncoperation.some((row) => row.asyncoperationid === job),
+      true,
+      'ParseImport answers the system job it queued',
+    );
     await waitForStatus(h.store, 3);
     assert.equal(h.store.state.tables.importfile[0].totalcount, 2);
     assert.equal(h.store.state.tables.importfile[0].headerrow, 'name,status');
@@ -908,7 +1129,7 @@ describe('cascade delete: recycle hand-off is Dataverse-only', () => {
     assert.equal(handed[0].identity, DATAVERSE);
   });
 
-  it('a portal cascade delete returns and cascades as before, and never reaches recycleDeleted', async () => {
+  it('a portal cascade delete returns and cascades, and never reaches recycleDeleted', async () => {
     const s = await cascadeStore();
     const handed = [];
     s.recycleDeleted = (entries) => handed.push(entries);

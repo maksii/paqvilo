@@ -1,0 +1,679 @@
+{
+  "schemaVersion": 1,
+  "scope": "Six exact original query cases, source-relative official 8.3 outputs and two native HTTP responses; no store/nonmutation or broader lexical claim.",
+  "source": {
+    "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+    "baselineSha256": "6846b32690ec29526fa42a130d20ccca651fa8ea096298b047b70ace0354822a",
+    "currentSha256": "17e1ab8097926063f3c83708fc6ad400b3208971a8cf998267b04802c1778346",
+    "casesAstSha256": "e8e0ef1779cf6b749f1bfe0a76d17a7985d85431ac229abdfbfb8318a4083c15",
+    "certificateSha256": "cced1a726f85a6c52f488f916d429722e4325e024682974f8c3e9c630b194afc",
+    "reviewSha256": "a726dd4f9b8633f0556930379d91556698611b216f902d8e47218b156d4a9f18",
+    "planSha256": "bd5660cf12cbade78fa0471206d56715b838eb082151c6918082db631d60ce3b",
+    "originalSdkSha256": "052d17f3f4d2726aa5fdca50c713643389d12b29a40f4593b8fe1bbe24ae5904",
+    "adaptedSdkSha256": "6c3378f83886c865680b466b59e2d70f38eb86f481ce8dbc6d6661880f7cdede",
+    "comparisonSha256": "5c7d6543b0c7a64c2434a86d7439402cb4c3954a0ca4388851f4f4d2fd416d73",
+    "supervisorSha256": "8480cda542b2255d01ea10f1941df2a0d9cac99e249fd87d81dbed8c3a2a212b"
+  },
+  "captures": [
+    {
+      "runSha256": "43249d7c319229300be567391cc4f843fe6126dd33c3f19c9c6cd800589e2123",
+      "provenanceSha256": "2027abe0f80269829a6a2e3b266fe33f30cfe6bd8ad17f1b9fb0ee332aea4ae5",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "caseIndex": 13,
+          "sourceBinding": {
+            "option": "$orderby",
+            "value": "name asc, quantity sideways",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 27 in 'name asc, quantity sideways'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$orderby",
+            "mappedValue": "pqwp_name asc, pqwp_integer sideways",
+            "replacements": [
+              {
+                "original": "name",
+                "native": "pqwp_name",
+                "start": 0,
+                "end": 4,
+                "type": "Edm.String"
+              },
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 10,
+                "end": 18,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 27,
+                "proposedNativeOffset": 36,
+                "sourceLength": 27,
+                "nativeLength": 36,
+                "originalCharacter": null,
+                "nativeCharacter": null,
+                "originalAtEnd": true,
+                "nativeAtEnd": true
+              }
+            ]
+          },
+          "requestSha256": "6bdab0607db0414955f52815accd37d98290e0cf66d8d0ba86ddb40ab0869660",
+          "responseBodySha256": "247b412200ce653f3599b2ca773170c7dc2c55e4ccc4e739b01e9b587c6f5be5",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+          },
+          "originalSdkMessages": [
+            "Syntax error at position 27 in 'name asc, quantity sideways'.",
+            "Syntax error at position 27 in 'name asc, quantity sideways'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'.",
+            "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+          ],
+          "predictedNativeMessage": "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+        },
+        {
+          "caseIndex": 23,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq +quantity",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq +pqwp_integer",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              },
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 13,
+                "end": 21,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 21,
+                "nativeLength": 29,
+                "originalCharacter": "+",
+                "nativeCharacter": "+",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "1b769e3346492c7bbbb0996c1ad86533a4abfc067fa5e8b9a0016d933ce96477",
+          "responseBodySha256": "486c08007257169280c765bb5ef104250628c3c115d5e5cf79082420cb30f93f",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'.",
+            "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'.",
+            "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+        },
+        {
+          "caseIndex": 29,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 13 in 'quantity eq @'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 13,
+                "nativeLength": 17,
+                "originalCharacter": null,
+                "nativeCharacter": null,
+                "originalAtEnd": true,
+                "nativeAtEnd": true
+              }
+            ]
+          },
+          "requestSha256": "eb90986638445296419881449b227c47a7e3278ef6757fd1c7baf907344c7d40",
+          "responseBodySha256": "36a95a9aac10a0c417253550215bbe208934427e2fa25beea584f177fe2b39d9",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 17 in 'pqwp_integer eq @'."
+          },
+          "originalSdkMessages": [
+            "Syntax error at position 13 in 'quantity eq @'.",
+            "Syntax error at position 13 in 'quantity eq @'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error at position 17 in 'pqwp_integer eq @'.",
+            "Syntax error at position 17 in 'pqwp_integer eq @'."
+          ],
+          "predictedNativeMessage": "Syntax error at position 17 in 'pqwp_integer eq @'."
+        },
+        {
+          "caseIndex": 31,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @ ",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @ ",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 14,
+                "nativeLength": 18,
+                "originalCharacter": " ",
+                "nativeCharacter": " ",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "80a21e871714ab6a7de409ed068972e4377d907e1caf4f35a22949f398440325",
+          "responseBodySha256": "6763178d6c648b1191130d4008b7999d00122669024f6a26c6b54dfd12778511",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '.",
+            "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '.",
+            "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+          ],
+          "predictedNativeMessage": "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+        },
+        {
+          "caseIndex": 32,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @1",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @1",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 14,
+                "nativeLength": 18,
+                "originalCharacter": "1",
+                "nativeCharacter": "1",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "37dd534995bf24e4c4f4bb2b86e6d3c017b2752e54e2d12bf15ce7413596c2cb",
+          "responseBodySha256": "e58166cc229b63f23f9a5ab8c10fec847eb7e2b57fe2cf5b7e5a4fcbce15a176",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'.",
+            "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'.",
+            "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+        },
+        {
+          "caseIndex": 33,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @@v",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @@v",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 15,
+                "nativeLength": 19,
+                "originalCharacter": "@",
+                "nativeCharacter": "@",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "5c7e12b116d2d980ba17bc6987016c1b29db3efadd0f29bf4d05dd2df5445b18",
+          "responseBodySha256": "88c23b1d878347052e1e351a2cb444465c52db839540519b7fb43414d24e4e8e",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'.",
+            "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'.",
+            "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+        }
+      ]
+    },
+    {
+      "runSha256": "5fdbcf7ffc31b54d684a5473f6cc0ca555faedd366b340881952c03c2162ea87",
+      "provenanceSha256": "74d79bd73d05c59a435ae92dc10060cfc5b72fc546838d52517b8a610aeabe13",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "caseIndex": 13,
+          "sourceBinding": {
+            "option": "$orderby",
+            "value": "name asc, quantity sideways",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 27 in 'name asc, quantity sideways'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$orderby",
+            "mappedValue": "pqwp_name asc, pqwp_integer sideways",
+            "replacements": [
+              {
+                "original": "name",
+                "native": "pqwp_name",
+                "start": 0,
+                "end": 4,
+                "type": "Edm.String"
+              },
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 10,
+                "end": 18,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 27,
+                "proposedNativeOffset": 36,
+                "sourceLength": 27,
+                "nativeLength": 36,
+                "originalCharacter": null,
+                "nativeCharacter": null,
+                "originalAtEnd": true,
+                "nativeAtEnd": true
+              }
+            ]
+          },
+          "requestSha256": "6bdab0607db0414955f52815accd37d98290e0cf66d8d0ba86ddb40ab0869660",
+          "responseBodySha256": "247b412200ce653f3599b2ca773170c7dc2c55e4ccc4e739b01e9b587c6f5be5",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+          },
+          "originalSdkMessages": [
+            "Syntax error at position 27 in 'name asc, quantity sideways'.",
+            "Syntax error at position 27 in 'name asc, quantity sideways'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'.",
+            "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+          ],
+          "predictedNativeMessage": "Syntax error at position 36 in 'pqwp_name asc, pqwp_integer sideways'."
+        },
+        {
+          "caseIndex": 23,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq +quantity",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq +pqwp_integer",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              },
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 13,
+                "end": 21,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 21,
+                "nativeLength": 29,
+                "originalCharacter": "+",
+                "nativeCharacter": "+",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "1b769e3346492c7bbbb0996c1ad86533a4abfc067fa5e8b9a0016d933ce96477",
+          "responseBodySha256": "486c08007257169280c765bb5ef104250628c3c115d5e5cf79082420cb30f93f",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'.",
+            "Syntax error: character '+' is not valid at position 12 in 'quantity eq +quantity'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'.",
+            "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '+' is not valid at position 16 in 'pqwp_integer eq +pqwp_integer'."
+        },
+        {
+          "caseIndex": 29,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 13 in 'quantity eq @'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 13,
+                "nativeLength": 17,
+                "originalCharacter": null,
+                "nativeCharacter": null,
+                "originalAtEnd": true,
+                "nativeAtEnd": true
+              }
+            ]
+          },
+          "requestSha256": "eb90986638445296419881449b227c47a7e3278ef6757fd1c7baf907344c7d40",
+          "responseBodySha256": "36a95a9aac10a0c417253550215bbe208934427e2fa25beea584f177fe2b39d9",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error at position 17 in 'pqwp_integer eq @'."
+          },
+          "originalSdkMessages": [
+            "Syntax error at position 13 in 'quantity eq @'.",
+            "Syntax error at position 13 in 'quantity eq @'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error at position 17 in 'pqwp_integer eq @'.",
+            "Syntax error at position 17 in 'pqwp_integer eq @'."
+          ],
+          "predictedNativeMessage": "Syntax error at position 17 in 'pqwp_integer eq @'."
+        },
+        {
+          "caseIndex": 31,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @ ",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @ ",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 14,
+                "nativeLength": 18,
+                "originalCharacter": " ",
+                "nativeCharacter": " ",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "80a21e871714ab6a7de409ed068972e4377d907e1caf4f35a22949f398440325",
+          "responseBodySha256": "6763178d6c648b1191130d4008b7999d00122669024f6a26c6b54dfd12778511",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '.",
+            "Syntax error: character ' ' is not valid at position 13 in 'quantity eq @ '."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '.",
+            "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+          ],
+          "predictedNativeMessage": "Syntax error: character ' ' is not valid at position 17 in 'pqwp_integer eq @ '."
+        },
+        {
+          "caseIndex": 32,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @1",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @1",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 14,
+                "nativeLength": 18,
+                "originalCharacter": "1",
+                "nativeCharacter": "1",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "37dd534995bf24e4c4f4bb2b86e6d3c017b2752e54e2d12bf15ce7413596c2cb",
+          "responseBodySha256": "e58166cc229b63f23f9a5ab8c10fec847eb7e2b57fe2cf5b7e5a4fcbce15a176",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'.",
+            "Syntax error: character '1' is not valid at position 13 in 'quantity eq @1'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'.",
+            "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '1' is not valid at position 17 in 'pqwp_integer eq @1'."
+        },
+        {
+          "caseIndex": 33,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq @@v",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq @@v",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 13,
+                "proposedNativeOffset": 17,
+                "sourceLength": 15,
+                "nativeLength": 19,
+                "originalCharacter": "@",
+                "nativeCharacter": "@",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "5c7e12b116d2d980ba17bc6987016c1b29db3efadd0f29bf4d05dd2df5445b18",
+          "responseBodySha256": "88c23b1d878347052e1e351a2cb444465c52db839540519b7fb43414d24e4e8e",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+          },
+          "originalSdkMessages": [
+            "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'.",
+            "Syntax error: character '@' is not valid at position 13 in 'quantity eq @@v'."
+          ],
+          "adaptedSdkMessages": [
+            "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'.",
+            "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+          ],
+          "predictedNativeMessage": "Syntax error: character '@' is not valid at position 17 in 'pqwp_integer eq @@v'."
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Only exact source expressions and mapped typed properties.",
+    "Original store nonmutation and other cases excluded."
+  ]
+}

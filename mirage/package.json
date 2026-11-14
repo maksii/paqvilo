@@ -8,7 +8,7 @@
     "start": "node cli.mjs serve",
     "inspect": "node cli.mjs inspect",
     "test": "node --test --test-concurrency=4 --test-timeout=180000 test/*.test.mjs",
-    "test:browser": "node --test --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
+    "test:browser": "node --test --import=../test/browser-bootstrap.mjs --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
     "validate": "npm test && npm run test:browser"
   },
   "engines": {
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "chokidar": "6.0.0",
+    "dompurify": "3.4.17",
     "jquery": "3.7.1",
     "moment": "2.31.0",
     "parse5": "8.0.1",

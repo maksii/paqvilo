@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Web API record messages (Merge, InitializeFrom, CalculateRollupField, IsValidStateTransition, FormatAddress) after the Microsoft Learn references; several rules are documented guesses
 // Record messages (Merge, InitializeFrom, CalculateRollupField, IsValidStateTransition,
 // FormatAddress). Handlers are called directly through a fake registry.
 // Fixtures use the stored shapes: lookups are { id, logical_name, name } objects and exported
@@ -275,6 +276,15 @@ test("Merge fills the target's empty values, applies UpdateContent, moves childr
     ACCOUNT_A,
     'a row already on the target is unchanged',
   );
+});
+
+// @test-kind compatibility: Microsoft Learn "Configure table relationship cascading behavior" (Merge: Cascade moves the related rows, NoCascade leaves them)
+test('Merge leaves the children of a relationship whose Merge does not cascade', async () => {
+  const t = setup();
+  t.store.state.mappings.account.relationships.account_contacts.cascade = { merge: 'NoCascade' };
+  const res = await t.call('Merge', { body: mergeBody() });
+  assert.equal(res.status, 204);
+  assert.equal(refId(t.row('contact', CONTACT_1, 'contactid').parentaccountid), ACCOUNT_B);
 });
 
 test('Merge rejects tables outside the list and entity objects without a key', async () => {

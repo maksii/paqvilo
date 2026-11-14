@@ -94,8 +94,8 @@ function ipv6Bytes(host) {
   const words =
     tail === undefined
       ? groups(head)
-      : [...groups(head), ...Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
-  return Buffer.from(words.flatMap((hex) => [parseInt(hex, 16) >> 8, parseInt(hex, 16) & 0xff]));
+      : [...groups(head), ...new Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
+  return Buffer.from(words.flatMap((hex) => [Number.parseInt(hex, 16) >> 8, Number.parseInt(hex, 16) & 0xff]));
 }
 
 const ipBytes = (host) => (isIP(host) === 4 ? Buffer.from(host.split('.').map(Number)) : ipv6Bytes(host));
@@ -139,7 +139,7 @@ export function createSelfSignedCertificate({
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength });
   const spki = publicKey.export({ type: 'spki', format: 'der' });
   // For RSA the subjectPublicKey BIT STRING content is exactly the PKCS#1 RSAPublicKey DER.
-  const keyIdentifier = createHash('sha1')
+  const keyIdentifier = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
     .update(publicKey.export({ type: 'pkcs1', format: 'der' }))
     .digest();
   const algorithm = seq(oid(SHA256_WITH_RSA), nul());
@@ -193,7 +193,7 @@ async function readUsable(file, clock, hosts) {
     const cert = new X509Certificate(certPem);
     const notAfter = new Date(cert.validTo);
     if (!cert.checkPrivateKey(createPrivateKey(keyPem))) return null;
-    if (!(notAfter.getTime() - clock() > RENEW_BEFORE_MS)) return null;
+    if (!(notAfter.getTime() - clock() > RENEW_BEFORE_MS)) return null; // NOSONAR: operand can be NaN or undefined, the negated test differs
     if (!hosts.every((host) => (isIP(host) ? cert.checkIP(host) : cert.checkHost(host)) !== undefined)) return null;
     if (hosts.length && !Buffer.from(cert.raw).includes(NAME_CONSTRAINTS_OID)) return null;
     return { key: keyPem, cert: certPem, fingerprint256: cert.fingerprint256, notAfter: notAfter.toISOString() };

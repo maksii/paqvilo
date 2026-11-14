@@ -13,7 +13,25 @@ function roundTrip(value, shortDigits, longDigits, convert = Number) {
 function sameDecimal(left, right) {
   const a = decimalParts(left),
     b = decimalParts(right);
-  return a && b && a.coefficient === b.coefficient && a.scale === b.scale;
+  if (!a || !b) return false;
+  return a.coefficient === b.coefficient && a.scale === b.scale;
+}
+
+function integerLiteralKind(raw) {
+  if (!/^-?\d+$/.test(raw)) return null;
+  const integer = BigInt(raw);
+  if (integer >= -2147483648n && integer <= 2147483647n) return 'Edm.Int32';
+  if (integer >= -9223372036854775808n && integer <= 9223372036854775807n) return 'Edm.Int64';
+  return null;
+}
+
+function decimalLiteralKind(raw, number) {
+  const decimal = parseDataverseDecimalString(raw);
+  if (decimal === null) return null;
+  const doubleDecimal =
+    parseDataverseDecimalString(String(roundTrip(number, 15, 17))) ??
+    parseDataverseDecimalString(decimalText(decimalParts(number.toPrecision(15))));
+  return doubleDecimal !== null && !sameDecimal(decimal, doubleDecimal) ? 'Edm.Decimal' : null;
 }
 
 export function dataverseNumberLiteralKind(raw) {
@@ -28,20 +46,12 @@ export function dataverseNumberLiteralKind(raw) {
       f: 'Edm.Single',
       l: 'Edm.Int64',
     }[suffix];
-  if (/^-?\d+$/.test(raw)) {
-    const integer = BigInt(raw);
-    if (integer >= -2147483648n && integer <= 2147483647n) return 'Edm.Int32';
-    if (integer >= -9223372036854775808n && integer <= 9223372036854775807n) return 'Edm.Int64';
-  }
+  const integerKind = integerLiteralKind(raw);
+  if (integerKind) return integerKind;
   const number = Number(raw);
   if (!Number.isFinite(number)) return null;
-  const decimal = parseDataverseDecimalString(raw);
-  if (decimal !== null) {
-    const doubleDecimal =
-      parseDataverseDecimalString(String(roundTrip(number, 15, 17))) ??
-      parseDataverseDecimalString(decimalText(decimalParts(number.toPrecision(15))));
-    if (doubleDecimal !== null && !sameDecimal(decimal, doubleDecimal)) return 'Edm.Decimal';
-  }
+  const decimalKind = decimalLiteralKind(raw, number);
+  if (decimalKind) return decimalKind;
   const single = Math.fround(number);
   if (!Number.isFinite(single)) return 'Edm.Double';
   return roundTrip(single, 7, 9, Math.fround) === number ? 'Edm.Single' : 'Edm.Double';

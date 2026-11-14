@@ -1,17 +1,12 @@
+import { cloneStateData } from './state-clone.mjs';
+// Projected column values are mostly scalars: only structured values need a detached copy.
+const copyValue = (value) => (value !== null && typeof value === 'object' ? cloneStateData(value) : value);
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from './data-error.mjs';
-import { isExactNumeric, sumNumeric, averageNumeric } from './exact-numeric.mjs';
-import { fieldKind } from './dataverse-values.mjs';
+import { isExactNumeric, sumNumeric, averageNumeric, decimalParts, parseNumericLiteral } from './exact-numeric.mjs';
 import {
-  FETCH_OPERATORS,
-  UNSUPPORTED_FETCH_OPERATORS,
-  HIERARCHY_OPERATORS,
-  compileColumnComparison,
-  compileOperator,
-} from './dataverse-conditions.mjs';
-import { fiscalCalendar } from './fiscal-calendar.mjs';
-import {
+  fieldKind,
   compareSortKeys,
   dateGroupValue,
   equalityKey,
@@ -25,6 +20,14 @@ import {
   scalar,
   sqlGuidSortKey,
 } from './dataverse-values.mjs';
+import {
+  FETCH_OPERATORS,
+  UNSUPPORTED_FETCH_OPERATORS,
+  HIERARCHY_OPERATORS,
+  compileColumnComparison,
+  compileOperator,
+} from './dataverse-conditions.mjs';
+import { fiscalCalendar } from './fiscal-calendar.mjs';
 
 const FETCH_LIMITS = Object.freeze({
   links: 15,
@@ -188,15 +191,66 @@ const integerAttribute = (fetch, name, { min = 1, max } = {}) => {
 };
 
 const XML_ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" };
+// The XML Char production: tab, line feed, carriage return, and U+0020 to U+10FFFF without surrogates.
+const isXmlChar = (code) =>
+  code === 0x9 ||
+  code === 0xa ||
+  code === 0xd ||
+  (code >= 0x20 && code <= 0xd7ff) ||
+  (code >= 0xe000 && code <= 0xfffd) ||
+  (code >= 0x10000 && code <= 0x10ffff);
+const characterReference = (entity) => {
+  const code = Number.parseInt(entity.slice(2, -1).replace(/^x/i, ''), /^&#x/i.test(entity) ? 16 : 10);
+  if (!Number.isSafeInteger(code) || !isXmlChar(code))
+    fail('Malformed FetchXML character reference', 400, 'InvalidRequest');
+  return String.fromCodePoint(code);
+};
 export const xmlDecode = (value) =>
   String(value).replace(
     /&(?:amp|lt|gt|quot|apos);|&#(?:x[\da-f]+|\d+);/gi,
-    (entity) =>
-      XML_ENTITIES[entity.toLowerCase()] ??
-      String.fromCodePoint(parseInt(entity.slice(2, -1).replace(/^x/i, ''), /^&#x/i.test(entity) ? 16 : 10)),
+    (entity) => XML_ENTITIES[entity.toLowerCase()] ?? characterReference(entity),
   );
 export const xmlEscapeAttribute = (value) =>
-  String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+function parseXmlAttributes(attributeText, elementName) {
+  const attrs = Object.create(null);
+  const attribute = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
+  let at = 0;
+  while (at < attributeText.length) {
+    while (at < attributeText.length && /\s/.test(attributeText[at])) at++;
+    if (at === attributeText.length) break;
+    attribute.lastIndex = at;
+    const parsed = attribute.exec(attributeText);
+    if (!parsed) fail(`Malformed attributes on ${elementName}`, 400, 'InvalidRequest');
+    attrs[parsed[1]] = xmlDecode(parsed[2] ?? parsed[3]);
+    at = attribute.lastIndex;
+  }
+  return attrs;
+}
+
+function appendXmlToken(token, stack, maxDepth) {
+  if (token.startsWith('</')) {
+    const name = token.slice(2, -1).trim();
+    if (stack.length === 1 || stack.pop().name !== name) fail('Malformed FetchXML closing tag', 400, 'InvalidRequest');
+    return;
+  }
+  if (!token.startsWith('<')) {
+    if (stack.length === 1 && token.trim()) fail('Unexpected text outside FetchXML', 400, 'InvalidRequest');
+    stack.at(-1).text = (stack.at(-1).text ?? '') + xmlDecode(token);
+    return;
+  }
+  const match = /^<([\w:-]+)/.exec(token);
+  if (!match) fail('Malformed FetchXML element', 400, 'InvalidRequest');
+  const content = token.slice(match[0].length, -1).trimEnd();
+  const selfClosing = content.endsWith('/');
+  const attributeText = selfClosing ? content.slice(0, -1) : content;
+  const node = { name: match[1], attrs: parseXmlAttributes(attributeText, match[1]), children: [], text: '' };
+  stack.at(-1).children.push(node);
+  if (selfClosing) return;
+  if (stack.length >= maxDepth) fail(`FetchXML nesting exceeds ${maxDepth} levels`, 400, 'UnsupportedQuery');
+  stack.push(node);
+}
 
 /** Small non-resolving XML parser. Declarations and external entities are rejected. */
 export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDepth } = {}) {
@@ -206,40 +260,7 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
   const stack = [document];
   for (const token of xmlTokens(String(source))) {
     if (token.startsWith('<!--') || token.startsWith('<?')) continue;
-    if (token.startsWith('</')) {
-      const name = token.slice(2, -1).trim();
-      if (stack.length === 1 || stack.pop().name !== name)
-        fail('Malformed FetchXML closing tag', 400, 'InvalidRequest');
-      continue;
-    }
-    if (token.startsWith('<')) {
-      const match = /^<([\w:-]+)/.exec(token);
-      if (!match) fail('Malformed FetchXML element', 400, 'InvalidRequest');
-      const attrs = Object.create(null);
-      const content = token.slice(match[0].length, -1).trimEnd();
-      const selfClosing = content.endsWith('/');
-      const attributeText = selfClosing ? content.slice(0, -1) : content;
-      const attribute = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
-      let at = 0;
-      while (at < attributeText.length) {
-        while (at < attributeText.length && /\s/.test(attributeText[at])) at++;
-        if (at === attributeText.length) break;
-        attribute.lastIndex = at;
-        const parsed = attribute.exec(attributeText);
-        if (!parsed) fail(`Malformed attributes on ${match[1]}`, 400, 'InvalidRequest');
-        attrs[parsed[1]] = xmlDecode(parsed[2] ?? parsed[3]);
-        at = attribute.lastIndex;
-      }
-      const node = { name: match[1], attrs, children: [], text: '' };
-      stack.at(-1).children.push(node);
-      if (!selfClosing) {
-        if (stack.length >= maxDepth) fail(`FetchXML nesting exceeds ${maxDepth} levels`, 400, 'UnsupportedQuery');
-        stack.push(node);
-      }
-    } else {
-      if (stack.length === 1 && token.trim()) fail('Unexpected text outside FetchXML', 400, 'InvalidRequest');
-      stack.at(-1).text = (stack.at(-1).text ?? '') + xmlDecode(token);
-    }
+    appendXmlToken(token, stack, maxDepth);
   }
   if (stack.length !== 1 || document.children.length !== 1 || (root && document.children[0].name !== root))
     fail(
@@ -254,7 +275,23 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
 
 // Never restart matching inside an unterminated tag/comment. Each input character
 // is scanned once, including quoted '>' values and malformed adversarial XML.
-function* xmlTokens(source) {
+function scanXmlTag(source, at) {
+  let quote = null;
+  for (at++; at < source.length; at++) {
+    const char = source[at];
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === '>') {
+      at++;
+      break;
+    } else if (char === '<') fail('Malformed FetchXML element', 400, 'InvalidRequest');
+  }
+  if (source[at - 1] !== '>' || quote) fail('Unterminated FetchXML element', 400, 'InvalidRequest');
+  return at;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function* xmlTokens(source) {
   let at = 0;
   while (at < source.length) {
     const start = at;
@@ -266,22 +303,177 @@ function* xmlTokens(source) {
       const end = source.indexOf(comment ? '-->' : '?>', at + (comment ? 4 : 2));
       if (end < 0) fail('Unterminated FetchXML comment or instruction', 400, 'InvalidRequest');
       at = end + (comment ? 3 : 2);
-    } else {
-      let quote = null;
-      for (at++; at < source.length; at++) {
-        const char = source[at];
-        if (quote) {
-          if (char === quote) quote = null;
-        } else if (char === '"' || char === "'") quote = char;
-        else if (char === '>') {
-          at++;
-          break;
-        } else if (char === '<') fail('Malformed FetchXML element', 400, 'InvalidRequest');
-      }
-      if (source[at - 1] !== '>' || quote) fail('Unterminated FetchXML element', 400, 'InvalidRequest');
-    }
+    } else at = scanXmlTag(source, at);
     yield source.slice(start, at);
   }
+}
+
+function selectedRestrictedDescendant(part) {
+  return part.children.some(
+    (child) => ['attribute', 'all-attributes', 'order'].includes(child.name) || selectedRestrictedDescendant(child),
+  );
+}
+
+function validateRestrictedLink(node, type, label) {
+  if (children(node, 'order').length)
+    fail(`${label} doesn't support order inside linkentity expression.`, 400, 'InvalidFetchXml', {
+      innerCode: '0x80041121',
+    });
+  const projected = node.children.some((child) => ['attribute', 'all-attributes'].includes(child.name));
+  if (type !== 'matchfirstrowusingcrossapply' && projected)
+    fail(`${label} doesn't support attribute inside linkentity expression.`, 400, 'InvalidFetchXml', {
+      innerCode: '0x80041121',
+    });
+  const descendants = children(node, 'link-entity');
+  if (
+    descendants.some(selectedRestrictedDescendant) ||
+    (type === 'matchfirstrowusingcrossapply' && projected && descendants.length)
+  )
+    fail(`${label} doesn't allow attribute or order clause in child linkentity.`, 400, 'InvalidFetchXml', {
+      innerCode: '0x80041121',
+    });
+}
+
+function validateLinkNode(node, parent, linkDepth, state) {
+  if (!node.attrs.name) fail('The FetchXML link-entity element requires a name.', 400, 'InvalidFetchXml');
+  const type = node.attrs['link-type'] ?? 'inner';
+  if (!FETCH_LINK_TYPES.has(type)) fail(`Unsupported FetchXML link-type ${type}`, 400, 'UnsupportedQuery');
+  if (parent?.name === 'filter' && !FILTER_LINK_TYPES.has(type))
+    fail(
+      `A link-entity inside a filter must use link-type any, not any, all or not all (found ${type}).`,
+      400,
+      'InvalidFetchXml',
+    );
+  if (['exists', 'in', 'matchfirstrowusingcrossapply'].includes(type)) {
+    const label = { exists: 'Exists', in: 'In', matchfirstrowusingcrossapply: 'MatchFirstRowUsingCrossApply' }[type];
+    validateRestrictedLink(node, type, label);
+  }
+  state.links.push(node);
+  if (parent?.name !== 'filter') state.ordinaryLinks++;
+  const nextLinkDepth = linkDepth + 1;
+  if (state.ordinaryLinks > state.limits.links || state.links.length > state.limits.linksAndFilters)
+    fail(
+      linkBudgetMessage(state.linkBudgetError, state.ordinaryLinks, state.links.length, state.limits),
+      400,
+      'UnsupportedQuery',
+      {
+        innerCode: '0x8004430d',
+        ordinaryLinks: state.ordinaryLinks,
+        filterLinks: state.links.length - state.ordinaryLinks,
+        totalLinks: state.links.length,
+        limit: state.ordinaryLinks > state.limits.links ? state.limits.links : state.limits.linksAndFilters,
+      },
+    );
+  if (nextLinkDepth > state.limits.linkDepth)
+    fail(`FetchXML link nesting exceeds ${state.limits.linkDepth} levels`, 400, 'UnsupportedQuery');
+  return nextLinkDepth;
+}
+
+function reportFilterHint(node, state) {
+  const hint = node.attrs.hint;
+  if (hint == null) return;
+  const level = state.filterLevels.get(node);
+  const report = (code, message) =>
+    state.diagnostics.push({ code, element: 'filter', attribute: 'hint', value: hint, message });
+  if (hint !== 'union') {
+    report(
+      'FETCHXML_FILTER_HINT_UNKNOWN',
+      `FetchXML filter hint '${hint}' is not documented; only union is, and it doesn't change the rows.`,
+    );
+    return;
+  }
+  state.unionHints++;
+  if ((node.attrs.type ?? 'and') !== 'or')
+    report(
+      'FETCHXML_UNION_HINT_RESTRICTION',
+      'The union hint needs a filter of type or (fetchxml/optimize-performance#union-hint).',
+    );
+  if (state.unionHints === 2)
+    report(
+      'FETCHXML_UNION_HINT_RESTRICTION',
+      'A query can contain only one union hint (fetchxml/optimize-performance#union-hint).',
+    );
+  if (level > 3)
+    report(
+      'FETCHXML_UNION_HINT_IGNORED',
+      `A union hint ${level} filter levels deep is ignored (more than three levels).`,
+    );
+}
+
+function validateConditionNode(node, state) {
+  state.conditions++;
+  if (!node.attrs.attribute) fail('FetchXML condition requires attribute', 400, 'InvalidFetchXml');
+  const operator = node.attrs.operator;
+  if (operator == null)
+    fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, 'InvalidFetchXml');
+  const identityOperator =
+    UNSUPPORTED_FETCH_OPERATORS.has(operator) && (state.dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
+  if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
+    fail(
+      `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
+      400,
+      'UnsupportedQuery',
+    );
+  if (!identityOperator && !FETCH_OPERATORS.has(operator === 'neq' ? 'ne' : operator) && operator !== 'neq') {
+    if (state.dataverseIdentity)
+      fail(`Unknown Condition Operator: ${operator}`, 400, 'UnsupportedQuery', { innerCode: '0x80041120' });
+    fail(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
+  }
+}
+
+function validateNodeSchema(node, schema, state) {
+  for (const [key, reason] of Object.entries(FETCH_UNSUPPORTED_ATTRIBUTES[node.name] ?? {}))
+    if (node.attrs[key] != null) fail(reason, 400, 'UnsupportedQuery');
+  for (const key of Object.keys(node.attrs)) {
+    if (
+      schema.attributes.includes(key) ||
+      /^xmlns(?::|$)/.test(key) ||
+      (key === 'anyallalias' && state.qualifiedFilters.has(node))
+    )
+      continue;
+    if (state.strict) fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, 'InvalidFetchXml');
+    state.diagnostics.push({
+      code: 'FETCHXML_ATTRIBUTE_IGNORED',
+      element: node.name,
+      attribute: key,
+      message: `The portal FetchXML model ignores the undeclared '${key}' attribute on ${node.name}.`,
+    });
+  }
+  for (const child of node.children)
+    if (!schema.children.includes(child.name))
+      fail(`Unsupported FetchXML ${child.name} inside ${node.name}`, 400, 'UnsupportedQuery');
+}
+
+/* NOSONAR */ function validateFetchNode(node, parent, linkDepth, state) {
+  let nextLinkDepth = linkDepth;
+  switch (node.name) {
+    case 'entity':
+      if (!node.attrs.name) fail('The FetchXML entity element requires a name.', 400, 'InvalidFetchXml');
+      break;
+    case 'link-entity':
+      nextLinkDepth = validateLinkNode(node, parent, linkDepth, state);
+      break;
+    case 'filter':
+      if (!['and', 'or'].includes(node.attrs.type ?? 'and'))
+        fail(`Unsupported FetchXML filter type ${node.attrs.type}`, 400, 'UnsupportedQuery');
+      reportFilterHint(node, state);
+      break;
+    case 'condition':
+      validateConditionNode(node, state);
+      break;
+    case 'attribute':
+      if (!node.attrs.name) fail('The FetchXML attribute element requires a name.', 400, 'InvalidFetchXml');
+      if (node.attrs.aggregate != null && !FETCH_AGGREGATES.has(node.attrs.aggregate))
+        fail(`Unsupported aggregate ${node.attrs.aggregate}`, 400, 'UnsupportedQuery');
+      if (node.attrs.dategrouping != null && !FETCH_DATE_GROUPINGS.has(node.attrs.dategrouping))
+        fail(`Unsupported FetchXML dategrouping ${node.attrs.dategrouping}`, 400, 'UnsupportedQuery');
+      break;
+    case 'order':
+      if (!node.attrs.attribute && !node.attrs.alias)
+        fail('A FetchXML order element requires an attribute or alias.', 400, 'InvalidFetchXml');
+      break;
+  }
+  return nextLinkDepth;
 }
 
 /**
@@ -336,179 +528,31 @@ export function planFetch(
     qualifiedFilters.add(filter);
   }
   const links = [];
-  let conditions = 0,
-    ordinaryLinks = 0,
-    unionHints = 0;
   // Filter nesting: the entity's (or link-entity's) own filter is level 1.
   const filterLevels = new Map();
   const filterLevel = (node) => (node?.name === 'filter' ? (filterLevels.get(node) ?? 1) : 0);
+  const validationState = {
+    strict,
+    diagnostics,
+    qualifiedFilters,
+    links,
+    limits,
+    linkBudgetError,
+    filterLevels,
+    dataverseIdentity,
+    conditions: 0,
+    ordinaryLinks: 0,
+    unionHints: 0,
+  };
   const visit = (node, depth, linkDepth, parent) => {
     if (node.name === 'filter') filterLevels.set(node, filterLevel(parent) + 1);
     if (depth > FETCH_LIMITS.xmlDepth)
       fail(`FetchXML nesting exceeds ${FETCH_LIMITS.xmlDepth} levels`, 400, 'UnsupportedQuery');
     const schema = FETCH_SCHEMA[node.name];
     if (!schema) fail(`Unsupported FetchXML element ${node.name}`, 400, 'UnsupportedQuery');
-    for (const [key, reason] of Object.entries(FETCH_UNSUPPORTED_ATTRIBUTES[node.name] ?? {}))
-      if (node.attrs[key] != null) fail(reason, 400, 'UnsupportedQuery');
-    for (const key of Object.keys(node.attrs))
-      if (
-        !schema.attributes.includes(key) &&
-        !/^xmlns(?::|$)/.test(key) &&
-        !(key === 'anyallalias' && qualifiedFilters.has(node))
-      ) {
-        if (strict) fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, 'InvalidFetchXml');
-        diagnostics.push({
-          code: 'FETCHXML_ATTRIBUTE_IGNORED',
-          element: node.name,
-          attribute: key,
-          message: `The portal FetchXML model ignores the undeclared '${key}' attribute on ${node.name}.`,
-        });
-      }
-    for (const child of node.children)
-      if (!schema.children.includes(child.name))
-        fail(`Unsupported FetchXML ${child.name} inside ${node.name}`, 400, 'UnsupportedQuery');
-    let nextLinkDepth = linkDepth;
-    switch (node.name) {
-      case 'entity':
-        if (!node.attrs.name) fail('The FetchXML entity element requires a name.', 400, 'InvalidFetchXml');
-        break;
-      case 'link-entity': {
-        if (!node.attrs.name) fail('The FetchXML link-entity element requires a name.', 400, 'InvalidFetchXml');
-        const type = node.attrs['link-type'] ?? 'inner';
-        if (!FETCH_LINK_TYPES.has(type)) fail(`Unsupported FetchXML link-type ${type}`, 400, 'UnsupportedQuery');
-        if (parent?.name === 'filter' && !FILTER_LINK_TYPES.has(type))
-          fail(
-            `A link-entity inside a filter must use link-type any, not any, all or not all (found ${type}).`,
-            400,
-            'InvalidFetchXml',
-          );
-        const restricted = ['exists', 'in', 'matchfirstrowusingcrossapply'].includes(type);
-        if (restricted) {
-          const label = { exists: 'Exists', in: 'In', matchfirstrowusingcrossapply: 'MatchFirstRowUsingCrossApply' }[
-            type
-          ];
-          if (children(node, 'order').length)
-            fail(`${label} doesn't support order inside linkentity expression.`, 400, 'InvalidFetchXml', {
-              innerCode: '0x80041121',
-            });
-          const projected = node.children.some((child) => ['attribute', 'all-attributes'].includes(child.name));
-          if (type !== 'matchfirstrowusingcrossapply' && projected)
-            fail(`${label} doesn't support attribute inside linkentity expression.`, 400, 'InvalidFetchXml', {
-              innerCode: '0x80041121',
-            });
-          const selectedDescendant = (part) =>
-            part.children.some(
-              (child) => ['attribute', 'all-attributes', 'order'].includes(child.name) || selectedDescendant(child),
-            );
-          if (
-            children(node, 'link-entity').some(selectedDescendant) ||
-            (type === 'matchfirstrowusingcrossapply' && projected && children(node, 'link-entity').length)
-          )
-            fail(`${label} doesn't allow attribute or order clause in child linkentity.`, 400, 'InvalidFetchXml', {
-              innerCode: '0x80041121',
-            });
-        }
-        links.push(node);
-        if (parent?.name !== 'filter') ordinaryLinks++;
-        nextLinkDepth++;
-        if (ordinaryLinks > limits.links || links.length > limits.linksAndFilters)
-          fail(
-            linkBudgetError === 'reported-counts'
-              ? ordinaryLinks > limits.links
-                ? `Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`
-                : `Number of link entity: ${ordinaryLinks}, Number of link filter: ${links.length - ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`
-              : 'Number of link entities in query exceeded maximum limit.',
-            400,
-            'UnsupportedQuery',
-            {
-              innerCode: '0x8004430d',
-              ordinaryLinks,
-              filterLinks: links.length - ordinaryLinks,
-              totalLinks: links.length,
-              limit: ordinaryLinks > limits.links ? limits.links : limits.linksAndFilters,
-            },
-          );
-        if (nextLinkDepth > limits.linkDepth)
-          fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, 'UnsupportedQuery');
-        break;
-      }
-      case 'filter': {
-        if (!['and', 'or'].includes(node.attrs.type ?? 'and'))
-          fail(`Unsupported FetchXML filter type ${node.attrs.type}`, 400, 'UnsupportedQuery');
-        const hint = node.attrs.hint;
-        if (hint != null) {
-          // Dataverse documents one value, union, for an or filter; one per query; moved to the
-          // root filter when nested; ignored more than three filter levels deep. What
-          // Dataverse does with the other cases isn't documented, so they are reported and
-          // the hint never changes the rows.
-          const level = filterLevels.get(node);
-          const report = (code, message) =>
-            diagnostics.push({ code, element: 'filter', attribute: 'hint', value: hint, message });
-          if (hint !== 'union')
-            report(
-              'FETCHXML_FILTER_HINT_UNKNOWN',
-              `FetchXML filter hint '${hint}' is not documented; only union is, and it doesn't change the rows.`,
-            );
-          else {
-            unionHints++;
-            if ((node.attrs.type ?? 'and') !== 'or')
-              report(
-                'FETCHXML_UNION_HINT_RESTRICTION',
-                'The union hint needs a filter of type or (fetchxml/optimize-performance#union-hint).',
-              );
-            if (unionHints === 2)
-              report(
-                'FETCHXML_UNION_HINT_RESTRICTION',
-                'A query can contain only one union hint (fetchxml/optimize-performance#union-hint).',
-              );
-            if (level > 3)
-              report(
-                'FETCHXML_UNION_HINT_IGNORED',
-                `A union hint ${level} filter levels deep is ignored (more than three levels).`,
-              );
-          }
-        }
-        break;
-      }
-      case 'condition': {
-        conditions++;
-        if (!node.attrs.attribute) fail('FetchXML condition requires attribute', 400, 'InvalidFetchXml');
-        const operator = node.attrs.operator;
-        if (operator == null)
-          fail(
-            `The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`,
-            400,
-            'InvalidFetchXml',
-          );
-        // Identity operators are evaluated only for a Dataverse caller (identity.dataverse); hierarchy operators for every
-        // caller, resolved when the condition compiles (dataverse-conditions.mjs runWithQueryResolvers).
-        const identityOperator =
-          UNSUPPORTED_FETCH_OPERATORS.has(operator) && (dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
-        if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
-          fail(
-            `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
-            400,
-            'UnsupportedQuery',
-          );
-        if (!identityOperator && !FETCH_OPERATORS.has(operator === 'neq' ? 'ne' : operator) && operator !== 'neq')
-          dataverseIdentity
-            ? fail(`Unknown Condition Operator: ${operator}`, 400, 'UnsupportedQuery', { innerCode: '0x80041120' })
-            : fail(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
-        break;
-      }
-      case 'attribute':
-        if (!node.attrs.name) fail('The FetchXML attribute element requires a name.', 400, 'InvalidFetchXml');
-        if (node.attrs.aggregate != null && !FETCH_AGGREGATES.has(node.attrs.aggregate))
-          fail(`Unsupported aggregate ${node.attrs.aggregate}`, 400, 'UnsupportedQuery');
-        if (node.attrs.dategrouping != null && !FETCH_DATE_GROUPINGS.has(node.attrs.dategrouping))
-          fail(`Unsupported FetchXML dategrouping ${node.attrs.dategrouping}`, 400, 'UnsupportedQuery');
-        break;
-      case 'order':
-        if (!node.attrs.attribute && !node.attrs.alias)
-          fail('A FetchXML order element requires an attribute or alias.', 400, 'InvalidFetchXml');
-        break;
-    }
-    if (conditions + links.length > limits.conditionsAndLinks)
+    validateNodeSchema(node, schema, validationState);
+    const nextLinkDepth = validateFetchNode(node, parent, linkDepth, validationState);
+    if (validationState.conditions + links.length > limits.conditionsAndLinks)
       fail('Number of conditions in query exceeded maximum limit.', 400, 'UnsupportedQuery', {
         innerCode: '0x8004430c',
       });
@@ -546,7 +590,7 @@ export function planFetch(
   indexParents(root, root);
   const aggregate = bool(fetch.attrs.aggregate);
   const top = integerAttribute(fetch, 'top', { min: 1, max: FETCH_LIMITS.top });
-  const count = integerAttribute(fetch, 'count', { min: 0 });
+  const count = integerAttribute(fetch, 'count', { min: 1 });
   const page = integerAttribute(fetch, 'page', { min: 1 });
   const returnTotal = bool(fetch.attrs.returntotalrecordcount);
   if (top != null && (count != null || page != null || returnTotal))
@@ -575,7 +619,7 @@ export function planFetch(
     diagnostics,
     distinct: bool(fetch.attrs.distinct),
     top,
-    pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
+    pageSize: count != null ? Math.min(count, limits.pageSize) : limits.pageSize,
     totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
     pagingCookie: fetch.attrs['paging-cookie'] ?? null,
@@ -599,14 +643,14 @@ function parsePagingCookie(value) {
   try {
     node = parseXmlDocument(text, { root: 'cookie' });
   } catch {
-    fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
+    return fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
   }
   if (node.attrs.pagingcookie != null) {
     try {
       text = decodeURIComponent(decodeURIComponent(node.attrs.pagingcookie));
       node = parseXmlDocument(text, { root: 'cookie' });
     } catch {
-      fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
+      return fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
     }
   }
   const page = Number(node.attrs.page);
@@ -619,7 +663,7 @@ function parsePagingCookie(value) {
 /** Lowercase double percent-encoding, matching documented Dataverse cookie bytes. */
 const cookieEncode = (value) =>
   encodeURIComponent(value)
-    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))
+    .replace(/[!'()*]/g, (c) => '%' + c.codePointAt(0).toString(16))
     .replace(/%[\dA-F]{2}/g, (escape) => escape.toLowerCase());
 /** Web API wrapper published as @Microsoft.Dynamics.CRM.fetchxmlpagingcookie. */
 export function webApiPagingCookie(cookie, page) {
@@ -644,6 +688,21 @@ const cookieValue = (value) => {
   if (typeof raw === 'boolean') return raw ? '1' : '0';
   return String(raw);
 };
+// A cookie value is text: its sort key takes the column's type, so it orders against the rows' keys as the row values do.
+// A column without metadata takes a number when the page's rows hold numbers.
+function cursorSortKey(text, definition, sample, timeZoneOffsetMinutes) {
+  if (text === '') return null;
+  const kind = fieldKind(definition);
+  if (kind === 'boolean') return makeSortKey(text === '1' || text === 'true', { definition });
+  const inferredNumber = kind == null && sample?.t === 'n';
+  const value = inferredNumber && decimalParts(text) ? parseNumericLiteral(text) : text;
+  return makeSortKey(value, { definition, rawChoice: true, timeZoneOffsetMinutes });
+}
+// The first non-null sort key of a sort column among the page rows, or null when every row holds null.
+const columnSample = (keyed, index) => keyed.find((item) => item.keys[index] != null)?.keys[index] ?? null;
+// A cursor key of another type than a row's key cannot place the cursor, so the page is read by offset.
+const mixesKeyTypes = (keyed, index, key) =>
+  key != null && keyed.some((item) => item.keys[index] != null && item.keys[index].t !== key.t);
 
 /**
  * Structural many-to-many traversals of a planned query: link-entities to an
@@ -694,7 +753,7 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
  *        canRead(logical,row), definition(logical, attribute), lookupName(ref),
  *        identity, settings, now, platformLanguageCode }
  */
-export function executeFetch(plan, ctx) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function executeFetch(plan, ctx) {
   const settings = ctx.settings ?? {};
   if (
     settings.fetchAllWithoutFilter === 'sql-error' &&
@@ -723,19 +782,16 @@ export function executeFetch(plan, ctx) {
   const pkSort = (rows, idColumn) =>
     rows
       .map((row, index) => ({ row, index, key: sqlGuidSortKey(row[idColumn]) }))
-      .sort((a, b) =>
-        a.key && b.key
-          ? a.key < b.key
-            ? -1
-            : a.key > b.key
-              ? 1
-              : a.index - b.index
-          : a.key
-            ? -1
-            : b.key
-              ? 1
-              : String(a.row[idColumn] ?? '').localeCompare(String(b.row[idColumn] ?? '')) || a.index - b.index,
-      )
+      .sort((a, b) => {
+        if (a.key && b.key) {
+          if (a.key < b.key) return -1;
+          if (a.key > b.key) return 1;
+          return a.index - b.index;
+        }
+        if (a.key) return -1;
+        if (b.key) return 1;
+        return String(a.row[idColumn] ?? '').localeCompare(String(b.row[idColumn] ?? '')) || a.index - b.index;
+      })
       .map((entry) => entry.row);
 
   // ctx.relationships (data.mjs) adds the standard navigations for a Dataverse caller only (plan.dataverseIdentity).
@@ -783,44 +839,49 @@ export function executeFetch(plan, ctx) {
           use,
         },
       );
-    if (status === 'unknown')
-      (plan.diagnostics ??= []).push({
+    if (status === 'unknown') {
+      plan.diagnostics ??= [];
+      plan.diagnostics.push({
         code: 'FETCHXML_COLUMN_UNKNOWN',
         entity: logical,
         attribute,
         use,
         message: `${logical}.${attribute} (${use}) isn't in the table's complete Solution metadata; Dataverse rejects it unless the environment defines it outside the exported Solutions.`,
       });
-    if (status === 'unverified')
-      (plan.diagnostics ??= []).push({
+    }
+    if (status === 'unverified') {
+      plan.diagnostics ??= [];
+      plan.diagnostics.push({
         code: 'FETCHXML_COLUMN_UNVERIFIED',
         entity: logical,
         attribute,
         use,
         message: `${logical}.${attribute} (${use}) is neither in the table's metadata nor in its local rows; the metadata isn't complete, so the query isn't rejected.`,
       });
+    }
   };
   const columnOwner = (entityname, owner) => (entityname != null ? aliasNode(resolveEntityName(entityname)) : owner);
-  const visitColumns = (node, owner) => {
-    for (const child of node.children ?? []) {
-      if (child.name === 'attribute') assertColumn(owner, child.attrs.name, 'attribute');
-      else if (child.name === 'order' && child.attrs.attribute)
-        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'order');
-      else if (child.name === 'condition') {
-        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'condition');
-        if (child.attrs.valueof != null) {
-          const [otherAlias, otherAttribute] = child.attrs.valueof.includes('.')
-            ? child.attrs.valueof.split('.', 2)
-            : [child.attrs.entityname, child.attrs.valueof];
-          assertColumn(columnOwner(otherAlias, owner), otherAttribute, 'condition');
-        }
-      } else if (child.name === 'filter') visitColumns(child, owner);
-      else if (child.name === 'link-entity') {
-        assertColumn(child, child.attrs.from, 'join');
-        if (!structural.has(owner) || !mappingOf.has(owner)) assertColumn(owner, child.attrs.to, 'join');
-        visitColumns(child, child);
+  const visitColumnChild = (child, owner) => {
+    if (child.name === 'attribute') assertColumn(owner, child.attrs.name, 'attribute');
+    else if (child.name === 'order' && child.attrs.attribute)
+      assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'order');
+    else if (child.name === 'condition') {
+      assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'condition');
+      if (child.attrs.valueof != null) {
+        const [otherAlias, otherAttribute] = child.attrs.valueof.includes('.')
+          ? child.attrs.valueof.split('.', 2)
+          : [child.attrs.entityname, child.attrs.valueof];
+        assertColumn(columnOwner(otherAlias, owner), otherAttribute, 'condition');
       }
+    } else if (child.name === 'filter') visitColumns(child, owner);
+    else if (child.name === 'link-entity') {
+      assertColumn(child, child.attrs.from, 'join');
+      if (!structural.has(owner) || !mappingOf.has(owner)) assertColumn(owner, child.attrs.to, 'join');
+      visitColumns(child, child);
     }
+  };
+  const visitColumns = (node, owner) => {
+    for (const child of node.children ?? []) visitColumnChild(child, owner);
   };
   visitColumns(root, root);
   const assertStructural = (alias, attribute, kind) => {
@@ -1016,6 +1077,27 @@ export function executeFetch(plan, ctx) {
 
   // ---- joins
   const linkPlans = new Map();
+  const indexRows = (rows, attribute) => {
+    const index = new Map();
+    for (const row of rows) {
+      const key = joinKey(fieldValue(row, attribute));
+      if (key == null) continue;
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(row);
+    }
+    return index;
+  };
+  const propagatePermissionRows = (link, rows) => {
+    if (!plan.distinct || plan.aggregate || !ctx.permissionLink?.(link)) return rows;
+    const descendants = children(link, 'link-entity');
+    if (descendants.length !== 1 || !ctx.permissionLink?.(descendants[0])) return rows;
+    const child = descendants[0],
+      childPlan = linkPlan(child);
+    return childPlan.permissionRestricted
+      ? rows.filter((row) => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))))
+      : rows;
+  };
+  const unfilteredLinkIndex = (link) => indexRows(candidatesFor(link), link.attrs.from);
   const linkPlan = (link) => {
     if (linkPlans.has(link)) return linkPlans.get(link);
     const alias = plan.aliasOf.get(link);
@@ -1036,22 +1118,8 @@ export function executeFetch(plan, ctx) {
     // Propagate a qualified terminal restriction up its compiler-owned path.
     // Outer paths with no qualifying principal remain null alternatives; other
     // permission paths can still grant the root row through the union filter.
-    if (plan.distinct && !plan.aggregate && ctx.permissionLink?.(link)) {
-      const descendants = children(link, 'link-entity');
-      if (descendants.length === 1 && ctx.permissionLink?.(descendants[0])) {
-        const child = descendants[0],
-          childPlan = linkPlan(child);
-        if (childPlan.permissionRestricted)
-          rows = rows.filter((row) => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))));
-      }
-    }
-    const index = new Map();
-    for (const row of rows) {
-      const key = joinKey(fieldValue(row, link.attrs.from));
-      if (key == null) continue;
-      if (!index.has(key)) index.set(key, []);
-      index.get(key).push(row);
-    }
+    rows = propagatePermissionRows(link, rows);
+    const index = indexRows(rows, link.attrs.from);
     const result = {
       alias,
       index,
@@ -1061,16 +1129,7 @@ export function executeFetch(plan, ctx) {
         Boolean(permissionPredicate) ||
         children(link, 'link-entity').some((child) => linkPlans.get(child)?.permissionRestricted),
     };
-    if (link.attrs['link-type'] === 'all') {
-      const all = new Map();
-      for (const row of candidatesFor(link)) {
-        const key = joinKey(fieldValue(row, link.attrs.from));
-        if (key == null) continue;
-        if (!all.has(key)) all.set(key, []);
-        all.get(key).push(row);
-      }
-      result.unfiltered = all;
-    }
+    if (link.attrs['link-type'] === 'all') result.unfiltered = unfilteredLinkIndex(link);
     linkPlans.set(link, result);
     return result;
   };
@@ -1120,6 +1179,31 @@ export function executeFetch(plan, ctx) {
         { joinRows: joinedRows, limit: joinRowLimit },
       );
   }
+  function joinRowsForLink(rows, link, nodeAlias, type) {
+    const alias = plan.aliasOf.get(link);
+    const next = [];
+    for (const row of rows) {
+      const matches = matchesFor(row, link, nodeAlias);
+      if (type === 'matchfirstrowusingcrossapply') {
+        const qualifying = joinTree(matches, link);
+        if (qualifying.length) {
+          countJoined(1);
+          next.push(qualifying[0]);
+        }
+      } else if (matches.length) {
+        countJoined(matches.length);
+        for (const match of matches) next.push(match);
+      } else if (type === 'outer') {
+        countJoined(1);
+        next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
+      }
+    }
+    // Dataverse emits flat joins: a nested link joins against every row
+    // produced so far, so an inner child of an outer link removes rows
+    // whose outer parent is null.
+    return type === 'matchfirstrowusingcrossapply' ? next : joinTree(next, link);
+  }
+
   function joinTree(rows, node) {
     const nodeAlias = node === root ? null : plan.aliasOf.get(node);
     for (const link of children(node, 'link-entity')) {
@@ -1129,39 +1213,20 @@ export function executeFetch(plan, ctx) {
         rows = rows.filter(test);
         continue;
       }
-      const alias = plan.aliasOf.get(link);
-      const next = [];
-      for (const row of rows) {
-        const matches = matchesFor(row, link, nodeAlias);
-        if (type === 'matchfirstrowusingcrossapply') {
-          const qualifying = joinTree(matches, link);
-          if (qualifying.length) {
-            countJoined(1);
-            next.push(qualifying[0]);
-          }
-        } else if (matches.length) {
-          countJoined(matches.length);
-          for (const match of matches) next.push(match);
-        } else if (type === 'outer') {
-          countJoined(1);
-          next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
-        }
-      }
-      // Dataverse emits flat joins: a nested link joins against every row
-      // produced so far, so an inner child of an outer link removes rows
-      // whose outer parent is null.
-      rows = type === 'matchfirstrowusingcrossapply' ? next : joinTree(next, link);
+      rows = joinRowsForLink(rows, link, nodeAlias, type);
     }
     return rows;
   }
 
   const lookupName = (ref) => ctx.lookupName?.(ref) ?? ref?.name;
+  // One offset for every sort key of the query: row keys (sortKeyOf) and paging-cookie cursor keys (seekIndex) use it.
+  const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
   const sortKeyOf = (value, columnDefinition) =>
     makeSortKey(value, {
       definition: columnDefinition,
       rawChoice: plan.rawChoiceOrder,
       lookupName,
-      timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
+      timeZoneOffsetMinutes,
     });
   /**
    * Rows the evaluation must produce before the result is known, or null when every row
@@ -1183,12 +1248,11 @@ export function executeFetch(plan, ctx) {
 
   // ---- evaluate
   // A Dataverse caller's bin and retained datasources read their own rows; portal retained answers none.
-  let inputs =
-    plan.dataverseIdentity && plan.datasource !== 'default'
-      ? (ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [])
-      : plan.retained
-        ? []
-        : ctx.readableRows(rootMapping.logicalName, root);
+  let inputs;
+  if (plan.dataverseIdentity && plan.datasource !== 'default')
+    inputs = ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [];
+  else if (plan.retained) inputs = [];
+  else inputs = ctx.readableRows(rootMapping.logicalName, root);
   // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
   // Text/numeric/date comparisons are left to the predicate's collation and coercion rules.
   const narrow = (filter) => {
@@ -1214,8 +1278,24 @@ export function executeFetch(plan, ctx) {
   };
   if (ctx.equalRows) for (const filter of children(root, 'filter')) narrow(filter);
   // Storage order: a distinct bucket answers its first stored row's value, as OData groupby and TDS DISTINCT do.
-  const storageOrder = new Map(inputs.map((base, index) => [base, index]));
-  let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
+  const storageOrder = plan.distinct ? new Map(inputs.map((base, index) => [base, index])) : null;
+  // A flat ordinary query sorts by these same valid primary keys below. Its
+  // initial full PK sort cannot change the final order or duplicate-key ties.
+  // Keep historical input ordering for joins, aggregates, distinct and malformed
+  // legacy IDs, where it participates in selection semantics.
+  const finalOrderSuffices =
+    !plan.aggregate &&
+    !plan.distinct &&
+    !plan.links.length &&
+    inputs.every(
+      (row) =>
+        typeof row[rootMapping.idColumn] === 'string' &&
+        /^\{?[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\}?$/i.test(row[rootMapping.idColumn]),
+    );
+  let rows = (finalOrderSuffices ? inputs : pkSort(inputs, rootMapping.idColumn)).map((base) => ({
+    base,
+    aliases: {},
+  }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, 'filter').some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);
@@ -1287,44 +1367,45 @@ export function executeFetch(plan, ctx) {
     outputKeys.set(key, column);
     return true;
   };
+  const collectAttributeColumn = (node, alias, lm, crossApply, attribute) => {
+    const name = attribute.attrs.name;
+    assertStructural(alias, name, 'attribute');
+    const columnDefinition = definition(node, name);
+    let aliasKey = name;
+    if (alias != null) aliasKey = crossApply ? (columnDefinition?.schemaName ?? name) : `${alias}.${name}`;
+    const key = attribute.attrs.alias ?? aliasKey;
+    const column = {
+      key,
+      alias,
+      entity: lm.logicalName,
+      attribute: name,
+      aliased: attribute.attrs.alias != null,
+      aggregate: attribute.attrs.aggregate ?? null,
+      groupby: bool(attribute.attrs.groupby),
+      dategrouping: attribute.attrs.dategrouping ?? null,
+      distinct: bool(attribute.attrs.distinct),
+      usertimezone: attribute.attrs.usertimezone == null ? true : bool(attribute.attrs.usertimezone),
+      definition: columnDefinition,
+    };
+    if (plan.aggregate) {
+      if (!attribute.attrs.alias)
+        fail(`An alias is required for the aggregate query attribute ${name}.`, 400, 'InvalidFetchXml');
+      if (!column.groupby && !column.aggregate)
+        fail(
+          `Attribute ${name} must specify an aggregate function or groupby in an aggregate query.`,
+          400,
+          'InvalidFetchXml',
+        );
+    } else if (column.aggregate || column.groupby)
+      fail('Aggregate attributes require <fetch aggregate="true">.', 400, 'InvalidFetchXml');
+    if (claim(key, column)) columns.push(column);
+  };
   const collectColumns = (node, alias) => {
     const type = node === root ? 'inner' : (node.attrs['link-type'] ?? 'inner');
     if (SEMI_JOIN_TYPES.has(type)) return;
     const crossApply = type === 'matchfirstrowusingcrossapply';
     const lm = mappingOf.get(node);
-    for (const attribute of children(node, 'attribute')) {
-      const name = attribute.attrs.name;
-      assertStructural(alias, name, 'attribute');
-      const columnDefinition = definition(node, name);
-      const key =
-        attribute.attrs.alias ??
-        (alias == null ? name : crossApply ? (columnDefinition?.schemaName ?? name) : `${alias}.${name}`);
-      const column = {
-        key,
-        alias,
-        entity: lm.logicalName,
-        attribute: name,
-        aliased: attribute.attrs.alias != null,
-        aggregate: attribute.attrs.aggregate ?? null,
-        groupby: bool(attribute.attrs.groupby),
-        dategrouping: attribute.attrs.dategrouping ?? null,
-        distinct: bool(attribute.attrs.distinct),
-        usertimezone: attribute.attrs.usertimezone == null ? true : bool(attribute.attrs.usertimezone),
-        definition: columnDefinition,
-      };
-      if (plan.aggregate) {
-        if (!attribute.attrs.alias)
-          fail(`An alias is required for the aggregate query attribute ${name}.`, 400, 'InvalidFetchXml');
-        if (!column.groupby && !column.aggregate)
-          fail(
-            `Attribute ${name} must specify an aggregate function or groupby in an aggregate query.`,
-            400,
-            'InvalidFetchXml',
-          );
-      } else if (column.aggregate || column.groupby)
-        fail('Aggregate attributes require <fetch aggregate="true">.', 400, 'InvalidFetchXml');
-      if (claim(key, column)) columns.push(column);
-    }
+    for (const attribute of children(node, 'attribute')) collectAttributeColumn(node, alias, lm, crossApply, attribute);
     for (const link of children(node, 'link-entity')) collectColumns(link, plan.aliasOf.get(link));
   };
   collectColumns(root, null);
@@ -1360,7 +1441,10 @@ export function executeFetch(plan, ctx) {
   collectLinkOrders(root);
 
   const total = { value: 0 };
-  let entities, keys, cookieSupported;
+  let entities,
+    keys,
+    cookieSupported,
+    deferredProjection = false;
   if (plan.aggregate) {
     ({ entities, keys } = aggregateRows());
     cookieSupported = false;
@@ -1399,7 +1483,11 @@ export function executeFetch(plan, ctx) {
       }
       return a.index - b.index;
     });
-    let projected = keyed.map((entry) => ({ entity: project(entry.row), entry }));
+    // Distinct needs every projected value to form equality buckets. Ordinary
+    // pages need only their returned values; copying every off-page payload
+    // made a 50-row grid allocate an entire large table again.
+    deferredProjection = !plan.distinct;
+    let projected = keyed.map((entry) => ({ entity: deferredProjection ? entry.row : project(entry.row), entry }));
     if (plan.distinct) {
       // One row per equality bucket, at the bucket's first position in this order, with the value of the bucket's first
       // stored row (the equalityKey contract: the emitted value is the first row's original value).
@@ -1408,7 +1496,7 @@ export function executeFetch(plan, ctx) {
       projected = projected.filter((item) => {
         const signature = JSON.stringify([
           Object.keys(item.entity)
-            .sort()
+            .sort(/* NOSONAR: preserve default string coercion */)
             .map((key) => [key, canonical(item.entity[key], collation)]),
           item.entry.keys.map((key) =>
             key ? [key.t, key.t === 's' ? foldText(key.v, collation) : equalityKey(key.v)] : null,
@@ -1449,7 +1537,7 @@ export function executeFetch(plan, ctx) {
     end = Math.min(start + plan.pageSize, entities.length);
     more = entities.length > start + plan.pageSize;
   }
-  const pageEntities = entities.slice(start, end);
+  const pageEntities = deferredProjection ? entities.slice(start, end).map(project) : entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
   else if (
@@ -1489,27 +1577,125 @@ export function executeFetch(plan, ctx) {
   Object.defineProperty(result, 'stats', { value: stats, enumerable: false });
   return result;
 
+  function copyProjectedAttributes(out, source, prefix = '') {
+    for (const [key, value] of Object.entries(source))
+      if (!isEmpty(value) && !key.includes('@')) out[`${prefix}${key}`] = copyValue(value);
+  }
+
   function project(row) {
     const out = {};
     const pk = rootMapping.idColumn;
     if (!plan.distinct && row.base[pk] != null) out[pk] = row.base[pk];
-    if (rootAll)
-      for (const [key, value] of Object.entries(row.base))
-        if (!isEmpty(value) && !key.includes('@')) out[key] = structuredClone(value);
+    if (rootAll) copyProjectedAttributes(out, row.base);
     for (const alias of allAttributeAliases) {
       if (alias == null) continue;
-      for (const [key, value] of Object.entries(row.aliases[alias] ?? {}))
-        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = structuredClone(value);
+      copyProjectedAttributes(out, row.aliases[alias] ?? {}, `${alias}.`);
     }
     // Distinct queries don't add the primary key implicitly; an explicitly
     // selected key (attribute element or all-attributes) is an ordinary column.
     for (const column of columns) {
       const source = column.alias == null ? row.base : row.aliases[column.alias];
       const value = fieldValue(source, column.attribute);
-      if (!isEmpty(value)) out[column.key] = structuredClone(value);
+      if (!isEmpty(value)) out[column.key] = copyValue(value);
       else delete out[column.key];
     }
     return out;
+  }
+
+  function uniqueAggregateValues(values) {
+    const seen = new Set();
+    return values.filter((value) => {
+      const signature = JSON.stringify(canonical(value, collation));
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
+  }
+
+  /* NOSONAR */ function calculateAggregate(column, values, rowCount, exact) {
+    const numbers = () => values.map((value) => Number(scalar(value))).filter(Number.isFinite);
+    switch (column.aggregate) {
+      case 'count':
+        return rowCount;
+      case 'countcolumn':
+        return values.length;
+      case 'sum':
+        return exact ? sumNumeric(values) : numbers().reduce((sum, value) => sum + value, 0);
+      case 'avg': {
+        const list = numbers();
+        if (!list.length) return null;
+        const average = list.reduce((sum, value) => sum + value, 0) / list.length;
+        const integer = ['int', 'integer', 'bigint'].includes(
+          String(column.definition?.dataverseType ?? '').toLowerCase(),
+        );
+        if (exact) return averageNumeric(values, { integer });
+        return integer ? Math.trunc(average) : average;
+      }
+      case 'min':
+      case 'max': {
+        if (!values.length) return null;
+        const keyed = values.map((value) => ({
+          value,
+          key: makeSortKey(value, { definition: column.definition, rawChoice: true }),
+        }));
+        keyed.sort((a, b) => compareSortKeys(a.key, b.key, collation));
+        const chosen = column.aggregate === 'min' ? keyed[0].value : keyed.at(-1).value;
+        const date = parseDateValue(chosen);
+        return typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : copyValue(chosen);
+      }
+    }
+  }
+
+  function aggregateBucket(bucket, groups, aggregates, read) {
+    const entity = {};
+    groups.forEach((column, index) => {
+      if (bucket.values[index] != null) entity[column.key] = copyValue(bucket.values[index]);
+    });
+    for (const column of aggregates) {
+      let values = bucket.rows.map((row) => read(row, column)).filter((value) => !isEmpty(value));
+      if (column.distinct) values = uniqueAggregateValues(values);
+      const exact = values.some(isExactNumeric) || ['decimal', 'money'].includes(fieldKind(column.definition));
+      const value = calculateAggregate(column, values, bucket.rows.length, exact);
+      if (value != null) entity[column.key] = value;
+    }
+    return entity;
+  }
+
+  function sortAggregateRows(out) {
+    const specs = children(root, 'order').map((order) => {
+      const alias = order.attrs.alias;
+      const column =
+        (alias && columns.find((item) => item.key === alias)) ||
+        (!alias &&
+          columns.find((item) => item.groupby && item.alias == null && item.attribute === order.attrs.attribute));
+      if (!column)
+        fail(
+          'An order element in an aggregate query must reference a groupby or aggregate alias.',
+          400,
+          'InvalidFetchXml',
+        );
+      return { column, descending: bool(order.attrs.descending) };
+    });
+    if (!specs.length) return;
+    out.sort((a, b) => {
+      for (const spec of specs) {
+        const result = compareSortKeys(
+          makeSortKey(a[spec.column.key], {
+            definition: spec.column.aggregate ? null : spec.column.definition,
+            rawChoice: plan.rawChoiceOrder,
+            lookupName,
+          }),
+          makeSortKey(b[spec.column.key], {
+            definition: spec.column.aggregate ? null : spec.column.definition,
+            rawChoice: plan.rawChoiceOrder,
+            lookupName,
+          }),
+          collation,
+        );
+        if (result) return spec.descending ? -result : result;
+      }
+      return 0;
+    });
   }
 
   function aggregateRows() {
@@ -1528,12 +1714,15 @@ export function executeFetch(plan, ctx) {
     const groupValue = (row, column) => {
       const value = read(row, column);
       if (isEmpty(value)) return null;
-      if (column.dategrouping)
+      if (column.dategrouping) {
+        // fiscal-period and fiscal-year follow the organisation fiscal calendar.
+        const fiscalGrouping = /^fiscal-/.test(column.dategrouping); // NOSONAR: preserve regex coercion for caller-supplied plans
+        if (fiscalGrouping) fiscal ??= fiscalCalendar(settings);
         return dateGroupValue(value, column.dategrouping, {
           timeZoneOffsetMinutes: column.usertimezone ? Number(settings.timeZoneOffsetMinutes ?? 0) : 0,
-          // fiscal-period and fiscal-year follow the organisation fiscal calendar.
-          fiscal: /^fiscal-/.test(column.dategrouping) ? (fiscal ??= fiscalCalendar(settings)) : undefined,
+          fiscal: fiscalGrouping ? fiscal : undefined,
         });
+      }
       return value;
     };
     const buckets = new Map();
@@ -1544,112 +1733,28 @@ export function executeFetch(plan, ctx) {
       buckets.get(signature).rows.push(row);
     }
     if (!groups.length && !buckets.size) buckets.set('[]', { values: [], rows: [] });
-    const out = [...buckets.values()].map((bucket) => {
-      const entity = {};
-      groups.forEach((column, index) => {
-        if (bucket.values[index] != null) entity[column.key] = structuredClone(bucket.values[index]);
-      });
-      for (const column of aggregates) {
-        let values = bucket.rows.map((row) => read(row, column)).filter((value) => !isEmpty(value));
-        if (column.distinct) {
-          const seen = new Set();
-          values = values.filter((value) => {
-            const signature = JSON.stringify(canonical(value, collation));
-            if (seen.has(signature)) return false;
-            seen.add(signature);
-            return true;
-          });
-        }
-        const numbers = () => values.map((value) => Number(scalar(value))).filter(Number.isFinite);
-        const exact = values.some(isExactNumeric) || ['decimal', 'money'].includes(fieldKind(column.definition));
-        let result;
-        switch (column.aggregate) {
-          case 'count':
-            result = bucket.rows.length;
-            break;
-          case 'countcolumn':
-            result = values.length;
-            break;
-          case 'sum':
-            result = exact ? sumNumeric(values) : numbers().reduce((sum, value) => sum + value, 0);
-            break;
-          case 'avg': {
-            const list = numbers();
-            if (!list.length) result = null;
-            else {
-              const average = list.reduce((sum, value) => sum + value, 0) / list.length;
-              const integer = ['int', 'integer', 'bigint'].includes(
-                String(column.definition?.dataverseType ?? '').toLowerCase(),
-              );
-              result = exact ? averageNumeric(values, { integer }) : integer ? Math.trunc(average) : average;
-            }
-            break;
-          }
-          case 'min':
-          case 'max': {
-            if (!values.length) {
-              result = null;
-              break;
-            }
-            const keyed = values.map((value) => ({
-              value,
-              key: makeSortKey(value, { definition: column.definition, rawChoice: true }),
-            }));
-            keyed.sort((a, b) => compareSortKeys(a.key, b.key, collation));
-            const chosen = column.aggregate === 'min' ? keyed[0].value : keyed.at(-1).value;
-            const date = parseDateValue(chosen);
-            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : structuredClone(chosen);
-            break;
-          }
-        }
-        if (result != null) entity[column.key] = result;
-      }
-      return entity;
-    });
-    const specs = children(root, 'order').map((order) => {
-      const alias = order.attrs.alias;
-      const column =
-        (alias && columns.find((item) => item.key === alias)) ||
-        (!alias &&
-          columns.find((item) => item.groupby && item.alias == null && item.attribute === order.attrs.attribute));
-      if (!column)
-        fail(
-          'An order element in an aggregate query must reference a groupby or aggregate alias.',
-          400,
-          'InvalidFetchXml',
-        );
-      return { column, descending: bool(order.attrs.descending) };
-    });
-    if (specs.length)
-      out.sort((a, b) => {
-        for (const spec of specs) {
-          const result = compareSortKeys(
-            makeSortKey(a[spec.column.key], {
-              definition: spec.column.aggregate ? null : spec.column.definition,
-              rawChoice: plan.rawChoiceOrder,
-              lookupName,
-            }),
-            makeSortKey(b[spec.column.key], {
-              definition: spec.column.aggregate ? null : spec.column.definition,
-              rawChoice: plan.rawChoiceOrder,
-              lookupName,
-            }),
-            collation,
-          );
-          if (result) return spec.descending ? -result : result;
-        }
-        return 0;
-      });
+    const out = [...buckets.values()].map((bucket) => aggregateBucket(bucket, groups, aggregates, read));
+    sortAggregateRows(out);
     return { entities: out, keys: [] };
+  }
+
+  function compareCookiePosition(item, specs, lastValues, lastPk) {
+    let comparison = 0;
+    for (let i = 0; i < specs.length && !comparison; i++) {
+      const result = compareSortKeys(item.keys[i], lastValues[i], collation);
+      comparison = specs[i].descending ? -result : result;
+    }
+    if (!comparison) comparison = compareSortKeys(item.pk, lastPk, collation);
+    return comparison;
   }
 
   function seekIndex(cookie, keyed) {
     const specs = keyed[0].specs;
     const pk = rootMapping.idColumn;
     const lastValues = [];
-    for (const spec of specs) {
+    for (const [index, spec] of specs.entries()) {
       const entry = cookie.values.get(spec.attribute);
-      if (!entry || entry.last == null) return null;
+      if (entry?.last == null) return null;
       const kind = String(spec.definition?.dataverseType ?? '').toLowerCase();
       // ponytail: lookup and choice orders sort by name or label, which the cookie's raw value does not carry; they resume
       // at the page offset, so a cursor row deleted between pages shifts the next page by one row. Carrying the label in
@@ -1658,22 +1763,15 @@ export function executeFetch(plan, ctx) {
         return null;
       // An empty last is the null marker (cookieValue(null)), as the OData skip token reads it (data.mjs cursorValue):
       // makeSortKey(null) orders it first ascending, as compareSortKeys orders every null (keysetPage's compare).
-      lastValues.push(
-        makeSortKey(entry.last === '' ? null : entry.last, { definition: spec.definition, rawChoice: true }),
-      );
+      const key = cursorSortKey(entry.last, spec.definition, columnSample(keyed, index), timeZoneOffsetMinutes);
+      if (mixesKeyTypes(keyed, index, key)) return null;
+      lastValues.push(key);
     }
     const pkEntry = cookie.values.get(pk);
     if (!pkEntry?.last) return null;
     const lastPk = makeSortKey(pkEntry.last, { definition: { dataverseType: 'primarykey' } });
     for (let index = 0; index < keyed.length; index++) {
-      const item = keyed[index];
-      let comparison = 0;
-      for (let i = 0; i < specs.length && !comparison; i++) {
-        const result = compareSortKeys(item.keys[i], lastValues[i], collation);
-        comparison = specs[i].descending ? -result : result;
-      }
-      if (!comparison) comparison = compareSortKeys(item.pk, lastPk, collation);
-      if (comparison > 0) return index;
+      if (compareCookiePosition(keyed[index], specs, lastValues, lastPk) > 0) return index;
     }
     return keyed.length;
   }
@@ -1700,6 +1798,12 @@ export function executeFetch(plan, ctx) {
   }
 }
 
+function linkBudgetMessage(mode, ordinaryLinks, filterCount, limits) {
+  if (mode !== 'reported-counts') return 'Number of link entities in query exceeded maximum limit.';
+  if (ordinaryLinks > limits.links)
+    return `Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`;
+  return `Number of link entity: ${ordinaryLinks}, Number of link filter: ${filterCount - ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`;
+}
 // Equality key of a value under the collation: groupby, distinct and countcolumn distinct agree with filter equality.
 function canonical(value, collation = 'CI_AI') {
   if (value == null) return null;
@@ -1708,7 +1812,7 @@ function canonical(value, collation = 'CI_AI') {
     if (own(value, 'id')) return ['ref', guidKey(value.id) ?? String(value.id)];
     if (own(value, 'value')) return ['choice', value.value];
     return Object.keys(value)
-      .sort()
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((key) => [key, canonical(value[key], collation)]);
   }
   if (Array.isArray(value)) return value.map((item) => canonical(item, collation));

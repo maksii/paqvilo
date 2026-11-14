@@ -1,5 +1,12 @@
 import { uuidV5 } from './dataverse-security.mjs';
 
+/** An organization's default start latency of an asynchronous job (dataverse asyncStartDelayMs). Native pickup
+ * (startedon - createdon, whole seconds) was 0-6 s, median 1-2 s, across the asyncLoop, async and asyncDeletedRow
+ * captures; a delete of the row or of the step sent right after the triggering response reached the queued job before
+ * it started (native asyncDeletedRow Update lane 3/32, asyncStepDeleted 3/31 with no execution, both captures). One
+ * second is the floor of the range, so such a follow-up write reaches the job locally as well. */
+export const ASYNC_START_DELAY_MS = 1000;
+
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Setting names mapped to their wire form on the token endpoint (grant_type values).
 export const GRANT_TYPES = {
@@ -34,6 +41,7 @@ const TOP_KEYS = [
   'auditing',
   'duplicateDetection',
   'pluginTimeoutSeconds',
+  'asyncStartDelayMs',
   'currencyCode',
   'currencySymbol',
   'localeId',
@@ -49,6 +57,7 @@ const APPLICATION_KEYS = [
   'roles',
   'publicClient',
   'redirectUris',
+  'spaRedirectUris',
   'allowedGrants',
   'federatedCredentials',
 ];
@@ -138,6 +147,22 @@ function httpUrl(value, label) {
   throw new Error(`${label} must be an http(s) URL`);
 }
 
+// Single-page application redirect URIs: http(s) URLs without a fragment or a wildcard. Only a public client has them,
+// since a single-page application holds no secret. The administration routes validate with this function too.
+export function spaRedirectUris(value, publicClient, label = 'spaRedirectUris') {
+  const uris = value === undefined ? [] : value;
+  if (!Array.isArray(uris)) throw new Error(`${label} must be an array of http(s) URLs`);
+  uris.forEach((uri, index) => {
+    const item = `${label}[${index}]`;
+    if (typeof uri !== 'string') throw new Error(`${item} must be an http(s) URL`);
+    httpUrl(uri, item);
+    if (uri.includes('#')) throw new Error(`${item} must not contain a fragment`);
+    if (uri.includes('*')) throw new Error(`${item} must not contain a wildcard`);
+  });
+  if (uris.length && !publicClient) throw new Error(`${label} requires publicClient: true`);
+  return [...uris];
+}
+
 function application(value, label) {
   plainObject(value, label);
   for (const key of ['secret', 'clientSecret'])
@@ -156,6 +181,8 @@ function application(value, label) {
     if (!['http:', 'https:'].includes(url.protocol))
       throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
   });
+  const publicClient = boolean(value.publicClient, `${label}.publicClient`, false);
+  const spaRedirects = spaRedirectUris(value.spaRedirectUris, publicClient, `${label}.spaRedirectUris`);
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
   if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null))
     throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
@@ -172,8 +199,9 @@ function application(value, label) {
     secretEnvironmentVariable,
     // Entra application users hold no roles until they are assigned, so an application without roles has none.
     roles: textList(value.roles, `${label}.roles`, []),
-    publicClient: boolean(value.publicClient, `${label}.publicClient`, false),
+    publicClient,
     redirectUris: [...redirectUris],
+    spaRedirectUris: spaRedirects,
     allowedGrants: [...new Set(allowedGrants.map(grantName))],
     federatedCredentials: federated.map((item, index) =>
       federatedCredential(item, `${label}.federatedCredentials[${index}]`),
@@ -317,6 +345,9 @@ export function dataverseSettings(value, label = 'dataverse') {
     duplicateDetection: boolean(input.duplicateDetection, `${label}.duplicateDetection`, true),
     // The plug-in execution limit of a custom API's handler; the platform's sandbox limit is 2 minutes.
     pluginTimeoutSeconds: integer(input.pluginTimeoutSeconds, `${label}.pluginTimeoutSeconds`, 120, 1, 3600),
+    // How long an asynchronous plug-in or web hook job waits before it may start (ASYNC_START_DELAY_MS: the native
+    // floor); 0 starts it on the next scheduler turn. A job regarding a row deleted meanwhile never runs.
+    asyncStartDelayMs: integer(input.asyncStartDelayMs, `${label}.asyncStartDelayMs`, ASYNC_START_DELAY_MS, 0, 600000),
     currencyCode: text(input.currencyCode, `${label}.currencyCode`, 'USD', /^[A-Z]{3}$/),
     currencySymbol: text(input.currencySymbol, `${label}.currencySymbol`, '$'),
     localeId: integer(input.localeId, `${label}.localeId`, 1033, 1, 65535),

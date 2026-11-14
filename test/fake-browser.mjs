@@ -41,8 +41,10 @@ export function fakeBrowser(online = {}) {
         return {};
       },
     });
+    const mainFrame = { url: () => url };
     const page = Object.assign(new EventEmitter(), {
       url: () => url,
+      mainFrame: () => mainFrame,
       context: () => context,
       isClosed: () => false,
       reloads: 0,
@@ -57,6 +59,7 @@ export function fakeBrowser(online = {}) {
           page.flows.push(data);
           return true;
         }
+        if (fn?.name === 'inspectRenderedPage') return { assets: [], controls: [] };
         page.drawn = data;
         return undefined;
       },

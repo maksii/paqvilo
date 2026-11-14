@@ -1,7 +1,8 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
+import { loopbackServer } from './shared-browser.mjs';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
@@ -58,7 +59,7 @@ $('#nav-btn-signIn').on('click', function () {
 async function open(t) {
   const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
   const compat = await fs.readFile(new URL('../lib/bootstrap-plugins-compat.js', import.meta.url));
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     if (PAGES[req.url]) {
       res.setHeader('content-type', 'text/html');
       return res.end(PAGES[req.url]);
@@ -70,14 +71,8 @@ async function open(t) {
     res.statusCode = 404;
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -94,7 +89,7 @@ test('a modal opens on .modal() without arguments and through the data API, as w
       modalOpen: document.body.classList.contains('modal-open'),
     }));
   await page.locator('#nav-btn-signIn').click();
-  await signIn.waitFor({ timeout: 5000 });
+  await signIn.waitFor();
   assert.equal(await page.locator('#SignInModal').evaluate((node) => node.classList.contains('in')), true);
   assert.deepEqual(await state(), { backdrops: 1, modalOpen: true });
   // data-keyboard="false" and data-backdrop="static": Escape and a click beside the dialog keep it open.
@@ -170,10 +165,11 @@ test('local plugins expose patchable Bootstrap 3 constructors, instances, noConf
     $(element).fixtureButton('toggle');
     facts.push(['toggle', element.classList.contains('active'), element.getAttribute('aria-pressed')]);
     $(element).fixtureButton('loading');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Like Bootstrap 3, the plugin applies a state in a zero-delay task; a task queued after it runs later.
+    await new Promise((resolve) => setTimeout(resolve));
     facts.push(['loading', element.disabled, element.textContent]);
     $(element).fixtureButton('reset');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve));
     facts.push(['reset', element.disabled, element.textContent]);
     return facts;
   });

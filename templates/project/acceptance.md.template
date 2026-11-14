@@ -90,14 +90,14 @@ acceptanceTest(site, 'invented content, authenticated data and anonymous denial'
         { action: 'text', selector: '#fixture-title', value: 'Invented acceptance content' },
       ] }],
     });
-    assert.equal(result.passed, true, 'rendered content and browser requests must pass');
     assert.equal(blocked.size, 0, 'unexpected external requests fail hermetic acceptance');
+    assert.equal(result.passed, true, 'rendered content and browser requests must pass');
     signedIn = await createPortalSession({ origin: simulator.url, contactId: 'fixture-contact' });
     const allowed = await signedIn.json('/_api/sample_items');
-    assert.equal(allowed.status, 200);
+    assert.equal(allowed.status, 200, 'authenticated fixture read must succeed');
     assert.deepEqual(allowed.body.value.map(row => row.title), ['Allowed fixture row']);
     anonymous = await createPortalSession({ origin: simulator.url });
-    assert.equal((await anonymous.json('/_api/sample_items')).status, 403);
+    assert.equal((await anonymous.json('/_api/sample_items')).status, 403, 'anonymous fixture read must be denied');
   } finally {
     try { signedIn?.close(); anonymous?.close(); }
     finally { try { await simulator?.close(); } finally { await fs.rm(directory, { recursive: true, force: true }); } }

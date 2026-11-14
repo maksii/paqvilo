@@ -10,6 +10,11 @@
 // and .../contact#BKMK_powerpagecomponent_mspp_webrole_contact.
 import { createHash } from 'node:crypto';
 
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
+
 const guidFrom = (text) => {
   const hex = createHash('sha256').update(text).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
@@ -134,9 +139,11 @@ export function buildSiteTables(portal, state) {
               statecode: Number(record.statecode ?? 0),
               statuscode: Object.hasOwn(record._componentEnvelope ?? {}, 'statuscode')
                 ? record._componentEnvelope.statuscode
-                : Number(record.statecode ?? 0) === 1
-                  ? 2
-                  : 1,
+                : chooseLazily(
+                    () => Number(record.statecode ?? 0) === 1,
+                    () => 2,
+                    () => 1,
+                  ),
             };
           }),
       ]
@@ -173,7 +180,7 @@ export function buildSiteTables(portal, state) {
         entitySet: declared(table)?.entitySet ?? setName,
         idColumn: declared(table)?.idColumn ?? idColumn,
         nameColumn,
-        fields: { ...fields, ...(declared(table)?.fields ?? {}) },
+        fields: { ...fields, ...declared(table)?.fields },
         relationships: {},
       },
       rows,

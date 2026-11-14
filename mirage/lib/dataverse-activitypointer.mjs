@@ -10,6 +10,7 @@ import {
   decodeSkipToken,
   encodeSkipToken,
   parseDataverseRoute,
+  preferenceApplied,
   skipTokenQueryValue,
 } from './dataverse-odata.mjs';
 import {
@@ -40,16 +41,18 @@ const readOnly = () =>
 const columns = new Set(Object.keys(standardTableDef(LOGICAL).attributes));
 // A lookup travels as _name_value; the base name is the activitypointer column.
 const baseName = (key) => /^_(.+)_value$/.exec(key)?.[1] ?? key;
+// The key before its annotation: a plain column, a lookup's _name_value, or the column an annotation annotates.
+const annotatedName = (key) => key.split('@')[0];
 const isActivity = (mapping) =>
   mapping.logicalName !== LOGICAL &&
   (mapping.idColumn === 'activityid' || standardTableDef(mapping.logicalName)?.isActivity === true);
 const sourcesOf = (store) => Object.values(store.state.mappings ?? {}).filter(isActivity);
 
-// Strips annotations and columns activitypointer does not have, and names the source table.
+// Keeps @odata.etag and each annotation on an activitypointer column; drops other columns, and names the source table.
 function projectRow(row, source) {
   const out = {};
   for (const [key, value] of Object.entries(row))
-    if (!key.includes('@') && columns.has(baseName(key))) out[key] = value;
+    if (key === '@odata.etag' || columns.has(baseName(annotatedName(key)))) out[key] = value;
   out.activitytypecode = source.logicalName;
   return out;
 }
@@ -63,12 +66,32 @@ function selectOf(text) {
   return new Set([...names, 'activityid']);
 }
 
+// A selected column keeps its own key and the annotations on it.
+const isSelected = (key, select) => {
+  const name = annotatedName(key);
+  return select.has(name) || select.has(baseName(name));
+};
+
 function pick(row, select) {
   if (select == null) return row;
-  return Object.fromEntries(Object.entries(row).filter(([key]) => select.has(key) || select.has(baseName(key))));
+  return Object.fromEntries(Object.entries(row).filter(([key]) => key === '@odata.etag' || isSelected(key, select)));
 }
 
-const PAGE_PREFER = (c) => ({ ...c.prefer, annotations: null, maxPageSize: null, maxPageSizeInvalid: false });
+// The caller's Prefer annotations travel to the source reads, so each row carries what a table read would.
+const PAGE_PREFER = (c) => ({ ...c.prefer, maxPageSize: null, maxPageSizeInvalid: false });
+// The context names the caller's $select list, as the records layer does; $select=* names every column.
+function contextSuffix(c, set) {
+  const text = c.url.searchParams.get('$select');
+  if (text?.trim() === '*') return `${set}(*)`;
+  const names = [...new Set(parseSelect(text) ?? [])];
+  return names.length ? `${set}(${names.join(',')})` : set;
+}
+
+// Preference-Applied for the Prefer options the caller sent, as the records layer echoes them.
+const appliedHeaders = (prefer, options) => {
+  const applied = preferenceApplied(prefer, options);
+  return applied ? { 'Preference-Applied': applied } : {};
+};
 // One read through records for one source table. A missing row is no answer (null); a denial (403) reaches the caller.
 async function callSource(c, api, pathname, search = '', prefer = PAGE_PREFER(c)) {
   const url = new URL(c.url.href);
@@ -150,7 +173,7 @@ async function getCollection(c, api) {
   }
   const end = Math.min(cap, offset + pageSize);
   const page = rows.slice(offset, end);
-  const body = { '@odata.context': contextUrl(c.origin, c.version, SET) };
+  const body = { '@odata.context': contextUrl(c.origin, c.version, contextSuffix(c, SET)) };
   if (params.get('$count') === 'true') body['@odata.count'] = rows.length;
   body.value = page.map((row) => pick(row, select));
   if (end < cap) {
@@ -162,16 +185,22 @@ async function getCollection(c, api) {
     });
     const query = new URLSearchParams(params);
     query.delete('$skiptoken');
-    const text = query.toString().replace(/%24/g, '$');
+    const text = query.toString().replaceAll('%24', '$');
+    const queryPrefix = text ? text + '&' : '';
     body['@odata.nextLink'] =
-      `${c.origin}/api/data/${c.version}/${SET}?${text ? `${text}&` : ''}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
+      `${c.origin}/api/data/${c.version}/${SET}?${queryPrefix}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
   }
-  return { status: 200, body };
+  return { status: 200, headers: appliedHeaders(c.prefer, { paged: true }), body };
 }
 
 const missingRow = (id) =>
   new DataError(`${LOGICAL} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
-const idInKey = (pathname) => /\(([^)]*)\)/.exec(pathname)?.[1];
+const idInKey = (pathname) => {
+  const start = pathname.indexOf('(');
+  if (start < 0) return undefined;
+  const end = pathname.indexOf(')', start + 1);
+  return end < 0 ? undefined : pathname.slice(start + 1, end);
+};
 
 // The activity row a key names, from whichever activity table holds it.
 async function getEntity(c, api) {
@@ -182,8 +211,9 @@ async function getEntity(c, api) {
     if (!result?.body) continue;
     return {
       status: 200,
+      headers: appliedHeaders(c.prefer),
       body: {
-        '@odata.context': contextUrl(c.origin, c.version, `${SET}/$entity`),
+        '@odata.context': contextUrl(c.origin, c.version, `${contextSuffix(c, SET)}/$entity`),
         ...pick(projectRow(result.body, source), select),
       },
     };

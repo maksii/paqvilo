@@ -66,6 +66,7 @@ test('async model startup matches synchronous indexing and bounds concurrent met
     }
   });
   const asyncModel = await PortalModel.create(fx.dir);
+  // 16: the metadata prefetch concurrency in lense/portal-model.mjs; the 40 extra files exceed it.
   assert.ok(peak > 1 && peak <= 16, `bounded parallel reads, observed ${peak}`);
   assert.deepEqual([...asyncModel.pages], [...sync.pages]);
   assert.deepEqual(asyncModel.webFiles, sync.webFiles);

@@ -2,11 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { startAdminApi } from './support/web-api.mjs';
 import { failDuplicateSeededKeys } from '../lib/dataverse-metadata-tables.mjs';
 
-const APP = '55555555-5555-4555-8555-555555555555';
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
 const column = (schema, extra = {}) => ({
   '@odata.type': '#Microsoft.Dynamics.CRM.StringAttributeMetadata',
@@ -17,45 +15,9 @@ const column = (schema, extra = {}) => ({
   ...extra,
 });
 
-let counter = 0;
 async function server(t, state = emptyState()) {
-  const variable = `PAQ_KEY_SECRET_${process.pid}_${++counter}`;
-  process.env[variable] = 'invented-secret';
   const store = await new DataStore({ state }).init();
-  const settings = dataverseSettings({
-    enabled: true,
-    tds: { enabled: false },
-    applications: [
-      { appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
-    ],
-  });
-  const api = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(async () => {
-    delete process.env[variable];
-    await api.close();
-  });
-  const token = (
-    await (
-      await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-        method: 'POST',
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: APP,
-          client_secret: 'invented-secret',
-          scope: `${api.origin}/.default`,
-        }),
-      })
-    ).json()
-  ).access_token;
-  const request = async (method, path, body, headers = {}) => {
-    const response = await fetch(`${api.origin}/api/data/v9.2${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    return { status: response.status, json: text ? JSON.parse(text) : null };
-  };
+  const { request } = await startAdminApi(t, store);
   return { store, request };
 }
 
@@ -90,15 +52,14 @@ async function table(host, codes, headers = {}) {
     assert.equal((await host.request('POST', '/fx_dupes', { fx_name: `row ${index}`, fx_code: code })).status, 204);
 }
 const keyRow = (host) => host.store.state.mappings.fx_dupe.alternateKeys.find((key) => key.name === 'fx_codekey');
+// The index job runs on the store's scheduler: drain() returns once every started and next-turn task has settled.
 async function settled(host) {
-  for (let i = 0; i < 200; i++) {
-    const key = keyRow(host);
-    const job =
-      key?.asyncJob && host.store.state.tables.asyncoperation.find((row) => row.asyncoperationid === key.asyncJob);
-    if (job?.statecode === 3) return { key, job };
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('The index job did not complete.');
+  await host.store.scheduler.drain();
+  const key = keyRow(host);
+  const job =
+    key?.asyncJob && host.store.state.tables.asyncoperation.find((row) => row.asyncoperationid === key.asyncJob);
+  assert.equal(job?.statecode, 3, 'the index job completed');
+  return { key, job };
 }
 const createKey = (host, headers = {}) =>
   host.request(
@@ -207,9 +168,8 @@ test('ReactivateEntityKey after the duplicate is fixed makes a Failed key Active
     ).status,
     204,
   );
-  for (let i = 0; i < 200 && keyRow(host).asyncJob === failedJob; i++)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  await settled(host);
+  const { key } = await settled(host);
+  assert.notEqual(key.asyncJob, failedJob, 'reactivation runs a new index job');
   assert.equal(await status(host), 'Active');
 });
 

@@ -1,6 +1,8 @@
+// @test-kind contract: the content fingerprint is the designed identity of a Solution load, including its side-file walk
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import syncFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -8,11 +10,18 @@ import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs'
 import { importSolutionData, applySolutionData } from '../lib/solution-data.mjs';
 import { emptyState } from '../lib/data.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
+import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import {
   solutionContentFingerprint,
   solutionContentPath,
   solutionLayerFiles,
 } from '../lib/solution-content-fingerprint.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
+import { SolutionFileCache } from '../lib/solution-cache.mjs';
+import { scanSolutionSources } from '../lib/solution-schema.mjs';
+import { bootstrapProject } from '../lib/project-config.mjs';
+import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const xml = (name) =>
   `<ImportExportXml><Entities><Entity><Name>sample_item</Name><EntityInfo><entity Name="sample_item"><attributes><attribute><LogicalName>sample_itemid</LogicalName><Type>primarykey</Type></attribute><attribute><LogicalName>${name}</LogicalName><Type>nvarchar</Type></attribute></attributes><EntitySetName>sample_items</EntitySetName></entity></EntityInfo></Entity></Entities></ImportExportXml>`;
@@ -26,7 +35,7 @@ test('legacy and source-free metadata omit an unavailable content fingerprint th
 });
 
 test('public content fingerprints survive relocation while physical cache identities remain distinct', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-content-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-content-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const left = path.join(root, 'original'),
     right = path.join(root, 'relocated-and-renamed');
@@ -94,7 +103,9 @@ test('content identity uses relative filenames, logical layer identities and sel
 });
 
 test('a ZIP layer listing never inflates entries outside the requested folders and is memoised per archive stamp', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fingerprint-zip-'));
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'fingerprint-zip-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const archive = path.join(root, 'invented.zip'),
     msappName = 'CanvasApps/x_app_DocumentUri.msapp';
@@ -127,4 +138,169 @@ test('a ZIP layer listing never inflates entries outside the requested folders a
       .toString(),
     '{"v":22}',
   );
+});
+
+test('side-file hashes persist across restarts and changed, added or removed side files change the fingerprint', async (t) => {
+  const settled = settleFileTimes(t);
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'fingerprint-side-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution'),
+    cacheFile = path.join(root, '.paqvilo', 'solution-cache.json'),
+    script = path.join(solution, 'WebResources', 'x_', 'script.js'),
+    added = path.join(solution, 'Workflows', 'x_flow.json'),
+    archive = path.join(root, 'invented.zip');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(path.dirname(script), { recursive: true });
+  await fs.writeFile(path.join(solution, 'Other', 'Customizations.xml'), xml('name'));
+  await fs.writeFile(script, 'invented();');
+  await fs.writeFile(
+    archive,
+    writeSolutionAssetEntries([{ name: 'workflows/x_flow.json', data: Buffer.from('{"invented":1}') }]),
+  );
+  const zip = { type: 'zip', dir: archive, solution: { uniqueName: 'archive' } };
+  // One restart: a fresh cache object over the persisted file; the side hashes it supplies, then a save.
+  const restart = async (edit = () => {}) => {
+    const cache = await SolutionFileCache.open(cacheFile);
+    const scan = await scanSolutionSources([solution], { cache });
+    edit(cache);
+    const layers = [...scan.layers, zip];
+    const value = solutionContentFingerprint(layers, { cache });
+    await cache.save();
+    return { value, uncached: solutionContentFingerprint(layers) };
+  };
+  const first = await restart();
+  assert.equal(first.value, first.uncached);
+  assert.equal((await restart()).value, first.value);
+  // A stored hash for an unchanged stamp is used as is: an unchanged side file is stat'ed, never read.
+  const tampered = await restart((cache) => {
+    cache.entries.get(script).hash = 'invented stored hash';
+  });
+  assert.notEqual(tampered.value, first.value);
+  assert.equal(tampered.uncached, first.value);
+  const listing = await restart((cache) => {
+    cache.entries.get(archive).results['side-files@1'] = [['workflows/x_flow.json', 'invented stored hash']];
+  });
+  assert.notEqual(listing.value, first.value, 'An unchanged archive reuses its stored side-file listing');
+  // The tampered entries were saved: restore real hashes by changing the files' stamps.
+  settled.restore();
+  await fs.writeFile(script, 'invented(); // edited');
+  const changed = await restart();
+  assert.equal(changed.value, changed.uncached);
+  assert.notEqual(changed.value, first.value, 'A changed side file changes the fingerprint');
+  await fs.writeFile(script, 'invented();');
+  await fs.writeFile(
+    archive,
+    writeSolutionAssetEntries([{ name: 'workflows/x_flow.json', data: Buffer.from('{"invented":1}') }]),
+  );
+  const restored = await restart();
+  assert.equal(restored.value, first.value);
+  await fs.mkdir(path.dirname(added), { recursive: true });
+  await fs.writeFile(added, '{}');
+  const grown = await restart();
+  assert.equal(grown.value, grown.uncached);
+  assert.notEqual(grown.value, first.value, 'An added side file changes the fingerprint');
+  await fs.rm(added);
+  assert.equal((await restart()).value, first.value, 'A removed side file restores the fingerprint');
+});
+
+test('one Solution load walks each side folder once and computes its content fingerprint once', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'fingerprint-walk-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(path.join(solution, 'WebResources', 'x_'), { recursive: true });
+  await fs.writeFile(path.join(solution, 'Other', 'Customizations.xml'), xml('name'));
+  await fs.writeFile(path.join(solution, 'WebResources', 'x_', 'script.js'), 'invented();');
+  const readdirSync = syncFs.readdirSync;
+  const walked = [];
+  t.mock.method(syncFs, 'readdirSync', (dir, options) => {
+    const relative = path.relative(solution, String(dir));
+    if (relative.split(path.sep)[0] === 'WebResources') walked.push(relative.split(path.sep).join('/'));
+    return readdirSync(dir, options);
+  });
+  await loadOrganizationSources({ solutionRoots: [solution], cacheFile: path.join(root, '.paqvilo', 'solution.json') });
+  assert.deepEqual(
+    walked.sort(),
+    ['WebResources', 'WebResources/x_'],
+    'each side folder is read once per load, not once per fingerprint',
+  );
+});
+
+test('a Solution load reports the metadata content fingerprint and sees a side-file edit on the next load', async (t) => {
+  const settled = settleFileTimes(t);
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'fingerprint-reload-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution'),
+    script = path.join(solution, 'WebResources', 'x_', 'script.js');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(path.dirname(script), { recursive: true });
+  await fs.writeFile(path.join(solution, 'Other', 'Customizations.xml'), xml('name'));
+  await fs.writeFile(script, 'invented();');
+  const first = await loadOrganizationSources({ solutionRoots: [solution] });
+  assert.equal(first.metadata.contentFingerprint, (await importSolutionMetadata([solution])).contentFingerprint);
+  settled.restore();
+  await fs.writeFile(script, 'invented(); // edited');
+  const second = await loadOrganizationSources({ solutionRoots: [solution] });
+  assert.notEqual(second.metadata.contentFingerprint, first.metadata.contentFingerprint);
+  assert.equal(second.metadata.contentFingerprint, (await importSolutionMetadata([solution])).contentFingerprint);
+});
+
+// One Solution with a side file and a portal with one page, under a fresh temporary root.
+async function sideFolderLoad(t, prefix) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution'),
+    portal = path.join(root, 'portal'),
+    script = path.join(solution, 'WebResources', 'x_', 'script.js');
+  const files = {
+    [path.join(solution, 'Other', 'Customizations.xml')]: xml('name'),
+    [script]: 'invented();',
+    [path.join(portal, 'website.yml')]: 'adx_name: Invented\nadx_websiteid: 6a0f0c2e-0000-4000-8000-000000000098\n',
+    [path.join(portal, 'web-pages', 'home', 'Home.webpage.yml')]:
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
+    [path.join(portal, 'page-templates', 'Main.pagetemplate.yml')]: 'adx_pagetemplateid: main\nadx_webtemplateid: main',
+    [path.join(portal, 'web-templates', 'Main.webtemplate.yml')]: 'adx_webtemplateid: main\nadx_name: Main',
+    [path.join(portal, 'web-templates', 'Main.webtemplate.source.html')]: '<p>home</p>',
+  };
+  for (const [file, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, body);
+  }
+  return { solution, portal, script };
+}
+
+// Records each read of the WebResources side folder. The second read of one load rewrites the script first, so a
+// second walk would hash different bytes than the first one did.
+function observeSideWalks(t, solution, script) {
+  const readdirSync = syncFs.readdirSync;
+  const walked = [];
+  t.mock.method(syncFs, 'readdirSync', (dir, options) => {
+    const relative = path.relative(solution, String(dir)).split(path.sep).join('/');
+    if (relative === 'WebResources' || relative.startsWith('WebResources/')) walked.push(relative);
+    if (relative === 'WebResources' && walked.filter((name) => name === relative).length === 2)
+      syncFs.writeFileSync(script, 'invented(); // edited during the load');
+    return readdirSync(dir, options);
+  });
+  return walked;
+}
+
+test('one project bootstrap walks each side folder once and its schema, metadata and data share one fingerprint', async (t) => {
+  const { solution, portal, script } = await sideFolderLoad(t, 'fingerprint-project-');
+  const walked = observeSideWalks(t, solution, script);
+  const project = await bootstrapProject({
+    portals: [{ id: 'portal', sourceDir: portal }],
+    solutionRoots: [solution],
+    lcid: 1033,
+  });
+  const [{ metadata, solutionData }] = project.portals;
+  assert.deepEqual(walked.sort(), ['WebResources', 'WebResources/x_'], 'each side folder is read once per load');
+  assert.equal(solutionData.schema.contentFingerprint, solutionData.contentFingerprint);
+  assert.equal(metadata.contentFingerprint, solutionData.contentFingerprint);
+});
+
+test('one bootstrap report walks each side folder once', async (t) => {
+  const { solution, portal, script } = await sideFolderLoad(t, 'fingerprint-report-');
+  const walked = observeSideWalks(t, solution, script);
+  await bootstrapReport(await resolveReportInputs({ source: portal, 'solution-root': [solution] }), { noCache: true });
+  assert.deepEqual(walked.sort(), ['WebResources', 'WebResources/x_'], 'each side folder is read once per load');
 });

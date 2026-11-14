@@ -1,5 +1,6 @@
 // The Response answers the caller, the run's outcome is its own. A Response 200 followed by a connector 500 leaves the
 // caller with 200 and the run Failed.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -40,7 +41,7 @@ async function unit(t, definition) {
     flowOf: () => ({ definition, mode: 'exported', connectors }),
   });
   runs.attach({});
-  t.after(() => {
+  ownedFixture(t).add(() => {
     runs.close();
     scheduler.close();
   });

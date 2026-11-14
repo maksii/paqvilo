@@ -21,11 +21,13 @@ const SIGN_IN_MARKERS = Object.freeze([
 /** Preserve surrounding markup/JSON and URL paths while removing query values. */
 export function redactEmbeddedQueryValues(text) {
   return String(text ?? '').replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
-    const ending = raw.match(/[),.;\]}]+$/)?.[0] ?? '';
+    let end = raw.length;
+    while (end > 0 && '),.;]}'.includes(raw[end - 1])) end--;
+    const ending = raw.slice(end);
     const body = ending ? raw.slice(0, -ending.length) : raw;
-    const escapedSlashes = body.includes('\\/');
-    const separator = body.match(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/i)?.[0];
-    const plain = body.replaceAll('\\/', '/').replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, '&');
+    const escapedSlashes = body.includes(String.raw`\/`);
+    const separator = /&(?:amp;|#0*38;|#x0*26;)|\\u0026/i.exec(body)?.[0];
+    const plain = body.replaceAll(String.raw`\/`, '/').replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, '&');
     const question = plain.indexOf('?');
     if (question < 0) return raw;
     try {
@@ -34,7 +36,7 @@ export function redactEmbeddedQueryValues(text) {
       return raw;
     }
     const hash = plain.indexOf('#', question);
-    const query = plain.slice(question + 1, hash < 0 ? undefined : hash);
+    const query = plain.slice(question + 1, hash < 0 ? plain.length : hash);
     const fragment = hash < 0 ? '' : plain.slice(hash);
     const safe = query
       .split('&')
@@ -46,7 +48,7 @@ export function redactEmbeddedQueryValues(text) {
       })
       .join(separator ?? '&');
     const result = plain.slice(0, question + 1) + safe + fragment;
-    return (escapedSlashes ? result.replaceAll('/', '\\/') : result) + ending;
+    return (escapedSlashes ? result.replaceAll('/', String.raw`\/`) : result) + ending;
   });
 }
 
@@ -108,6 +110,224 @@ export function redactTokens(text) {
   );
 }
 
+// Credential-bearing keys (identity callbacks, token responses, SAML and WS-Federation assertions): their values are
+// replaced in every recorded request and response body, JSON or form-encoded, at any depth.
+const CREDENTIAL_KEYS = new Set(
+  [
+    'id_token',
+    'access_token',
+    'refresh_token',
+    'client_secret',
+    'client_assertion',
+    'password',
+    'samlresponse',
+    'wresult',
+    'assertion',
+  ].map((key) => key.toLowerCase()),
+);
+// Flow keys name an OAuth code or state, which an ordinary API body also uses for row columns and error codes. Their
+// values are replaced in form-encoded bodies, and in JSON only at the top level of a request body or a token response.
+const FLOW_KEYS = new Set(['code', 'state', 'session_state']);
+// The OAuth 2.0 token path, on an identity provider or on a local authority that serves the same path.
+const TOKEN_ENDPOINT = /\/oauth2\/(?:v2\.0\/)?token$/i;
+const CREDENTIAL_PLACEHOLDER = '{token}';
+const isCredentialKey = (key) => CREDENTIAL_KEYS.has(String(key).toLowerCase());
+const isFlowKey = (key) => FLOW_KEYS.has(String(key).toLowerCase());
+const isAnyCredentialKey = (key) => isCredentialKey(key) || isFlowKey(key);
+function isTokenEndpoint(url) {
+  try {
+    return TOKEN_ENDPOINT.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+function parseJsonObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+// flowKeys: the object is the top level of a body whose flow keys are redacted too.
+function redactJsonCredentials(value, flowKeys) {
+  if (Array.isArray(value)) return value.map((item) => redactJsonCredentials(item, false));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      isCredentialKey(key) || (flowKeys && isFlowKey(key))
+        ? CREDENTIAL_PLACEHOLDER
+        : redactJsonCredentials(item, false),
+    ]),
+  );
+}
+function decodeFormKey(key) {
+  try {
+    return decodeURIComponent(key.replaceAll('+', ' '));
+  } catch {
+    return key;
+  }
+}
+function redactFormCredentials(text) {
+  // Spaces in a form body are encoded, so raw whitespace or markup means the text is not a form body.
+  if (/[\s<]/.test(text)) return text;
+  let changed = false;
+  const pairs = text.split('&').map((pair) => {
+    const equals = pair.indexOf('=');
+    if (equals < 0 || !isAnyCredentialKey(decodeFormKey(pair.slice(0, equals)))) return pair;
+    changed = true;
+    return pair.slice(0, equals + 1) + CREDENTIAL_PLACEHOLDER;
+  });
+  return changed ? pairs.join('&') : text;
+}
+/**
+ * Keep the keys and replace each credential value with {token}; a body without credential keys is returned as is.
+ * flowKeys: whether the top level of a JSON body also redacts code, state and session_state.
+ */
+export function redactCredentialBody(text, flowKeys) {
+  const value = parseJsonObject(text);
+  if (value === null) return redactFormCredentials(text);
+  const redacted = JSON.stringify(redactJsonCredentials(value, flowKeys));
+  return redacted === JSON.stringify(value) ? text : redacted;
+}
+// A body that carries a credential takes the redacted-text provenance, as a body changed by the token redaction does.
+function redactCredentialResponse(response, tokenEndpoint) {
+  if (typeof response?.body !== 'string') return response;
+  const body = redactCredentialBody(response.body, tokenEndpoint);
+  if (body === response.body) return response;
+  const result = { ...response, body };
+  delete result.bodyHashInput;
+  result.bodyHashProvenance = 'redacted-text-sha256';
+  return result;
+}
+function redactCredentialEntry(entry) {
+  // A request body's top level always takes the flow keys; a response does so only from a token endpoint.
+  const result = { ...entry, response: redactCredentialResponse(entry.response, isTokenEndpoint(entry.url)) };
+  if (typeof entry.body === 'string') result.body = redactCredentialBody(entry.body, true);
+  return result;
+}
+// A hidden form input that names a credential keeps its name and loses its value, in every captured DOM. Attribute
+// values may be double-quoted, single-quoted or unquoted, in any order and letter case. The attributes of a tag are read
+// once, left to right, so text inside another attribute's value is never taken for an attribute.
+const QUOTE_CHARACTERS = new Set(['"', "'"]);
+const attributeNameEnd = (text, index) => {
+  let end = index;
+  while (end < text.length && !/[\s=/>]/.test(text[end])) end++;
+  return end;
+};
+const skipSpace = (text, index) => {
+  let end = index;
+  while (end < text.length && /\s/.test(text[end])) end++;
+  return end;
+};
+// A quoted value ends at its matching quote, or at the end of the text when that quote never closes. An unquoted value
+// ends at whitespace or '>'. `next` is the index after the value.
+const attributeValue = (text, start) => {
+  const quote = QUOTE_CHARACTERS.has(text[start]) ? text[start] : null;
+  if (quote) {
+    const close = text.indexOf(quote, start + 1);
+    const valueEnd = close < 0 ? text.length : close;
+    return {
+      value: text.slice(start + 1, valueEnd),
+      valueStart: start + 1,
+      valueEnd,
+      quote,
+      next: close < 0 ? text.length : close + 1,
+    };
+  }
+  let valueEnd = start;
+  while (valueEnd < text.length && !/[\s>]/.test(text[valueEnd])) valueEnd++;
+  return { value: text.slice(start, valueEnd), valueStart: start, valueEnd, quote: null, next: valueEnd };
+};
+// The attribute that starts at `index`. A name without '=' has an empty value and no value span (valueStart -1).
+const readAttribute = (text, index) => {
+  const nameEnd = attributeNameEnd(text, index);
+  const name = text.slice(index, nameEnd).toLowerCase();
+  const equals = skipSpace(text, nameEnd);
+  if (text[equals] !== '=') {
+    return { attribute: { name, value: '', valueStart: -1, valueEnd: -1, quote: null }, next: equals };
+  }
+  const { next, ...value } = attributeValue(text, skipSpace(text, equals + 1));
+  return { attribute: { name, ...value }, next };
+};
+// The attributes of an '<input' tag, in order. The first occurrence of a name is the one that counts, as in HTML.
+function inputAttributes(tag) {
+  const attributes = [];
+  let index = '<input'.length;
+  while (index < tag.length && tag[index] !== '>') {
+    if (/[\s/]/.test(tag[index])) {
+      index++;
+    } else {
+      const { attribute, next } = readAttribute(tag, index);
+      attributes.push(attribute);
+      index = next;
+    }
+  }
+  return attributes;
+}
+const attributeNamed = (attributes, name) => attributes.find((attribute) => attribute.name === name);
+function redactCredentialTag(tag) {
+  const attributes = inputAttributes(tag);
+  const name = attributeNamed(attributes, 'name')?.value;
+  const type = attributeNamed(attributes, 'type')?.value.toLowerCase();
+  if (type !== 'hidden' || !name || !isAnyCredentialKey(name)) return tag;
+  const value = attributeNamed(attributes, 'value');
+  if (!value || value.valueStart < 0) return tag;
+  const quoteWidth = value.quote ? 1 : 0;
+  const before = tag.slice(0, value.valueStart - quoteWidth);
+  return `${before}"${CREDENTIAL_PLACEHOLDER}"${tag.slice(value.valueEnd + quoteWidth)}`;
+}
+// The '>' that closes the tag whose attributes start at `from`, searched only before `limit` (the next '<input').
+// A '>' inside a quoted attribute value does not close the tag, and a quote opens a value only after '=', as in HTML.
+// When no '>' outside a quote closes the tag before `limit`, the first '>' before `limit` ends it; -1 when there is none.
+function closingBracket(text, from, limit) {
+  let quote = null;
+  let afterEquals = false;
+  let firstBracket = -1;
+  for (let index = from; index < limit; index++) {
+    const char = text[index];
+    if (char === '>' && firstBracket < 0) firstBracket = index;
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '>') {
+      return index;
+    } else if (afterEquals && (char === '"' || char === "'")) {
+      quote = char;
+    }
+    if (char === '=') afterEquals = true;
+    else if (!/\s/.test(char)) afterEquals = false;
+  }
+  return firstBracket;
+}
+// Every '<input' starts its own tag and every tag ends before the next '<input', so no input is skipped and the scan
+// stays linear: each span between two '<input' starts is read a bounded number of times. A tag with no closing bracket
+// before the next '<input' (or the end of the text, for a truncated capture) runs to that limit.
+export function redactDomCredentials(html) {
+  const text = String(html);
+  const starts = /<input\b/gi;
+  let output = '';
+  let copied = 0;
+  let match = starts.exec(text);
+  while (match) {
+    const from = match.index + match[0].length;
+    starts.lastIndex = from;
+    const next = starts.exec(text);
+    const limit = next ? next.index : text.length;
+    const close = closingBracket(text, from, limit);
+    const end = close < 0 ? limit : close + 1;
+    output += text.slice(copied, match.index) + redactCredentialTag(text.slice(match.index, end));
+    copied = end;
+    starts.lastIndex = copied;
+    match = starts.exec(text);
+  }
+  return output + text.slice(copied);
+}
+function redactCredentialEvidence(raw) {
+  if (!Array.isArray(raw?.requests)) return raw;
+  return { ...raw, requests: raw.requests.map(redactCredentialEntry) };
+}
+
 // The capture's own origin (referer, origin, location headers) is reduced to the same `{site}` form the meta uses.
 export const siteOriginPlaceholder = (origin) => {
   try {
@@ -129,7 +349,7 @@ function redactHeaders(headers, origin = null) {
               .split(/,(?=\s*\w+=)|;/)
               .map((part) => part.split('=')[0].trim())
               .filter(Boolean)
-              .sort()
+              .sort(/* NOSONAR: preserve default string coercion */)
               .join(';')
           : '{token}';
     } else {
@@ -146,7 +366,7 @@ function redactHeaders(headers, origin = null) {
  * its page and returns { summary, raw }. It must not reference module scope (it is stringified).
  * options: { origin, scenario, ids, allowWrites, allowPaths, allowEntitySets, readPosts, signInMarkers, settle, textTypes, maxBody }
  */
-export async function pageRunner(page, options) {
+/* NOSONAR */ export async function pageRunner(page, options) {
   const {
     origin,
     scenario,
@@ -158,23 +378,25 @@ export async function pageRunner(page, options) {
     settle: settleDefaults = {},
     maxBody = 2 * 1024 * 1024,
     readPosts = ['^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)', '^/_services/entity-notes/[^/]+$'],
+    // Hang guard for the screenshot, in milliseconds; the page's own screenshot deadline is disabled.
+    screenshotGuardMs = 240_000,
   } = options;
   const textTypes = new RegExp(
     options.textTypes ??
-      '^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\\+json)|.*\\+json|.*\\+xml)',
+      String.raw`^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\+json)|.*\+json|.*\+xml)`,
     'i',
   );
   const sleep = (ms) => page.waitForTimeout(ms);
   const resolve = (text) =>
     String(text ?? '').replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
-      if (!Object.prototype.hasOwnProperty.call(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
+      if (!Object.hasOwn(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
       return String(ids[alias]);
     });
   const context = page.context();
   const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(origin).hostname);
   const allowWrite = (method, pathname) => {
     // A local runtime's own instrumentation endpoints are not scenario writes.
-    if (loopback && /^\/__sim\//.test(pathname)) return true;
+    if (loopback && pathname.startsWith('/__sim/')) return true;
     // Portal list/grid data is fetched with POST but reads only (entity-grid-data.json and friends).
     if (readPosts.some((pattern) => new RegExp(pattern).test(pathname))) return true;
     if (!allowWrites) return false;
@@ -187,6 +409,9 @@ export async function pageRunner(page, options) {
   const owned = await context.newPage();
   await owned.setViewportSize({ width: 1440, height: 1000 });
   const inflight = new Set();
+  // Response-body reads the capture owns, by request: settle waits for them. A read of a request still in flight is left
+  // to its page, which closes at the end and ends the read.
+  const bodyReads = new Map();
   let lastActivity = Date.now();
   let seq = 0;
   const entries = new Map();
@@ -198,73 +423,65 @@ export async function pageRunner(page, options) {
     }
   };
   const identityHosts = /(?:^|\.)login\.microsoftonline\.com$|(?:^|\.)login\.live\.com$|(?:^|\.)b2clogin\.com$/i;
+  const hostOf = (value) => {
+    try {
+      return new URL(value).hostname;
+    } catch {
+      return '';
+    }
+  };
+  const referrerHost = (request) => hostOf(request.headers().referer) || hostOf(request.headers().origin);
+  const isTopLevel = (request) => request.frame()?.parentFrame() === null;
+  // Identity traffic is the sign-in flow's own navigations: a provider's form_post back to the portal, a form
+  // posted from an identity host, the start of an external challenge, or a top-level navigation to an identity host.
+  const isIdentityTraffic = (request, url) => {
+    if (!request.isNavigationRequest()) return false;
+    if (url.origin !== origin) return identityHosts.test(url.hostname) && isTopLevel(request);
+    const headers = request.headers();
+    return (
+      /^\/signin-[^/]+$/i.test(url.pathname) ||
+      /^\/Account\/Login\/ExternalLogin$/i.test(url.pathname) ||
+      [headers.referer, headers.origin].some((value) => identityHosts.test(hostOf(value)))
+    );
+  };
+  // Entries name the host only when it is not the portal's own, so portal evidence keeps its {method, path} shape.
+  const hostField = (url) => (url.origin === origin ? {} : { host: url.hostname });
+  // The guard covers the captured origin: its writes are blocked unless the run allows them. Identity navigations are
+  // recorded wherever they go, and every other request to another origin is left to the browser.
+  let contextClosed = false;
+  // A route answer can fail because its page or popup closed while the request was in flight. That failure is ignored
+  // only when the route's page reports that it is closed, or the context has closed; the decision never reads the
+  // error's text. A page that cannot be reached is not treated as closed. Defined here because pageRunner is
+  // serialised.
+  const routePageClosed = (route) => {
+    try {
+      return route.request().frame().page().isClosed() === true;
+    } catch {
+      return false;
+    }
+  };
+  const answerRoute = (route, action) =>
+    Promise.resolve(action).catch((error) => {
+      if (!routePageClosed(route) && !contextClosed) throw error;
+    });
   const guard = async (route) => {
     const request = route.request();
     const method = request.method().toUpperCase();
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return route.fallback();
-    const pathname = new URL(request.url()).pathname;
-    // The browser's own sign-in completion (an identity provider's form_post back to the portal)
-    // is identity traffic, not a scenario write: let it through and record it.
-    const headers = request.headers();
-    let referrer = '';
-    try {
-      referrer = new URL(headers.referer || headers.origin || '').hostname;
-    } catch {
-      /* no referrer */
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return answerRoute(route, route.fallback());
+    const url = new URL(request.url());
+    if (isIdentityTraffic(request, url)) {
+      raw.identityTraffic.push({ method, path: url.pathname, ...hostField(url), from: referrerHost(request) });
+      return answerRoute(route, route.fallback());
     }
-    if (
-      request.isNavigationRequest() &&
-      (identityHosts.test(referrer) ||
-        /^\/signin(?:-|\/|$|\?)/i.test(pathname) ||
-        /^\/Account\/Login\//i.test(pathname))
-    ) {
-      raw.identityTraffic.push({ method, path: pathname, from: referrer });
-      return route.fallback();
-    }
-    if (allowWrite(method, pathname)) return route.fallback();
-    raw.blockedWrites.push({ method, path: pathname });
-    return route.abort('blockedbyclient');
+    if (url.origin !== origin || allowWrite(method, url.pathname)) return answerRoute(route, route.fallback());
+    raw.blockedWrites.push({ method, path: url.pathname });
+    return answerRoute(route, route.abort('blockedbyclient'));
   };
-  await owned.route((url) => url.origin === origin, guard);
-  owned.on('request', (request) => {
-    lastActivity = Date.now();
-    if (!sameOrigin(request.url())) return;
-    const method = request.method().toUpperCase();
-    const entry = {
-      seq: ++seq,
-      method,
-      url: request.url(),
-      resourceType: request.resourceType(),
-      headers: request.headers(),
-      body: method === 'GET' || method === 'HEAD' ? null : (request.postData() ?? ''),
-      response: null,
-    };
-    entries.set(request, entry);
-    raw.requests.push(entry);
-    // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
-    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !/^\/__sim\//.test(new URL(entry.url).pathname))
-      inflight.add(request);
-  });
-  owned.on('requestfailed', (request) => {
-    inflight.delete(request);
-    const entry = entries.get(request);
-    if (entry) entry.response = { status: 0, failure: (request.failure() && request.failure().errorText) || 'failed' };
-  });
-  owned.on('requestfinished', (request) => inflight.delete(request));
-  owned.on('response', async (response) => {
-    lastActivity = Date.now();
-    const entry = entries.get(response.request());
-    if (!entry) return;
-    const headers = response.headers();
-    const contentType = headers['content-type'] || '';
-    entry.response = {
-      status: response.status(),
-      headers,
-      body: null,
-      bodyBytes: null,
-      bodySha256: null,
-      binary: !textTypes.test(contentType),
-    };
+  // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work, and
+  // their bodies are never read to the end.
+  const persistent = (request) =>
+    /^(?:eventsource|websocket)$/.test(request.resourceType()) || new URL(request.url()).pathname.startsWith('/__sim/');
+  const readBody = async (response, entry) => {
     try {
       const buffer = await response.body();
       entry.response.bodyBytes = buffer.length;
@@ -275,17 +492,156 @@ export async function pageRunner(page, options) {
     } catch {
       /* redirects and aborted responses expose no body */
     }
-  });
+  };
+  const trackBodyRead = (request, read) => {
+    if (persistent(request)) return;
+    bodyReads.set(
+      request,
+      read.then(() => bodyReads.delete(request)),
+    );
+  };
+  // Returns the requests this target contributed to the capture, so a page that turns out to be unrelated can be dropped,
+  // and `detach`, which removes the listeners that observe it.
+  const observe = (target) => {
+    const recorded = [];
+    const onRequest = (request) => {
+      lastActivity = Date.now();
+      if (!sameOrigin(request.url())) return;
+      const method = request.method().toUpperCase();
+      const entry = {
+        seq: ++seq,
+        method,
+        url: request.url(),
+        resourceType: request.resourceType(),
+        headers: request.headers(),
+        body: method === 'GET' || method === 'HEAD' ? null : (request.postData() ?? ''),
+        response: null,
+      };
+      entries.set(request, entry);
+      raw.requests.push(entry);
+      recorded.push(request);
+      if (!persistent(request)) inflight.add(request);
+    };
+    const onRequestFailed = (request) => {
+      inflight.delete(request);
+      const entry = entries.get(request);
+      if (entry) entry.response = { status: 0, failure: request.failure()?.errorText || 'failed' };
+    };
+    const onRequestFinished = (request) => {
+      inflight.delete(request);
+    };
+    const onResponse = (response) => {
+      lastActivity = Date.now();
+      const entry = entries.get(response.request());
+      if (!entry) return;
+      const headers = response.headers();
+      const contentType = headers['content-type'] || '';
+      entry.response = {
+        status: response.status(),
+        headers,
+        body: null,
+        bodyBytes: null,
+        bodySha256: null,
+        binary: !textTypes.test(contentType),
+      };
+      trackBodyRead(response.request(), readBody(response, entry));
+    };
+    target.on('request', onRequest);
+    target.on('requestfailed', onRequestFailed);
+    target.on('requestfinished', onRequestFinished);
+    target.on('response', onResponse);
+    const detach = () => {
+      target.off('request', onRequest);
+      target.off('requestfailed', onRequestFailed);
+      target.off('requestfinished', onRequestFinished);
+      target.off('response', onResponse);
+    };
+    return { recorded, detach };
+  };
+  // Playwright's page routes do not see a popup's first request, so the guard lives on the context. A page is
+  // unrelated only when its opener is known to be unrelated (no opener, or an unrelated page); any other page,
+  // including one whose opener is unknown, is guarded.
+  const popups = [];
+  const popupWaiters = [];
+  const unrelated = new Set();
+  // Drops what an unrelated page contributed: its entries and its requests in flight.
+  const forget = (requests) => {
+    const dropped = new Set(requests.map((request) => entries.get(request)));
+    for (const request of requests) {
+      inflight.delete(request);
+      bodyReads.delete(request);
+      entries.delete(request);
+    }
+    for (let index = raw.requests.length - 1; index >= 0; index--) {
+      if (dropped.has(raw.requests[index])) raw.requests.splice(index, 1);
+    }
+  };
+  // The page is observed from its creation, so its first request is never missed. It counts only when the owned page opened it.
+  const onPage = async (popup) => {
+    lastActivity = Date.now();
+    const { recorded, detach } = observe(popup);
+    const opener = await popup.opener().catch(() => undefined);
+    if (opener === owned) {
+      popups.push(popup);
+      for (const wake of popupWaiters.splice(0)) wake();
+      return;
+    }
+    if (opener === null || unrelated.has(opener)) unrelated.add(popup);
+    detach();
+    forget(recorded);
+  };
+  const popupsReached = async (count) => {
+    while (popups.length < count) {
+      await new Promise((wake) => {
+        popupWaiters.push(wake);
+      });
+    }
+  };
+  // Resolves from the notifier that onPage signals. The deadline only fails the step when no popup opens in time.
+  const waitForPopups = async (count, ms) => {
+    let timer;
+    const expired = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`no ${count} popup opened within ${ms} ms`)), ms);
+    });
+    try {
+      await Promise.race([popupsReached(count), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const pageOf = (route) => {
+    try {
+      return route.request().frame().page();
+    } catch {
+      return null;
+    }
+  };
+  // The owned page's own route applies the guard to its requests, so the context route leaves them to it.
+  // A context route covers a popup's first request only when this Playwright client resumes the popup; a shared browser
+  // is covered by the suite's browser-session write net.
+  const guardPopups = async (route) => {
+    const page = pageOf(route);
+    if (page === owned || unrelated.has(page)) return answerRoute(route, route.fallback());
+    return answerRoute(route, guard(route));
+  };
+  const onContextClose = () => {
+    contextClosed = true;
+  };
+  context.on('page', onPage);
+  context.on('close', onContextClose);
+  await context.route('**/*', guardPopups);
+  await owned.route('**/*', guard);
+  observe(owned);
   owned.on('console', (message) => {
     const location = message.location();
     raw.console.push({
       type: message.type(),
       text: String(message.text()).slice(0, 2000),
-      url: location && location.url,
-      line: location && location.lineNumber,
+      url: location?.url ?? null,
+      line: location?.lineNumber ?? null,
     });
   });
-  owned.on('pageerror', (error) => raw.pageErrors.push(String((error && error.message) || error).slice(0, 2000)));
+  owned.on('pageerror', (error) => raw.pageErrors.push(String(error?.message || error).slice(0, 2000)));
   owned.on('dialog', async (dialog) => {
     raw.dialogs.push({ type: dialog.type(), message: String(dialog.message()).slice(0, 500) });
     await dialog.accept().catch(() => {});
@@ -335,14 +691,15 @@ export async function pageRunner(page, options) {
       loading = false;
     while (Date.now() - started < timeout) {
       loading = await owned.evaluate(loadingProbe).catch(() => false);
-      if (!loading && inflight.size === 0 && Date.now() - lastActivity >= quietMs) {
+      if (!loading && inflight.size === 0 && bodyReads.size === 0 && Date.now() - lastActivity >= quietMs) {
         settled = true;
         break;
       }
       await sleep(150);
     }
     if (settleMs) await sleep(Math.min(settleMs, 10000));
-    (summary.settlements ??= []).push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
+    if (summary.settlements == null) summary.settlements = [];
+    summary.settlements.push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
     if (!settled) summary.problems.push('page did not settle within ' + timeout + ' ms');
     return settled;
   };
@@ -377,7 +734,7 @@ export async function pageRunner(page, options) {
       throw error;
     }
   };
-  const runStep = async (step) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const runStep = async (step) => {
     const timeout = step.timeout ?? 20000;
     const q = (selector, scope = owned) => scope.locator(resolve(selector)).first();
     if (step.goto !== undefined) {
@@ -404,20 +761,20 @@ export async function pageRunner(page, options) {
       // Files are inline payloads ({ name, mimeType, base64 }) or paths; with `accept` on the input only matching payloads
       // are sent, one unless the input takes several.
       const input = q(step.upload);
-      const accept = ((await input.getAttribute('accept').catch(() => '')) || '')
+      // One wait for the input, under the step's own timeout: the reads below then find it at once.
+      await input.waitFor({ state: 'attached', timeout });
+      const accept = ((await input.getAttribute('accept', { timeout }).catch(() => '')) || '')
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
-      const multiple = await input.evaluate((el) => Boolean(el.multiple)).catch(() => false);
+      const multiple = await input.evaluate((el) => Boolean(el.multiple), undefined, { timeout }).catch(() => false);
       const matches = (file) =>
         !accept.length ||
-        accept.some((rule) =>
-          rule.startsWith('.')
-            ? file.name.toLowerCase().endsWith(rule.toLowerCase())
-            : rule.endsWith('/*')
-              ? file.mimeType.startsWith(rule.slice(0, -1))
-              : rule === file.mimeType,
-        );
+        accept.some((rule) => {
+          if (rule.startsWith('.')) return file.name.toLowerCase().endsWith(rule.toLowerCase());
+          if (rule.endsWith('/*')) return file.mimeType.startsWith(rule.slice(0, -1));
+          return rule === file.mimeType;
+        });
       const files = (step.files || [])
         .map((file) =>
           typeof file === 'string'
@@ -434,6 +791,7 @@ export async function pageRunner(page, options) {
       else if (step.wait.url)
         await owned.waitForURL((url) => new RegExp(step.wait.url).test(url.pathname + url.search), { timeout });
       else if (step.wait.navigation) await owned.waitForLoadState('load', { timeout });
+      else if (step.wait.popup !== undefined) await waitForPopups(step.wait.popup, timeout);
     } else if (step.frame !== undefined) {
       const frame = owned.frameLocator(resolve(step.frame));
       for (const inner of step.steps ?? []) {
@@ -445,27 +803,21 @@ export async function pageRunner(page, options) {
             { timeout },
           );
         else if (inner.check !== undefined) await q(inner.check, frame).setChecked(inner.value !== false, { timeout });
-        else if (inner.wait && inner.wait.selector)
+        else if (inner.wait?.selector)
           await q(inner.wait.selector, frame).waitFor({ state: inner.wait.state ?? 'visible', timeout });
         else throw new Error('Unsupported frame step: ' + Object.keys(inner).join(','));
       }
     } else throw new Error('Unsupported step: ' + Object.keys(step).join(','));
     if (step.settle !== false) await settle(step.settleOptions ?? {});
   };
-  const elementInventory = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const elementInventory = () => {
     const selectorOf = (element) => {
       const parts = [];
-      for (
-        let node = element;
-        node && node.nodeType === 1 && node !== document.documentElement;
-        node = node.parentElement
-      ) {
+      for (let node = element; node?.nodeType === 1 && node !== document.documentElement; node = node.parentElement) {
         let part = node.tagName.toLowerCase();
         if (node.id) part += '#' + CSS.escape(node.id);
         else {
-          const siblings = [...((node.parentElement && node.parentElement.children) || [])].filter(
-            (item) => item.tagName === node.tagName,
-          );
+          const siblings = [...(node.parentElement?.children || [])].filter((item) => item.tagName === node.tagName);
           if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
         }
         parts.unshift(part);
@@ -485,6 +837,11 @@ export async function pageRunner(page, options) {
           secret.test(element.getAttribute('name') || '') && attribute.name === 'value' ? '{token}' : attribute.value;
       }
       const formControl = ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) && element.type !== 'password';
+      const formControlValue = () => {
+        if (element.type === 'checkbox' || element.type === 'radio') return element.checked;
+        if (secret.test(element.name)) return '{token}';
+        return String(element.value ?? '');
+      };
       out.push({
         selector: selectorOf(element),
         tag: element.tagName.toLowerCase(),
@@ -496,12 +853,7 @@ export async function pageRunner(page, options) {
         required: Boolean(element.required) || element.getAttribute('aria-required') === 'true',
         ...(formControl
           ? {
-              value:
-                element.type === 'checkbox' || element.type === 'radio'
-                  ? element.checked
-                  : secret.test(element.name)
-                    ? '{token}'
-                    : String(element.value ?? ''),
+              value: formControlValue(),
             }
           : {}),
       });
@@ -574,20 +926,13 @@ export async function pageRunner(page, options) {
       )
         summary.problems.push('unexpected element present: ' + selector);
     for (const text of expect.text || [])
-      if (
-        !(
-          await owned
-            .locator('body')
-            .innerText()
-            .catch(() => '')
-        ).includes(text)
-      )
+      if (!(await owned.evaluate(() => document.body?.innerText ?? '').catch(() => '')).includes(text))
         summary.problems.push('expected text missing: ' + JSON.stringify(text));
     if (expect.urlPattern && !new RegExp(expect.urlPattern).test(url.pathname + url.search))
       summary.problems.push('url does not match expectation');
   } catch (error) {
     summary.status = 'error';
-    summary.problems.push(String((error && error.message) || error).slice(0, 1200));
+    summary.problems.push(String(error?.message || error).slice(0, 1200));
   }
   if (summary.problems.length && summary.status === 'captured') summary.status = 'failed';
   mark('checked');
@@ -619,14 +964,40 @@ export async function pageRunner(page, options) {
   mark('inventoried');
   raw.title = await owned.title().catch(() => '');
   raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== 'about:blank' ? urlBeforeHarness : owned.url();
+  // Only reads of finished requests are awaited here: they end without network. A read of a request still in flight ends
+  // with its page.
+  await Promise.allSettled([...bodyReads].filter(([request]) => !inflight.has(request)).map(([, read]) => read));
   try {
-    raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString('base64');
+    // Only the guard bounds the screenshot, so a slow host gets the full budget before the capture is marked failed.
+    let guard;
+    const shot = owned.screenshot({ fullPage: true, timeout: 0 });
+    const expired = new Promise((_resolve, reject) => {
+      guard = setTimeout(
+        () => reject(new Error(`screenshot guard expired after ${screenshotGuardMs} ms without a screenshot`)),
+        screenshotGuardMs,
+      );
+    });
+    try {
+      raw.screenshot = (await Promise.race([shot, expired])).toString('base64');
+    } finally {
+      clearTimeout(guard);
+    }
   } catch (error) {
-    summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200));
+    summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200)); // NOSONAR: optional chaining would change the false/null result
   }
   mark('screenshot');
-  await owned.unroute((url) => url.origin === origin, guard).catch(() => {});
-  await owned.close().catch(() => {});
+  context.off('page', onPage);
+  context.off('close', onContextClose);
+  await context.unroute('**/*', guardPopups).catch(() => {});
+  for (const popup of popups) await popup.close().catch(() => {});
+  await owned.unroute('**/*', guard).catch(() => {});
+  const closed = await owned.close().then(
+    () => true,
+    () => false,
+  );
+  // Closing the page rejects the reads it still holds, so they end here. A page that did not close may leave them pending,
+  // and the capture then returns without them: their evidence keeps body null.
+  if (closed) await Promise.allSettled(bodyReads.values());
   summary.finishedAt = new Date().toISOString();
   return { summary, raw };
 }
@@ -639,7 +1010,9 @@ export async function writeCapture(
   { summary, raw },
   { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null },
 ) {
-  ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
+  ({ summary, raw } = redactCaptureQueryValues(
+    redactCaptureControlEvidence({ summary, raw: redactCredentialEvidence(raw) }),
+  ));
   // Evidence of another scenario (a late post of an abandoned bridge run) never lands in this folder.
   if (scenarioId && summary?.id !== scenarioId)
     throw new Error(`Capture of ${summary?.id ?? '(unknown)'} refused for scenario ${scenarioId}`);
@@ -648,6 +1021,11 @@ export async function writeCapture(
   });
   const origins = [origin];
   // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
+  const bodyHashOf = (response) => {
+    if (response.bodyHashInput) return sha(Buffer.from(response.bodyHashInput, 'base64'));
+    if (response.body) return sha(redactTokens(response.body));
+    return null;
+  };
   const requests = raw.requests
     .filter((entry) => !/\/__sim\//.test(entry.url ?? ''))
     .map((entry) => {
@@ -661,11 +1039,7 @@ export async function writeCapture(
                 ? null
                 : redactTokens(entry.response.body),
             bodyBytes: entry.response.bodyBytes ?? null,
-            bodySha256: entry.response.bodyHashInput
-              ? sha(Buffer.from(entry.response.bodyHashInput, 'base64'))
-              : entry.response.body
-                ? sha(redactTokens(entry.response.body))
-                : null,
+            bodySha256: bodyHashOf(entry.response),
             ...(entry.response.bodyHashProvenance ? { bodyHashProvenance: entry.response.bodyHashProvenance } : {}),
           }
         : null;
@@ -693,13 +1067,17 @@ export async function writeCapture(
   }));
   const pageErrors = raw.pageErrors.map((text) => normalizeText(text, { origins }).slice(0, 2000));
   await fs.writeFile(path.join(outDir, 'requests.json'), JSON.stringify(requests, null, 2));
-  await fs.writeFile(path.join(outDir, 'dom.html'), redactTokens(raw.dom ?? ''));
+  await fs.writeFile(path.join(outDir, 'dom.html'), redactTokens(redactDomCredentials(raw.dom ?? '')));
   await fs.writeFile(path.join(outDir, 'elements.json'), JSON.stringify(raw.elements ?? [], null, 2));
   // Same-origin frame documents (pageRunner): path → DOM, written only when the page has any.
   if (raw.frames?.length)
     await fs.writeFile(
       path.join(outDir, 'frames.json'),
-      JSON.stringify(Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(frame.dom)])), null, 2),
+      JSON.stringify(
+        Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(redactDomCredentials(frame.dom))])),
+        null,
+        2,
+      ),
     );
   await fs.writeFile(
     path.join(outDir, 'console.json'),
@@ -730,6 +1108,61 @@ export async function writeCapture(
   return capture;
 }
 
+// The scenario's own budget in seconds (the live side's per-scenario default), also the screenshot guard's default.
+const SCENARIO_TIMEOUT_DEFAULT_SECONDS = 240;
+
+// The identity hosts of the runner guard's identity traffic: the same literal as the runner's identityHosts.
+const CAPTURE_IDENTITY_HOSTS = /(?:^|\.)login\.microsoftonline\.com$|(?:^|\.)login\.live\.com$|(?:^|\.)b2clogin\.com$/i;
+const NET_CONTINUE = Object.freeze({ action: 'continue' });
+const NET_BLOCK = Object.freeze({ action: 'block' });
+const hostOfValue = (value) => URL.parse(value)?.hostname ?? '';
+// Header names are matched without regard to case, since a browser may send them in any case.
+const headerValue = (headers, name) => {
+  const key = Object.keys(headers ?? {}).find((item) => item.toLowerCase() === name);
+  return key === undefined ? '' : String(headers[key]);
+};
+// Identity navigations, as the runner guard has them: a document to a sign-in path, or a document whose referer or origin
+// is an identity host.
+const isCaptureIdentityNavigation = (request, url) => {
+  if (request.resourceType !== 'Document') return false;
+  if (/^\/signin-[^/]+$/i.test(url.pathname) || /^\/Account\/Login\/ExternalLogin$/i.test(url.pathname)) return true;
+  return ['referer', 'origin'].some((name) =>
+    CAPTURE_IDENTITY_HOSTS.test(hostOfValue(headerValue(request.headers, name))),
+  );
+};
+/**
+ * The browser-session net's decision for a live capture, with the runner guard's rules. It is at module scope because
+ * pageRunner is serialised and cannot share it. A request is continued when it is a read, a sign-in navigation or a
+ * request to another origin; a write to the captured origin is continued only when the run allows it, and blocked otherwise.
+ */
+export function captureNetDecision({
+  origin,
+  allowWrites = false,
+  allowPaths = [],
+  allowEntitySets = [],
+  readPosts = ['^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)', '^/_services/entity-notes/[^/]+$'],
+}) {
+  const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(origin).hostname);
+  // A local runtime's own instrumentation endpoints and the portal's list/grid data (POST, reads only) are not writes.
+  const isRead = (pathname) =>
+    (loopback && pathname.startsWith('/__sim/')) || readPosts.some((pattern) => new RegExp(pattern).test(pathname));
+  const isEntitySetWrite = (pathname) => {
+    const api = /^\/_api\/([^/(]+)/.exec(pathname);
+    return Boolean(api && allowEntitySets.includes(api[1]));
+  };
+  // A write is allowed only in a run with writes, by a listed path or a listed entity set.
+  const writeAllowed = (pathname) =>
+    isRead(pathname) ||
+    (allowWrites && (allowPaths.some((pattern) => new RegExp(pattern).test(pathname)) || isEntitySetWrite(pathname)));
+  return (request) => {
+    const method = String(request.method).toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return NET_CONTINUE;
+    const url = new URL(request.url);
+    if (url.origin !== origin || isCaptureIdentityNavigation(request, url)) return NET_CONTINUE;
+    return writeAllowed(url.pathname) ? NET_CONTINUE : NET_BLOCK;
+  };
+}
+
 /** Runner options shared by every side, from the matrix and the run. */
 export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
   return {
@@ -737,6 +1170,7 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
     scenario: { id: scenario.id, steps: scenario.steps, expect: scenario.expect ?? {} },
     ids,
     allowWrites: Boolean(allowWrites),
+    screenshotGuardMs: (scenario.timeout ?? SCENARIO_TIMEOUT_DEFAULT_SECONDS) * 1000,
     ...(matrix.readPosts ? { readPosts: matrix.readPosts } : {}),
     allowPaths: matrix.writeScope?.paths ?? [],
     allowEntitySets: matrix.writeScope?.entitySets ?? [],

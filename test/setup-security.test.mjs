@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import { scaffoldMarkers } from '../lense/project-check.mjs';
 import { SetupStore } from '../lense/setup/store.mjs';
 
 function work(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-setup-security-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-setup-security-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }

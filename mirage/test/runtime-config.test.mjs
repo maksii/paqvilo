@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RUNTIME_KINDS, runtimeSettings, runtimeCapabilities } from '../lib/runtime-config.mjs';
@@ -43,6 +44,7 @@ test('solution-only project configuration does not require or invent a portal', 
     /portal source/,
   );
 });
+// @test-kind contract+unproven: catalogue configuration is local; imported model-driven behavior has no native capture.
 test('solution catalogue has no Power Pages provider and chooses an imported default', () => {
   const input = {
     metadata: {

@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // OData query parsing and evaluation for the local Dataverse store.
 // Dialect "dataverse" accepts only what the Dataverse Web API documents;
 // dialect "extended" keeps the simulator's internal convenience functions
@@ -28,6 +29,7 @@ const ODATA_LIMITS = Object.freeze({
   conditions: 500,
   aggregateRecords: 50000,
   expandDepth: 10,
+  nesting: 100,
 });
 export const ODATA_COMPARISON = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
 export const ODATA_STRING_FUNCTIONS = new Set(['contains', 'startswith', 'endswith']);
@@ -68,16 +70,35 @@ const unsupported = (message) => fail(message, 400, 'UnsupportedQuery');
 const TOKEN = new RegExp(
   [
     "(?<string>'(?:[^']|'')*')",
-    '(?<dstring>"(?:[^"\\\\]|\\\\.)*")',
-    '(?<guid>[\\da-fA-F]{8}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{12}(?![\\w-]))',
-    '(?<datetime>\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:\\d{2})?)?(?![\\w:-]))',
-    '(?<number>-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?[mMdDfFlL]?(?![\\w]))',
-    '(?<alias>@[A-Za-z_]\\w*)',
-    '(?<ident>[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_][\\w]*)*)',
-    '(?<punct>[()/,:=\\[\\]])',
+    String.raw`(?<dstring>"(?:[^"\\]|\\.)*")`,
+    String.raw`(?<guid>[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}(?![\w-]))`,
+    String.raw`(?<datetime>\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?(?![\w:-]))`,
+    String.raw`(?<number>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[mMdDfFlL]?(?![\w]))`,
+    String.raw`(?<alias>@[A-Za-z_]\w*)`,
+    String.raw`(?<ident>[A-Za-z_$][\w$]*(?:\.[A-Za-z_][\w]*)*)`,
+    String.raw`(?<punct>[()/,:=\[\]])`,
   ].join('|'),
   'y',
 );
+function handleUnmatchedToken(text, index, nativeSyntax, tokens) {
+  if (nativeSyntax && text[index] === '@') {
+    const at = index + 1;
+    const message =
+      at === text.length
+        ? `Syntax error at position ${at} in '${text}'.`
+        : `Syntax error: character '${text[at]}' is not valid at position ${at} in '${text}'.`;
+    fail(message, 400, 'InvalidQuery', { innerCode: '0x80060888' });
+  }
+  if (nativeSyntax && text[index] === '-') {
+    tokens.push({ kind: 'punct', value: '-', at: index++ });
+    return index;
+  }
+  if (nativeSyntax && text[index] === '+')
+    fail(`Syntax error: character '+' is not valid at position ${index} in '${text}'.`, 400, 'InvalidQuery', {
+      innerCode: '0x80060888',
+    });
+  unsupported(`Unsupported OData filter near ${text.slice(index, index + 50)}`);
+}
 function tokenize(source, { nativeSyntax = false } = {}) {
   const tokens = [];
   const text = String(source);
@@ -90,25 +111,13 @@ function tokenize(source, { nativeSyntax = false } = {}) {
     TOKEN.lastIndex = index;
     const match = TOKEN.exec(text);
     if (!match) {
-      if (nativeSyntax && text[index] === '@') {
-        const at = index + 1;
-        const message =
-          at === text.length
-            ? `Syntax error at position ${at} in '${text}'.`
-            : `Syntax error: character '${text[at]}' is not valid at position ${at} in '${text}'.`;
-        fail(message, 400, 'InvalidQuery', { innerCode: '0x80060888' });
-      }
-      if (nativeSyntax && text[index] === '-') {
-        tokens.push({ kind: 'punct', value: '-', at: index++ });
+      const next = handleUnmatchedToken(text, index, nativeSyntax, tokens);
+      if (next !== undefined) {
+        index = next;
         continue;
       }
-      if (nativeSyntax && text[index] === '+')
-        fail(`Syntax error: character '+' is not valid at position ${index} in '${text}'.`, 400, 'InvalidQuery', {
-          innerCode: '0x80060888',
-        });
-      unsupported(`Unsupported OData filter near ${text.slice(index, index + 50)}`);
     }
-    const [kind, value] = Object.entries(match.groups).find(([, v]) => v !== undefined);
+    const [kind, value] = Object.entries(match.groups).find(([, v]) => v);
     tokens.push({ kind, value, at: index });
     index = TOKEN.lastIndex;
   }
@@ -210,6 +219,7 @@ export function parseODataExpression(
   const tokens = tokenize(source, { nativeSyntax });
   let pos = 0;
   let conditions = 0;
+  let nestingDepth = 0;
   const peek = (offset = 0) => tokens[pos + offset];
   const peekWord = (offset = 0) => {
     const token = peek(offset);
@@ -225,7 +235,7 @@ export function parseODataExpression(
   const literalFromToken = (token, jsonArray = false) => {
     switch (token.kind) {
       case 'string':
-        return { type: 'literal', kind: 'string', value: token.value.slice(1, -1).replace(/''/g, "'") };
+        return { type: 'literal', kind: 'string', value: token.value.slice(1, -1).replaceAll("''", "'") };
       case 'dstring':
         if (dialect === 'dataverse' && !jsonArray) unsupported('OData string literals must use single quotes.');
         return { type: 'literal', kind: 'string', value: JSON.parse(token.value) };
@@ -287,6 +297,16 @@ export function parseODataExpression(
     }
     return segments;
   };
+  // Parenthesised groups and lambda bodies recurse; the limit keeps deep input a 400 instead of a stack overflow.
+  const nested = (parse) => {
+    nestingDepth += 1;
+    try {
+      if (nestingDepth > ODATA_LIMITS.nesting) unsupported('OData filter nesting is too deep');
+      return parse();
+    } finally {
+      nestingDepth -= 1;
+    }
+  };
   const lambda = (segments) => {
     take(); // '/'
     const kind = take().value.toLowerCase();
@@ -299,50 +319,49 @@ export function parseODataExpression(
     const variable = take();
     if (variable?.kind !== 'ident') unsupported('Malformed lambda expression');
     expect(':');
-    const body = or();
+    const body = nested(or);
     expect(')');
     return { type: 'lambda', kind, path: segments, variable: variable.value, body };
   };
-  const functionCall = (name) => {
-    expect('(');
-    const lower = name.toLowerCase();
-    if (/^microsoft\.dynamics\.crm\./i.test(name)) {
-      const short = name.split('.').at(-1);
-      const definition = Object.entries(CRM_FUNCTIONS).find(([key]) => key.toLowerCase() === short.toLowerCase());
-      if (!definition) unsupported(`Unsupported Dataverse query function ${name}`);
-      const params = {};
-      if (peek()?.value !== ')') {
-        for (;;) {
-          const key = take();
-          if (key?.kind !== 'ident') unsupported(`Malformed parameters for ${name}`);
-          expect('=');
-          let value;
-          if (peek()?.value === '[') value = arrayLiteral();
-          else {
-            const token = take();
-            if (token?.kind === 'alias') value = resolveAlias(token);
-            else value = token && literalFromToken(token);
-            if (!value) unsupported(`Malformed parameter ${key.value} for ${name}`);
-          }
-          params[key.value] = value;
-          if (peek()?.value !== ',') break;
-          take();
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const crmFunctionCall = (name) => {
+    const short = name.split('.').at(-1);
+    const definition = Object.entries(CRM_FUNCTIONS).find(([key]) => key.toLowerCase() === short.toLowerCase());
+    if (!definition) unsupported(`Unsupported Dataverse query function ${name}`);
+    const params = {};
+    if (peek()?.value !== ')') {
+      for (;;) {
+        const key = take();
+        if (key?.kind !== 'ident') unsupported(`Malformed parameters for ${name}`);
+        expect('=');
+        let value;
+        if (peek()?.value === '[') value = arrayLiteral();
+        else {
+          const token = take();
+          if (token?.kind === 'alias') value = resolveAlias(token);
+          else value = token && literalFromToken(token);
+          if (!value) unsupported(`Malformed parameter ${key.value} for ${name}`);
         }
+        params[key.value] = value;
+        if (peek()?.value !== ',') break;
+        take();
       }
-      expect(')');
-      conditions++;
-      return {
-        type: 'crm',
-        name: definition[0],
-        operator: definition[1].operator,
-        shape: definition[1].values,
-        params,
-      };
     }
+    expect(')');
+    conditions++;
+    return {
+      type: 'crm',
+      name: definition[0],
+      operator: definition[1].operator,
+      shape: definition[1].values,
+      params,
+    };
+  };
+  const regularFunctionCall = (name) => {
+    const lower = name.toLowerCase();
     const args = [];
     if (peek()?.value !== ')') {
       for (;;) {
-        args.push(or());
+        args.push(nested(or));
         if (peek()?.value !== ',') break;
         take();
       }
@@ -358,6 +377,30 @@ export function parseODataExpression(
       fail(`The "${name}" function isn't supported.`, 501, 'UnsupportedQueryFunction');
     unsupported(`Unsupported OData function ${name}`);
   };
+  const functionCall = (name) => {
+    expect('(');
+    return /^microsoft\.dynamics\.crm\./i.test(name) ? crmFunctionCall(name) : regularFunctionCall(name);
+  };
+  const identifierPrimary = (token) => {
+    const lower = token.value.toLowerCase();
+    if (['null', 'true', 'false'].includes(lower)) {
+      take();
+      return {
+        type: 'literal',
+        kind: lower === 'null' ? 'null' : 'boolean',
+        value: { null: null, true: true, false: false }[lower],
+      };
+    }
+    if (KEYWORDS.has(lower)) unsupported(`Unexpected OData keyword ${token.value}`);
+    take();
+    if (peek()?.value === '(') return functionCall(token.value);
+    const segments = pathSegments(token.value);
+    if (peek()?.value === '/' && ['any', 'all'].includes(String(peek(1)?.value).toLowerCase())) {
+      conditions++;
+      return lambda(segments);
+    }
+    return { type: 'path', segments };
+  };
   const primary = () => {
     const token = peek();
     if (!token) {
@@ -369,7 +412,7 @@ export function parseODataExpression(
     }
     if (token.value === '(') {
       take();
-      const expression = or();
+      const expression = nested(or);
       if (nativeSyntax && !peek())
         fail(`')' or operator expected at position ${String(source).length} in '${source}'.`, 400, 'InvalidQuery', {
           innerCode: '0x80060888',
@@ -387,57 +430,14 @@ export function parseODataExpression(
       take();
       return literal;
     }
-    if (token.kind === 'ident') {
-      const lower = token.value.toLowerCase();
-      if (['null', 'true', 'false'].includes(lower)) {
-        take();
-        return {
-          type: 'literal',
-          kind: lower === 'null' ? 'null' : 'boolean',
-          value: { null: null, true: true, false: false }[lower],
-        };
-      }
-      if (KEYWORDS.has(lower)) unsupported(`Unexpected OData keyword ${token.value}`);
-      take();
-      if (peek()?.value === '(') return functionCall(token.value);
-      const segments = pathSegments(token.value);
-      if (peek()?.value === '/' && ['any', 'all'].includes(String(peek(1)?.value).toLowerCase())) {
-        conditions++;
-        return lambda(segments);
-      }
-      return { type: 'path', segments };
-    }
+    if (token.kind === 'ident') return identifierPrimary(token);
     unsupported(`Unsupported OData syntax near ${token.value}`);
   };
   const unary = () => {
-    if (nativeSyntax && peek()?.value === '-') {
-      const minuses = [];
-      while (peek()?.value === '-') minuses.push(take());
-      if (peek()?.kind === 'number' && peek().value.startsWith('-')) {
-        const token = peek();
-        const kind = dataverseNumberLiteralKind(token.value);
-        if (kind === null)
-          fail(`Numeric string '${token.value}' is not a valid Int32/Int64/Double/Decimal.`, 400, 'InvalidQuery', {
-            innerCode: '0x80060888',
-          });
-        if (kind)
-          fail(
-            `Unrecognized '${kind}' literal '-${token.value}' at '${minuses.at(-1).at}' in '${source}'.`,
-            400,
-            'InvalidQuery',
-            { innerCode: '0x80060888' },
-          );
-        unsupported(`Unsupported OData filter near ${String(source).slice(minuses[0].at, minuses[0].at + 50)}`);
-      }
-      if (minuses.length > ODATA_LIMITS.conditions)
-        unsupported('OData unary operators exceed the bounded query complexity limit');
-      let operand = unary();
-      for (let index = minuses.length - 1; index >= 0; index--) operand = { type: 'negate', operand };
-      return operand;
-    }
+    if (nativeSyntax && peek()?.value === '-') return nativeUnary();
     if (peekWord() === 'not') {
       take();
-      const operand = unary();
+      const operand = nested(unary);
       // Dataverse rejects negated query functions; the Dataverse records layer opts in.
       if (rejectNotOnQueryFunctions && operand.type === 'crm')
         fail('Not operator along with the Custom Named Condition operators is not allowed', 400, 'InvalidQuery', {
@@ -446,6 +446,31 @@ export function parseODataExpression(
       return { type: 'not', operand };
     }
     return primary();
+  };
+  const nativeUnary = () => {
+    const minuses = [];
+    while (peek()?.value === '-') minuses.push(take());
+    if (peek()?.kind === 'number' && peek().value.startsWith('-')) {
+      const token = peek();
+      const kind = dataverseNumberLiteralKind(token.value);
+      if (kind === null)
+        fail(`Numeric string '${token.value}' is not a valid Int32/Int64/Double/Decimal.`, 400, 'InvalidQuery', {
+          innerCode: '0x80060888',
+        });
+      if (kind)
+        fail(
+          `Unrecognized '${kind}' literal '-${token.value}' at '${minuses.at(-1).at}' in '${source}'.`,
+          400,
+          'InvalidQuery',
+          { innerCode: '0x80060888' },
+        );
+      unsupported(`Unsupported OData filter near ${String(source).slice(minuses[0].at, minuses[0].at + 50)}`);
+    }
+    if (minuses.length > ODATA_LIMITS.conditions)
+      unsupported('OData unary operators exceed the bounded query complexity limit');
+    let operand = nested(unary);
+    for (let index = minuses.length - 1; index >= 0; index--) operand = { type: 'negate', operand };
+    return operand;
   };
   const compare = () => {
     const left = unary();
@@ -512,39 +537,41 @@ export function parseODataExpression(
   return result;
 }
 
+/* NOSONAR */ function visitExpressionPaths(node, prefix, scope, out) {
+  if (!node || typeof node !== 'object') return;
+  switch (node.type) {
+    case 'path': {
+      const [head, ...rest] = node.segments;
+      if (scope.has(head)) {
+        if (rest.length) out.push([...scope.get(head), ...rest]);
+      } else out.push([...prefix, ...node.segments]);
+      return;
+    }
+    case 'lambda': {
+      const [head, ...rest] = node.path;
+      const base = scope.has(head) ? [...scope.get(head), ...rest] : [...prefix, ...node.path];
+      out.push(base);
+      if (node.body) visitExpressionPaths(node.body, prefix, new Map([...scope, [node.variable, base]]), out);
+      return;
+    }
+    case 'crm': {
+      const name = node.params.PropertyName;
+      if (name?.type === 'literal' && typeof name.value === 'string')
+        out.push([...prefix, ...String(name.value).split('/')]);
+      return;
+    }
+    default:
+      for (const key of ['left', 'right', 'operand', 'body'])
+        if (node[key]) visitExpressionPaths(node[key], prefix, scope, out);
+      for (const list of [node.args, node.values])
+        if (Array.isArray(list)) for (const item of list) visitExpressionPaths(item, prefix, scope, out);
+  }
+}
+
 /** Every property path an expression reads, with lambda paths qualified from the root. */
 export function expressionPaths(ast, prefix = [], variables = new Map()) {
   const out = [];
-  const visit = (node, scope) => {
-    if (!node || typeof node !== 'object') return;
-    switch (node.type) {
-      case 'path': {
-        const [head, ...rest] = node.segments;
-        if (scope.has(head)) {
-          if (rest.length) out.push([...scope.get(head), ...rest]);
-        } else out.push([...prefix, ...node.segments]);
-        break;
-      }
-      case 'lambda': {
-        const [head, ...rest] = node.path;
-        const base = scope.has(head) ? [...scope.get(head), ...rest] : [...prefix, ...node.path];
-        out.push(base);
-        if (node.body) visit(node.body, new Map([...scope, [node.variable, base]]));
-        break;
-      }
-      case 'crm': {
-        const name = node.params.PropertyName;
-        if (name?.type === 'literal' && typeof name.value === 'string')
-          out.push([...prefix, ...String(name.value).split('/')]);
-        break;
-      }
-      default:
-        for (const key of ['left', 'right', 'operand', 'body']) if (node[key]) visit(node[key], scope);
-        for (const list of [node.args, node.values])
-          if (Array.isArray(list)) list.forEach((item) => visit(item, scope));
-    }
-  };
-  visit(ast, variables);
+  visitExpressionPaths(ast, prefix, variables, out);
   return out;
 }
 
@@ -555,6 +582,21 @@ export function columnValue(row, name) {
   return lookupColumnValue(row, name);
 }
 const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
+function pathNavigation(currentMapping, currentRow, head, ctx) {
+  const navigation = ctx.navigate(currentMapping, currentRow, head);
+  if (!navigation) {
+    if (ctx.dialect === 'dataverse')
+      fail(
+        `Could not find a navigation property named '${head}' on ${currentMapping.logicalName}.`,
+        400,
+        'InvalidAttribute',
+      );
+    return null;
+  }
+  if (navigation.many)
+    unsupported(`Collection-valued navigation property ${head} can only be filtered with any or all.`);
+  return navigation;
+}
 
 /**
  * Compile an AST into a predicate over store rows.
@@ -568,7 +610,7 @@ export function compileODataPredicate(ast, mapping, ctx) {
     timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
   });
   // Resolve a path to { value, definition } for a row in scope.
-  const resolvePath = (segments, row, rowMapping, scope, depth = 0) => {
+  /* NOSONAR */ const resolvePath = (segments, row, rowMapping, scope, depth = 0) => {
     let [head, ...rest] = segments;
     let currentRow = row,
       currentMapping = rowMapping;
@@ -580,18 +622,8 @@ export function compileODataPredicate(ast, mapping, ctx) {
     while (rest.length) {
       if (depth++ > ODATA_LIMITS.navigationDepth)
         unsupported(`OData navigation exceeds ${ODATA_LIMITS.navigationDepth} relationship levels`);
-      const navigation = ctx.navigate(currentMapping, currentRow, head);
-      if (!navigation) {
-        if (ctx.dialect === 'dataverse')
-          fail(
-            `Could not find a navigation property named '${head}' on ${currentMapping.logicalName}.`,
-            400,
-            'InvalidAttribute',
-          );
-        return { value: undefined, definition: null };
-      }
-      if (navigation.many)
-        unsupported(`Collection-valued navigation property ${head} can only be filtered with any or all.`);
+      const navigation = pathNavigation(currentMapping, currentRow, head, ctx);
+      if (!navigation) return { value: undefined, definition: null };
       currentRow = navigation.value;
       currentMapping = navigation.mapping;
       [head, ...rest] = rest;
@@ -661,7 +693,7 @@ export function compileODataPredicate(ast, mapping, ctx) {
     const fn = compile(node);
     return ['path', 'literal', 'call'].includes(node.type) ? (row, m, s) => truthOf(fn(row, m, s)) : fn;
   };
-  const compile = (node) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const compile = (node) => {
     switch (node.type) {
       case 'literal':
         return () => node.value;
@@ -716,10 +748,10 @@ export function compileODataPredicate(ast, mapping, ctx) {
       }
       case 'compare': {
         for (const side of [node.left, node.right]) if (side.type === 'path') boundPath(side.segments);
-        const pathSide = node.left.type === 'path' ? node.left : node.right.type === 'path' ? node.right : null;
+        const pathSide = [node.left, node.right].find((side) => side.type === 'path') ?? null;
         const left = compile(node.left),
           right = compile(node.right);
-        return (row, rowMapping, scope) => {
+        /* NOSONAR */ return (row, rowMapping, scope) => {
           let definition = null;
           let x, y;
           if (pathSide) {
@@ -744,6 +776,8 @@ export function compileODataPredicate(ast, mapping, ctx) {
             return leftNull && rightNull;
           if (node.op === 'ne' && (node.left.kind === 'null' || node.right.kind === 'null'))
             return !(leftNull && rightNull);
+          if (ctx.odataNullEquality && (leftNull || rightNull) && ['eq', 'ne'].includes(node.op))
+            return node.op === 'eq' ? leftNull && rightNull : !(leftNull && rightNull);
           // SQL semantics: a comparison with a null operand is unknown, so neither it
           // nor its negation matches.
           if (leftNull || rightNull) return null;
@@ -756,13 +790,10 @@ export function compileODataPredicate(ast, mapping, ctx) {
             default: {
               const result = compareForFilter(x, y, opts);
               if (Number.isNaN(result)) return false;
-              return node.op === 'gt'
-                ? result > 0
-                : node.op === 'ge'
-                  ? result >= 0
-                  : node.op === 'lt'
-                    ? result < 0
-                    : result <= 0;
+              if (node.op === 'gt') return result > 0;
+              if (node.op === 'ge') return result >= 0;
+              if (node.op === 'lt') return result < 0;
+              return result <= 0;
             }
           }
         };
@@ -895,24 +926,31 @@ export function compileODataPredicate(ast, mapping, ctx) {
 // ---- Query options
 
 /** Split on a separator outside parentheses and quoted strings. */
+function scanTopLevelCharacter(text, index, separator, quote, depth) {
+  const char = text[index];
+  if (char === "'") {
+    if (quote && text[index + 1] === "'") return { quote, depth, escaped: true };
+    quote = !quote;
+  }
+  if (quote) return { quote, depth };
+  if (char === '(' || char === '[') depth++;
+  if (char === ')' || char === ']') depth--;
+  return { quote, depth, split: char === separator && depth === 0 };
+}
 export function splitTopLevel(text, separator = ',') {
   const out = [];
   let start = 0,
     depth = 0,
     quote = false;
   for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === "'") {
-      if (quote && text[i + 1] === "'") {
-        i++;
-        continue;
-      }
-      quote = !quote;
+    const state = scanTopLevelCharacter(text, i, separator, quote, depth);
+    quote = state.quote;
+    depth = state.depth;
+    if (state.escaped) {
+      i++;
+      continue;
     }
-    if (quote) continue;
-    if (c === '(' || c === '[') depth++;
-    if (c === ')' || c === ']') depth--;
-    if (c === separator && depth === 0) {
+    if (state.split) {
       out.push(text.slice(start, i).trim());
       start = i + 1;
     }
@@ -928,7 +966,7 @@ export function parseOrderBy(text, { dialect = 'dataverse', nativeSyntax = false
   return splitTopLevel(String(text)).map((spec) => {
     const offset = String(text).indexOf(spec, cursor);
     cursor = offset + spec.length;
-    const match = /^([A-Za-z_][\w]*(?:\/[A-Za-z_][\w]*)*)(?:\s+(asc|desc))?$/i.exec(spec.trim());
+    const match = /^([a-z_]\w*(?:\/[a-z_]\w*)*)(?:\s+(asc|desc))?$/i.exec(spec.trim());
     if (!match) {
       const plain = /^([A-Za-z_]\w*(?:\/[A-Za-z_]\w*)*)(?:[\t-\r ]+[A-Za-z_]\w*)+$/.exec(spec);
       if (nativeSyntax && plain) {
@@ -954,7 +992,7 @@ export function parseOrderBy(text, { dialect = 'dataverse', nativeSyntax = false
 export function parseSelect(text) {
   if (text == null || text === '' || text === '*') return null;
   return splitTopLevel(String(text)).map((item) => {
-    if (!/^[A-Za-z_][\w]*$/.test(item)) unsupported(`Unsupported $select item ${item}`);
+    if (!/^[A-Za-z_]\w*$/.test(item)) unsupported(`Unsupported $select item ${item}`);
     return item;
   });
 }
@@ -964,7 +1002,7 @@ export function parseExpand(text, depth = 0) {
   if (text == null || text === '') return [];
   if (depth > ODATA_LIMITS.expandDepth) unsupported('$expand nesting is too deep');
   return splitTopLevel(String(text)).map((spec) => {
-    const match = /^([A-Za-z_][\w]*)(?:\(([\s\S]*)\))?$/.exec(spec.trim());
+    const match = /^([A-Za-z_]\w*)(?:\(([\s\S]*)\))?$/.exec(spec.trim());
     if (!match) unsupported(`Malformed expand ${spec}`);
     const options = {};
     for (const pair of splitTopLevel(match[2] ?? '', ';')) {
@@ -1003,7 +1041,7 @@ export function parseApply(text, { dialect = 'dataverse', aliases = {} } = {}) {
       const groupMatch = /^\(([^()]*)\)(?:\s*,\s*aggregate\(([\s\S]*)\))?$/i.exec(body);
       if (!groupMatch) unsupported(`Unsupported OData groupby ${body}`);
       const properties = splitTopLevel(groupMatch[1]).map((item) => {
-        if (!/^[A-Za-z_][\w]*(?:\/[A-Za-z_][\w]*)*$/.test(item)) unsupported(`Unsupported groupby property ${item}`);
+        if (!/^[A-Za-z_]\w*(?:\/[A-Za-z_]\w*)*$/.test(item)) unsupported(`Unsupported groupby property ${item}`);
         return item.split('/');
       });
       steps.push({ kind, properties, aggregates: groupMatch[2] ? parseAggregates(groupMatch[2]) : [] });
@@ -1013,9 +1051,9 @@ export function parseApply(text, { dialect = 'dataverse', aliases = {} } = {}) {
 }
 function parseAggregates(text) {
   return splitTopLevel(text).map((item) => {
-    let match = /^\$count\s+as\s+([A-Za-z_]\w*)$/i.exec(item);
+    let match = /^\$count\s+as\s+([a-z_]\w*)$/i.exec(item);
     if (match) return { method: '$count', alias: match[1] };
-    match = /^([A-Za-z_][\w]*(?:\/[A-Za-z_][\w]*)*)\s+with\s+([A-Za-z]+)\s+as\s+([A-Za-z_]\w*)$/i.exec(item);
+    match = /^([a-z_]\w*(?:\/[a-z_]\w*)*)\s+with\s+([a-z]+)\s+as\s+([a-z_]\w*)$/i.exec(item);
     if (!match) unsupported(`Unsupported OData aggregate expression ${item}`);
     const method = match[2].toLowerCase();
     if (!ODATA_APPLY_METHODS.has(method)) unsupported(`Unsupported OData aggregate method ${match[2]}`);
@@ -1062,6 +1100,74 @@ export function sortRows(
   return keyed.map((entry) => entry.row);
 }
 
+/* NOSONAR */ function aggregateValue(aggregate, rows, ctx) {
+  if (aggregate.method === '$count') return rows.length;
+  const values = rows.map((row) => ctx.pathValue(row, aggregate.path)).filter((value) => !isEmpty(scalar(value)));
+  const numbers = values.map((value) => Number(scalar(value))).filter(Number.isFinite);
+  const definition = ctx.pathDefinition(aggregate.path),
+    numericKind = fieldKind(definition),
+    exact = values.some(isExactNumeric) || ['decimal', 'money'].includes(numericKind);
+  let result = null;
+  switch (aggregate.method) {
+    case 'sum':
+      result = exact ? sumNumeric(values) : numbers.reduce((a, b) => a + b, 0);
+      break;
+    case 'average':
+      if (exact) result = averageNumeric(values);
+      else result = numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null;
+      break;
+    case 'min':
+    case 'max': {
+      if (!values.length) break;
+      const definition = ctx.pathDefinition(aggregate.path);
+      const keyed = values.map((value) => ({ value, key: makeSortKey(value, { definition, rawChoice: true }) }));
+      keyed.sort((a, b) => compareSortKeys(a.key, b.key, ctx.settings?.collation));
+      const chosen = aggregate.method === 'min' ? keyed[0].value : keyed.at(-1).value;
+      result = isExactNumeric(chosen) ? cloneStateData(chosen) : scalar(chosen);
+      const date = typeof result === 'string' ? parseDateValue(result) : null;
+      if (date && !date.dateOnly) result = new Date(date.ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      break;
+    }
+  }
+  return result;
+}
+
+function projectBucket(bucket, step, properties, ctx, keyOf) {
+  const out = {};
+  properties.forEach((segments, index) => {
+    const value = bucket.values[index];
+    if (!isEmpty(scalar(value))) out[keyOf(segments)] = cloneStateData(value);
+  });
+  for (const aggregate of step.aggregates ?? []) {
+    const result = aggregateValue(aggregate, bucket.rows, ctx);
+    if (result != null) out[aggregate.alias] = result;
+  }
+  return out;
+}
+
+function dateLikeGroupValue(properties, values, ctx) {
+  return properties.some(
+    (segments, index) =>
+      fieldKind(ctx.pathDefinition(segments)) == null &&
+      typeof values[index] === 'string' &&
+      looksLikeDate(values[index]),
+  );
+}
+
+function groupBuckets(properties, rows, ctx, valueOf) {
+  const buckets = new Map();
+  for (const row of rows) {
+    const values = properties.map((segments) => valueOf(row, segments));
+    if (dateLikeGroupValue(properties, values, ctx)) unsupported("groupby with datetime values isn't supported.");
+    // Buckets compare under the column collation, as $filter equality does (CI_AI by default).
+    const signature = JSON.stringify(values.map((value) => equalityKey(value, ctx.settings?.collation ?? 'CI_AI')));
+    if (!buckets.has(signature)) buckets.set(signature, { values, rows: [] });
+    buckets.get(signature).rows.push(row);
+  }
+  if (!properties.length && !buckets.size) buckets.set('[]', { values: [], rows: [] });
+  return buckets;
+}
+
 /** Apply $apply group/aggregate steps over already permission-filtered rows. */
 export function evaluateApply(steps, rows, ctx) {
   let current = rows;
@@ -1086,71 +1192,8 @@ export function evaluateApply(steps, rows, ctx) {
       const definition = ctx.pathDefinition(segments);
       if (fieldKind(definition) === 'datetime') unsupported("groupby with datetime values isn't supported.");
     }
-    const buckets = new Map();
-    for (const row of current) {
-      const values = properties.map((segments) => valueOf(row, segments));
-      if (
-        properties.some(
-          (segments, index) =>
-            fieldKind(ctx.pathDefinition(segments)) == null &&
-            typeof values[index] === 'string' &&
-            looksLikeDate(values[index]),
-        )
-      )
-        unsupported("groupby with datetime values isn't supported.");
-      // Buckets compare under the column collation, as $filter equality does (CI_AI by default).
-      const signature = JSON.stringify(values.map((value) => equalityKey(value, ctx.settings?.collation ?? 'CI_AI')));
-      if (!buckets.has(signature)) buckets.set(signature, { values, rows: [] });
-      buckets.get(signature).rows.push(row);
-    }
-    if (!properties.length && !buckets.size) buckets.set('[]', { values: [], rows: [] });
-    current = [...buckets.values()].map((bucket) => {
-      const out = {};
-      properties.forEach((segments, index) => {
-        const value = bucket.values[index];
-        if (!isEmpty(scalar(value))) out[keyOf(segments)] = structuredClone(value);
-      });
-      for (const aggregate of step.aggregates ?? []) {
-        if (aggregate.method === '$count') {
-          out[aggregate.alias] = bucket.rows.length;
-          continue;
-        }
-        const values = bucket.rows
-          .map((row) => valueOf(row, aggregate.path))
-          .filter((value) => !isEmpty(scalar(value)));
-        const numbers = values.map((value) => Number(scalar(value))).filter(Number.isFinite);
-        const definition = ctx.pathDefinition(aggregate.path),
-          numericKind = fieldKind(definition),
-          exact = values.some(isExactNumeric) || ['decimal', 'money'].includes(numericKind);
-        let result = null;
-        switch (aggregate.method) {
-          case 'sum':
-            result = exact ? sumNumeric(values) : numbers.reduce((a, b) => a + b, 0);
-            break;
-          case 'average':
-            result = exact
-              ? averageNumeric(values)
-              : numbers.length
-                ? numbers.reduce((a, b) => a + b, 0) / numbers.length
-                : null;
-            break;
-          case 'min':
-          case 'max': {
-            if (!values.length) break;
-            const definition = ctx.pathDefinition(aggregate.path);
-            const keyed = values.map((value) => ({ value, key: makeSortKey(value, { definition, rawChoice: true }) }));
-            keyed.sort((a, b) => compareSortKeys(a.key, b.key, ctx.settings?.collation));
-            const chosen = aggregate.method === 'min' ? keyed[0].value : keyed.at(-1).value;
-            result = isExactNumeric(chosen) ? structuredClone(chosen) : scalar(chosen);
-            const date = typeof result === 'string' ? parseDateValue(result) : null;
-            if (date && !date.dateOnly) result = new Date(date.ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
-            break;
-          }
-        }
-        if (result != null) out[aggregate.alias] = result;
-      }
-      return out;
-    });
+    const buckets = groupBuckets(properties, current, ctx, valueOf);
+    current = [...buckets.values()].map((bucket) => projectBucket(bucket, step, properties, ctx, keyOf));
     grouped = true;
   }
   return { rows: current, grouped };

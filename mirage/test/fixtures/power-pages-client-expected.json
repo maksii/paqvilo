@@ -1,0 +1,768 @@
+[
+  {
+    "id": "forms.count",
+    "value": 1
+  },
+  {
+    "id": "form.nameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "form.byName",
+    "value": true
+  },
+  {
+    "id": "form.byId",
+    "value": true
+  },
+  {
+    "id": "form.isMultiStep",
+    "value": false
+  },
+  {
+    "id": "form.visible",
+    "value": true
+  },
+  {
+    "id": "form.htmlContainsSelectedFields",
+    "value": true
+  },
+  {
+    "id": "field1.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field1.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field1.getType",
+    "value": "String"
+  },
+  {
+    "id": "field1.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field1.getRequired",
+    "value": false
+  },
+  {
+    "id": "field1.getVisible",
+    "value": true
+  },
+  {
+    "id": "field1.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field2.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field2.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field2.getType",
+    "value": "String"
+  },
+  {
+    "id": "field2.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field2.getRequired",
+    "value": false
+  },
+  {
+    "id": "field2.getVisible",
+    "value": true
+  },
+  {
+    "id": "field2.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field3.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field3.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field3.getType",
+    "value": "EmailString"
+  },
+  {
+    "id": "field3.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field3.getRequired",
+    "value": false
+  },
+  {
+    "id": "field3.getVisible",
+    "value": true
+  },
+  {
+    "id": "field3.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field4.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field4.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field4.getType",
+    "value": "String"
+  },
+  {
+    "id": "field4.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field4.getRequired",
+    "value": false
+  },
+  {
+    "id": "field4.getVisible",
+    "value": true
+  },
+  {
+    "id": "field4.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field5.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field5.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field5.getType",
+    "value": "UrlString"
+  },
+  {
+    "id": "field5.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field5.getRequired",
+    "value": false
+  },
+  {
+    "id": "field5.getVisible",
+    "value": true
+  },
+  {
+    "id": "field5.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field6.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field6.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field6.getType",
+    "value": "TickerSymbolString"
+  },
+  {
+    "id": "field6.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field6.getRequired",
+    "value": false
+  },
+  {
+    "id": "field6.getVisible",
+    "value": true
+  },
+  {
+    "id": "field6.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field7.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field7.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field7.getType",
+    "value": "Memo"
+  },
+  {
+    "id": "field7.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field7.getRequired",
+    "value": false
+  },
+  {
+    "id": "field7.getVisible",
+    "value": true
+  },
+  {
+    "id": "field7.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field8.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field8.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field8.getType",
+    "value": "Integer"
+  },
+  {
+    "id": "field8.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field8.getRequired",
+    "value": false
+  },
+  {
+    "id": "field8.getVisible",
+    "value": true
+  },
+  {
+    "id": "field8.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field9.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field9.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field9.getType",
+    "value": "Money"
+  },
+  {
+    "id": "field9.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field9.getRequired",
+    "value": false
+  },
+  {
+    "id": "field9.getVisible",
+    "value": true
+  },
+  {
+    "id": "field9.isReadOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field10.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field10.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field10.getType",
+    "value": "Decimal"
+  },
+  {
+    "id": "field10.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field10.getRequired",
+    "value": false
+  },
+  {
+    "id": "field10.getVisible",
+    "value": true
+  },
+  {
+    "id": "field10.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field11.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field11.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field11.getType",
+    "value": "Double"
+  },
+  {
+    "id": "field11.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field11.getRequired",
+    "value": false
+  },
+  {
+    "id": "field11.getVisible",
+    "value": true
+  },
+  {
+    "id": "field11.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field12.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field12.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field12.getType",
+    "value": "Picklist"
+  },
+  {
+    "id": "field12.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field12.getRequired",
+    "value": false
+  },
+  {
+    "id": "field12.getVisible",
+    "value": true
+  },
+  {
+    "id": "field12.isReadOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field13.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field13.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field13.getType",
+    "value": "Lookup"
+  },
+  {
+    "id": "field13.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field13.getRequired",
+    "value": false
+  },
+  {
+    "id": "field13.getVisible",
+    "value": true
+  },
+  {
+    "id": "field13.isReadOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field14.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field14.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field14.getType",
+    "value": "DateTime"
+  },
+  {
+    "id": "field14.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field14.getRequired",
+    "value": false
+  },
+  {
+    "id": "field14.getVisible",
+    "value": true
+  },
+  {
+    "id": "field14.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field15.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field15.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field15.getType",
+    "value": "DateTime"
+  },
+  {
+    "id": "field15.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field15.getRequired",
+    "value": false
+  },
+  {
+    "id": "field15.getVisible",
+    "value": true
+  },
+  {
+    "id": "field15.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field16.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field16.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field16.getType",
+    "value": "Lookup"
+  },
+  {
+    "id": "field16.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field16.getRequired",
+    "value": false
+  },
+  {
+    "id": "field16.getVisible",
+    "value": true
+  },
+  {
+    "id": "field16.isReadOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field17.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field17.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field17.getType",
+    "value": "Lookup"
+  },
+  {
+    "id": "field17.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field17.getRequired",
+    "value": false
+  },
+  {
+    "id": "field17.getVisible",
+    "value": true
+  },
+  {
+    "id": "field17.isReadOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field18.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field18.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field18.getType",
+    "value": "String"
+  },
+  {
+    "id": "field18.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field18.getRequired",
+    "value": false
+  },
+  {
+    "id": "field18.getVisible",
+    "value": true
+  },
+  {
+    "id": "field18.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field19.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field19.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field19.getType",
+    "value": "String"
+  },
+  {
+    "id": "field19.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field19.getRequired",
+    "value": false
+  },
+  {
+    "id": "field19.getVisible",
+    "value": true
+  },
+  {
+    "id": "field19.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field20.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field20.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field20.getType",
+    "value": "String"
+  },
+  {
+    "id": "field20.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field20.getRequired",
+    "value": false
+  },
+  {
+    "id": "field20.getVisible",
+    "value": true
+  },
+  {
+    "id": "field20.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field21.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field21.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field21.getType",
+    "value": "DateTime"
+  },
+  {
+    "id": "field21.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field21.getRequired",
+    "value": false
+  },
+  {
+    "id": "field21.getVisible",
+    "value": true
+  },
+  {
+    "id": "field21.isReadOnly",
+    "value": true
+  },
+  {
+    "id": "field22.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field22.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field22.getType",
+    "value": "DateTime"
+  },
+  {
+    "id": "field22.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field22.getRequired",
+    "value": false
+  },
+  {
+    "id": "field22.getVisible",
+    "value": true
+  },
+  {
+    "id": "field22.isReadOnly",
+    "value": true
+  },
+  {
+    "id": "field23.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field23.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field23.getType",
+    "value": "AddressComposite"
+  },
+  {
+    "id": "field23.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field23.getRequired",
+    "value": false
+  },
+  {
+    "id": "field23.getVisible",
+    "value": true
+  },
+  {
+    "id": "field23.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field24.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field24.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field24.getType",
+    "value": "String"
+  },
+  {
+    "id": "field24.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field24.getRequired",
+    "value": false
+  },
+  {
+    "id": "field24.getVisible",
+    "value": true
+  },
+  {
+    "id": "field24.isReadOnly",
+    "value": false
+  },
+  {
+    "id": "field25.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "field25.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "field25.getType",
+    "value": "String"
+  },
+  {
+    "id": "field25.getDisabled",
+    "value": false
+  },
+  {
+    "id": "field25.getRequired",
+    "value": false
+  },
+  {
+    "id": "field25.getVisible",
+    "value": true
+  },
+  {
+    "id": "field25.isReadOnly",
+    "value": true
+  },
+  {
+    "id": "boolean.nameMatchesSource",
+    "value": false
+  },
+  {
+    "id": "boolean.logicalNameMatchesSource",
+    "value": true
+  },
+  {
+    "id": "boolean.getType",
+    "value": "Boolean"
+  },
+  {
+    "id": "boolean.getDisabled",
+    "value": false
+  },
+  {
+    "id": "boolean.getRequired",
+    "value": false
+  },
+  {
+    "id": "boolean.getVisible",
+    "value": true
+  },
+  {
+    "id": "boolean.isReadOnly",
+    "value": false
+  }
+]

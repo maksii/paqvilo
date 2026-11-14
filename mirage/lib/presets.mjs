@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { seedPresetBody } from './solution-schema.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
+import { cloneStateData } from './state-clone.mjs';
 import {
   LAZY_PRESET,
+  OWNED_PRESET,
   defineLazyPreset,
   discoverPacks,
   genericPresets,
@@ -12,7 +14,7 @@ import {
   presetLibrary,
 } from './preset-registry.mjs';
 
-const clone = (value) => structuredClone(value);
+const clone = cloneStateData;
 const hasOwn = (object, key) => object != null && typeof object === 'object' && Object.hasOwn(object, key);
 
 /**
@@ -30,6 +32,10 @@ export const builtinPresets = presetLibrary({ packs: defaultPacks });
 
 const lazyMeta = (library, id) =>
   hasOwn(library, id) ? (Object.getOwnPropertyDescriptor(library, id).get?.[LAZY_PRESET] ?? null) : null;
+const instantiatePreset = (library, id, context) => {
+  const create = Object.getOwnPropertyDescriptor(library, id)?.get?.[OWNED_PRESET];
+  return create ? create(context) : cloneStateData(library[id], { forkTables: Boolean(context?.records) });
+};
 const compactDescriptor = (name, description, configurationPreset) => ({
   builtin: true,
   builtinVersion: 1,
@@ -52,31 +58,30 @@ const bodyKeys = [
 const isCompactDescriptor = (preset) => preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
 
 /** Refresh generated library entries; explicitly edited presets and mappings remain authoritative. */
-export function resolvePreset(state, name, generatedPresets = builtinPresets) {
-  const saved = state.presets?.[name];
+/* NOSONAR */ export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
+  const copySaved = (value) => cloneStateData(value, { forkTables: Boolean(context?.records) });
+  const saved = hasOwn(state.presets, name) ? state.presets[name] : undefined;
   const generatedHas = hasOwn(generatedPresets, name);
   // Explicit project packs are absent from the compatibility library; their
   // stored descriptors resolve from the supplied portal library instead.
-  const library = hasOwn(builtinPresets, name)
-    ? builtinPresets
-    : generatedHas && saved?.builtin === true && saved.userConfigured !== true
-      ? generatedPresets
-      : null;
+  let library = null;
+  if (hasOwn(builtinPresets, name)) library = builtinPresets;
+  else if (generatedHas && saved?.builtin === true && saved.userConfigured !== true) library = generatedPresets;
   if (
     saved?.userConfigured === true ||
     !library ||
     (saved && saved.builtin !== true && !isDeepStrictEqual(saved, library[name]))
-  )
-    return saved
-      ? !library && isCompactDescriptor(saved)
-        ? null
-        : clone(saved)
-      : generatedHas
-        ? clone(generatedPresets[name])
-        : null;
-  const generated = generatedHas ? generatedPresets[name] : library[name];
-  if (!generated) return saved ? clone(saved) : null;
-  const result = clone(generated);
+  ) {
+    if (saved) return !library && isCompactDescriptor(saved) ? null : copySaved(saved);
+    return generatedHas ? instantiatePreset(generatedPresets, name, context) : null;
+  }
+  const result = instantiatePreset(generatedHas ? generatedPresets : library, name, context);
+  if (!result) return saved ? copySaved(saved) : null;
+  applyExistingMappings(result, state);
+  return result;
+}
+
+function applyExistingMappings(result, state) {
   for (const [entity, mapping] of Object.entries(result.mappings ?? {})) {
     const existing = state.mappings?.[entity];
     if (existing?.userConfigured === true) result.mappings[entity] = clone(existing);
@@ -90,7 +95,6 @@ export function resolvePreset(state, name, generatedPresets = builtinPresets) {
         },
       };
   }
-  return result;
 }
 
 /** Builtin bodies are generated on demand; explicit custom presets remain complete. */
@@ -131,10 +135,23 @@ export function applyPresetSections(state, preset, { owned = false } = {}) {
       preset.personaCatalog,
       `Preset ${preset.id ?? preset.name ?? 'unnamed'}`,
     );
-  if (preset.tables) for (const [entity, rows] of Object.entries(preset.tables)) state.tables[entity] = copy(rows);
+  if (preset.tables) applyPresetTables(state, preset.tables, copy);
   if (preset.mappings) Object.assign(state.mappings, copy(preset.mappings));
-  for (const key of ['plugins', 'permissions']) if (preset[key]) state[key] = copy(preset[key]);
+  applyPresetSectionsByKey(state, preset, copy);
   if (preset.settings) Object.assign(state.settings, copy(preset.settings));
+  applyPresetSimulator(state, preset, copy);
+  return state;
+}
+
+function applyPresetTables(state, tables, copy) {
+  for (const [entity, rows] of Object.entries(tables)) state.tables[entity] = copy(rows);
+}
+
+function applyPresetSectionsByKey(state, preset, copy) {
+  for (const key of ['plugins', 'permissions']) if (preset[key]) state[key] = copy(preset[key]);
+}
+
+function applyPresetSimulator(state, preset, copy) {
   if (preset.identity) {
     state.simulator ??= {};
     state.simulator.identity = copy(preset.identity);
@@ -143,7 +160,6 @@ export function applyPresetSections(state, preset, { owned = false } = {}) {
     state.simulator ??= {};
     state.simulator.endpoints = copy(preset.endpoints);
   }
-  return state;
 }
 
 /**
@@ -174,17 +190,23 @@ export function bootstrapPresetLibrary({
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
       defineLazyPreset(library, id, entry, {
         pack: pack.id,
-        finish: (body) =>
-          seedPresetBody(
+        finish: (body, { owned = false } = {}) => {
+          // These sections are composed separately; cloning the whole body first
+          // temporarily duplicates every generated business row for no purpose.
+          const { mappings: bodyMappings, tables: bodyTables, ...rest } = body;
+          const copy = owned ? (value) => value : clone;
+          return seedPresetBody(
             {
-              ...clone(body),
+              ...copy(rest),
               id,
               builtin: true,
-              ...(body.mappings ? { mappings: { ...clone(importedMappings), ...clone(body.mappings) } } : {}),
-              ...(body.tables ? { tables: { ...clone(importedTables), ...clone(body.tables) } } : {}),
+              ...(bodyMappings ? { mappings: { ...clone(importedMappings), ...copy(bodyMappings) } } : {}),
+              ...(bodyTables ? { tables: { ...clone(importedTables), ...copy(bodyTables) } } : {}),
             },
             metadata?.schema,
-          ),
+            { owned: true },
+          );
+        },
       });
     }
   }
@@ -203,15 +225,14 @@ export function listPresets({ state = {}, library = {} } = {}) {
     const meta = presetDescriptor(library, id) ?? presetDescriptor(builtinPresets, id);
     const custom = saved !== undefined && (saved?.userConfigured === true || !meta || saved?.builtin !== true);
     const unavailable = !meta && isCompactDescriptor(saved);
+    const configuredPreset = custom ? saved?.configurationPreset : meta?.configurationPreset;
     return {
       id,
       name: (custom ? saved?.name : meta?.name) ?? meta?.name ?? id,
       description: (custom ? saved?.description : meta?.description) ?? meta?.description ?? '',
-      source: saved?.userConfigured ? 'stored' : meta ? 'builtin' : 'stored',
+      source: saved?.userConfigured || !meta ? 'stored' : 'builtin',
       ...(meta?.pack ? { pack: meta.pack } : {}),
-      ...((custom ? saved?.configurationPreset : meta?.configurationPreset)
-        ? { configurationPreset: custom ? saved.configurationPreset : meta.configurationPreset }
-        : {}),
+      ...(configuredPreset ? { configurationPreset: configuredPreset } : {}),
       ...(unavailable ? { unavailable: true } : {}),
     };
   });

@@ -20,7 +20,7 @@ export function runToolkit(...args) {
         execFile(
           process.execPath,
           [lenseCli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 },
+          { env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         );
       }),

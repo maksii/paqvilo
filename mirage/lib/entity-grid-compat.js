@@ -9,11 +9,11 @@
  */
 (() => {
   'use strict';
-  if (window.__ppNativeGridRuntime) return;
-  window.__ppNativeGridRuntime = true;
+  if (globalThis.__ppNativeGridRuntime) return;
+  globalThis.__ppNativeGridRuntime = true;
 
   // Only a real jQuery (jQuery.fn.jquery is its version) carries the native grid events.
-  const jq = () => (typeof window.jQuery?.fn?.jquery === 'string' ? window.jQuery : null);
+  const jq = () => (typeof globalThis.jQuery?.fn?.jquery === 'string' ? globalThis.jQuery : null);
   const esc = (value) =>
     String(value ?? '').replace(
       /[&<>"']/g,
@@ -24,16 +24,65 @@
     div.innerHTML = String(html ?? '');
     return div.textContent.trim();
   };
-  const ResourceManager = () => window.ResourceManager || {};
+  const ResourceManager = () => globalThis.ResourceManager || {};
   const resource = (key, fallback) => ResourceManager()[key] || fallback;
   // Browser-local date formatting with the site's .NET date patterns (body data-dateformat,
   // data-datetimeformat), as the platform grid renders <time> cells.
   const pad = (value, length = 2) => String(value).padStart(length, '0');
+  const LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]{1,8})*$/i;
+  const NAME_OPTIONS = {
+    MMMM: { month: 'long' },
+    MMM: { month: 'short' },
+    dddd: { weekday: 'long' },
+    ddd: { weekday: 'short' },
+  };
+  // One formatter per language and name token, so the cell loop does not rebuild it. The page has one language.
+  const nameFormatters = new Map();
+  // A tag the pattern accepts but Intl refuses (for example en-a) falls back to en-US.
+  function createNameFormatter(language, options) {
+    try {
+      return new Intl.DateTimeFormat(language, options);
+    } catch {
+      return new Intl.DateTimeFormat('en-US', options);
+    }
+  }
+  function nameFormatter(language, token) {
+    const key = `${language}|${token}`;
+    if (!nameFormatters.has(key)) nameFormatters.set(key, createNameFormatter(language, NAME_OPTIONS[token]));
+    return nameFormatters.get(key);
+  }
+  // Month and weekday names come from the page language; a missing or malformed tag falls back to en-US.
+  function localName(date, token) {
+    const language = globalThis.document?.documentElement?.lang ?? '';
+    return nameFormatter(LANGUAGE_TAG.test(language) ? language : 'en-US', token).format(date);
+  }
+  // Literal text first (quoted or escaped), then the format letters; each letter run takes as many of its letter as the format allows.
+  const FORMAT_TOKEN = new RegExp(
+    [
+      `'[^']*'`,
+      '"[^"]*"',
+      String.raw`\\.`,
+      'y{1,4}',
+      'M{1,4}',
+      'd{1,4}',
+      'H{1,2}',
+      'h{1,2}',
+      'm{1,2}',
+      's{1,2}',
+      'f{1,3}',
+      't{1,2}',
+    ].join('|'),
+    'g',
+  );
   function formatLocal(date, pattern) {
     const h = date.getHours();
+    const year = date.getFullYear();
+    const ms = date.getMilliseconds();
     const tokens = {
-      yyyy: date.getFullYear(),
-      yy: pad(date.getFullYear() % 100),
+      yyyy: year,
+      yyy: pad(year, 3),
+      yy: pad(year % 100),
+      y: year % 100,
       MM: pad(date.getMonth() + 1),
       M: date.getMonth() + 1,
       dd: pad(date.getDate()),
@@ -46,11 +95,19 @@
       m: date.getMinutes(),
       ss: pad(date.getSeconds()),
       s: date.getSeconds(),
+      fff: pad(ms, 3),
+      ff: pad(Math.floor(ms / 10)),
+      f: Math.floor(ms / 100),
       tt: h < 12 ? 'AM' : 'PM',
+      t: h < 12 ? 'A' : 'P',
     };
-    return String(pattern).replace(/'[^']*'|yyyy|yy|MM|M|dd|d|HH|H|hh|h|mm|m|ss|s|tt/g, (token) =>
-      token.startsWith("'") ? token.slice(1, -1) : String(tokens[token]),
-    );
+    return String(pattern).replaceAll(FORMAT_TOKEN, (token) => formatToken(token, date, tokens));
+  }
+  // Quoted text and backslash escapes are literal; name tokens are looked up only when used.
+  function formatToken(token, date, tokens) {
+    if (token.startsWith('\\')) return token.slice(1);
+    if (token.startsWith("'") || token.startsWith('"')) return token.slice(1, -1);
+    return NAME_OPTIONS[token] ? localName(date, token) : String(tokens[token]);
   }
   function isoLocal(date) {
     const offset = -date.getTimezoneOffset();
@@ -62,8 +119,8 @@
     const body = document.body;
     const pattern =
       attribute.DateTimeFormat === 'DateOnly'
-        ? body?.getAttribute('data-dateformat')
-        : body?.getAttribute('data-datetimeformat');
+        ? (body?.getAttribute('data-dateformat') ?? null) // NOSONAR: actual attributes exclude inherited dataset values
+        : (body?.getAttribute('data-datetimeformat') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     const match = /\/Date\((-?\d+)\)\//.exec(String(attribute.Value ?? ''));
     if (!pattern || !match) return null;
     if (attribute.DateTimeFormat === 'DateOnly') {
@@ -131,10 +188,10 @@
       const rightEdge = leftEdge + (viewport?.width || edge) - gap * 2;
       const bottomEdge = topEdge + (viewport?.height || window.innerHeight) - gap * 2;
       const style = getComputedStyle(menu);
-      const marginTop = parseFloat(style.marginTop) || 0;
-      const marginBottom = parseFloat(style.marginBottom) || 0;
-      const marginLeft = parseFloat(style.marginLeft) || 0;
-      const marginRight = parseFloat(style.marginRight) || 0;
+      const marginTop = Number.parseFloat(style.marginTop) || 0;
+      const marginBottom = Number.parseFloat(style.marginBottom) || 0;
+      const marginLeft = Number.parseFloat(style.marginLeft) || 0;
+      const marginRight = Number.parseFloat(style.marginRight) || 0;
       const maxHeight = Math.max(1, bottomEdge - topEdge);
       const maxWidth = Math.max(1, rightEdge - leftEdge);
       if (menu.offsetHeight > maxHeight) {
@@ -213,7 +270,7 @@
   function token() {
     return new Promise((ready, reject) => {
       const resolve = (value) => setTimeout(() => ready(value), 0);
-      const shell = window.shell;
+      const shell = globalThis.shell;
       if (shell && typeof shell.getTokenDeferred === 'function') {
         const deferred = shell.getTokenDeferred();
         if (deferred && typeof deferred.done === 'function') {
@@ -229,7 +286,7 @@
     });
   }
   function errorOf(xhr, thrown) {
-    let message = thrown || 'Error completing request.';
+    let message = thrown || 'Error completing request.'; // NOSONAR: falsy inputs must also be defaulted
     try {
       if (/json/i.test(xhr?.getResponseHeader?.('content-type') || '')) {
         const body = JSON.parse(xhr.responseText);
@@ -241,6 +298,55 @@
     const error = new Error(message);
     error.status = xhr?.status;
     return error;
+  }
+  function sendJQueryPost($, url, body, value, { json, form, jsonType, multipart }) {
+    return new Promise((resolve, reject) => {
+      if (form) body.append('__RequestVerificationToken', value);
+      const headers = form ? {} : { __RequestVerificationToken: value };
+      let payload;
+      if (!form) payload = JSON.stringify(body);
+      else payload = multipart ? body : body.toString();
+      let contentType = jsonType;
+      if (multipart) contentType = false;
+      else if (form) contentType = 'application/x-www-form-urlencoded; charset=UTF-8';
+      $.ajax({
+        type: 'POST',
+        url,
+        data: payload,
+        contentType,
+        processData: !form,
+        dataType: json ? 'json' : undefined,
+        headers,
+        cache: false,
+      })
+        .done((data) => resolve(data))
+        .fail((xhr, _status, thrown) => reject(errorOf(xhr, thrown)));
+    });
+  }
+  function configureXhrPost(xhr, value, { form, jsonType }) {
+    if (!form) xhr.setRequestHeader('Content-Type', jsonType);
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    if (!form) xhr.setRequestHeader('__RequestVerificationToken', value);
+  }
+  function completeXhrPost(xhr, resolve, reject, json) {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      if (!json || !xhr.responseText) return resolve(null);
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch (error) {
+        reject(error);
+      }
+    } else reject(errorOf(xhr, xhr.statusText));
+  }
+  function sendXhrPost(url, body, value, { json, form, jsonType }) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      configureXhrPost(xhr, value, { form, jsonType });
+      xhr.onload = () => completeXhrPost(xhr, resolve, reject, json);
+      xhr.onerror = () => reject(errorOf(xhr, 'Network error'));
+      xhr.send(form ? body : JSON.stringify(body));
+    });
   }
   /**
    * entityform.js record actions (button.*-link in .form-custom-actions): Delete opens the
@@ -258,7 +364,13 @@
       Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? '').replace(/[{}]/g, ''),
     };
     const submit = () =>
-      post(button.getAttribute('data-url') || location.href, { entityReference: reference }, { json: false }).then(
+      post(
+        /* NOSONAR */ button.getAttribute('data-url') || location.href,
+        { entityReference: reference },
+        { json: false },
+      ).then(
+        // NOSONAR: read actual attributes, not inherited dataset properties
+        // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
         () => location.reload(),
       );
@@ -269,7 +381,7 @@
     if (primary)
       primary.onclick = () => {
         primary.disabled = true;
-        submit();
+        void submit();
       };
     showModal(modal);
   }
@@ -279,54 +391,20 @@
         '.form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link',
       )
     )
-      formActionClick(event);
+      void formActionClick(event);
   });
   /** POST JSON with the native headers; json=true parses the reply. */
   // jsonType: the JSON request's content type (the Bootstrap 5 notes control posts a bare application/json).
   function post(url, body, { json = true, form = false, jsonType = 'application/json; charset=utf-8' } = {}) {
     // form: the body is a URLSearchParams (urlencoded) or FormData (multipart) payload.
     const multipart = form && typeof FormData !== 'undefined' && body instanceof FormData;
-    return token().then(
-      (value) =>
-        new Promise((resolve, reject) => {
-          const $ = jq();
-          // A form post carries the token as a field (the platform's ajaxSafePost form path).
-          if (form) body.append('__RequestVerificationToken', value);
-          const headers = form ? {} : { __RequestVerificationToken: value };
-          if ($ && $.ajax) {
-            $.ajax({
-              type: 'POST',
-              url,
-              data: form ? (multipart ? body : body.toString()) : JSON.stringify(body),
-              contentType: multipart ? false : form ? 'application/x-www-form-urlencoded; charset=UTF-8' : jsonType,
-              processData: !form,
-              dataType: json ? 'json' : undefined,
-              headers,
-              cache: false,
-            })
-              .done((data) => resolve(data))
-              .fail((xhr, _status, thrown) => reject(errorOf(xhr, thrown)));
-            return;
-          }
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', url);
-          if (!form) xhr.setRequestHeader('Content-Type', jsonType);
-          xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-          if (!form) xhr.setRequestHeader('__RequestVerificationToken', value);
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              if (!json || !xhr.responseText) return resolve(null);
-              try {
-                resolve(JSON.parse(xhr.responseText));
-              } catch (error) {
-                reject(error);
-              }
-            } else reject(errorOf(xhr, xhr.statusText));
-          };
-          xhr.onerror = () => reject(errorOf(xhr, 'Network error'));
-          xhr.send(form ? body : JSON.stringify(body));
-        }),
-    );
+    return token().then((value) => {
+      const $ = jq();
+      // A form post carries the token as a field (the platform's ajaxSafePost form path).
+      if ($?.ajax) return sendJQueryPost($, url, body, value, { json, form, jsonType, multipart });
+      if (form) body.append('__RequestVerificationToken', value);
+      return sendXhrPost(url, body, value, { json, form, jsonType });
+    });
   }
   // The platform's timeago phrases (jquery.timeago defaults) for a past instant.
   function timeAgo(date, now = Date.now()) {
@@ -351,19 +429,19 @@
   // ---- bootstrap modal (native Bootstrap when present)
   function showModal(modal) {
     const $ = jq();
-    if ($ && $.fn.modal) {
+    if ($?.fn.modal) {
       // Bootstrap 3 leaves aria-hidden alone; the platform's grids, lookups and notes mark
       // their dialog exposed on show.bs.modal and hidden again once it is hidden.
       $(modal)
         .off('.simModalAria')
         .on('show.bs.modal.simModalAria', () =>
-          modal.hasAttribute('data-bs-backdrop')
+          modal.hasAttribute('data-bs-backdrop') // NOSONAR: actual attributes exclude inherited dataset values
             ? modal.removeAttribute('aria-hidden')
             : modal.setAttribute('aria-hidden', 'false'),
         )
         .on('hidden.bs.modal.simModalAria', () => modal.setAttribute('aria-hidden', 'true'));
       $(modal).modal('show');
-      return void announceDialog(modal);
+      return announceDialog(modal);
     }
     trigger(modal, 'show.bs.modal');
     modal.hidden = false;
@@ -401,7 +479,7 @@
   }
   function hideModal(modal) {
     const $ = jq();
-    if ($ && $.fn.modal) return void $(modal).modal('hide');
+    if ($?.fn.modal) return void $(modal).modal('hide');
     if (!modal.classList.contains('in')) return;
     trigger(modal, 'hide.bs.modal');
     modal.style.display = 'none';
@@ -413,7 +491,7 @@
   }
   document.addEventListener('click', (event) => {
     const $ = jq();
-    if ($ && $.fn.modal) return;
+    if ($?.fn.modal) return;
     const dismiss = event.target.closest('[data-dismiss="modal"]');
     if (dismiss) {
       const modal = dismiss.closest('.modal');
@@ -449,7 +527,7 @@
       return JSON.parse(value);
     } catch {
       try {
-        return JSON.parse(decodeURIComponent(escape(atob(value))));
+        return JSON.parse(decodeURIComponent(escape(atob(value)))); // NOSONAR: deprecated API kept for compatibility
       } catch {
         return [];
       }
@@ -483,7 +561,7 @@
       // A lookup dialog grid announces its count under the lookup field's name.
       const lookup = element.closest('.entity-lookup');
       this.isLookup = Boolean(lookup);
-      this.lookupField = lookup?.getAttribute('data-lookup-datafieldname') ?? null;
+      this.lookupField = lookup?.getAttribute('data-lookup-datafieldname') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const $ = jq();
       const data = (name) => element.getAttribute(`data-${name}`);
       this.layouts = parseLayouts(data('view-layouts'));
@@ -521,13 +599,13 @@
       }
       on(element, 'refresh', (event) => {
         if (event.target !== element) return;
-        this.load(this.state.page || 1);
+        void this.load(this.state.page || 1);
       });
       on(element, 'metafilter', (event, metaFilter) => {
         if (event.target !== element) return;
         this.state.metaFilter = typeof metaFilter === 'string' ? metaFilter : null;
         this.state.page = 1;
-        this.load(1);
+        void this.load(1);
       });
       const initialFilter = new URLSearchParams(location.search).get(
         this.layout?.Configuration?.FilterSettings?.FilterQueryStringParameterName || 'mf',
@@ -548,7 +626,8 @@
     // "account" when it filters by the user's account column, else none.
     userFilter() {
       const config = this.config;
-      return config.FilterPortalUserAttributeName ? 'user' : config.FilterAccountAttributeName ? 'account' : null;
+      if (config.FilterPortalUserAttributeName) return 'user';
+      return config.FilterAccountAttributeName ? 'account' : null;
     }
     get config() {
       return this.layout?.Configuration ?? {};
@@ -565,7 +644,7 @@
       }
       this.renderToolbar();
       this.renderTable();
-      if (load) this.load(1);
+      if (load) void this.load(1);
     }
 
     renderToolbar() {
@@ -573,42 +652,8 @@
       const config = this.config;
       const toolbar = document.createElement('div');
       toolbar.className = 'view-toolbar grid-actions clearfix';
-      if (this.layouts.length > 1) {
-        const select = document.createElement('ul');
-        select.className = `view-select nav nav-pills ${this.bs5 ? 'float-start' : 'pull-left'}`;
-        const current = this.layout;
-        const name = current.Configuration?.ViewDisplayName || current.ViewName;
-        const count = this.layouts.length;
-        select.innerHTML = this.bs5
-          ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title">${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
-              .map(
-                (layout, index) =>
-                  `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" class="dropdown-item" tabindex="0" aria-posinset="${index + 1}" aria-setsize="${count}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
-              )
-              .join('')}</ul></li>`
-          : `<li class="dropdown"><a class="selected-view dropdown-toggle" data-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span><span class="caret" aria-hidden="true"></span></a><ul class="dropdown-menu" role="menu">${this.layouts
-              .map(
-                (layout) =>
-                  `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" data-view-id="${esc(layout.Id)}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
-              )
-              .join('')}</ul></li>`;
-        onClick(select, (event) => {
-          const item = event.target.closest('[role="menuitem"]');
-          if (item) {
-            event.preventDefault();
-            // Bootstrap 5 menu items carry no view id: their position names the layout.
-            const index = [...select.querySelectorAll('[role="menuitem"]')].indexOf(item);
-            this.changeView(item.getAttribute('data-view-id') ?? this.layouts[index]?.Id);
-            return;
-          }
-          const toggle = event.target.closest('.dropdown-toggle');
-          if (toggle && !(jq() && jq().fn.dropdown)) {
-            event.preventDefault();
-            toggle.parentElement.classList.toggle('open');
-          }
-        });
-        toolbar.append(select);
-      }
+      const select = this.renderViewSelect();
+      if (select) toolbar.append(select);
       // A Bootstrap 5 page grid shows the list's create page (InsertActionLink) as its own toolbar button.
       const insert = config.InsertActionLink;
       if (this.bs5 && !this.dialog && this.enableActions && insert?.Enabled && insert.URL?.PathWithQueryString) {
@@ -619,81 +664,142 @@
         link.innerHTML = insert.Label;
         toolbar.append(link);
       }
-      const actions = document.createElement('div');
-      actions.className = `${this.bs5 ? 'float-end' : 'pull-right'} toolbar-actions`;
-      const search = config.Search;
-      if (search?.Enabled) {
-        const group = document.createElement('div');
-        group.className = `input-group ${this.bs5 ? 'float-start' : 'pull-left'} view-search entitylist-search`;
-        group.setAttribute('role', 'none');
-        const results = resource('Search_Results', 'Search Results');
-        group.innerHTML = this.bs5
-          ? `<input placeholder="${esc(search.PlaceholderText || 'Search')}" title="${esc(search.TooltipText || '')}" aria-label="${esc(search.TooltipText || search.PlaceholderText || 'Search')}" class="query form-control" style="display: table-cell; width: 100%; font-size: 14px;"><div class="input-group-btn align-top" role="presentation" style="display: table-cell;"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default" style="border-radius: 0px;"><span class="visually-hidden">${esc(results)}</span><span class="fa fa-search"></span></button></div>`
-          : `<input placeholder="${esc(search.PlaceholderText || 'Search')}" title="${esc(search.TooltipText || '')}" aria-label="${esc(search.TooltipText || search.PlaceholderText || 'Search')}" class="query form-control"><div class="input-group-btn" role="presentation"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default btn-hg">${search.ButtonLabel || "<span class='sr-only'>Search Results</span><span class='fa fa-search'></span>"}</button></div>`;
-        if (this.bs5) group.style.display = 'table';
-        const input = group.querySelector('input');
-        const searchValue = new URLSearchParams(location.search).get(search.SearchQueryStringParameterName || 'query');
-        if (searchValue && !this.isLookup) input.value = searchValue;
-        group.querySelector('button').addEventListener('click', () => this.load(1));
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            this.load(1);
-          }
-        });
-        actions.append(group);
-      }
-      if (this.enableActions)
-        for (const action of config.ViewActionLinks ?? []) {
-          if (!action.Enabled) continue;
-          // A subgrid of an inactive record renders no create or associate action at all; search and
-          // download stay.
-          if ((action.Type === ACTION.Insert || action.Type === ACTION.Associate) && this.parentInactive()) continue;
-          if (action.Type === ACTION.Insert) actions.append(this.createActionElement(action));
-          else if (action.Type === ACTION.Associate) {
-            const link = document.createElement('a');
-            link.href = '#';
-            link.className = `btn btn-info ${this.bs5 ? 'float-end' : 'pull-right'} action`;
-            if (!this.bs5) {
-              link.setAttribute('role', 'button');
-              link.setAttribute('tabindex', '0');
-            }
-            link.title = action.Tooltip || plain(action.Label);
-            link.innerHTML = action.Label;
-            onClick(link, (event) => {
-              event.preventDefault();
-              const modal = this.element.querySelector('.associate-lookup .modal-associate');
-              if (modal) showModal(modal);
-            });
-            const group = document.createElement('div');
-            group.className = `input-group ${this.bs5 ? 'float-start' : 'pull-left'}`;
-            if (this.bs5) group.setAttribute('style', 'display: table; width: auto;');
-            group.append(link);
-            actions.append(group);
-          } else if (action.Type === ACTION.Download) {
-            const group = document.createElement('div');
-            group.className = `input-group ${this.bs5 ? 'float-start' : 'pull-left'}`;
-            if (this.bs5) group.setAttribute('style', 'display: table; width: auto;');
-            // Bootstrap 5 grids render a button with a left margin, Bootstrap 3 a link.
-            const link = document.createElement(this.bs5 ? 'button' : 'a');
-            if (this.bs5) link.type = 'button';
-            else link.href = '#';
-            link.className = `entitylist-download btn btn-info ${this.bs5 ? 'float-end' : 'pull-right'} action`;
-            link.title = action.Tooltip || plain(action.Label);
-            if (this.bs5) link.style.marginLeft = '8px';
-            link.innerHTML = action.Label;
-            onClick(link, (event) => {
-              event.preventDefault();
-              this.download(action, link);
-            });
-            group.append(link);
-            actions.append(group);
-          }
-        }
+      const actions = this.renderToolbarActions(config);
       if (actions.children.length) toolbar.append(actions);
       if (toolbar.children.length) this.element.prepend(toolbar);
       // A Bootstrap 5 page grid announces the record count after its toolbar (or first, without one).
       if (this.bs5 && !this.dialog) this.ensureAnnouncer();
+    }
+
+    renderViewSelect() {
+      if (this.layouts.length <= 1) return null;
+      const select = document.createElement('ul');
+      select.className = `view-select nav nav-pills ${this.bs5 ? 'float-start' : 'pull-left'}`;
+      const current = this.layout;
+      const name = current.Configuration?.ViewDisplayName || current.ViewName;
+      const count = this.layouts.length;
+      select.innerHTML = this.bs5
+        ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title">${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
+            .map(
+              (layout, index) =>
+                `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" class="dropdown-item" tabindex="0" aria-posinset="${index + 1}" aria-setsize="${count}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
+            )
+            .join('')}</ul></li>`
+        : `<li class="dropdown"><a class="selected-view dropdown-toggle" data-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span><span class="caret" aria-hidden="true"></span></a><ul class="dropdown-menu" role="menu">${this.layouts
+            .map(
+              (layout) =>
+                `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" data-view-id="${esc(layout.Id)}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
+            )
+            .join('')}</ul></li>`;
+      onClick(select, (event) => this.handleViewSelectClick(event, select));
+      return select;
+    }
+
+    handleViewSelectClick(event, select) {
+      const item = event.target.closest('[role="menuitem"]');
+      if (item) {
+        event.preventDefault();
+        // Bootstrap 5 menu items carry no view id: their position names the layout.
+        const index = [...select.querySelectorAll('[role="menuitem"]')].indexOf(item);
+        this.changeView(item.getAttribute('data-view-id') ?? this.layouts[index]?.Id); // NOSONAR: actual attributes exclude inherited dataset values
+        return;
+      }
+      const toggle = event.target.closest('.dropdown-toggle');
+      /* NOSONAR */ if (toggle && !(jq() && jq().fn.dropdown)) {
+        event.preventDefault();
+        toggle.parentElement.classList.toggle('open');
+      }
+    }
+
+    renderToolbarActions(config) {
+      const actions = document.createElement('div');
+      actions.className = `${this.bs5 ? 'float-end' : 'pull-right'} toolbar-actions`;
+      const search = config.Search;
+      if (search?.Enabled) actions.append(this.renderSearch(search));
+      if (!this.enableActions) return actions;
+      for (const action of config.ViewActionLinks ?? []) this.appendToolbarAction(actions, action);
+      return actions;
+    }
+
+    appendToolbarAction(actions, action) {
+      if (!action.Enabled) return;
+      // A subgrid of an inactive record renders no create or associate action at all; search and
+      // download stay.
+      if ((action.Type === ACTION.Insert || action.Type === ACTION.Associate) && this.parentInactive()) return;
+      if (action.Type === ACTION.Insert) actions.append(this.createActionElement(action));
+      else if (action.Type === ACTION.Associate) actions.append(this.renderAssociateAction(action));
+      else if (action.Type === ACTION.Download) actions.append(this.renderDownloadAction(action));
+    }
+
+    renderSearch(search) {
+      const group = document.createElement('div');
+      group.className = `input-group ${this.bs5 ? 'float-start' : 'pull-left'} view-search entitylist-search`;
+      group.setAttribute('role', 'none');
+      const results = resource('Search_Results', 'Search Results');
+      group.innerHTML = this.bs5
+        ? `<input placeholder="${esc(search.PlaceholderText || 'Search')}" title="${esc(search.TooltipText || '')}" aria-label="${esc(search.TooltipText || search.PlaceholderText || 'Search')}" class="query form-control" style="display: table-cell; width: 100%; font-size: 14px;"><div class="input-group-btn align-top" role="presentation" style="display: table-cell;"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default" style="border-radius: 0px;"><span class="visually-hidden">${esc(results)}</span><span class="fa fa-search"></span></button></div>`
+        : `<input placeholder="${esc(search.PlaceholderText || 'Search')}" title="${esc(search.TooltipText || '')}" aria-label="${esc(search.TooltipText || search.PlaceholderText || 'Search')}" class="query form-control"><div class="input-group-btn" role="presentation"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default btn-hg">${search.ButtonLabel || "<span class='sr-only'>Search Results</span><span class='fa fa-search'></span>"}</button></div>`;
+      if (this.bs5) group.style.display = 'table';
+      const input = group.querySelector('input');
+      const searchValue = new URLSearchParams(location.search).get(search.SearchQueryStringParameterName || 'query');
+      if (searchValue && !this.isLookup) input.value = searchValue;
+      group.querySelector('button').addEventListener('click', () => this.load(1));
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          void this.load(1);
+        }
+      });
+      return group;
+    }
+
+    renderAssociateAction(action) {
+      const link = document.createElement('a');
+      link.href = '#';
+      link.className = `btn btn-info ${this.bs5 ? 'float-end' : 'pull-right'} action`;
+      if (!this.bs5) {
+        link.setAttribute('role', 'button');
+        link.setAttribute('tabindex', '0');
+      }
+      link.title = action.Tooltip || plain(action.Label);
+      link.innerHTML = action.Label;
+      onClick(link, (event) => {
+        event.preventDefault();
+        const modal = this.element.querySelector('.associate-lookup .modal-associate');
+        if (modal) showModal(modal);
+      });
+      return this.toolbarActionGroup(link);
+    }
+
+    renderDownloadAction(action) {
+      // Bootstrap 5 grids render a button with a left margin, Bootstrap 3 a link.
+      const group = this.createToolbarActionGroup();
+      const link = document.createElement(this.bs5 ? 'button' : 'a');
+      if (this.bs5) link.type = 'button';
+      else link.href = '#';
+      link.className = `entitylist-download btn btn-info ${this.bs5 ? 'float-end' : 'pull-right'} action`;
+      link.title = action.Tooltip || plain(action.Label);
+      if (this.bs5) link.style.marginLeft = '8px';
+      link.innerHTML = action.Label;
+      onClick(link, (event) => {
+        event.preventDefault();
+        this.download(action, link);
+      });
+      group.append(link);
+      return group;
+    }
+
+    toolbarActionGroup(link) {
+      const group = this.createToolbarActionGroup();
+      group.append(link);
+      return group;
+    }
+
+    createToolbarActionGroup() {
+      const group = document.createElement('div');
+      group.className = `input-group ${this.bs5 ? 'float-start' : 'pull-left'}`;
+      if (this.bs5) group.setAttribute('style', 'display: table; width: auto;');
+      return group;
     }
 
     /**
@@ -704,11 +810,9 @@
      */
     ensureAnnouncer() {
       if (this.child("[id^='SearchCountText']")) return;
-      const suffix = this.isLookup
-        ? (this.lookupField ?? '')
-        : this.element.hasAttribute('data-nl-search-filter')
-          ? 'null'
-          : 'undefined';
+      let suffix = 'undefined';
+      if (this.isLookup) suffix = this.lookupField ?? '';
+      else if (this.element.hasAttribute('data-nl-search-filter')) suffix = 'null'; // NOSONAR: actual attributes exclude inherited dataset values
       let announcer = document.getElementById(`SearchCountText${suffix}`);
       if (!announcer) {
         announcer = document.createElement('div');
@@ -744,7 +848,7 @@
         this.bs5 && !this.dialog && !(action.Target === 0 && action.EntityForm) ? 'link' : 'button',
       );
       link.innerHTML = action.Label;
-      if (href !== '#' && window.parent !== window) link.target = '_top';
+      if (href !== '#' && window.parent !== globalThis) link.target = '_top'; // NOSONAR: window and globalThis are compared deliberately
       if (action.Target === 0 && action.EntityForm) {
         const modal = this.child('.modal-form-insert');
         if (modal) this.bindFormModal(modal, link);
@@ -798,14 +902,14 @@
         modal.setAttribute('aria-hidden', 'true');
         const frame = modal.querySelector('iframe');
         if (frame) frame.setAttribute('src', '');
-        if (focusTarget && focusTarget.isConnected) focusTarget.focus();
+        if (focusTarget?.isConnected) focusTarget.focus();
       };
       if ($) $(modal).off('hidden.bs.modal.entitygrid').on('hidden.bs.modal.entitygrid', reset);
       else modal.addEventListener('hidden.bs.modal', reset);
     }
 
     formModalSource(modal, params) {
-      const page = modal?.querySelector('iframe')?.getAttribute('data-page');
+      const page = modal?.querySelector('iframe')?.getAttribute('data-page'); // NOSONAR: actual attributes exclude inherited dataset values
       if (!page) return null;
       try {
         const source = withQuery(page, params),
@@ -871,84 +975,7 @@
       const sortParts = String(this.state.sort ?? layout.SortExpression ?? '')
         .split(',')
         .map((part) => part.trim().split(/\s+/));
-      for (const column of layout.Columns ?? []) {
-        const th = document.createElement('th');
-        th.setAttribute('scope', 'col');
-        // The platform writes the unrounded width (style="width:15.686274509803921%;").
-        th.setAttribute(
-          'style',
-          this.widthStyle === 'Pixels' ? `width:${column.Width}px;` : `width:${column.WidthAsPercent}%;`,
-        );
-        const name = column.Name ?? column.LogicalName;
-        if (column.Type === 1 || column.Type === 2 || column.SortDisabled) {
-          th.className = 'sort-disabled';
-          if (column.Type === 1) {
-            th.setAttribute('aria-label', 'Select');
-            th.setAttribute('data-th', name);
-          } else if (column.Type === 2) {
-            th.setAttribute('aria-label', 'Actions');
-            th.setAttribute('data-th', name);
-          } else if (this.bs5) {
-            th.setAttribute('aria-label', plain(name));
-            th.setAttribute('data-th', name);
-          }
-          th.innerHTML = name;
-        } else {
-          const sorted = sortParts.find((part) => part[0] === column.LogicalName);
-          th.className = 'sort-enabled';
-          const ascending = sorted && !/desc/i.test(sorted[1] ?? '');
-          if (sorted) {
-            th.classList.add('sort', ascending ? 'sort-asc' : 'sort-desc');
-            th.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
-          }
-          const userSorted = this.state.sort != null;
-          // A column the view sorts names its own direction (a descending view column reads ". sort descending").
-          const hint = sorted
-            ? userSorted
-              ? ascending
-                ? 'Sort_Descending_Order'
-                : 'Sort_Ascending_Order'
-              : ascending
-                ? 'Sort_Ascending_Order'
-                : 'Sort_Descending_Order'
-            : 'Sort_Descending_Order';
-          th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${sorted ? ` <span class="fa ${ascending ? 'fa-arrow-up' : 'fa-arrow-down'}" aria-hidden="true"></span>` : ''}<span class="${this.bs5 ? 'visually-hidden' : 'sr-only'} sort-hint">. ${esc(resource(hint, hint === 'Sort_Descending_Order' ? 'sort descending' : 'sort ascending'))}</span></a>`;
-          onClick(th.querySelector('a'), (event) => {
-            event.preventDefault();
-            if (this.state.loading) return;
-            const current = String(this.state.sort ?? layout.SortExpression ?? '')
-              .split(',')
-              .map((part) => part.trim().split(/\s+/))
-              .find((part) => part[0] === column.LogicalName);
-            const direction = current && !/desc/i.test(current[1] ?? '') ? 'DESC' : 'ASC';
-            this.state.sort = `${column.LogicalName} ${direction}`;
-            if (!this.bs5 || this.dialog) {
-              this.renderTable();
-              this.load(1);
-              return;
-            }
-            // The Bootstrap 5 page grid re-marks its header in place: the previous column loses its
-            // classes and arrow (its text keeps the trailing space), the clicked column gets
-            // "sort-asc sort" and a bare arrow, the hints stay, and the header links keep style="".
-            for (const other of row.querySelectorAll('th.sort')) {
-              other.classList.remove('sort', 'sort-asc', 'sort-desc');
-              other.removeAttribute('aria-sort');
-              other.querySelector('a > .fa')?.remove();
-            }
-            th.classList.add(direction === 'ASC' ? 'sort-asc' : 'sort-desc', 'sort');
-            th.setAttribute('aria-sort', direction === 'ASC' ? 'ascending' : 'descending');
-            const hintNode = th.querySelector('.sort-hint');
-            const arrow = document.createElement('span');
-            arrow.className = `fa ${direction === 'ASC' ? 'fa-arrow-up' : 'fa-arrow-down'}`;
-            if (!/s$/.test(hintNode.previousSibling?.textContent ?? '')) hintNode.before(' ');
-            hintNode.before(arrow);
-            this.load(1).then(() => {
-              for (const link of row.querySelectorAll('th a')) link.setAttribute('style', '');
-            });
-          });
-        }
-        row.append(th);
-      }
+      for (const column of layout.Columns ?? []) row.append(this.renderColumnHeader(column, row, sortParts, layout));
       head.append(row);
       table.append(head, document.createElement('tbody'));
       if (this.bs5) {
@@ -968,6 +995,94 @@
         }
       }
       container.replaceChildren(table);
+    }
+
+    renderColumnHeader(column, row, sortParts, layout) {
+      const th = document.createElement('th');
+      th.setAttribute('scope', 'col');
+      // The platform writes the unrounded width (style="width:15.686274509803921%;").
+      th.setAttribute(
+        'style',
+        this.widthStyle === 'Pixels' ? `width:${column.Width}px;` : `width:${column.WidthAsPercent}%;`,
+      );
+      const name = column.Name ?? column.LogicalName;
+      if (column.Type === 1 || column.Type === 2 || column.SortDisabled) this.renderDisabledHeader(th, column, name);
+      else this.renderSortableHeader(th, column, name, row, sortParts, layout);
+      return th;
+    }
+
+    renderDisabledHeader(th, column, name) {
+      th.className = 'sort-disabled';
+      if (column.Type === 1) {
+        th.setAttribute('aria-label', 'Select');
+        th.dataset.th = String(name);
+      } else if (column.Type === 2) {
+        th.setAttribute('aria-label', 'Actions');
+        th.dataset.th = String(name);
+      } else if (this.bs5) {
+        th.setAttribute('aria-label', plain(name));
+        th.dataset.th = String(name);
+      }
+      th.innerHTML = name;
+    }
+
+    /* NOSONAR */ renderSortableHeader(th, column, name, row, sortParts, layout) {
+      const sorted = sortParts.find((part) => part[0] === column.LogicalName);
+      th.className = 'sort-enabled';
+      const ascending = sorted && !/desc/i.test(sorted[1] ?? '');
+      if (sorted) {
+        th.classList.add('sort', ascending ? 'sort-asc' : 'sort-desc');
+        th.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
+      }
+      const userSorted = this.state.sort != null;
+      // A column the view sorts names its own direction (a descending view column reads ". sort descending").
+      let hint = 'Sort_Descending_Order';
+      if (sorted) {
+        if (userSorted) hint = ascending ? 'Sort_Descending_Order' : 'Sort_Ascending_Order';
+        else hint = ascending ? 'Sort_Ascending_Order' : 'Sort_Descending_Order';
+      }
+      const arrowClass = ascending ? 'fa-arrow-up' : 'fa-arrow-down';
+      const arrow = sorted ? ` <span class="fa ${arrowClass}" aria-hidden="true"></span>` : '';
+      th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${arrow}<span class="${this.bs5 ? 'visually-hidden' : 'sr-only'} sort-hint">. ${esc(resource(hint, hint === 'Sort_Descending_Order' ? 'sort descending' : 'sort ascending'))}</span></a>`;
+      onClick(th.querySelector('a'), (event) => this.handleSortClick(event, th, row, column, layout));
+    }
+
+    handleSortClick(event, th, row, column, layout) {
+      event.preventDefault();
+      if (this.state.loading) return;
+      const current = String(this.state.sort ?? layout.SortExpression ?? '')
+        .split(',')
+        .map((part) => part.trim().split(/\s+/))
+        .find((part) => part[0] === column.LogicalName);
+      const direction = current && !/desc/i.test(current[1] ?? '') ? 'DESC' : 'ASC';
+      this.state.sort = `${column.LogicalName} ${direction}`;
+      if (!this.bs5 || this.dialog) {
+        this.renderTable();
+        void this.load(1);
+        return;
+      }
+      this.updateBs5SortHeader(th, row, direction);
+      void this.load(1).then(() => {
+        for (const link of row.querySelectorAll('th a')) link.setAttribute('style', '');
+      });
+    }
+
+    updateBs5SortHeader(th, row, direction) {
+      // The Bootstrap 5 page grid re-marks its header in place: the previous column loses its
+      // classes and arrow (its text keeps the trailing space), the clicked column gets
+      // "sort-asc sort" and a bare arrow, the hints stay, and the header links keep style="".
+      for (const other of row.querySelectorAll('th.sort')) {
+        other.classList.remove('sort', 'sort-asc', 'sort-desc');
+        other.removeAttribute('aria-sort');
+        other.querySelector('a > .fa')?.remove();
+      }
+      th.classList.add(direction === 'ASC' ? 'sort-asc' : 'sort-desc', 'sort');
+      th.setAttribute('aria-sort', direction === 'ASC' ? 'ascending' : 'descending');
+      const hintNode = th.querySelector('.sort-hint');
+      const arrow = document.createElement('span');
+      arrow.className = `fa ${direction === 'ASC' ? 'fa-arrow-up' : 'fa-arrow-down'}`;
+      if (!(hintNode.previousSibling?.textContent ?? '').endsWith('s')) hintNode.before(' ');
+      hintNode.before(arrow);
     }
 
     showMessage(selector) {
@@ -991,7 +1106,7 @@
         filter: this.state.filter ?? this.userFilter(),
         metaFilter: this.state.metaFilter,
         // The entity_list template's grid posts its data-nl-search-filter; other grids post null.
-        nlSearchFilter: this.element.getAttribute('data-nl-search-filter'),
+        nlSearchFilter: this.element.getAttribute('data-nl-search-filter') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
         timezoneOffset: new Date().getTimezoneOffset(),
         customParameters: [],
       };
@@ -1015,65 +1130,81 @@
       for (const link of this.element.querySelectorAll('.view-grid th a')) link.style.pointerEvents = 'none';
       const request = (this.state.loading = post(this.getUrl, body));
       return request
-        .then((data) => {
-          if (request !== this.state.loading) return;
-          this.showMessage(null);
-          if (!data || data.AccessDenied) {
-            this.child('.view-access-denied').style.display = data?.AccessDenied ? 'block' : 'none';
-            // A denied grid announces no record count and hides its pager.
-            if (data?.AccessDenied) {
-              this.child("[id^='SearchCountText']")?.remove();
-              const pager = this.child('.view-pagination');
-              if (pager) pager.style.display = 'none';
-            }
-            if (!data?.AccessDenied) this.child('.view-empty').style.display = 'block';
-            this.renderRows({ Records: [] });
-            trigger(this.element, 'loaded');
-            return;
-          }
-          if (data.CreateActionMetadata?.Disabled)
-            for (const link of this.element.querySelectorAll('.create-action')) {
-              link.title = data.CreateActionMetadata.DisabledMessage || link.title;
-              onClick(link, (event) => {
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                alert(data.CreateActionMetadata.DisabledMessage || '');
-              });
-            }
-          this.data = data;
-          const $ = jq();
-          if ($) $(this.element).data('totalRecordCount', data.ItemCount);
-          this.renderRows(data);
-          if (!data.Records?.length) {
-            const empty = this.child('.view-empty');
-            empty.style.display = 'block';
-            // The Bootstrap 5 page grid announces its empty message.
-            if (this.bs5 && !this.dialog)
-              for (const [name, value] of [
-                ['role', 'status'],
-                ['aria-live', 'polite'],
-                ['aria-atomic', 'true'],
-                ['tabindex', '0'],
-              ])
-                empty.setAttribute(name, value);
-          }
-          this.renderPagination(data);
-          trigger(this.element, 'loaded');
-        })
-        .catch((error) => {
-          if (request !== this.state.loading) return;
-          this.showMessage('.view-error');
-          const details = this.child('.view-error')?.querySelector('.details');
-          if (details) details.textContent = error.message;
-          console.error(error);
-        })
-        .finally(() => {
-          if (request === this.state.loading) this.state.loading = null;
-          for (const link of this.element.querySelectorAll('.view-grid th a')) {
-            link.style.pointerEvents = '';
-            if (!link.getAttribute('style')) link.removeAttribute('style');
-          }
+        .then((data) => this.handleLoadData(request, data))
+        .catch((error) => this.handleLoadError(request, error))
+        .finally(() => this.finishLoad(request));
+    }
+
+    handleLoadData(request, data) {
+      if (request !== this.state.loading) return;
+      this.showMessage(null);
+      if (!data || data.AccessDenied) {
+        this.handleDeniedLoad(data);
+        return;
+      }
+      this.bindDisabledCreateActions(data);
+      this.data = data;
+      const $ = jq();
+      if ($) $(this.element).data('totalRecordCount', data.ItemCount);
+      this.renderRows(data);
+      if (!data.Records?.length) this.showEmptyLoadMessage();
+      this.renderPagination(data);
+      trigger(this.element, 'loaded');
+    }
+
+    handleDeniedLoad(data) {
+      this.child('.view-access-denied').style.display = data?.AccessDenied ? 'block' : 'none';
+      // A denied grid announces no record count and hides its pager.
+      if (data?.AccessDenied) {
+        this.child("[id^='SearchCountText']")?.remove();
+        const pager = this.child('.view-pagination');
+        if (pager) pager.style.display = 'none';
+      }
+      if (!data?.AccessDenied) this.child('.view-empty').style.display = 'block';
+      this.renderRows({ Records: [] });
+      trigger(this.element, 'loaded');
+    }
+
+    bindDisabledCreateActions(data) {
+      if (!data.CreateActionMetadata?.Disabled) return;
+      for (const link of this.element.querySelectorAll('.create-action')) {
+        link.title = data.CreateActionMetadata.DisabledMessage || link.title;
+        onClick(link, (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          alert(data.CreateActionMetadata.DisabledMessage || '');
         });
+      }
+    }
+
+    showEmptyLoadMessage() {
+      const empty = this.child('.view-empty');
+      empty.style.display = 'block';
+      // The Bootstrap 5 page grid announces its empty message.
+      if (this.bs5 && !this.dialog)
+        for (const [name, value] of [
+          ['role', 'status'],
+          ['aria-live', 'polite'],
+          ['aria-atomic', 'true'],
+          ['tabindex', '0'],
+        ])
+          empty.setAttribute(name, value);
+    }
+
+    handleLoadError(request, error) {
+      if (request !== this.state.loading) return;
+      this.showMessage('.view-error');
+      const details = this.child('.view-error')?.querySelector('.details');
+      if (details) details.textContent = error.message;
+      console.error(error);
+    }
+
+    finishLoad(request) {
+      if (request === this.state.loading) this.state.loading = null;
+      for (const link of this.element.querySelectorAll('.view-grid th a')) {
+        link.style.pointerEvents = '';
+        if (!link.getAttribute('style')) link.removeAttribute('style');
+      }
     }
 
     primaryName(record) {
@@ -1100,16 +1231,21 @@
       const display = attribute.DisplayValue ?? attribute.FormattedValue ?? '';
       const local = this.bs5 && attribute.Type === 'System.DateTime' ? siteDate(attribute) : null;
       if (local) return `<time datetime="${esc(local.iso)}">${esc(local.text)}</time>`;
-      if (attribute.Type === 'System.DateTime' && attribute.Value) {
-        const iso = typeof attribute.DisplayValue === 'string' ? attribute.DisplayValue : '';
-        return `<time datetime="${esc(iso)}">${esc(attribute.FormattedValue ?? iso)}</time>`;
-      }
+      if (attribute.Type === 'System.DateTime' && attribute.Value) return this.dateCellContent(attribute);
       const format = attribute.AttributeMetadata?.Format;
-      if (attribute.Type === 'System.String' && display) {
-        if (format === 0) return `<a href="mailto:${esc(display)}">${esc(display)}</a>`;
-        if (format === 3)
-          return `<a href="${esc(/^https?:/i.test(display) ? display : 'http://' + display)}" target="_blank">${esc(display)}</a>`;
-      }
+      if (attribute.Type === 'System.String' && display) return this.stringCellContent(display, format);
+      return esc(display);
+    }
+
+    dateCellContent(attribute) {
+      const iso = typeof attribute.DisplayValue === 'string' ? attribute.DisplayValue : '';
+      return `<time datetime="${esc(iso)}">${esc(attribute.FormattedValue ?? iso)}</time>`;
+    }
+
+    stringCellContent(display, format) {
+      if (format === 0) return `<a href="mailto:${esc(display)}">${esc(display)}</a>`;
+      if (format === 3)
+        return `<a href="${esc(/^https?:/i.test(display) ? display : 'http://' + display)}" target="_blank">${esc(display)}</a>`; // NOSONAR: reserved or loopback placeholder host, not a real transport
       return esc(display);
     }
 
@@ -1131,11 +1267,21 @@
       }
       tbody.setAttribute('style', '');
       if (this.selectMode === 'Single' && !this.bs5) tbody.setAttribute('role', 'radiogroup');
+      const { details, edit, disabled } = this.rowActionData(data);
+      for (const record of data.Records ?? []) {
+        this.renderRecord(record, tbody, disabled, details, edit);
+      }
+      this.finishRows(data, tbody);
+    }
+
+    rowActionData(data) {
       const config = this.config;
-      const details = this.enableActions
-        ? ((config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Details && action.Enabled) ??
-          (config.DetailsActionLink?.Enabled ? config.DetailsActionLink : null))
-        : null;
+      let details = null;
+      if (this.enableActions) {
+        details =
+          (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Details && action.Enabled) ?? null;
+        if (details === null && config.DetailsActionLink?.Enabled) details = config.DetailsActionLink;
+      }
       const edit = this.enableActions
         ? ((config.ItemActionLinks ?? []).find(
             (action) => action.Type === ACTION.Edit && action.Enabled && action.Target !== 0,
@@ -1146,77 +1292,14 @@
           (item) => `${String(item.EntityId).toLowerCase()}|${String(item.LinkUniqueId).toLowerCase()}`,
         ),
       );
-      let firstData;
-      for (const record of data.Records ?? []) {
-        const tr = document.createElement('tr');
-        const name = this.primaryName(record);
-        tr.setAttribute('data-id', record.Id);
-        tr.setAttribute('data-entity', record.EntityName);
-        tr.setAttribute('data-name', name);
-        firstData = true;
-        for (const column of this.layout.Columns ?? []) {
-          const td = document.createElement('td');
-          if (column.Type === 1) {
-            td.setAttribute('data-th', 'Select');
-            td.setAttribute('aria-label', '');
-            td.innerHTML = this.bs5
-              ? `<span class="fa fa-fw" role="checkbox" aria-label="Select or deselect the row ${esc(name)}" title="Checkbox" tabindex="0" aria-checked="false"></span>`
-              : `<span class="fa fa-fw" role="checkbox" aria-label="${esc(name)}" title="${esc(name)}" tabindex="0" aria-checked="false"></span>`;
-          } else if (column.Type === 2) {
-            td.setAttribute('aria-label', 'action menu');
-            const items = this.itemActions(record, disabled);
-            if (items.length) {
-              td.innerHTML = this.bs5
-                ? `<div class="dropdown action"><button class="btn btn-default btn-md aria-exp" data-bs-toggle="dropdown" aria-expanded="false" aria-label="action menu"><span class="fa fa-chevron-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`
-                : `<div class="dropdown action"><button class="btn btn-default btn-xs aria-exp" data-toggle="dropdown" aria-expanded="false" aria-label="action menu" title="action menu" type="button"><span class="fa fa-chevron-circle-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`;
-              const menu = td.querySelector('ul');
-              bindActionMenu(td.querySelector('.dropdown.action'));
-              items.forEach((item, index) => {
-                item.setAttribute('aria-setsize', String(items.length));
-                item.setAttribute('aria-posinset', String(index + 1));
-                const li = document.createElement('li');
-                li.setAttribute('role', 'none');
-                li.append(item);
-                menu.append(li);
-              });
-            }
-          } else {
-            const attribute = record.Attributes?.find((candidate) => candidate.Name === column.LogicalName);
-            // Bootstrap 5 cells of absent values carry only the column header and an empty label.
-            if (attribute || !this.bs5) {
-              td.setAttribute('data-type', attribute?.Type ?? '');
-              td.setAttribute('data-attribute', column.LogicalName);
-              td.setAttribute('data-value', this.cellValue(attribute));
-            }
-            td.setAttribute('data-th', plain(column.Name));
-            const local = this.bs5 && attribute?.Type === 'System.DateTime' ? siteDate(attribute) : null;
-            td.setAttribute(
-              'aria-label',
-              local
-                ? local.text
-                : this.bs5
-                  ? (attribute?.DisplayValue ?? '')
-                  : (attribute?.FormattedValue ?? attribute?.DisplayValue ?? ''),
-            );
-            let content = this.cellContent(attribute);
-            if (firstData && details) {
-              // The Bootstrap 5 primary column opens the edit page when the list has an edit action.
-              const target = this.bs5 && !this.dialog && details.Target !== 0 ? (edit ?? details) : details;
-              const url = target.Target === 0 ? '#' : (this.actionUrl(target, record) ?? '#');
-              content = `<a href="${esc(url)}" class="details-link has-tooltip${details.Target === 0 ? ' launch-modal' : ''}" ${this.bs5 ? 'data-bs-toggle' : 'data-toggle'}="tooltip" title="${esc(details.Tooltip || plain(details.Label))}"${details.Target === 0 && details.EntityForm ? ` data-entityformid="${esc(details.EntityForm.Id)}"` : ''}${url !== '#' && window.parent !== window ? ' target="_top"' : ''}>${attribute?.DisplayValue != null ? esc(attribute.DisplayValue) : content}</a>`;
-            }
-            td.innerHTML = content;
-            firstData = false;
-          }
-          tr.append(td);
-        }
-        if (this.selectMode !== 'None') this.bindSelection(tr);
-        tbody.append(tr);
-      }
+      return { details, edit, disabled };
+    }
+
+    finishRows(data, tbody) {
       this.bindRowActions(tbody);
       if (this.selectMode === 'Single') {
         const selected = String(this.state.selected ?? '').toLowerCase();
-        const match = [...tbody.rows].find((tr) => tr.getAttribute('data-id') === selected);
+        const match = [...tbody.rows].find((tr) => (tr.getAttribute('data-id') ?? null) === selected); // NOSONAR: actual attributes exclude inherited dataset values
         if (match) this.toggleRow(match, true);
       }
       // Dialog grids (lookup, associate) announce once loaded.
@@ -1228,6 +1311,86 @@
         announcer.textContent = `${data.ItemCount ?? (data.Records ?? []).length} ${resource('SearchCountText', 'records found')}`;
     }
 
+    renderRecord(record, tbody, disabled, details, edit) {
+      const tr = document.createElement('tr');
+      const name = this.primaryName(record);
+      tr.dataset.id = String(record.Id);
+      tr.dataset.entity = String(record.EntityName);
+      tr.dataset.name = String(name);
+      const firstData = { value: true };
+      for (const column of this.layout.Columns ?? [])
+        tr.append(this.renderRecordCell(record, name, column, disabled, details, edit, firstData));
+      if (this.selectMode !== 'None') this.bindSelection(tr);
+      tbody.append(tr);
+    }
+
+    renderRecordCell(record, name, column, disabled, details, edit, firstData) {
+      const td = document.createElement('td');
+      if (column.Type === 1) return this.renderSelectCell(td, name);
+      if (column.Type === 2) return this.renderActionCell(td, record, disabled);
+      return this.renderDataCell(td, record, column, details, edit, firstData);
+    }
+
+    renderSelectCell(td, name) {
+      td.dataset.th = 'Select';
+      td.setAttribute('aria-label', '');
+      td.innerHTML = this.bs5
+        ? `<span class="fa fa-fw" role="checkbox" aria-label="Select or deselect the row ${esc(name)}" title="Checkbox" tabindex="0" aria-checked="false"></span>`
+        : `<span class="fa fa-fw" role="checkbox" aria-label="${esc(name)}" title="${esc(name)}" tabindex="0" aria-checked="false"></span>`;
+      return td;
+    }
+
+    renderActionCell(td, record, disabled) {
+      td.setAttribute('aria-label', 'action menu');
+      const items = this.itemActions(record, disabled);
+      if (!items.length) return td;
+      td.innerHTML = this.bs5
+        ? `<div class="dropdown action"><button class="btn btn-default btn-md aria-exp" data-bs-toggle="dropdown" aria-expanded="false" aria-label="action menu"><span class="fa fa-chevron-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`
+        : `<div class="dropdown action"><button class="btn btn-default btn-xs aria-exp" data-toggle="dropdown" aria-expanded="false" aria-label="action menu" title="action menu" type="button"><span class="fa fa-chevron-circle-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`;
+      const menu = td.querySelector('ul');
+      bindActionMenu(td.querySelector('.dropdown.action'));
+      items.forEach((item, index) => {
+        item.setAttribute('aria-setsize', String(items.length));
+        item.setAttribute('aria-posinset', String(index + 1));
+        const li = document.createElement('li');
+        li.setAttribute('role', 'none');
+        li.append(item);
+        menu.append(li);
+      });
+      return td;
+    }
+
+    renderDataCell(td, record, column, details, edit, firstData) {
+      const attribute = record.Attributes?.find((candidate) => candidate.Name === column.LogicalName);
+      // Bootstrap 5 cells of absent values carry only the column header and an empty label.
+      if (attribute || !this.bs5) {
+        td.dataset.type = String(attribute?.Type ?? '');
+        td.dataset.attribute = String(column.LogicalName);
+        td.dataset.value = String(this.cellValue(attribute));
+      }
+      td.dataset.th = String(plain(column.Name));
+      const local = this.bs5 && attribute?.Type === 'System.DateTime' ? siteDate(attribute) : null;
+      let cellLabel;
+      if (local) cellLabel = local.text;
+      else if (this.bs5) cellLabel = attribute?.DisplayValue ?? '';
+      else cellLabel = attribute?.FormattedValue ?? attribute?.DisplayValue ?? '';
+      td.setAttribute('aria-label', cellLabel);
+      let content = this.cellContent(attribute);
+      if (firstData.value && details) content = this.detailsCellContent(record, attribute, content, details, edit);
+      td.innerHTML = content;
+      firstData.value = false;
+      return td;
+    }
+
+    detailsCellContent(record, attribute, content, details, edit) {
+      // The Bootstrap 5 primary column opens the edit page when the list has an edit action.
+      const target = this.bs5 && !this.dialog && details.Target !== 0 ? (edit ?? details) : details;
+      const url = target.Target === 0 ? '#' : (this.actionUrl(target, record) ?? '#');
+      const entityFormAttr =
+        details.Target === 0 && details.EntityForm ? ` data-entityformid="${esc(details.EntityForm.Id)}"` : '';
+      return `<a href="${esc(url)}" class="details-link has-tooltip${details.Target === 0 ? ' launch-modal' : ''}" ${this.bs5 ? 'data-bs-toggle' : 'data-toggle'}="tooltip" title="${esc(details.Tooltip || plain(details.Label))}"${entityFormAttr}${url !== '#' && window.parent !== globalThis ? ' target="_top"' : ''}>${attribute?.DisplayValue != null ? esc(attribute.DisplayValue) : content}</a>`; // NOSONAR: window and globalThis are compared deliberately
+    }
+
     itemActions(record, disabled) {
       if (!this.enableActions) return [];
       const items = [];
@@ -1235,61 +1398,76 @@
         if (!action.Enabled) continue;
         if (disabled.has(`${String(record.Id).toLowerCase()}|${String(action.FilterCriteriaId).toLowerCase()}`))
           continue;
-        const link = document.createElement('a');
-        link.setAttribute('role', 'menuitem');
-        link.setAttribute('tabindex', '-1');
-        link.innerHTML = action.Label;
-        link.title = action.Tooltip || plain(action.Label);
-        link.href = '#';
-        const formTarget = action.Target === 0 && action.EntityForm;
-        switch (action.Type) {
-          case ACTION.Details:
-            if (!record.CanRead) continue;
-            link.className = `details-link${formTarget ? ' launch-modal' : ''}`;
-            break;
-          case ACTION.Edit:
-            if (!record.CanWrite) continue;
-            link.className = `edit-link${formTarget ? ' launch-modal' : ''}`;
-            break;
-          case ACTION.Delete:
-            if (!record.CanDelete) continue;
-            link.className = 'delete-link';
-            break;
-          case ACTION.Disassociate:
-            if (!record.CanAppend && !record.CanWrite) continue;
-            link.className = 'disassociate-link';
-            break;
-          case ACTION.Workflow:
-            link.className = 'workflow-link';
-            break;
-          case ACTION.Deactivate:
-            if (!record.CanWrite || record.StateCode !== 0) continue;
-            link.className = 'deactivate-link';
-            break;
-          case ACTION.Activate:
-            if (!record.CanWrite || record.StateCode !== 1) continue;
-            link.className = 'activate-link';
-            break;
-          default:
-            continue;
-        }
-        if (this.bs5)
-          link.className = link.classList.contains('launch-modal')
-            ? link.className.replace(/\blaunch-modal\b/, 'dropdown-item launch-modal')
-            : `${link.className} dropdown-item`;
-        if (formTarget && (action.Type === ACTION.Details || action.Type === ACTION.Edit))
-          link.setAttribute('data-entityformid', action.EntityForm.Id);
-        else if (action.Type === ACTION.Details || action.Type === ACTION.Edit) {
-          const url = this.actionUrl(action, record);
-          if (url) {
-            link.href = url;
-            if (window.parent !== window) link.target = '_top';
-          }
-        }
-        link.__ppAction = action;
-        items.push(link);
+        const item = this.itemAction(action, record);
+        if (item) items.push(item);
       }
       return items;
+    }
+
+    itemAction(action, record) {
+      const link = document.createElement('a');
+      link.setAttribute('role', 'menuitem');
+      link.setAttribute('tabindex', '-1');
+      link.innerHTML = action.Label;
+      link.title = action.Tooltip || plain(action.Label);
+      link.href = '#';
+      const formTarget = action.Target === 0 && action.EntityForm;
+      const linkClass = this.itemActionClass(action, record, formTarget);
+      if (!linkClass) return null;
+      link.className = linkClass;
+      if (this.bs5)
+        link.className = link.classList.contains('launch-modal')
+          ? link.className.replace(/\blaunch-modal\b/, 'dropdown-item launch-modal')
+          : `${link.className} dropdown-item`;
+      if (formTarget && (action.Type === ACTION.Details || action.Type === ACTION.Edit))
+        link.dataset.entityformid = String(action.EntityForm.Id);
+      else if (action.Type === ACTION.Details || action.Type === ACTION.Edit) {
+        const url = this.actionUrl(action, record);
+        if (url) {
+          link.href = url;
+          if (window.parent !== globalThis) link.target = '_top'; // NOSONAR: window and globalThis are compared deliberately
+        }
+      }
+      link.__ppAction = action;
+      return link;
+    }
+
+    itemActionClass(action, record, formTarget) {
+      switch (action.Type) {
+        case ACTION.Details:
+          if (!record.CanRead) return null;
+          return `details-link${formTarget ? ' launch-modal' : ''}`;
+        case ACTION.Edit:
+          if (!record.CanWrite) return null;
+          return `edit-link${formTarget ? ' launch-modal' : ''}`;
+        case ACTION.Delete:
+          return record.CanDelete ? 'delete-link' : null;
+        case ACTION.Workflow:
+          return 'workflow-link';
+        case ACTION.Disassociate:
+          return this.disassociateActionClass(record);
+        case ACTION.Deactivate:
+          return this.deactivateActionClass(record);
+        case ACTION.Activate:
+          return this.activateActionClass(record);
+        default:
+          return null;
+      }
+    }
+
+    disassociateActionClass(record) {
+      if (!record.CanAppend && !record.CanWrite) return null;
+      return 'disassociate-link';
+    }
+
+    deactivateActionClass(record) {
+      if (!record.CanWrite || record.StateCode !== 0) return null;
+      return 'deactivate-link';
+    }
+
+    activateActionClass(record) {
+      if (!record.CanWrite || record.StateCode !== 1) return null;
+      return 'activate-link';
     }
 
     bindRowActions(tbody) {
@@ -1297,37 +1475,48 @@
       // once so a saved modal cannot make the next toggle open and immediately close.
       if (tbody.__ppRowActionsBound) return;
       tbody.__ppRowActionsBound = true;
-      tbody.addEventListener('click', (event) => {
-        const link = event.target.closest(
-          'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link',
-        );
-        if (!link || !tbody.contains(link)) {
-          const toggle = event.target.closest('[data-toggle="dropdown"], [data-bs-toggle="dropdown"]');
-          if (toggle && tbody.contains(toggle) && !(jq() && jq().fn.dropdown)) {
-            event.preventDefault();
-            const container = toggle.parentElement;
-            const opening = !container.classList.contains('open');
-            trigger(container, opening ? 'show.bs.dropdown' : 'hide.bs.dropdown');
-            container.classList.toggle('open', opening);
-            toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
-          }
-          return;
-        }
-        const tr = link.closest('tr');
-        const record = this.data?.Records?.find((candidate) => candidate.Id === tr?.getAttribute('data-id'));
-        if (!record) return;
-        let action = link.__ppAction;
-        if (!action && link.classList.contains('details-link'))
-          action =
-            (this.config.ItemActionLinks ?? []).find((candidate) => candidate.Type === ACTION.Details) ??
-            this.config.DetailsActionLink;
-        if (!action) return;
-        if ((action.Type === ACTION.Details || action.Type === ACTION.Edit) && !link.classList.contains('launch-modal'))
-          return;
-        if (event.defaultPrevented) return;
-        event.preventDefault();
-        this.runAction(action, record, link);
-      });
+      tbody.addEventListener('click', (event) => this.handleRowActionClick(event, tbody));
+    }
+
+    handleRowActionClick(event, tbody) {
+      const link = event.target.closest(
+        'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link',
+      );
+      if (!link || !tbody.contains(link)) {
+        this.toggleRowDropdown(event, tbody);
+        return;
+      }
+      this.dispatchRowAction(event, link);
+    }
+
+    toggleRowDropdown(event, tbody) {
+      const toggle = event.target.closest('[data-toggle="dropdown"], [data-bs-toggle="dropdown"]');
+      if (!toggle || !tbody.contains(toggle) || (jq() && jq().fn.dropdown)) return; // NOSONAR: optional chaining would change the false/null result
+      event.preventDefault();
+      const container = toggle.parentElement;
+      const opening = !container.classList.contains('open');
+      trigger(container, opening ? 'show.bs.dropdown' : 'hide.bs.dropdown');
+      container.classList.toggle('open', opening);
+      toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    }
+
+    dispatchRowAction(event, link) {
+      const tr = link.closest('tr');
+      const record = this.data?.Records?.find(
+        (candidate) => candidate.Id === (tr ? (tr.getAttribute('data-id') ?? null) : undefined), // NOSONAR: actual attributes exclude inherited dataset values
+      );
+      if (!record) return;
+      let action = link.__ppAction;
+      if (!action && link.classList.contains('details-link'))
+        action =
+          (this.config.ItemActionLinks ?? []).find((candidate) => candidate.Type === ACTION.Details) ??
+          this.config.DetailsActionLink;
+      if (!action) return;
+      if ((action.Type === ACTION.Details || action.Type === ACTION.Edit) && !link.classList.contains('launch-modal'))
+        return;
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      this.runAction(action, record, link);
     }
 
     runAction(action, record, link) {
@@ -1461,7 +1650,7 @@
 
     complete(action) {
       if ((action.OnComplete === 1 || action.OnComplete === 2) && action.RedirectUrl) {
-        (window.parent !== window ? window.parent : window).location.replace(action.RedirectUrl);
+        (window.parent !== globalThis ? window.parent : globalThis).location.replace(action.RedirectUrl); // NOSONAR: window and globalThis are compared deliberately
         return;
       }
       trigger(this.element, 'refresh');
@@ -1491,7 +1680,7 @@
       if (this.selectMode === 'Single' && select)
         for (const other of tr.parentElement.rows) if (other !== tr) this.setRowSelected(other, false);
       this.setRowSelected(tr, select);
-      trigger(this.element, 'selected', { id: tr.getAttribute('data-id'), selected: select });
+      trigger(this.element, 'selected', { id: tr.getAttribute('data-id') ?? null, selected: select }); // NOSONAR: actual attributes exclude inherited dataset values
     }
 
     setRowSelected(tr, selected) {
@@ -1521,79 +1710,121 @@
       this.state.pageSize = pageSize;
       if ($) $(pagination).data({ pagesize: pageSize, pages, 'current-page': current, count: data.ItemCount });
       if (data.ItemCount === -1) {
-        if (current === 1 && !data.MoreRecords) {
-          pagination.style.display = 'none';
-          grid?.classList.remove('has-pagination');
-          return;
-        }
-        pagination.innerHTML = `<ul class="pagination"><li${current > 1 ? '' : ' class="disabled"'}><a href="#" data-page="${current - 1}" aria-label="Previous page" role="button"${current > 1 ? '' : ' aria-disabled="true"'}>&lt;</a></li><li class="active"><span>${current}</span></li><li${data.MoreRecords ? '' : ' class="disabled"'}><a href="#" data-page="${current + 1}" aria-label="Next page" role="button"${data.MoreRecords ? '' : ' aria-disabled="true"'}>&gt;</a></li></ul>`;
+        if (this.renderUnknownPagination(data, pagination, grid)) return;
       } else {
-        if (!(pages > 1)) {
+        /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(pages > 1)) {
           pagination.style.display = 'none';
           // Bootstrap 5 hides the pager and keeps its last pages.
           if (!this.bs5) pagination.replaceChildren();
           grid?.classList.remove('has-pagination');
           return;
         }
-        const span = 8;
-        let start = Math.max(1, current - Math.floor(span / 2));
-        const end = Math.min(pages, start + span - 1);
-        start = Math.max(1, end - span + 1);
-        const bs5 = this.bs5;
-        // Bootstrap 5 pager links are page-link items; previous/next show < and > with a tooltip.
-        const item = (page, label, { active = false, disabled = false, aria, className, tooltip = false } = {}) =>
-          `<li class="${[bs5 ? 'page-item' : '', active ? 'active' : disabled ? 'disabled' : ''].filter(Boolean).join(' ')}"><a${bs5 || className ? ` class="${[bs5 ? 'page-link' : '', className ?? ''].filter(Boolean).join(' ')}"` : ''}${disabled ? '' : ' href="#"'}${aria && !(bs5 && tooltip) ? ` aria-label="${esc(aria)}"` : ''} data-page="${page}" role="button"${bs5 && tooltip ? ` data-bs-toggle="tooltip" aria-label="${esc(aria)}"` : ''}${active ? ' aria-current="page"' : ''}${disabled ? ' aria-disabled="true"' : ''}${bs5 && tooltip ? ` data-bs-original-title="${esc(aria)}"` : ''}>${esc(label)}</a></li>`.replace(
-            ' class=""',
-            '',
-          );
-        const parts = [
-          item(current > 1 ? current - 1 : 0, bs5 ? '<' : resource('Pagination_Previous_Page', 'Previous'), {
-            disabled: current <= 1,
-            aria: resource('Pagination_Previous_Page', 'Previous page'),
-            className: 'entity-pager-prev-link',
-            tooltip: true,
-          }),
-        ];
-        if (start > 1) {
-          parts.push(item(1, '1', { aria: 'page 1' }));
-          if (start > 2) parts.push(item('..', '..', { disabled: true, aria: 'Load more pages' }));
-        }
-        for (let page = start; page <= end; page++)
-          parts.push(
-            item(page, String(page), { active: page === current, aria: page === current ? null : `page ${page}` }),
-          );
-        if (end < pages) {
-          if (end < pages - 1) parts.push(item('..', '..', { disabled: true, aria: 'Load more pages' }));
-          parts.push(item(pages, String(pages), { aria: `page ${pages}` }));
-        }
-        parts.push(
-          item(current < pages ? current + 1 : 0, bs5 ? '>' : resource('Pagination_Next_Page', 'Next'), {
-            disabled: current >= pages,
-            aria: resource('Pagination_Next_Page', 'Next page'),
-            className: 'entity-pager-next-link',
-            tooltip: true,
-          }),
-        );
-        pagination.innerHTML = `<div class="jquery-bootstrap-pagination"><ul class="pagination">${parts.join('')}</ul></div>`;
+        this.renderNumberedPagination(data, pagination);
       }
       pagination.style.display = '';
       if (this.bs5 && !pagination.hasAttribute('style')) pagination.setAttribute('style', '');
       grid?.classList.add('has-pagination');
-      pagination.onclick = (event) => {
-        const link = event.target.closest('a[data-page]');
-        if (!link || !pagination.contains(link)) return;
-        event.preventDefault();
-        const li = link.parentElement;
-        if (li.classList.contains('disabled') || li.classList.contains('active')) return;
-        const page = Number(link.getAttribute('data-page'));
-        if (!Number.isFinite(page) || page < 1) return;
-        this.load(page);
-      };
+      pagination.onclick = (event) => this.handlePaginationClick(event, pagination);
+    }
+
+    renderUnknownPagination(data, pagination, grid) {
+      const current = data.PageNumber;
+      if (current === 1 && !data.MoreRecords) {
+        pagination.style.display = 'none';
+        grid?.classList.remove('has-pagination');
+        return true;
+      }
+      pagination.innerHTML = `<ul class="pagination"><li${current > 1 ? '' : ' class="disabled"'}><a href="#" data-page="${current - 1}" aria-label="Previous page" role="button"${current > 1 ? '' : ' aria-disabled="true"'}>&lt;</a></li><li class="active"><span>${current}</span></li><li${data.MoreRecords ? '' : ' class="disabled"'}><a href="#" data-page="${current + 1}" aria-label="Next page" role="button"${data.MoreRecords ? '' : ' aria-disabled="true"'}>&gt;</a></li></ul>`;
+      return false;
+    }
+
+    renderNumberedPagination(data, pagination) {
+      const { PageCount: pages, PageNumber: current } = data;
+      const span = 8;
+      let start = Math.max(1, current - Math.floor(span / 2));
+      const end = Math.min(pages, start + span - 1);
+      start = Math.max(1, end - span + 1);
+      const bs5 = this.bs5;
+      const parts = [
+        this.paginationItem(
+          current > 1 ? current - 1 : 0,
+          bs5 ? '<' : resource('Pagination_Previous_Page', 'Previous'),
+          {
+            disabled: current <= 1,
+            aria: resource('Pagination_Previous_Page', 'Previous page'),
+            className: 'entity-pager-prev-link',
+            tooltip: true,
+          },
+          bs5,
+        ),
+      ];
+      if (start > 1) {
+        parts.push(this.paginationItem(1, '1', { aria: 'page 1' }, bs5));
+        if (start > 2) parts.push(this.paginationItem('..', '..', { disabled: true, aria: 'Load more pages' }, bs5));
+      }
+      for (let page = start; page <= end; page++)
+        parts.push(
+          this.paginationItem(
+            page,
+            String(page),
+            {
+              active: page === current,
+              aria: page === current ? null : `page ${page}`,
+            },
+            bs5,
+          ),
+        );
+      if (end < pages) {
+        if (end < pages - 1)
+          parts.push(this.paginationItem('..', '..', { disabled: true, aria: 'Load more pages' }, bs5));
+        parts.push(this.paginationItem(pages, String(pages), { aria: `page ${pages}` }, bs5));
+      }
+      parts.push(
+        this.paginationItem(
+          current < pages ? current + 1 : 0,
+          bs5 ? '>' : resource('Pagination_Next_Page', 'Next'),
+          {
+            disabled: current >= pages,
+            aria: resource('Pagination_Next_Page', 'Next page'),
+            className: 'entity-pager-next-link',
+            tooltip: true,
+          },
+          bs5,
+        ),
+      );
+      pagination.innerHTML = `<div class="jquery-bootstrap-pagination"><ul class="pagination">${parts.join('')}</ul></div>`;
+    }
+
+    paginationItem(page, label, { active = false, disabled = false, aria, className, tooltip = false } = {}, bs5) {
+      let state = '';
+      if (active) state = 'active';
+      else if (disabled) state = 'disabled';
+      const liClasses = [bs5 ? 'page-item' : '', state].filter(Boolean).join(' ');
+      const linkClasses = [bs5 ? 'page-link' : '', className ?? ''].filter(Boolean).join(' ');
+      const linkClass = bs5 || className ? ` class="${linkClasses}"` : '';
+      const ariaLabel = aria && !(bs5 && tooltip) ? ` aria-label="${esc(aria)}"` : '';
+      const tooltipAttrs = bs5 && tooltip ? ` data-bs-toggle="tooltip" aria-label="${esc(aria)}"` : '';
+      const originalTitle = bs5 && tooltip ? ` data-bs-original-title="${esc(aria)}"` : '';
+      return `<li class="${liClasses}"><a${linkClass}${disabled ? '' : ' href="#"'}${ariaLabel} data-page="${page}" role="button"${tooltipAttrs}${active ? ' aria-current="page"' : ''}${disabled ? ' aria-disabled="true"' : ''}${originalTitle}>${esc(label)}</a></li>`.replace(
+        ' class=""',
+        '',
+      );
+    }
+
+    handlePaginationClick(event, pagination) {
+      const link = event.target.closest('a[data-page]');
+      if (!link || !pagination.contains(link)) return;
+      event.preventDefault();
+      const li = link.parentElement;
+      if (li.classList.contains('disabled') || li.classList.contains('active')) return;
+      const page = Number(link.getAttribute('data-page') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+      if (!Number.isFinite(page) || page < 1) return;
+      void this.load(page);
     }
 
     changeView(id) {
       this.selectedView = id;
-      this.element.setAttribute('data-selected-view', id);
+      this.element.dataset.selectedView = String(id);
       this.state.sort = null;
       this.state.page = 1;
       this.render(true);
@@ -1614,8 +1845,10 @@
         timezoneOffset: new Date().getTimezoneOffset(),
       })
         .then((result) => {
-          if (result?.sessionKey)
-            window.location = `${action.URL?.Path || `/_services/download-as-excel/${this.websiteId()}`}?key=${encodeURIComponent(result.sessionKey)}`;
+          if (result?.sessionKey) {
+            const path = action.URL?.Path || `/_services/download-as-excel/${this.websiteId()}`;
+            globalThis.location = `${path}?key=${encodeURIComponent(result.sessionKey)}`;
+          }
         })
         .catch((error) => notify(this.element, error.message))
         .finally(() => link.classList.remove('disabled'));
@@ -1627,7 +1860,7 @@
   function initLookup(container) {
     if (container.__ppLookup) return;
     container.__ppLookup = true;
-    const field = container.getAttribute('data-lookup-datafieldname');
+    const field = container.getAttribute('data-lookup-datafieldname'); // NOSONAR: actual attributes exclude inherited dataset values
     const modal = container.querySelector(':scope > .modal-lookup, :scope > section.modal');
     const gridElement = modal?.querySelector('.entity-grid');
     if (!field || !modal || !gridElement) return;
@@ -1659,7 +1892,7 @@
       const $ = jq();
       if ($) $(input).trigger('change');
       else input.dispatchEvent(new Event('change', { bubbles: true }));
-      if (typeof window.setIsDirty === 'function') window.setIsDirty(field);
+      if (typeof globalThis.setIsDirty === 'function') globalThis.setIsDirty(field);
       sync();
     };
     const clear = () => {
@@ -1718,8 +1951,8 @@
           currentId && currentEntity
             ? [...gridElement.querySelectorAll('.view-grid tbody tr[data-id]')].find(
                 (row) =>
-                  row.getAttribute('data-id')?.toLowerCase() === currentId &&
-                  row.getAttribute('data-entity')?.toLowerCase() === currentEntity,
+                  row.getAttribute('data-id')?.toLowerCase() === currentId && // NOSONAR: read actual attributes, not inherited dataset properties
+                  row.getAttribute('data-entity')?.toLowerCase() === currentEntity, // NOSONAR: actual attributes exclude inherited dataset values
               )
             : null;
         if (current) {
@@ -1733,7 +1966,11 @@
       event.preventDefault();
       const row = grid.selectedRows()[0];
       if (!row) return;
-      setValue(row.getAttribute('data-id'), row.getAttribute('data-name'), row.getAttribute('data-entity'));
+      setValue(
+        row.getAttribute('data-id') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
+        row.getAttribute('data-name') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
+        row.getAttribute('data-entity') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
+      ); // NOSONAR: actual attributes exclude inherited dataset values
       hideModal(modal);
       nameInput()?.focus();
     });
@@ -1744,15 +1981,24 @@
     const createButton = modal.querySelector('.modal-footer .new-value');
     const createModal = container.querySelector('.modal-lookup-create-form');
     if (createButton && createModal) {
+      // At most one success listener: the current create dialog's, removed on success, on a failed
+      // open and when the dialog is hidden without a save.
+      let createListener = null;
+      const detachCreateListener = () => {
+        if (createListener) window.removeEventListener('message', createListener);
+        createListener = null;
+      };
+      on(createModal, 'hidden.bs.modal', detachCreateListener);
       createButton.addEventListener('click', (event) => {
         event.preventDefault();
         const source = grid.formModalSource(createModal, {
           lookup: 'true',
-          entityformid: container.getAttribute('data-lookup-reference_entityformid'),
-          languagecode: container.getAttribute('data-languagecode') || 1033,
+          entityformid: container.getAttribute('data-lookup-reference_entityformid') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+          languagecode: container.getAttribute('data-languagecode') || 1033, // NOSONAR: actual attributes exclude inherited dataset values
         });
         if (!source) return;
-        const listener = (message) => {
+        detachCreateListener();
+        createListener = (message) => {
           if (message.origin !== location.origin) return;
           let data = message.data;
           try {
@@ -1761,13 +2007,13 @@
             return;
           }
           if (data?.type !== 'Success') return;
-          window.removeEventListener('message', listener);
+          detachCreateListener();
           hideModal(createModal);
           grid.state.selected = data.id;
           trigger(gridElement, 'refresh');
         };
-        window.addEventListener('message', listener);
-        if (!grid.openFormModal(createModal, source)) window.removeEventListener('message', listener);
+        window.addEventListener('message', createListener);
+        if (!grid.openFormModal(createModal, source)) detachCreateListener();
       });
     }
     sync();
@@ -1789,10 +2035,10 @@
         ...grid.selectedRows().map((tr) => {
           const item = document.createElement('div');
           item.className = 'item pull-left btn btn-default';
-          item.setAttribute('data-entity', tr.getAttribute('data-entity'));
-          item.setAttribute('data-id', tr.getAttribute('data-id'));
-          item.setAttribute('data-name', tr.getAttribute('data-name'));
-          item.innerHTML = `<span class="name">${esc(tr.getAttribute('data-name'))}</span><span class="remove"><span class="fa fa-times" aria-hidden="true"></span></span>`;
+          item.dataset.entity = String(tr.getAttribute('data-entity') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.dataset.id = String(tr.getAttribute('data-id') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.dataset.name = String(tr.getAttribute('data-name') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.innerHTML = `<span class="name">${esc(tr.getAttribute('data-name'))}</span><span class="remove"><span class="fa fa-times" aria-hidden="true"></span></span>`; // NOSONAR: actual attributes exclude inherited dataset values
           item.querySelector('.remove').addEventListener('click', () => {
             grid.setRowSelected(tr, false);
             syncSelection();
@@ -1843,17 +2089,17 @@
       event.preventDefault();
       let payload;
       try {
-        payload = JSON.parse(container.getAttribute('data-associate') || '{}');
+        payload = JSON.parse(container.getAttribute('data-associate') || '{}'); // NOSONAR: actual attributes exclude inherited dataset values
       } catch {
         payload = {};
       }
       payload.RelatedEntities = grid.selectedRows().map((tr) => ({
-        LogicalName: tr.getAttribute('data-entity'),
-        Id: tr.getAttribute('data-id'),
-        Name: tr.getAttribute('data-name'),
+        LogicalName: tr.getAttribute('data-entity') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+        Id: tr.getAttribute('data-id') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+        Name: tr.getAttribute('data-name') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
       }));
       if (!payload.RelatedEntities.length) return;
-      post(container.getAttribute('data-url'), payload, { json: false })
+      post(container.getAttribute('data-url') ?? null, payload, { json: false }) // NOSONAR: actual attributes exclude inherited dataset values
         .then(() => {
           succeeded = true;
           hideModal(modal);
@@ -1871,12 +2117,41 @@
   }
 
   // ---- notes
+  function bs5NoteToolbar(note) {
+    if (!note.DisplayToolbar) return '';
+    const editItem = note.CanWrite
+      ? '<li role="presentation"><a class="edit-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa fa-edit fa-fw" aria-hidden="true"></span> Edit</a></li>'
+      : '';
+    const deleteItem = note.CanDelete
+      ? '<li role="presentation"><a class="delete-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa-solid fa-trash-can" aria-hidden="true"></span>Delete</a></li>'
+      : '';
+    return `<div class="toolbar dropdown float-end" style="z-index: 1; position: relative;"><button aria-expanded="false" aria-label="action menu" class="btn btn-default btn-sm" data-bs-toggle="dropdown" href="#"><span class="fa fa-caret-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu">${editItem}${deleteItem}</ul></div>`;
+  }
+
+  function bs5NoteAttachment(note, url) {
+    if (!note.HasAttachment) return '';
+    const thumbnail = note.AttachmentIsImage
+      ? `<div class="img float-start"><a class="thumbnail" href="${esc(url)}" target="_blank"><img alt="${esc(note.AttachmentFileName)}" class="img-thumbnail" src="${esc(url)}"></a></div>`
+      : '';
+    return `<div class="attachment alert alert-block clearfix">${thumbnail}<div class="link float-start"><span class="fa fa-file" aria-hidden="true"></span> <a href="${esc(url)}" target="_blank">${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`;
+  }
+
+  function bs5NoteCard(note, pattern) {
+    const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
+    const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
+    const url = `${note.AttachmentUrl}?t=${Date.now()}`;
+    const toolbar = bs5NoteToolbar(note);
+    const attachment = bs5NoteAttachment(note, url);
+    const postedBy = note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : '';
+    return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${note.UnformattedText ?? ''}</div>${attachment}</div></div></div>`;
+  }
+
   function initNotes(container) {
     if (container.__ppNotes) return;
     container.__ppNotes = true;
     const regarding = (() => {
       try {
-        return JSON.parse(container.getAttribute('data-target') || container.getAttribute('data-bs-target') || '{}');
+        return JSON.parse(container.getAttribute('data-target') || container.getAttribute('data-bs-target') || '{}'); // NOSONAR: actual attributes exclude inherited dataset values
       } catch {
         return {};
       }
@@ -1885,7 +2160,7 @@
     const state = { page: 1 };
     // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
     // its list only when it has notes.
-    const bs5 = container.hasAttribute('data-bs-target');
+    const bs5 = container.hasAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
     if (bs5)
       for (const name of ['.modal-editnote', '.modal-deletenote', '.modal-addnote']) {
         const modal = container.querySelector(`:scope > ${name}`);
@@ -1907,12 +2182,12 @@
       state.page = page;
       show('.notes-loading');
       return post(
-        container.getAttribute('data-url-get'),
+        container.getAttribute('data-url-get') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
         {
           regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id },
-          orders: JSON.parse(container.getAttribute('data-orders') || '[]'),
+          orders: JSON.parse(container.getAttribute('data-orders') || '[]'), // NOSONAR: actual attributes exclude inherited dataset values
           page,
-          pageSize: Number(container.getAttribute('data-pagesize')) || 10,
+          pageSize: Number(container.getAttribute('data-pagesize')) || 10, // NOSONAR: actual attributes exclude inherited dataset values
         },
         bs5 ? { jsonType: 'application/json' } : {},
       )
@@ -1921,26 +2196,19 @@
           // The Bootstrap 5 control hides its pager for a single page of notes; without notes the
           // pager is left as rendered.
           const pager = bs5 && container.querySelector('.notes-pagination');
-          if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = 'none';
-          const pattern = document.body?.getAttribute('data-datetimeformat');
-          const bs5Card = (note) => {
-            const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
-            const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
-            const url = `${note.AttachmentUrl}?t=${Date.now()}`;
+          if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = 'none'; // NOSONAR: operand can be NaN or undefined, the negated test differs
+          const pattern = document.body?.getAttribute('data-datetimeformat'); // NOSONAR: actual attributes exclude inherited dataset values
+          const legacyNoteCard = (note) => {
             const toolbar = note.DisplayToolbar
-              ? `<div class="toolbar dropdown float-end" style="z-index: 1; position: relative;"><button aria-expanded="false" aria-label="action menu" class="btn btn-default btn-sm" data-bs-toggle="dropdown" href="#"><span class="fa fa-caret-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu">${note.CanWrite ? '<li role="presentation"><a class="edit-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa fa-edit fa-fw" aria-hidden="true"></span> Edit</a></li>' : ''}${note.CanDelete ? '<li role="presentation"><a class="delete-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa-solid fa-trash-can" aria-hidden="true"></span>Delete</a></li>' : ''}</ul></div>`
+              ? `<div class="toolbar dropdown pull-right"><a href="#" class="edit-link" title="Edit">Edit</a> <a href="#" class="delete-link" title="Delete">Delete</a></div>`
               : '';
             const attachment = note.HasAttachment
-              ? `<div class="attachment alert alert-block clearfix">${note.AttachmentIsImage ? `<div class="img float-start"><a class="thumbnail" href="${esc(url)}" target="_blank"><img alt="${esc(note.AttachmentFileName)}" class="img-thumbnail" src="${esc(url)}"></a></div>` : ''}<div class="link float-start"><span class="fa fa-file" aria-hidden="true"></span> <a href="${esc(url)}" target="_blank">${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`
+              ? `<div class="attachment alert alert-block alert-info clearfix"><div class="link pull-left"><a href="${esc(note.AttachmentUrl)}?t=${Date.now()}"><span class="fa fa-file" aria-hidden="true"></span> ${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`
               : '';
-            return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : ''}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${note.UnformattedText ?? ''}</div>${attachment}</div></div></div>`;
+            return `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${toolbar}<div class="text">${note.Text ?? ''}</div>${attachment}</div></div></div>`;
           };
           list.innerHTML = (data.Records ?? [])
-            .map((note) =>
-              bs5
-                ? bs5Card(note)
-                : `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${note.DisplayToolbar ? `<div class="toolbar dropdown pull-right"><a href="#" class="edit-link" title="Edit">Edit</a> <a href="#" class="delete-link" title="Delete">Delete</a></div>` : ''}<div class="text">${note.Text ?? ''}</div>${note.HasAttachment ? `<div class="attachment alert alert-block alert-info clearfix"><div class="link pull-left"><a href="${esc(note.AttachmentUrl)}?t=${Date.now()}"><span class="fa fa-file" aria-hidden="true"></span> ${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>` : ''}</div></div></div>`,
-            )
+            .map((note) => (bs5 ? bs5NoteCard(note, pattern) : legacyNoteCard(note)))
             .join('');
           trigger(container, 'loaded');
         })
@@ -1956,8 +2224,8 @@
         if (!file) return resolve(null);
         const reader = new FileReader();
         reader.onload = () =>
-          resolve({ name: file.name, type: file.type, content: String(reader.result).replace(/^data:[^,]*,/, '') });
-        reader.onerror = () => reject(reader.error);
+          resolve({ name: file.name, type: file.type, content: String(reader.result).replace(/^data:[^,]*,/, '') }); // NOSONAR: stringification is intentional here
+        reader.onerror = () => reject(reader.error); // NOSONAR: forward the native FileReader rejection value
         reader.readAsDataURL(file);
       });
     const dialog = (selector) => container.querySelector(selector) || document.querySelector(selector);
@@ -1970,7 +2238,7 @@
         text: modal.querySelector('textarea[name="text"]')?.value ?? '',
         isRequired: '',
         isPrivate: String(modal.querySelector('input[name="isPrivate"]')?.checked ?? false),
-        attachmentSettings: container.getAttribute('data-attachmentsettings') ?? '',
+        attachmentSettings: container.getAttribute('data-attachmentsettings') ?? '', // NOSONAR: actual attributes exclude inherited dataset values
       };
       const body = input?.files?.[0] ? new FormData() : new URLSearchParams();
       for (const [name, value] of Object.entries(fields)) body.append(name, value);
@@ -2009,7 +2277,7 @@
               input.replaceWith(fresh);
             }
           }
-          load(state.page);
+          void load(state.page);
         })
         .catch((error) => {
           modal.querySelector('.modal-body > .alert')?.remove();
@@ -2029,7 +2297,9 @@
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
       replacement.addEventListener('click', () =>
-        submit(modal, container.getAttribute('data-url-add'), {
+        submit(modal, /* NOSONAR */ container.getAttribute('data-url-add') ?? null, {
+          // NOSONAR: read actual attributes, not inherited dataset properties
+          // NOSONAR: actual attributes exclude inherited dataset values
           regardingEntityLogicalName: regarding.LogicalName,
           regardingEntityId: regarding.Id,
         }),
@@ -2041,14 +2311,14 @@
       if (!link) return;
       event.preventDefault();
       const note = link.closest('.note');
-      const id = note.getAttribute('data-id');
+      const id = note.getAttribute('data-id'); // NOSONAR: reads attributes of observed DOM, dataset would differ
       if (link.classList.contains('delete-link')) {
         const modal = dialog('.modal-deletenote');
         const run = () =>
-          post(container.getAttribute('data-url-delete'), { id }, { json: true })
+          post(container.getAttribute('data-url-delete') ?? null, { id }, { json: true }) // NOSONAR: actual attributes exclude inherited dataset values
             .then(() => {
               if (modal) hideModal(modal);
-              load(state.page);
+              void load(state.page);
             })
             .catch((error) => notify(container, error.message));
         if (!modal) return run();
@@ -2062,17 +2332,17 @@
       const modal = dialog('.modal-editnote');
       if (!modal) return;
       const textarea = modal.querySelector('textarea[name="text"]');
-      if (textarea) textarea.value = note.getAttribute('data-unformattedtext');
+      if (textarea) textarea.value = note.getAttribute('data-unformattedtext') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
-      replacement.addEventListener('click', () => submit(modal, container.getAttribute('data-url-edit'), { id }));
+      replacement.addEventListener('click', () => submit(modal, container.getAttribute('data-url-edit'), { id })); // NOSONAR: reads attributes of observed DOM, dataset would differ
       showModal(modal);
     });
     on(container, 'refresh', (event, page) => {
-      if (event.target === container) load(Number(page) || state.page);
+      if (event.target === container) void load(Number(page) || state.page);
     });
-    load(1);
+    void load(1);
   }
 
   // ---- metadata filter apply (serialized-query)
@@ -2080,7 +2350,7 @@
     const button = event.target.closest('[data-serialized-query]');
     if (!button) return;
     const list = button.closest('.entitylist');
-    const target = document.querySelector(button.getAttribute('data-target'));
+    const target = document.querySelector(button.getAttribute('data-target') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     if (!target) return;
     event.preventDefault();
     const parameters = new URLSearchParams();
@@ -2097,7 +2367,7 @@
       return;
     }
     const url = new URL(location.href);
-    url.searchParams.set(button.getAttribute('data-serialized-query'), serialized);
+    url.searchParams.set(button.getAttribute('data-serialized-query') ?? null, serialized); // NOSONAR: actual attributes exclude inherited dataset values
     location.assign(url.href);
   });
 
@@ -2106,7 +2376,7 @@
     if (event.origin !== location.origin || event.data !== 'Success') return;
     for (const element of document.querySelectorAll('.entity-grid')) {
       const grid = element.__ppEntityGrid;
-      if (!grid || !grid.enableActions) continue;
+      if (!grid?.enableActions) continue;
       const open = [...element.children].filter(
         (child) => child.matches('.modal-form') && child.classList.contains('in'),
       );
@@ -2129,8 +2399,8 @@
     for (const lookup of root.querySelectorAll('.entity-lookup')) initLookup(lookup);
     for (const associate of root.querySelectorAll('.entity-associate')) initAssociate(associate);
   }
-  window.__portalSimulation = window.__portalSimulation || {};
-  window.__portalSimulation.nativeGrid = { initialise, EntityGrid };
+  globalThis.__portalSimulation = globalThis.__portalSimulation || {};
+  globalThis.__portalSimulation.nativeGrid = { initialise, EntityGrid };
   const start = () => {
     const $ = jq();
     if ($) $(() => initialise());

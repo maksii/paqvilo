@@ -1,6 +1,7 @@
+// @test-kind unproven: the checks in this file exercise qualification lease with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
@@ -17,6 +18,7 @@ import {
   planQualificationFixtures,
   bindQualificationFixtureRequests,
 } from '../portal-security/qualification-fixtures.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const schema = JSON.parse(await readFile(new URL('../dataverse/manifest.json', import.meta.url)));
 const catalogue = JSON.parse(await readFile(new URL('../data/stress-catalogue.json', import.meta.url)));
@@ -145,7 +147,7 @@ function fakeClient(plan, { failCommittedCreate = false } = {}) {
 
 async function withJournal(callback) {
   // The lease refuses journals outside an ignored .paqvilo directory.
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'qualification-lease-')),
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'qualification-lease-')),
     state = path.join(directory, '.paqvilo');
   await mkdir(state);
   try {
@@ -177,6 +179,7 @@ test('priority pilots explicitly add six roleless-ancestor graphs without silent
   }
 });
 
+// @test-kind tooling: verified native three-region bindings are mandatory before any executable lease exists
 test('verified native three-region bindings are mandatory before any executable lease exists', () => {
   assert.throws(
     () =>
@@ -409,6 +412,7 @@ test('Equipment lifecycle domain exhausts leaf flags, separates Read/Write and r
   );
 });
 
+// @test-kind tooling: component/membership lease restores exact baseline and unrelated roles after callback failure
 test('component/membership lease restores exact baseline and unrelated roles after callback failure', () =>
   withJournal(async (journalFile) => {
     const plan = prepared(priority.configurations[0]),
@@ -437,6 +441,7 @@ test('component/membership lease restores exact baseline and unrelated roles aft
     assert.equal(JSON.parse(await readFile(journalFile)).state, 'restored');
   }));
 
+// @test-kind tooling: unknown committed create is reconciled and cleaned without retrying the native mutation
 test('unknown committed create is reconciled and cleaned without retrying the native mutation', () =>
   withJournal(async (journalFile) => {
     const plan = prepared(priority.configurations[0]),
@@ -514,6 +519,7 @@ test('baseline overrides compute descendant closure and deactivate deepest child
   assert.deepEqual(plan.baselineOverrides, [ids[7], parent.id]);
 });
 
+// @test-kind tooling: recovery refuses concurrent foreign role or owned component content drift before writes
 test('recovery refuses concurrent foreign role or owned component content drift before writes', () =>
   withJournal(async (journalFile) => {
     const plan = prepared(priority.configurations[0]),

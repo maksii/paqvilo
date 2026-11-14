@@ -4,15 +4,16 @@ export const siteWorkflowName = (product, site) =>
 
 // These proposals must be portable between npm's cmd.exe and POSIX sh. Refuse
 // interpolation/control characters instead of pretending JSON escaping is shell escaping.
-const scriptArgument = (value) =>
-  typeof value === 'string' && /^[a-z0-9_./: -]+$/i.test(value) ? (value.includes(' ') ? `"${value}"` : value) : null;
+const scriptArgument = (value) => {
+  if (typeof value !== 'string' || !/^[a-z0-9_./: -]+$/i.test(value)) return null;
+  return value.includes(' ') ? `"${value}"` : value;
+};
 export const developmentScript = (name, workflow) => {
   const args = name.endsWith(':debug')
     ? ['npm', 'run', name.slice(0, -6), '--', '--debug-port', workflow.args.at(-1)]
     : ['paqvilo', ...workflow.args];
   const quoted = args.map(scriptArgument);
-  if (quoted.some((value) => value === null))
-    throw new Error('Development shortcut arguments require manual portable shell quoting.');
+  if (quoted.includes(null)) throw new Error('Development shortcut arguments require manual portable shell quoting.');
   return quoted.join(' ');
 };
 
@@ -44,7 +45,7 @@ export function developmentWorkflows({ sites, browser, config = './paqvilo.confi
 export function generatedDevelopmentScripts(scripts = {}, sites = [], configs = ['./paqvilo.config.yml']) {
   const previousSites = Object.values(scripts).flatMap((command) =>
     typeof command === 'string'
-      ? (command.match(/ --site ([a-zA-Z0-9][a-zA-Z0-9_-]*) --portals selected$/)?.[1] ?? [])
+      ? (/ --site ([a-zA-Z0-9][a-zA-Z0-9_-]*) --portals selected$/.exec(command)?.[1] ?? [])
       : [],
   );
   const generated = new Set();
@@ -66,22 +67,25 @@ export function generatedDevelopmentScripts(scripts = {}, sites = [], configs = 
 }
 
 /** Read-only reconciliation proposals. Applying/removing any custom script requires project review. */
+function manualConfigDrift(workflows, scripts, generated) {
+  const changes = [];
+  for (const name of Object.keys(workflows))
+    changes.push({
+      action: Object.hasOwn(scripts, name) ? 'update' : 'add',
+      name,
+      reason:
+        'Selected catalogue path requires manual portable shell quoting; reconcile the command manually without an executable proposal.',
+      custom: Object.hasOwn(scripts, name) && !generated.has(name),
+      requiresReview: true,
+    });
+  return changes;
+}
+
 export function developmentScriptDrift({ scripts = {}, sites, config = './paqvilo.config.yml' }) {
   const workflows = developmentWorkflows({ sites, config });
   const generated = generatedDevelopmentScripts(scripts, sites, ['./paqvilo.config.yml', config]),
     changes = [];
-  if (scriptArgument(config) === null) {
-    for (const name of Object.keys(workflows))
-      changes.push({
-        action: Object.hasOwn(scripts, name) ? 'update' : 'add',
-        name,
-        reason:
-          'Selected catalogue path requires manual portable shell quoting; reconcile the command manually without an executable proposal.',
-        custom: Object.hasOwn(scripts, name) && !generated.has(name),
-        requiresReview: true,
-      });
-    return changes;
-  }
+  if (scriptArgument(config) === null) return manualConfigDrift(workflows, scripts, generated);
   const expected = Object.fromEntries(
     Object.entries(workflows).map(([name, workflow]) => [name, developmentScript(name, workflow)]),
   );

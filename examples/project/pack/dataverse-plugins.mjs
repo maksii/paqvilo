@@ -1,4 +1,4 @@
-// Explicit local models for the exported C# registrations. Mirage does not execute .NET.
+// Explicit JavaScript models for the exported C# registrations. Original CLR execution is a separate local choice.
 const supplied = (target, field) => Object.hasOwn(target, field);
 const trimmed = (value) => (value == null ? null : String(value).trim());
 const email = (value) => (value == null ? null : String(value).trim().toLowerCase());

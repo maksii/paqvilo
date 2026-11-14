@@ -1,11 +1,10 @@
+// @test-kind contract: provisioning reruns retain a complete journal for the compiled action plan without repeating writes
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { DataverseClient } from '../lense/dataverse/client.mjs';
 import { compileManifest, validateManifest } from '../lense/dataverse/manifest.mjs';
@@ -25,6 +24,9 @@ import {
   privateJson,
   tokenProvider,
 } from '../lense/dataverse/connection.mjs';
+import { tempDir, loopbackServer } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 function fixtureManifest() {
   const manifest = {
@@ -126,7 +128,7 @@ async function serverFixture(t) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   };
-  const server = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     let text = '';
     for await (const chunk of req) text += chunk;
     const body = text ? JSON.parse(text) : null;
@@ -279,7 +281,7 @@ async function serverFixture(t) {
       } else if (route === 'PublishXml') return send(res, 200, {});
       else return send(res, 400, { error: { message: 'unsupported fixture route' } });
       res.writeHead(204, {
-        'OData-EntityId': `http://127.0.0.1:${server.address().port}/api/data/v9.2/${route}(${id})`,
+        'OData-EntityId': `http://${req.headers.host}/api/data/v9.2/${route}(${id})`,
       });
       return res.end();
     }
@@ -293,11 +295,9 @@ async function serverFixture(t) {
       return send(res, 200, {});
     }
     send(res, 405, {});
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  };
   const client = new DataverseClient({
-    environmentUrl: `http://127.0.0.1:${server.address().port}`,
+    environmentUrl: await loopbackServer(t, handle),
     allowLoopback: true,
     token: async () => 'invented-token',
   });
@@ -381,7 +381,11 @@ test('remote plan is read-only; apply creates, retains membership and has a muta
     manifest = fixtureManifest();
   const before = await planManifest(manifest, { client });
   assert.equal(before.summary.drift, 0);
-  assert.ok(before.summary.create > 0);
+  assert.equal(
+    before.summary.create,
+    compileManifest(manifest).actions.length,
+    'an empty organisation lacks every action',
+  );
   assert.ok(state.requests.every((r) => r.method === 'GET'));
   const result = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
   assert.equal(result.state, 'Created');
@@ -393,6 +397,11 @@ test('remote plan is read-only; apply creates, retains membership and has a muta
   );
   const posts = state.requests.filter((r) => r.method === 'POST').length;
   const again = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  const expectedActionKeys = compileManifest(manifest)
+    .actions.map((action) => action.key)
+    .sort();
+  assert.ok(expectedActionKeys.length > 0);
+  assert.deepEqual(again.entries.map((entry) => entry.key).sort(), expectedActionKeys);
   assert.ok(again.entries.every((e) => e.status === 'exists'));
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, posts);
   assert.equal((await checkKeys(manifest, client)).ready, false);
@@ -437,6 +446,7 @@ test('solution scoping replaces IncludeAll membership without deleting metadata 
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, posts);
 });
 
+// @test-kind security+contract: drift and organisation mismatch block writes before mutation
 test('drift and organisation mismatch block writes before mutation', async (t) => {
   const { state, client } = await serverFixture(t),
     manifest = fixtureManifest();
@@ -451,6 +461,7 @@ test('drift and organisation mismatch block writes before mutation', async (t) =
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, writes);
 });
 
+// @test-kind security+contract: solution scoping refuses metadata drift before replacing any membership
 test('solution scoping refuses metadata drift before replacing any membership', async (t) => {
   const { state, client } = await serverFixture(t),
     manifest = fixtureManifest();
@@ -463,6 +474,52 @@ test('solution scoping refuses metadata drift before replacing any membership', 
   assert.ok(state.components.filter((c) => c.componenttype === 1).every((c) => c.rootcomponentbehavior === 0));
 });
 
+test('remote plan lists the membership apply writes: root re-scoping and a missing primary-name membership', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  const node = state.tables.get('tst_node'),
+    primary = node.Attributes.find((a) => a.LogicalName === 'tst_name').MetadataId;
+  state.components = state.components.filter((c) => c.objectid !== primary);
+  state.components.find((c) => c.componenttype === 1 && c.objectid === node.MetadataId).rootcomponentbehavior = 0;
+  const requests = state.requests.length;
+  const plan = await planManifest(manifest, { client });
+  assert.equal(plan.summary.rootScoping, 1);
+  assert.equal(plan.summary.membershipAdd, 1);
+  assert.equal(plan.summary.blocked, 0);
+  assert.ok(state.requests.slice(requests).every((r) => r.method === 'GET'));
+});
+
+test('remote plan blocks apply before its first write when a table root is undeclared', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest(),
+    stray = randomUUID();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  state.components.push({
+    solutioncomponentid: randomUUID(),
+    objectid: stray,
+    componenttype: 1,
+    rootcomponentbehavior: 0,
+    _solutionid_value: state.solutions[0].solutionid,
+  });
+  const plan = await planManifest(manifest, { client });
+  assert.equal(plan.summary.blocked, 1);
+  assert.deepEqual(
+    plan.membership.filter((e) => e.operation === 'blocked').map((e) => e.objectId),
+    [stray],
+  );
+  const requests = state.requests.length;
+  await assert.rejects(
+    applyManifest(manifest, { client, expectedOrganisationId: state.organisationId }),
+    /Undeclared table root/,
+  );
+  assert.deepEqual(
+    state.requests.slice(requests).filter((r) => r.method !== 'GET'),
+    [],
+  );
+});
+
+// @test-kind security+contract: mutations are not blindly retried and server responses do not leak through errors
 test('mutations are not blindly retried and server responses do not leak through errors', async (t) => {
   const { state, client } = await serverFixture(t);
   state.failCreate = true;
@@ -503,7 +560,13 @@ test('acknowledged table and lookup creates reconcile transient metadata read ab
   };
   const journal = await applyManifest(fixtureManifest(), { client, expectedOrganisationId: state.organisationId });
   assert.equal(journal.state, 'Created');
-  assert.ok(missed.size >= 3);
+  // Both new tables' primary name columns and the one-to-many lookup (plain and typed reads) were each read absent once.
+  assert.deepEqual([...missed].sort(), [
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_name')",
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')",
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')/Microsoft.Dynamics.CRM.LookupAttributeMetadata",
+    "EntityDefinitions(LogicalName='tst_node')/Attributes(LogicalName='tst_name')",
+  ]);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'EntityDefinitions').length, 2);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'RelationshipDefinitions').length, 2);
 });
@@ -535,41 +598,47 @@ test('datetime manifest format is independent of behavior and participates in dr
   }
 });
 
-test('schema mutations have a longer deadline while timeout outcomes still require reconciliation', async () => {
+// @test-kind contract: schema mutations have a longer deadline while timeout outcomes still require reconciliation
+test('schema mutations have a longer deadline while timeout outcomes still require reconciliation', async (t) => {
+  // docs/dataverse-provisioning.md: reads allow 30 seconds, schema mutations 180 seconds.
+  const defaults = new DataverseClient({ environmentUrl: 'https://fictional.crm.example', token: async () => '' });
+  assert.deepEqual([defaults.timeoutMs, defaults.mutationTimeoutMs], [30_000, 180_000]);
+  // Each request's deadline signal is recorded and expires as soon as the request is sent, so no real time passes.
+  const deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', (ms) => {
+    const controller = new AbortController();
+    deadlines.push({ ms, expire: () => controller.abort(new DOMException('Invented deadline', 'TimeoutError')) });
+    return controller.signal;
+  });
   let requests = 0;
   const client = new DataverseClient({
     environmentUrl: 'https://fictional.crm.example',
     token: async () => 'invented-token',
-    timeoutMs: 10,
-    mutationTimeoutMs: 30,
-    fetchImpl: async (_url, { signal }) => {
+    timeoutMs: 1_000,
+    mutationTimeoutMs: 5_000,
+    fetchImpl: (_url, { signal }) => {
       requests++;
-      // Keep the fixture alive while AbortSignal's unreferenced deadline expires.
-      return new Promise((_resolve, reject) => {
-        const keepAlive = setTimeout(() => reject(new Error('deadline was not enforced')), 1000);
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(keepAlive);
-            reject(signal.reason);
-          },
-          { once: true },
-        );
-      });
+      const settled = new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+      );
+      deadlines.at(-1).expire();
+      return settled;
     },
   });
-  assert.equal(
-    new DataverseClient({ environmentUrl: 'https://fictional.crm.example', token: async () => '' }).mutationTimeoutMs,
-    180_000,
-  );
   await assert.rejects(client.get('EntityDefinitions'), (e) => e.code === 'READ_FAILED');
   await assert.rejects(
     client.request('EntityDefinitions', { method: 'POST', body: {} }),
     (e) => e.code === 'UNKNOWN_COMMIT',
   );
   assert.equal(requests, 2);
+  assert.deepEqual(
+    deadlines.map((deadline) => deadline.ms),
+    [1_000, 5_000],
+    'a read uses the read deadline and a mutation the longer mutation deadline',
+  );
 });
 
+// @test-kind security+contract: API continuations cannot escape origin or path; connection output omits secrets
 test('API continuations cannot escape origin or path; connection output omits secrets', () => {
   const client = new DataverseClient({
     environmentUrl: 'https://fictional.crm.example',
@@ -594,20 +663,21 @@ test('API continuations cannot escape origin or path; connection output omits se
   assert.equal(parsed.clientSecret, 'invented-secret');
 });
 
+// @test-kind contract: dataverse help lists its register, plan and export commands
 test('dataverse help lists its register, plan and export commands', () => {
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'dataverse', '--help'],
-    { encoding: 'utf8', windowsHide: true },
+    { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
   );
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /Register|register/);
-  assert.match(result.stdout, /plan/);
-  assert.match(result.stdout, /export/);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const command of ['register', 'plan', 'export'])
+    assert.match(result.stdout, new RegExp(`^  ${command} +--`, 'm'));
 });
 
+// @test-kind contract: journal replacement survives a transient filesystem lock without repeating remote work
 test('journal replacement survives a transient filesystem lock without repeating remote work', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-dataverse-journal-')),
+  const directory = await tempDir('invented-dataverse-journal-'),
     file = path.join(directory, 'journal.json'),
     originalRename = fs.rename;
   let replacements = 0;
@@ -633,6 +703,7 @@ test('journal replacement survives a transient filesystem lock without repeating
   }
 });
 
+// @test-kind security+contract: credential import handles identity-bearing formats without treating secret ID as the value
 test('credential import handles identity-bearing formats without treating secret ID as the value', () => {
   const clientId = '11111111-1111-4111-8111-111111111111',
     tenantId = '22222222-2222-4222-8222-222222222222',
@@ -698,6 +769,7 @@ test('forms/views and later scalar columns preserve explicit solution ownership'
   assert.equal(plan.actions.at(-1).kind, 'view');
 });
 
+// @test-kind security+contract: response stream and JSON failures retain unknown mutation outcomes without leaking bodies
 test('response stream and JSON failures retain unknown mutation outcomes without leaking bodies', async () => {
   for (const text of [
     async () => {
@@ -726,10 +798,11 @@ test('response stream and JSON failures retain unknown mutation outcomes without
   }
 });
 
+// @test-kind contract: interrupted schema journals identify the pending action before its remote mutation
 test('interrupted schema journals identify the pending action before its remote mutation', async (t) => {
   const { client, state } = await serverFixture(t);
   state.failCreate = true;
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-schema-journal-')),
+  const directory = await tempDir('invented-schema-journal-'),
     journalFile = path.join(directory, 'journal.json');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await assert.rejects(applyManifest(fixtureManifest(), { client, journalFile }), (e) => e.status === 503);
@@ -786,6 +859,7 @@ test('application authentication confines file-derived configuration to the fixe
   }
 });
 
+// @test-kind security+contract: unexpected OAuth transport and response failures never expose credential text
 test('unexpected OAuth transport and response failures never expose credential text', async () => {
   const connection = {
     tenantId: '11111111-1111-4111-8111-111111111111',

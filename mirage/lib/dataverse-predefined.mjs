@@ -1,9 +1,9 @@
 // Predefined queries for the simulated Dataverse Web API: `savedQuery=<id>` (system views) and
 // `userQuery=<id>` (saved Advanced Find queries). The query hook answers with the stored FetchXML,
 // which the records layer runs.
-import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { ownerColumns, privilegeDeniedError } from './dataverse-security.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 
 const TEXT = 'nvarchar',
@@ -34,7 +34,7 @@ const SEEDED = {
       owningbusinessunit: LOOKUP,
     },
   },
-  // The appnotification columns are guesses (the table is not in the standard table reference); SendAppNotification writes these rows.
+  // The appnotification columns follow the standard table reference (picklist defaults are its appDefaultValue); SendAppNotification writes these rows.
   appnotification: {
     entitySet: 'appnotifications',
     idColumn: 'appnotificationid',
@@ -46,8 +46,7 @@ const SEEDED = {
       icontype: INT,
       priority: INT,
       toasttype: INT,
-      expiry: INT,
-      recipient: LOOKUP,
+      ttlinseconds: INT,
       ownerid: LOOKUP,
       owninguser: LOOKUP,
       owningteam: LOOKUP,
@@ -64,7 +63,7 @@ const idOf = (value) =>
 const GUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
-const xmlEscape = (value) => String(value).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+const xmlEscape = (value) => String(value).replace(/[&<>"']/g, (ch) => `&#${ch.codePointAt(0)};`);
 
 function seed(store) {
   for (const [logical, def] of Object.entries(SEEDED)) {
@@ -142,7 +141,7 @@ const CSDL_EXCHANGE_RATE = `<ComplexType Name="RetrieveExchangeRateResponse"><Pr
   <ReturnType Type="mscrm.RetrieveExchangeRateResponse" Nullable="false" />
 </Function>`;
 function retrieveExchangeRate(api) {
-  return async (c) => {
+  return (c) => {
     const id = c.params?.TransactionCurrencyId;
     if (!GUID_TEXT.test(idOf(id))) throw new DataError('TransactionCurrencyId must be a GUID.', 400, 'InvalidRequest'); // native message text is a guess
     const { principals, store } = api;
@@ -161,8 +160,10 @@ function retrieveExchangeRate(api) {
   };
 }
 
+// The miscellaneous privilege a sender holds to send an in-app notification (seeded for the administrators in dataverse-security.mjs).
+const SEND_PRIVILEGE = 'prvSendAppNotification';
 // SendAppNotification: creates an appnotification row for Recipient. No toast is delivered. The row is the only effect.
-// The Recipient wire shape (systemuserid), the defaults for IconType, Priority and ToastType, and the response body are guesses.
+// The Recipient wire shape (systemuserid) and the response body are guesses.
 const CSDL_APP_NOTIFICATION = `<ComplexType Name="SendAppNotificationResponse" />
 <Action Name="SendAppNotification">
   <Parameter Name="Title" Type="Edm.String" Nullable="false" />
@@ -187,20 +188,24 @@ function sendAppNotification(api) {
     await api.change(() =>
       api.store.transact(
         async () => {
-          api.principals.authorize({ user: c.user, entity: 'appnotification', operation: 'write' });
-          await api.store.createRecordAsync(
+          // The recipient owns the notification: Create is judged against a row owned by the recipient in the recipient's business unit.
+          const owner = ownerColumns(api.store, { id: recipientId, logical_name: 'systemuser' });
+          const granted = api.principals.privileges(c.user).get(SEND_PRIVILEGE) > 0;
+          if (!granted) throw privilegeDeniedError(c.user, SEND_PRIVILEGE, 'appnotification');
+          api.principals.authorize({ user: c.user, entity: 'appnotification', operation: 'create', row: owner });
+          await api.records.createInternal(
+            c,
             'appnotification',
             {
-              appnotificationid: randomUUID(),
+              ...owner,
               title: body.Title,
               body: body.Body ?? null,
-              icontype: body.IconType ?? 0,
-              priority: body.Priority ?? 1,
-              toasttype: body.ToastType ?? 0,
-              expiry: body.Expiry ?? null, // the defaults are guesses
-              recipient: { id: recipientId, logical_name: 'systemuser', name: '' },
+              icontype: body.IconType ?? 100000000,
+              priority: body.Priority ?? 200000000,
+              toasttype: body.ToastType ?? 200000000,
+              ttlinseconds: body.Expiry ?? null,
             },
-            c.identity,
+            { authorized: true },
           );
         },
         { isolated: true },
@@ -256,7 +261,9 @@ export function install(api) {
     name: 'RetrieveExchangeRate',
     kind: 'function',
     binding: 'unbound',
-    handle: retrieveExchangeRate(api),
+    // The Web API awaits the handler; a plug-in's synchronous SDK Execute calls it directly (sdk).
+    handle: async (c) => retrieveExchangeRate(api)(c),
+    sdk: retrieveExchangeRate(api),
     csdl: CSDL_EXCHANGE_RATE,
   });
   api.registry.register({

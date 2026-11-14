@@ -32,6 +32,18 @@ const BUILT_IN = [
 const key = (service, operation) => `${service}\u0000${operation}`;
 const isName = (value) => typeof value === 'string' && value.trim() !== '';
 
+function validateOperations(service, operations, result) {
+  for (const [operation, fn] of Object.entries(operations)) {
+    if (!isName(operation))
+      throw new TypeError(`serviceFixtures.${service} operation names must be non-empty strings.`);
+    if (typeof fn !== 'function') throw new TypeError(`serviceFixtures.${service}.${operation} must be a function.`);
+    // ponytail: the seam that consumes a fixture (platform.mjs Liquid render) is synchronous; a promise would leak to it.
+    if (fn.constructor?.name === 'AsyncFunction')
+      throw new TypeError(`serviceFixtures.${service}.${operation} must be a synchronous function.`);
+    result[service][operation] = fn;
+  }
+}
+
 /** Validates the pack export 'serviceFixtures'. Returns the normalised map; throws TypeError naming the bad entry. */
 export function validateServiceFixtures(map) {
   if (map === undefined) return {};
@@ -43,15 +55,7 @@ export function validateServiceFixtures(map) {
     if (!operations || typeof operations !== 'object' || Array.isArray(operations))
       throw new TypeError(`serviceFixtures.${service} must map operation names to functions.`);
     result[service] = {};
-    for (const [operation, fn] of Object.entries(operations)) {
-      if (!isName(operation))
-        throw new TypeError(`serviceFixtures.${service} operation names must be non-empty strings.`);
-      if (typeof fn !== 'function') throw new TypeError(`serviceFixtures.${service}.${operation} must be a function.`);
-      // ponytail: the seam that consumes a fixture (platform.mjs Liquid render) is synchronous; a promise would leak to it.
-      if (fn.constructor?.name === 'AsyncFunction')
-        throw new TypeError(`serviceFixtures.${service}.${operation} must be a synchronous function.`);
-      result[service][operation] = fn;
-    }
+    validateOperations(service, operations, result);
   }
   return result;
 }

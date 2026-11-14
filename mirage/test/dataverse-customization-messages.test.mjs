@@ -1,3 +1,4 @@
+// @test-kind contract: the customization messages are Paqvilo's designed runtime behaviour over the standard systemform and theme names.
 // Customization messages: ribbons, forms, unpublished reads and themes, through the registered operations and SOAP dispatch.
 // The systemform and theme mappings are the Dataverse standard names.
 import test from 'node:test';
@@ -157,6 +158,7 @@ async function setup() {
   return { store, api, admin, basic, find, call, send, formsMapping, themeMapping };
 }
 
+// @test-kind security: the create privilege is required to instantiate filters
 test('InstantiateFilters copies templates for the bound user, validates atomically, and checks create privilege', async () => {
   const t = await setup();
   const id = 'bbbbbbbb-0000-4000-8000-000000000005';
@@ -314,6 +316,7 @@ test('CopySystemForm creates a form from the source and writes into a named dest
   assert.equal(t.store.state.tables.systemform.length, 3);
 });
 
+// @test-kind security: a caller without create privilege cannot copy a system form
 test('CopySystemForm refuses an unknown destination and a caller without create privilege', async () => {
   const t = await setup();
   const target = { mapping: t.formsMapping, id: FORM_MAIN, row: t.store.state.tables.systemform[0] };
@@ -331,6 +334,29 @@ test('CopySystemForm refuses an unknown destination and a caller without create 
     t.call('CopySystemForm', { user: t.basic, kind: 'action', binding: 'entity', entity: 'systemform', target }),
     { status: 403, code: 'PrivilegeDenied' },
   );
+});
+
+// The copy carries the source's content columns only: the managed flag and the solution of the destination stay as they were.
+// @test-kind security: a copy onto a managed form must not overwrite its managed flag or solution, so only content columns are copied.
+test('CopySystemForm copies only the form content and keeps the destination managed flag and solution', async () => {
+  const t = await setup();
+  const [source, destination] = t.store.state.tables.systemform;
+  Object.assign(source, { ismanaged: false, solutionid: 'SOURCE-SOLUTION' });
+  Object.assign(destination, { ismanaged: true, solutionid: 'DESTINATION-SOLUTION' });
+  const target = { mapping: t.formsMapping, id: FORM_MAIN, row: source };
+  const response = await t.call('CopySystemForm', {
+    kind: 'action',
+    binding: 'entity',
+    entity: 'systemform',
+    target,
+    body: { Target: { formid: FORM_QUICK } },
+  });
+  assert.equal(response.status, 200);
+  const copied = t.store.state.tables.systemform.find((f) => f.formid === FORM_QUICK);
+  assert.equal(copied.formxml, '<form main />');
+  assert.equal(copied.name, 'Contoso main');
+  assert.equal(copied.ismanaged, true);
+  assert.equal(copied.solutionid, 'DESTINATION-SOLUTION');
 });
 
 test('RetrieveUnpublished and RetrieveUnpublishedMultiple return the current rows', async () => {
@@ -351,6 +377,7 @@ test('RetrieveUnpublished and RetrieveUnpublishedMultiple return the current row
   );
 });
 
+// @test-kind security: a caller without write privilege cannot publish a theme
 test('PublishTheme makes one theme the default and refuses a caller without write privilege', async () => {
   const t = await setup();
   const target = { mapping: t.themeMapping, id: THEME_NEW, row: t.store.state.tables.theme[1] };

@@ -1,7 +1,10 @@
 import { DataStore } from '../data.mjs';
+import { likeMatcher } from '../dataverse-values.mjs';
+import { pagedRecordsOf } from '../record-tables.mjs';
 import { parseSolutionXml, child, serializeXml } from '../solution-xml.mjs';
 import { managementOverlay } from './power-pages.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
+import { appCatalogue, appCatalogueAsync } from './catalogue.mjs';
 
 const invalid = (message, status = 400) =>
   Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
@@ -24,7 +27,52 @@ function validateWebApiQuery(input) {
 function writableField(field, operation) {
   return controlDescriptor(field)[operation === 'create' ? 'create' : 'update'];
 }
-export function validateValues(table, values, operation) {
+function validateChoice(field, value) {
+  if (field.type === 'multiselect') {
+    if (
+      !Array.isArray(value) ||
+      value.length > 150 ||
+      value.some((option) => !Number.isInteger(option) || !field.options?.some((known) => known.value === option))
+    )
+      throw invalid(`${field.label} requires an array of known choice values.`);
+  } else if (
+    field.options?.length &&
+    !field.options.some(
+      (option) =>
+        String(field.type === 'boolean' ? Number(option.value) : option.value) ===
+        String(field.type === 'boolean' ? Number(value) : value),
+    )
+  )
+    throw invalid(`${field.label} has an invalid choice.`);
+}
+function validateNonNullValue(field, value) {
+  if (field.type === 'boolean' && typeof value !== 'boolean') throw invalid(`${field.label} requires a boolean.`);
+  if (field.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value)))
+    throw invalid(`${field.label} requires a finite number.`);
+  if (field.type === 'date' && (typeof value !== 'string' || !Number.isFinite(Date.parse(value))))
+    throw invalid(`${field.label} requires a date.`);
+  if (
+    ['text', 'textarea', 'lookup'].includes(field.type ?? 'text') &&
+    typeof value !== 'string' &&
+    !(field.type === 'lookup' && typeof value === 'object' && value.id)
+  )
+    throw invalid(`${field.label} requires text or a lookup reference.`);
+  if (field.maxLength && String(value).length > field.maxLength)
+    throw invalid(`${field.label} exceeds ${field.maxLength} characters.`);
+  validateChoice(field, value);
+}
+function validateRequiredFields(table, operation, result) {
+  if (operation !== 'create') return;
+  for (const field of Object.values(table.fields))
+    if (
+      field.required &&
+      String(field.requiredLevel ?? '').toLowerCase() !== 'systemrequired' &&
+      writableField(field, operation) &&
+      (result[field.name] == null || result[field.name] === '')
+    )
+      throw invalid(`${field.label} is required.`);
+}
+/* NOSONAR */ export function validateValues(table, values, operation) {
   if (!values || typeof values !== 'object' || Array.isArray(values)) throw invalid('Provide a values object.');
   const result = {};
   for (const [name, value] of Object.entries(values)) {
@@ -32,58 +80,16 @@ export function validateValues(table, values, operation) {
     if (!field || !writableField(field, operation)) throw invalid(`Column ${name} is unavailable for ${operation}.`);
     if (field.required && (value == null || value === '' || (Array.isArray(value) && !value.length)))
       throw invalid(`${field.label} is required.`);
-    if (value != null) {
-      if (field.type === 'boolean' && typeof value !== 'boolean') throw invalid(`${field.label} requires a boolean.`);
-      if (field.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value)))
-        throw invalid(`${field.label} requires a finite number.`);
-      if (field.type === 'date' && (typeof value !== 'string' || !Number.isFinite(Date.parse(value))))
-        throw invalid(`${field.label} requires a date.`);
-      if (
-        ['text', 'textarea', 'lookup'].includes(field.type ?? 'text') &&
-        typeof value !== 'string' &&
-        !(field.type === 'lookup' && typeof value === 'object' && value.id)
-      )
-        throw invalid(`${field.label} requires text or a lookup reference.`);
-      if (field.maxLength && String(value).length > field.maxLength)
-        throw invalid(`${field.label} exceeds ${field.maxLength} characters.`);
-      if (field.type === 'multiselect') {
-        if (
-          !Array.isArray(value) ||
-          value.length > 150 ||
-          value.some((option) => !Number.isInteger(option) || !field.options?.some((known) => known.value === option))
-        )
-          throw invalid(`${field.label} requires an array of known choice values.`);
-      } else if (
-        field.options?.length &&
-        !field.options.some(
-          (option) =>
-            String(field.type === 'boolean' ? Number(option.value) : option.value) ===
-            String(field.type === 'boolean' ? Number(value) : value),
-        )
-      )
-        throw invalid(`${field.label} has an invalid choice.`);
-    }
+    if (value != null) validateNonNullValue(field, value);
     // The form API uses numeric arrays; the shared Dataverse record pipeline
     // accepts the native Web API's comma-separated representation.
-    result[name] =
-      field.type === 'multiselect' && Array.isArray(value)
-        ? value.length
-          ? [...new Set(value)].join(',')
-          : null
-        : value;
+    if (field.type === 'multiselect' && Array.isArray(value))
+      result[name] = value.length ? [...new Set(value)].join(',') : null;
+    else result[name] = value;
   }
-  if (operation === 'create')
-    for (const field of Object.values(table.fields)) {
-      // Dataverse supplies omitted system-required values (owner, state and audit
-      // columns) in the canonical create pipeline. Explicit nulls still fail above.
-      if (
-        field.required &&
-        String(field.requiredLevel ?? '').toLowerCase() !== 'systemrequired' &&
-        writableField(field, operation) &&
-        (result[field.name] == null || result[field.name] === '')
-      )
-        throw invalid(`${field.label} is required.`);
-    }
+  // Dataverse supplies omitted system-required values (owner, state and audit
+  // columns) in the canonical create pipeline. Explicit nulls still fail above.
+  validateRequiredFields(table, operation, result);
   return result;
 }
 
@@ -105,8 +111,171 @@ function projectedStore(table) {
   });
 }
 
+// The rows the solution metadata overlay reads (dataverse-solution-metadata.mjs).
+const SOLUTION_COMPONENT_TABLES = Object.freeze(['systemform', 'savedquery', 'appmodule', 'sitemap']);
+/** A key of everything a store-backed catalogue reads besides its metadata object: it advances with metadata,
+ * mapping and settings commits (non-incremental), solution component row writes and a state replacement,
+ * and an incremental business-row write keeps it. */
+const catalogueRevision = (store) => store.tablesRevision(SOLUTION_COMPONENT_TABLES);
+
+// A detached copy of plain store data (objects, arrays and scalars). copyPlainGraph also
+// guards shared references and exotic objects, which mappings never hold; this copy of a
+// wide mapping set costs a fraction of it.
+const ownedCopy = (value) => {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedCopy);
+  const copy = {};
+  for (const key of Object.keys(value))
+    if (key === '__proto__')
+      Object.defineProperty(copy, key, {
+        value: ownedCopy(value[key]),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    else copy[key] = ownedCopy(value[key]);
+  return copy;
+};
+
+/** A host's cached lazy catalogue over a DataStore: catalogue() and catalogue.async({ cancelled })
+ * return one value until metadata() or source() returns another object or catalogue.revision()
+ * changes. The catalogue reads metadata, mappings and settings, never business rows. Its bodies
+ * compile lazily, after the host's read, so it owns a copy of the mappings: a later in-place
+ * mapping write never reaches a catalogue already handed out. options(metadata) builds the input. */
+export function storeCatalogue({ store, metadata, options, source = () => null }) {
+  let cache;
+  const revision = () => catalogueRevision(store);
+  const input = (current) => {
+    const value = options(current);
+    return { ...value, mappings: ownedCopy(value.mappings ?? {}) };
+  };
+  const lookup = () => {
+    const current = metadata(),
+      origin = source(),
+      key = revision();
+    return {
+      current,
+      origin,
+      key,
+      value: cache?.metadata === current && cache.origin === origin && cache.key === key ? cache.value : null,
+    };
+  };
+  const catalogue = () => {
+    const { current, origin, key, value } = lookup();
+    if (value) return value;
+    cache = { metadata: current, origin, key, value: appCatalogue(input(current)) };
+    return cache.value;
+  };
+  catalogue.async = async ({ cancelled } = {}) => {
+    const { current, origin, key, value } = lookup();
+    if (value) return value;
+    const built = await appCatalogueAsync(input(current), { cancelled });
+    cache = { metadata: current, origin, key, value: built };
+    return built;
+  };
+  catalogue.revision = revision;
+  return catalogue;
+}
+
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
+const escapeLikeText = (text) => text.replace(/[[%_]/g, (char) => `[${char}]`);
+
+// A lookup find column joins each target table on the column and matches the target's primary name, as its
+// cells show it.
+function lookupFindParts(name, field, { value, tables, prefix }) {
+  const links = [];
+  const conditions = [];
+  (field.targets ?? []).forEach((entity, index) => {
+    const target = Object.hasOwn(tables, entity) ? tables[entity] : null;
+    if (!target?.nameColumn) return;
+    const alias = `${prefix}${index}`;
+    links.push(node('link-entity', { name: entity, from: target.idColumn, to: name, 'link-type': 'outer', alias }));
+    conditions.push(node('condition', { entityname: alias, attribute: target.nameColumn, operator: 'like', value }));
+  });
+  return { links, conditions };
+}
+
+// A choice find column matches the labels of its options, which the cells show, by the option values the store holds.
+function choiceFindParts(name, field, matches) {
+  return field.options
+    .filter((option) => matches(option.label))
+    .map((option) => node('condition', { attribute: name, operator: 'eq', value: String(option.value) }));
+}
+
+// The Quick Find joins and conditions of the find columns. Other columns match their stored text from its beginning.
+function quickFindParts(table, tables, columns, value) {
+  const matches = likeMatcher(value);
+  const links = [];
+  const conditions = [];
+  columns.forEach((name, index) => {
+    const field = table.fields[name];
+    let part = { links: [], conditions: [node('condition', { attribute: name, operator: 'like', value })] };
+    if (field?.type === 'lookup') part = lookupFindParts(name, field, { value, tables, prefix: `qf${index}t` });
+    else if (field?.options?.length) part = { links: [], conditions: choiceFindParts(name, field, matches) };
+    links.push(...part.links);
+    conditions.push(...part.conditions);
+  });
+  // When no find column can match, the search matches nothing: the primary id is never null.
+  return {
+    links,
+    conditions: conditions.length ? conditions : [node('condition', { attribute: table.idColumn, operator: 'null' })],
+  };
+}
+// The form in which lookup ids and stored keys are compared: surrounding whitespace, braces and letter case are ignored.
+const looseKey = (value) => String(value).trim().replace(/[{}]/g, '').toLowerCase();
+function lookupTargetRow(entity, target, id, byId, store) {
+  const source =
+    target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity);
+  const paged = pagedRecordsOf(source);
+  if (paged && !paged.looseBraceKeys) {
+    const positions = paged.primaryPositions(target.idColumn, looseKey(id));
+    if (positions !== null) return positions.length ? source[positions[0]] : undefined;
+  }
+  if (!byId.has(entity)) {
+    const index = new Map();
+    for (const record of source) {
+      const key = looseKey(record[target.idColumn]);
+      if (!index.has(key)) index.set(key, record);
+    }
+    byId.set(entity, index);
+  }
+  return byId.get(entity).get(looseKey(id));
+}
+
+function lookupDisplayName(value, field, table, tables, portal, byId, { store, id }) {
+  let name = value?.name;
+  for (const entity of field.targets ?? []) {
+    const target = Object.hasOwn(tables, entity) ? tables[entity] : undefined;
+    if (!target) continue;
+    const found = lookupTargetRow(entity, target, id, byId, store);
+    if (found) {
+      name = found[target.nameColumn];
+      break;
+    }
+  }
+  if (!name && table.kind === 'website' && field.name.endsWith('defaultlanguage'))
+    name = portal().websiteLanguages?.find((language) => language.id === id)?.displayName;
+  return name;
+}
+
+function formatModelDrivenRow(row, table, tables, portal, byId, store) {
+  const copy = { ...row };
+  for (const field of Object.values(table.fields)) {
+    if (field.type !== 'lookup' || row[field.name] == null) continue;
+    const value = row[field.name],
+      id = String(value?.id ?? value?.value ?? value)
+        .replace(/[{}]/g, '')
+        .toLowerCase();
+    const name = lookupDisplayName(value, field, table, tables, portal, byId, { store, id });
+    if (name) copy[field.name + '@OData.Community.Display.V1.FormattedValue'] = name;
+  }
+  return copy;
+}
+// True when a requested column is neither a column of the table nor a field of the view.
+const unknownColumn = (table, view, name) =>
+  !Object.hasOwn(table.fields, name) && !view.fields.some((field) => field.name === name);
+
 export function createModelDrivenData({
   store,
   catalogue,
@@ -129,49 +298,15 @@ export function createModelDrivenData({
   const backend = (table) =>
     table.projected && !store.state.mappings[table.entity]?.modelDrivenSource ? projectedStore(table) : store;
   const format = (table, rows) => {
-    const tables = catalogue().tables;
+    // Lookup targets need only their id, name and projection: the lazy catalogue index has them without a body compile.
+    const current = catalogue(),
+      tables = current.tableIndex ?? current.tables;
     // One id map per target table and call: lookup display names cost O(rows + target rows), not a scan per cell.
     const byId = new Map();
-    const targetRow = (entity, target, id) => {
-      if (!byId.has(entity)) {
-        const index = new Map();
-        for (const record of target.projected && !store.state.mappings[entity]?.modelDrivenSource
-          ? target.rows
-          : store.tableRows(entity)) {
-          const key = String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase();
-          if (!index.has(key)) index.set(key, record);
-        }
-        byId.set(entity, index);
-      }
-      return byId.get(entity).get(id);
-    };
-    return rows.map((row) => {
-      const copy = { ...row };
-      for (const field of Object.values(table.fields)) {
-        if (field.type !== 'lookup' || row[field.name] == null) continue;
-        const value = row[field.name],
-          id = String(value?.id ?? value?.value ?? value)
-            .replace(/[{}]/g, '')
-            .toLowerCase();
-        let name = value?.name;
-        for (const entity of field.targets ?? []) {
-          const target = tables[entity];
-          if (!target) continue;
-          const found = targetRow(entity, target, id);
-          if (found) {
-            name = found[target.nameColumn];
-            break;
-          }
-        }
-        if (!name && table.kind === 'website' && /defaultlanguage$/.test(field.name))
-          name = portal().websiteLanguages?.find((language) => language.id === id)?.displayName;
-        if (name) copy[field.name + '@OData.Community.Display.V1.FormattedValue'] = name;
-      }
-      return copy;
-    });
+    return rows.map((row) => formatModelDrivenRow(row, table, tables, portal, byId, store));
   };
-  const capabilities = (entity, actor, id, fields = tableFor(entity).fields) => {
-    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields });
+  const capabilities = (entity, actor, id, fields = tableFor(entity).fields, { compact = false } = {}) => {
+    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields, ...(compact ? { compact } : {}) });
     return rights && id && tableFor(entity).protectedIds?.includes(id) ? { ...rights, delete: false } : rights;
   };
   return {
@@ -179,7 +314,7 @@ export function createModelDrivenData({
     capabilities,
     async list(entity, input = {}, actor = {}) {
       const recordService = recordsOf(actor);
-      return readOperation(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return readOperation(async () => {
         const table = tableFor(entity);
         if (input.scope === 'odata') {
           if (!recordService?.list) throw invalid('Organization queries are unavailable.', 501);
@@ -188,18 +323,19 @@ export function createModelDrivenData({
         }
         if (input.scope !== undefined && input.scope !== 'table') throw invalid('Unsupported query scope.');
         if (input.scope === 'table' && input.view) throw invalid('A table query cannot select a saved view.');
-        const view =
-          input.scope === 'table'
-            ? { id: null, fields: Object.keys(table.fields).map((name) => ({ name })) }
-            : ([...table.views, ...(table.lookupViews ?? [])].find((view) => view.id === input.view) ??
-              (!input.view ? (table.views.find((view) => view.isDefault) ?? table.views[0]) : null));
+        let view;
+        if (input.scope === 'table') view = { id: null, fields: Object.keys(table.fields).map((name) => ({ name })) };
+        else {
+          view = [...table.views, ...(table.lookupViews ?? [])].find((item) => item.id === input.view) ?? null;
+          if (!view && !input.view) view = table.views.find((item) => item.isDefault) ?? table.views[0];
+        }
         if (!view) throw invalid('View not found.', 404);
         const fields = input.columns ?? view.fields.map((field) => field.name);
         if (
           !Array.isArray(fields) ||
           !fields.length ||
           fields.length > 100 ||
-          fields.some((name) => !table.fields[name] && !view.fields.some((field) => field.name === name))
+          fields.some((name) => unknownColumn(table, view, name))
         )
           throw invalid('Select known columns.');
         const root = view.fetchXml
@@ -216,7 +352,7 @@ export function createModelDrivenData({
         delete root.attrs.top;
         for (const name of new Set([table.idColumn, ...fields]))
           if (
-            /^[a-z][\w]*$/i.test(name) &&
+            /^[a-z]\w*$/i.test(name) &&
             !target.children.some((item) => item.name === 'attribute' && item.attrs.name === name)
           )
             target.children.push(node('attribute', { name }));
@@ -228,13 +364,13 @@ export function createModelDrivenData({
             columns = link?.columns ?? [];
           if (
             !linkedTable ||
-            !linkedTable.fields[link.from] ||
-            !table.fields[link.to] ||
+            !Object.hasOwn(linkedTable.fields, link.from) ||
+            !Object.hasOwn(table.fields, link.to) ||
             !/^[a-z_][a-z\d_]*$/i.test(link.alias ?? '') ||
             !['inner', 'outer'].includes(link.linkType ?? 'inner') ||
             !Array.isArray(columns) ||
             columns.length > 50 ||
-            columns.some((name) => !linkedTable.fields[name])
+            columns.some((name) => !Object.hasOwn(linkedTable.fields, name))
           )
             throw invalid(
               'Linked tables need imported tables, known from/to columns, an alias and an inner or outer link type.',
@@ -261,29 +397,29 @@ export function createModelDrivenData({
         if (input.search) {
           if (typeof input.search !== 'string' || input.search.length > 500)
             throw invalid('Search is limited to 500 characters.');
-          const columns = Object.keys(table.fields).filter(
-            (name) => ['text', 'textarea'].includes(table.fields[name].type) && !table.fields[name].isPrimaryId,
-          );
-          if (columns.length)
-            filter.children.push(
-              node(
-                'filter',
-                { type: 'or' },
-                columns.map((name) =>
-                  node('condition', {
-                    attribute: name,
-                    operator: 'like',
-                    value: `%${input.search.replace(/[[%_]/g, (char) => `[${char}]`)}%`,
-                  }),
-                ),
-              ),
+          // Begins-with match on the Quick Find find columns, or on the text columns when no Quick Find view was imported.
+          const columns =
+            table.quickFindColumns ??
+            Object.keys(table.fields).filter(
+              (name) => ['text', 'textarea'].includes(table.fields[name].type) && !table.fields[name].isPrimaryId,
             );
+          // A leading asterisk asks for a contains match, as the platform grid search does.
+          const contains = input.search.startsWith('*');
+          const value = `${contains ? '%' : ''}${escapeLikeText(contains ? input.search.slice(1) : input.search)}%`;
+          if (columns.length) {
+            const current = catalogue();
+            const quickFind = quickFindParts(table, current.tableIndex ?? current.tables, columns, value);
+            target.children.push(...quickFind.links);
+            filter.children.push(node('filter', { type: 'or' }, quickFind.conditions));
+          }
         }
         if (input.filters !== undefined && (!Array.isArray(input.filters) || input.filters.length > 30))
           throw invalid('Provide at most 30 filter conditions.');
         for (const condition of input.filters ?? []) {
           if (
-            !table.fields[condition.field] ||
+            condition === null ||
+            typeof condition !== 'object' ||
+            !Object.hasOwn(table.fields, condition.field) ||
             ![
               'eq',
               'ne',
@@ -324,7 +460,7 @@ export function createModelDrivenData({
         }
         if (filter.children.length) target.children.push(filter);
         if (input.sort) {
-          if (!table.fields[input.sort] || !['asc', 'desc'].includes(input.direction ?? 'asc'))
+          if (!Object.hasOwn(table.fields, input.sort) || !['asc', 'desc'].includes(input.direction ?? 'asc'))
             throw invalid('Unsupported sort.');
           target.children = target.children.filter((item) => item.name !== 'order');
           target.children.push(
@@ -335,15 +471,19 @@ export function createModelDrivenData({
           target.children.push(node('order', { attribute: table.nameColumn }));
         const db = backend(table);
         const secured = recordService ? await recordService.query(entity, serializeXml(root), actor) : null;
-        const result = secured
-          ? null
-          : db === store
-            ? db.fetchXml(serializeXml(root), admin)
-            : await db.readOperation(() => db.fetchXml(serializeXml(root), admin));
+        let result = null;
+        if (!secured)
+          result =
+            db === store
+              ? db.fetchXml(serializeXml(root), admin)
+              : await db.readOperation(() => db.fetchXml(serializeXml(root), admin));
         const order = target.children.find((item) => item.name === 'order');
         return {
           rows: secured?.rows ?? format(table, result.entities),
           total: secured?.total ?? result.total_record_count,
+          ...(secured?.totalLimitExceeded || result?.total_record_count_limit_exceeded
+            ? { totalLimitExceeded: true }
+            : {}),
           more: secured?.more ?? result.more_records,
           ...(recordService?.capabilities
             ? {
@@ -382,7 +522,7 @@ export function createModelDrivenData({
         return { row: format(table, [row])[0], etag: db.etag(row) };
       });
     },
-    async write(entity, id, values, { remove = false, etag, ...actor } = {}) {
+    /* NOSONAR */ async write(entity, id, values, { remove = false, etag, ...actor } = {}) {
       const recordService = recordsOf(actor);
       const table = await store.readOperation(() => tableFor(entity)),
         db = backend(table),
@@ -406,11 +546,10 @@ export function createModelDrivenData({
         });
       }
       const options = { coerce: true, metadata: () => table.fields, ...(id ? { ifMatch: etag } : {}) };
-      const row = remove
-        ? await db.remove(entity, id, admin, options)
-        : id
-          ? await db.update(entity, id, data, admin, options)
-          : await db.create(entity, data, admin, options);
+      let row;
+      if (remove) row = await db.remove(entity, id, admin, options);
+      else if (id) row = await db.update(entity, id, data, admin, options);
+      else row = await db.create(entity, data, admin, options);
       if (table.projected) {
         const recordId = id ?? row[table.idColumn];
         const previous = table.rows.find((record) => record[table.idColumn] === recordId);

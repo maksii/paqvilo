@@ -7,7 +7,7 @@ const role = 'f0000000-0000-4000-8000-000000000001';
 const flow = 'f0000000-0000-4000-8000-000000000002';
 const standalone = 'f0000000-0000-4000-8000-000000000003';
 export async function operationFixture(t, { solutionComponents = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-catalogue-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-catalogue-')));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const definition = {
     properties: {

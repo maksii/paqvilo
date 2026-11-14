@@ -99,11 +99,22 @@ async function boundedBody(response, maximum) {
   return Buffer.concat(chunks, size);
 }
 
-export async function agentRequest(discovery, route, { body, timeout = 35_000, image = false } = {}) {
+export async function agentRequest(
+  discovery,
+  route,
+  { body, timeout = 35_000, image = false, fetchImpl = fetch } = {},
+) {
   if (!route.startsWith('/v1/') || route.startsWith('//') || route.includes('#')) throw argument('Invalid agent route');
+  // The deadline covers the response body too. It aborts with the reason AbortSignal.timeout gives, so callers see
+  // the same TimeoutError, and it is a timer rather than AbortSignal.timeout so a test can drive it.
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+    timeout,
+  );
   let response;
   try {
-    response = await fetch(`${discovery.endpoint}${route}`, {
+    response = await fetchImpl(`${discovery.endpoint}${route}`, {
       method: body === undefined ? 'GET' : 'POST',
       redirect: 'error',
       headers: {
@@ -111,34 +122,10 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(timeout),
+      signal: deadline.signal,
     });
     const bytes = await boundedBody(response, image && response.ok ? MAX_IMAGE : MAX_JSON);
-    if (image && response.ok) {
-      if (
-        !response.headers.get('content-type')?.startsWith('image/png') ||
-        !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      ) {
-        throw argument('Agent returned an invalid PNG screenshot', 'invalid_response');
-      }
-      return bytes;
-    }
-    let result;
-    try {
-      result = JSON.parse(bytes.toString('utf8'));
-    } catch {
-      throw argument('Agent returned invalid JSON', 'invalid_response');
-    }
-    if (!result || typeof result !== 'object' || Array.isArray(result))
-      throw argument('Agent returned invalid JSON: expected an object', 'invalid_response');
-    if (!response.ok)
-      throw Object.assign(
-        new Error(
-          `Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`,
-        ),
-        { code: result.error?.code, status: response.status },
-      );
-    return result;
+    return parseAgentResponse(response, bytes, image);
   } catch (error) {
     // Never include discovery objects or fetch options in an error (they contain the token).
     if (error.name === 'TimeoutError' || error.name === 'AbortError')
@@ -151,10 +138,40 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
         code: 'session_unavailable',
       });
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-export async function listAgentSessions(stateDir) {
+function parseAgentResponse(response, bytes, image) {
+  if (image && response.ok) {
+    if (
+      !response.headers.get('content-type')?.startsWith('image/png') ||
+      !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw argument('Agent returned an invalid PNG screenshot', 'invalid_response');
+    }
+    return bytes;
+  }
+  let result;
+  try {
+    result = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw argument('Agent returned invalid JSON', 'invalid_response');
+  }
+  if (!result || typeof result !== 'object' || Array.isArray(result))
+    throw argument('Agent returned invalid JSON: expected an object', 'invalid_response');
+  if (!response.ok)
+    throw Object.assign(
+      new Error(
+        `Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`,
+      ),
+      { code: result.error?.code, status: response.status },
+    );
+  return result;
+}
+
+export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl = fetch } = {}) {
   const dir = path.join(stateDir, 'agents');
   let entries;
   try {
@@ -189,7 +206,7 @@ export async function listAgentSessions(stateDir) {
           discoveryFile: file,
         };
         try {
-          const status = await agentRequest(entry, '/v1/session', { timeout: 2000 });
+          const status = await agentRequest(entry, '/v1/session', { timeout, fetchImpl });
           item.reachable = status.id === entry.id;
           if (!item.reachable) item.error = 'Session identity mismatch';
         } catch (err) {
@@ -200,17 +217,99 @@ export async function listAgentSessions(stateDir) {
       }),
     );
   }
-  sessions.sort((a, b) => a.discoveryFile.localeCompare(b.discoveryFile));
-  return { schemaVersion: 1, sessions, invalidFiles: invalidFiles.sort(), truncated: names.length > 64 };
+  sessions.sort((a, b) => a.discoveryFile.localeCompare(b.discoveryFile, 'en'));
+  return {
+    schemaVersion: 1,
+    sessions,
+    invalidFiles: invalidFiles.sort(/* NOSONAR: preserve in-place default string sorting */),
+    truncated: names.length > 64,
+  };
 }
 
-export default async function agent(_cfg, args, positionals = []) {
+export default async function agent(_cfg, args, positionals = [], { fetchImpl = fetch } = {}) {
   const action = positionals[0] ?? 'sessions';
+  const pageActions = validateAgentAction(action, args);
+  const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
+  if (action === 'sessions') {
+    const stateDir = path.join(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(), '.paqvilo');
+    console.log(JSON.stringify(await listAgentSessions(stateDir, timeout), null, 2));
+    return 0;
+  }
+  assertAgentArguments(action, args, pageActions);
+  const { route, body, guardMs } = agentActionRequest(action, args, timeout);
+  const discovery = await readDiscovery(args.session);
+  let handle;
+  const output = args.output ? path.resolve(args.output) : null;
+  if (output) {
+    await fs.mkdir(path.dirname(output), { recursive: true });
+    try {
+      handle = await fs.open(output, 'wx', 0o600);
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw argument(
+          `Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`,
+        );
+      }
+      throw error;
+    }
+  }
+  try {
+    const result = await agentRequest(discovery, route, {
+      body,
+      timeout: guardMs,
+      image: action === 'screenshot',
+      fetchImpl,
+    }).catch((error) => {
+      // The guard is internal: its expiry reports the wait the client made, with the --timeout it adds to.
+      if (error.code !== 'request_timeout') throw error;
+      throw Object.assign(
+        new Error(
+          `The agent session did not answer within ${guardMs} ms (--timeout ${timeout} ms plus the ${AGENT_REQUEST_HANG_GUARD_MS} ms request hang guard)`,
+        ),
+        { code: 'request_timeout', status: 504 },
+      );
+    });
+    if (handle) {
+      await handle.writeFile(result);
+      const displayPath = outputName(output, args.config);
+      console.log(
+        JSON.stringify(
+          { schemaVersion: 1, path: displayPath, bytes: result.length, writesFiles: [displayPath] },
+          null,
+          2,
+        ),
+      );
+    } else console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    if (handle) {
+      await handle.close();
+      handle = null;
+      await fs.rm(output, { force: true });
+    }
+    throw err;
+  } finally {
+    await handle?.close();
+  }
+  return 0;
+}
+
+function assertAgentArguments(action, args, pageActions) {
+  if (!args.session)
+    throw argument(`agent ${action} requires --session <discovery-file>; use agent sessions to find it`);
+  if (pageActions.has(action) && !args['page-id'])
+    throw argument(`agent ${action} requires --page-id from agent pages`);
+  if (action === 'navigate' && !args.path) throw argument('agent navigate requires --path <portal-path>');
+  if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
+    throw argument('agent screenshot requires --output <file.png>');
+  if (pageActions.has(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function validateAgentAction(action, args) {
   if (!AGENT_ACTIONS.includes(action))
     throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
-  const allowed = new Set(['config', 'json', 'help', ...(action === 'sessions' ? [] : ['session', 'timeout'])]);
-  const pageActions = ['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload'];
-  if (pageActions.includes(action)) allowed.add('page-id');
+  const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
+  const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload']);
+  if (pageActions.has(action)) allowed.add('page-id');
   for (const option of {
     events: ['after', 'limit'],
     snapshot: ['selector', 'limit', 'styles'],
@@ -221,21 +320,14 @@ export default async function agent(_cfg, args, positionals = []) {
     allowed.add(option);
   for (const option of Object.keys(args))
     if (!allowed.has(option)) throw argument(`--${option} is not supported by agent ${action}`, 'unsupported_option');
-  const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
-  if (action === 'sessions') {
-    const stateDir = path.join(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(), '.paqvilo');
-    console.log(JSON.stringify(await listAgentSessions(stateDir), null, 2));
-    return 0;
-  }
-  if (!args.session)
-    throw argument(`agent ${action} requires --session <discovery-file>; use agent sessions to find it`);
-  if (pageActions.includes(action) && !args['page-id'])
-    throw argument(`agent ${action} requires --page-id from agent pages`);
-  if (action === 'navigate' && !args.path) throw argument('agent navigate requires --path <portal-path>');
-  if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
-    throw argument('agent screenshot requires --output <file.png>');
-  if (pageActions.includes(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
-  const discovery = await readDiscovery(args.session);
+  return pageActions;
+}
+
+// Hang guard for the client's own HTTP request. The server answers at its action deadline (the --timeout the client
+// sends), so the structured answer always arrives before this guard fires.
+const AGENT_REQUEST_HANG_GUARD_MS = 30_000;
+
+function agentActionRequest(action, args, timeout) {
   const page = `/v1/pages/${encodeURIComponent(args['page-id'])}`;
   let route;
   let body;
@@ -261,69 +353,38 @@ export default async function agent(_cfg, args, positionals = []) {
           ?.split(',')
           .map((s) => s.trim())
           .filter(Boolean),
+        timeoutMs: timeout,
       };
       break;
     case 'screenshot':
       route = `${page}/screenshot`;
-      body = { fullPage: Boolean(args['full-page']), includePanel: Boolean(args['include-panel']) };
+      body = {
+        fullPage: Boolean(args['full-page']),
+        includePanel: Boolean(args['include-panel']),
+        timeoutMs: timeout,
+      };
       break;
     case 'viewport':
       route = `${page}/viewport`;
       body = {
         width: integer(args.width, '--width', 1440, 320, 4096),
         height: integer(args.height, '--height', 900, 240, 4096),
+        timeoutMs: timeout,
       };
       break;
     case 'navigate':
       route = `${page}/navigate`;
-      body = { url: args.path, timeoutMs: Math.min(60_000, timeout - 1000) };
+      // The server accepts at most 60 000 ms for a navigation, so a longer --timeout is clamped there.
+      body = { url: args.path, timeoutMs: Math.min(60_000, timeout) };
       break;
     case 'reload':
       route = `${page}/reload`;
-      body = { timeoutMs: Math.min(60_000, timeout - 1000) };
+      body = { timeoutMs: Math.min(60_000, timeout) };
       break;
     case 'stop':
       route = '/v1/stop';
       body = {};
       break;
   }
-  let handle;
-  const output = args.output ? path.resolve(args.output) : null;
-  if (output) {
-    await fs.mkdir(path.dirname(output), { recursive: true });
-    try {
-      handle = await fs.open(output, 'wx', 0o600);
-    } catch (error) {
-      if (error.code === 'EEXIST') {
-        throw argument(
-          `Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`,
-        );
-      }
-      throw error;
-    }
-  }
-  try {
-    const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
-    if (handle) {
-      await handle.writeFile(result);
-      const displayPath = outputName(output, args.config);
-      console.log(
-        JSON.stringify(
-          { schemaVersion: 1, path: displayPath, bytes: result.length, writesFiles: [displayPath] },
-          null,
-          2,
-        ),
-      );
-    } else console.log(JSON.stringify(result, null, 2));
-  } catch (err) {
-    if (handle) {
-      await handle.close();
-      handle = null;
-      await fs.rm(output, { force: true });
-    }
-    throw err;
-  } finally {
-    await handle?.close();
-  }
-  return 0;
+  return { route, body, guardMs: timeout + AGENT_REQUEST_HANG_GUARD_MS };
 }

@@ -62,17 +62,13 @@ function encodeTyped(type, value) {
     case 'symbol':
       return variable(0xa3, 0xb3, Buffer.from(value, 'ascii'));
     case 'uint':
-      return value === 0
-        ? bytes(0x43)
-        : value <= 0xff
-          ? bytes(0x52, value)
-          : fixed(0x70, 4, (b) => b.writeUInt32BE(value, 1));
+      if (value === 0) return bytes(0x43);
+      if (value <= 0xff) return bytes(0x52, value);
+      return fixed(0x70, 4, (b) => b.writeUInt32BE(value, 1));
     case 'ulong':
-      return value === 0
-        ? bytes(0x44)
-        : value <= 0xff
-          ? bytes(0x53, value)
-          : fixed(0x80, 8, (b) => b.writeBigUInt64BE(BigInt(value), 1));
+      if (value === 0) return bytes(0x44);
+      if (value <= 0xff) return bytes(0x53, value);
+      return fixed(0x80, 8, (b) => b.writeBigUInt64BE(BigInt(value), 1));
     case 'ubyte':
       return bytes(0x50, value);
     case 'ushort':
@@ -80,6 +76,25 @@ function encodeTyped(type, value) {
     default:
       throw new TypeError(`Unknown AMQP type ${type}`);
   }
+}
+
+function encodeNumber(value) {
+  if (Number.isSafeInteger(value))
+    return value >= -128 && value <= 127
+      ? bytes(0x55, value & 0xff)
+      : fixed(0x81, 8, (b) => b.writeBigInt64BE(BigInt(value), 1));
+  return fixed(0x82, 8, (b) => b.writeDoubleBE(value, 1));
+}
+
+function encodeCollection(value) {
+  if (Array.isArray(value)) return value.length ? compound(0xc0, 0xd0, value.map(encode)) : bytes(0x45);
+  if (typeof value !== 'object') throw new TypeError(`Cannot encode ${typeof value} as AMQP`);
+  const entries = value instanceof Map ? [...value] : Object.entries(value);
+  return compound(
+    0xc1,
+    0xd1,
+    entries.flatMap(([key, item]) => [encode(key), encode(item)]),
+  );
 }
 
 /** Encodes one value: null, boolean, string (str), Buffer (binary), Date (timestamp), safe integer (long), other number
@@ -99,27 +114,83 @@ export function encode(value) {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return variable(0xa0, 0xb0, Buffer.from(value));
   if (value instanceof Date) return fixed(0x83, 8, (b) => b.writeBigInt64BE(BigInt(value.getTime()), 1));
   if (typeof value === 'bigint') return fixed(0x81, 8, (b) => b.writeBigInt64BE(value, 1));
-  if (typeof value === 'number') {
-    if (Number.isSafeInteger(value))
-      return value >= -128 && value <= 127
-        ? bytes(0x55, value & 0xff)
-        : fixed(0x81, 8, (b) => b.writeBigInt64BE(BigInt(value), 1));
-    return fixed(0x82, 8, (b) => b.writeDoubleBE(value, 1));
-  }
-  if (Array.isArray(value)) return value.length ? compound(0xc0, 0xd0, value.map(encode)) : bytes(0x45);
-  if (typeof value !== 'object') throw new TypeError(`Cannot encode ${typeof value} as AMQP`);
-  const entries = value instanceof Map ? [...value] : Object.entries(value);
-  return compound(
-    0xc1,
-    0xd1,
-    entries.flatMap(([key, item]) => [encode(key), encode(item)]),
-  );
+  if (typeof value === 'number') return encodeNumber(value);
+  return encodeCollection(value);
 }
 
 const truncated = () => new RangeError('AMQP value is truncated');
 const integer = (big) =>
   big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
 const uuidText = (b) => b.toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-');
+
+// Bytes one array element occupies, for the constructors with a fixed width. Other non-zero-width constructors take at least one.
+const ARRAY_ELEMENT_WIDTH = new Map([
+  [0x50, 1],
+  [0x51, 1],
+  [0x52, 1],
+  [0x53, 1],
+  [0x54, 1],
+  [0x55, 1],
+  [0x56, 1],
+  [0x60, 2],
+  [0x61, 2],
+  [0x70, 4],
+  [0x71, 4],
+  [0x72, 4],
+  [0x73, 4],
+  [0x80, 8],
+  [0x81, 8],
+  [0x82, 8],
+  [0x83, 8],
+  [0x98, 16],
+]);
+const ZERO_WIDTH_ELEMENTS = new Set([0x40, 0x41, 0x42, 0x43, 0x44, 0x45]);
+
+/** Rejects an array count that its element bytes cannot cover, before any element is decoded. Zero-width elements carry
+ * no bytes, so their count is bounded by the largest frame instead. */
+function checkArrayCount(element, count, available) {
+  if (ZERO_WIDTH_ELEMENTS.has(element)) {
+    if (count > MAX_FRAME) throw new RangeError(`AMQP array count ${count} is beyond the frame limit`);
+    return;
+  }
+  if (count * (ARRAY_ELEMENT_WIDTH.get(element) ?? 1) > available) {
+    throw new RangeError('AMQP array elements exceed the declared size');
+  }
+}
+
+function decodeCompound(code, b, at, need) {
+  const wide = code === 0xd0 || code === 0xd1 || code === 0xf0,
+    width = wide ? 4 : 1;
+  need(2 * width);
+  const size = wide ? b.readUInt32BE(at) : b[at],
+    count = wide ? b.readUInt32BE(at + width) : b[at + width];
+  const end = at + width + size;
+  if (end > b.length) throw truncated();
+  let cursor = at + 2 * width;
+  const items = [];
+  if (code === 0xe0 || code === 0xf0) {
+    if (!count) return [[], end];
+    const element = b[cursor++];
+    if (element === 0x00) throw new TypeError('Described AMQP array elements are not supported');
+    checkArrayCount(element, count, end - cursor);
+    for (let index = 0; index < count; index += 1) {
+      const [item, next] = decodeAs(element, b, cursor);
+      items.push(item);
+      cursor = next;
+    }
+    return [items, end];
+  }
+  if (count > end - cursor) throw truncated();
+  for (let index = 0; index < count; index += 1) {
+    const [item, next] = decode(b.subarray(0, end), cursor);
+    items.push(item);
+    cursor = next;
+  }
+  if (code === 0xc0 || code === 0xd0) return [items, end];
+  const entries = [];
+  for (let index = 0; index + 1 < items.length; index += 2) entries.push([String(items[index]), items[index + 1]]);
+  return [Object.fromEntries(entries), end];
+}
 
 /** Decodes the value at offset → [value, next offset]. Symbols decode to strings, maps to plain objects (keys as strings),
  * ulong/long to numbers (bigint beyond 2^53), timestamps to Date, uuid to text, binary to Buffer, arrays and lists to arrays. */
@@ -203,10 +274,10 @@ function decodeAs(code, b, at) {
         start = at + (wide ? 4 : 1);
       if (start + size > b.length) throw truncated();
       const raw = b.subarray(start, start + size);
-      return [
-        (code & 0x0f) === 0 ? Buffer.from(raw) : raw.toString((code & 0x0f) === 1 ? 'utf8' : 'ascii'),
-        start + size,
-      ];
+      let text;
+      if ((code & 0x0f) === 0) text = Buffer.from(raw);
+      else text = raw.toString((code & 0x0f) === 1 ? 'utf8' : 'ascii');
+      return [text, start + size];
     }
     case 0x45:
       return [[], at];
@@ -215,38 +286,8 @@ function decodeAs(code, b, at) {
     case 0xd0:
     case 0xd1:
     case 0xe0:
-    case 0xf0: {
-      const wide = code === 0xd0 || code === 0xd1 || code === 0xf0,
-        width = wide ? 4 : 1;
-      need(2 * width);
-      const size = wide ? b.readUInt32BE(at) : b[at],
-        count = wide ? b.readUInt32BE(at + width) : b[at + width];
-      const end = at + width + size;
-      if (end > b.length) throw truncated();
-      let cursor = at + 2 * width;
-      const items = [];
-      if (code === 0xe0 || code === 0xf0) {
-        if (!count) return [[], end];
-        const element = b[cursor++];
-        if (element === 0x00) throw new TypeError('Described AMQP array elements are not supported');
-        for (let index = 0; index < count; index += 1) {
-          const [item, next] = decodeAs(element, b, cursor);
-          items.push(item);
-          cursor = next;
-        }
-        return [items, end];
-      }
-      for (let index = 0; index < count; index += 1) {
-        const [item, next] = decode(b.subarray(0, end), cursor);
-        items.push(item);
-        cursor = next;
-      }
-      if (code === 0xc0 || code === 0xd0) return [items, end];
-      const entries = [];
-      for (let index = 0; index + 1 < items.length; index += 2) entries.push([String(items[index]), items[index + 1]]);
-      const map = Object.fromEntries(entries);
-      return [map, end];
-    }
+    case 0xf0:
+      return decodeCompound(code, b, at, need);
     default:
       throw new TypeError(`Unsupported AMQP type code 0x${code.toString(16)}`);
   }
@@ -381,9 +422,14 @@ const MAX_FRAME = 1 << 20; // our max-frame-size: 1 MiB covers the emulator's 25
 // ponytail: the peer's incoming window is not enforced and ours is re-announced only with each flow; enforce both for a broker that throttles.
 const WINDOW = 5000;
 
+// How an answer that never came is named in its error: the caller's bound, or the probe that ended the wait.
+const boundText = (timeoutMs) => (timeoutMs == null ? 'before the probe ended' : `within the ${timeoutMs} ms bound`);
+
 /**
  * Opens a connection: TCP → SASL header → sasl-mechanisms → sasl-init PLAIN → sasl-outcome → AMQP header → open → begin.
- * credentials() → { user, password } is called once during SASL. signal (optional) aborts every wait. Resolves to
+ * credentials() → { user, password } is called once during SASL. signal (optional) aborts every wait. timeoutMs bounds each
+ * wait; null leaves the waits to signal alone (a probe's idle guard). onProgress(step) is called as each step completes (connect,
+ * sasl-header, sasl-outcome, amqp-header, open, begin, and later attach, detach, close). Resolves to
  * { attach, transfer, take, settle, detach, close, failed }; any failure rejects with a ProviderError and destroys the socket.
  */
 export async function connectAmqp({
@@ -394,6 +440,7 @@ export async function connectAmqp({
   timeoutMs = 5000,
   signal = null,
   provider = null,
+  onProgress = () => {},
 }) {
   const waits = new Map(),
     links = new Map(),
@@ -419,10 +466,15 @@ export async function connectAmqp({
   function expect(key, label = key, ms = timeoutMs) {
     if (failure) return Promise.reject(failure);
     const promise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        waits.delete(key);
-        reject(unavailable(`No ${label} from the Service Bus emulator within ${ms} ms.`, 'AMQP_TIMEOUT', provider));
-      }, ms);
+      const timer =
+        ms == null
+          ? null
+          : setTimeout(() => {
+              waits.delete(key);
+              reject(
+                unavailable(`No ${label} from the Service Bus emulator within ${ms} ms.`, 'AMQP_TIMEOUT', provider),
+              );
+            }, ms);
       waits.set(key, {
         resolve: (value) => {
           clearTimeout(timer);
@@ -449,22 +501,15 @@ export async function connectAmqp({
     if (failure) return;
     failure = error;
     clearInterval(keepalive);
-    for (const wait of [...waits.values()]) wait.reject(error);
+    for (const wait of waits.values()) wait.reject(error);
     for (const link of links.values()) link.failure ??= error;
     socket.destroy();
   }
-  signal?.addEventListener(
-    'abort',
-    () =>
-      fail(
-        unavailable(
-          `The Service Bus emulator did not answer within the ${timeoutMs} ms bound.`,
-          'AMQP_TIMEOUT',
-          provider,
-        ),
-      ),
-    { once: true },
-  );
+  const abort = () =>
+    fail(unavailable(`The Service Bus emulator did not answer ${boundText(timeoutMs)}.`, 'AMQP_TIMEOUT', provider));
+  // A signal aborted before the connection starts (during a lookup) must end it too: a null bound would leave the waits unbounded.
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
   socket.on('connect', () => answer('connect'));
   // Before the TCP connection exists the emulator is not reachable; afterwards a socket error is the connection closing under
   // whatever was in flight (a transfer, a disposition wait), named by its condition.
@@ -498,20 +543,7 @@ export async function connectAmqp({
     input = input.length ? Buffer.concat([input, chunk]) : chunk;
     while (!failure) {
       if (phase === 'sasl-header' || phase === 'amqp-header') {
-        if (input.length < 8) return;
-        const header = input.subarray(0, 8),
-          wanted = phase === 'sasl-header' ? SASL_HEADER : AMQP_HEADER;
-        input = input.subarray(8);
-        if (!header.equals(wanted))
-          return fail(
-            unavailable(
-              'The peer answered a different protocol header; it is not an AMQP 1.0 broker with SASL.',
-              'AMQP_PROTOCOL_MISMATCH',
-              provider,
-            ),
-          );
-        phase = phase === 'sasl-header' ? 'sasl' : 'amqp';
-        answer('header');
+        if (!receiveHeader()) return;
         continue;
       }
       const item = readFrame(input, MAX_FRAME);
@@ -521,125 +553,173 @@ export async function connectAmqp({
     }
   }
 
+  function receiveHeader() {
+    if (input.length < 8) return false;
+    const header = input.subarray(0, 8),
+      wanted = phase === 'sasl-header' ? SASL_HEADER : AMQP_HEADER;
+    input = input.subarray(8);
+    if (!header.equals(wanted)) {
+      fail(
+        unavailable(
+          'The peer answered a different protocol header; it is not an AMQP 1.0 broker with SASL.',
+          'AMQP_PROTOCOL_MISMATCH',
+          provider,
+        ),
+      );
+      return false;
+    }
+    phase = phase === 'sasl-header' ? 'sasl' : 'amqp';
+    answer('header');
+    return true;
+  }
+
+  function handleSaslFrame(type, performative, f) {
+    if (type !== 1) throw new Error('expected a SASL frame');
+    if (performative.descriptor === CODE.saslMechanisms) answer('sasl-mechanisms', [f[0]].flat());
+    if (performative.descriptor === CODE.saslOutcome) {
+      phase = 'amqp-header';
+      answer('sasl-outcome', f[0]);
+    }
+  }
+
+  function handleOpen(f) {
+    remoteMaxFrame = Math.max(512, Math.min(f[2] ?? MAX_FRAME, MAX_FRAME));
+    // Idle timeout (2.4.5): send something at least every half of the peer's idle-time-out.
+    if (f[4] > 0) {
+      keepalive = setInterval(() => write(EMPTY_FRAME), Math.max(Math.floor(f[4] / 2), 50));
+      keepalive.unref?.();
+    }
+    answer('open');
+  }
+
+  function handleAttach(f) {
+    const link = links.get(f[0]);
+    if (!link) return;
+    link.remote = f[1];
+    byRemote.set(f[1], link);
+    if (link.role === 'receiver') link.deliveryCount = f[9] ?? 0;
+    // A refused attach answers a null terminus and then a detach with the error.
+    if ((link.role === 'sender' ? f[6] : f[5]) == null) return;
+    answer(`attach:${link.name}`);
+  }
+
+  function handleFlow(f) {
+    const link = f[4] == null ? null : byRemote.get(f[4]);
+    if (!link) return; // session-level flow: windows are not enforced (see WINDOW)
+    if (link.role === 'sender') {
+      // 2.6.7: link-credit(snd) = delivery-count(rcv) + link-credit(rcv) - delivery-count(snd)
+      link.credit = (f[5] ?? link.deliveryCount) + (f[6] ?? 0) - link.deliveryCount;
+      if (link.credit > 0) answer(`credit:${link.name}`);
+    } else if (link.draining && (f[6] ?? 0) === 0) {
+      link.deliveryCount = f[5] ?? link.deliveryCount;
+      link.credit = 0;
+      answer(`drain:${link.name}`);
+    }
+  }
+
+  function handleTransfer(f, payload) {
+    const link = byRemote.get(f[0]);
+    if (!link) return;
+    if (!link.partial) {
+      link.partial = { deliveryId: f[1], tag: f[2], settled: f[4] === true, chunks: [] };
+      nextIncomingId = (f[1] ?? nextIncomingId) + 1;
+    }
+    if (payload?.length) link.partial.chunks.push(payload);
+    if (f[5] === true) return; // more frames of this delivery follow
+    const delivery = link.partial;
+    link.partial = null;
+    if (f[7] === true) return; // aborted
+    link.deliveryCount += 1;
+    link.credit = Math.max(0, link.credit - 1);
+    link.buffer.push({
+      deliveryId: delivery.deliveryId,
+      tag: delivery.tag,
+      settled: delivery.settled,
+      payload: Buffer.concat(delivery.chunks),
+    });
+    if (link.buffer.length >= link.wanted) answer(`filled:${link.name}`);
+  }
+
+  function handleDisposition(f) {
+    if (f[0] !== true) return; // only the broker's settlement of our transfers is awaited
+    const first = f[1],
+      last = f[2] ?? first;
+    for (const id of sending.keys()) if (id >= first && id <= last) answer(`delivery:${id}`, f[4] ?? null);
+  }
+
+  function handleDetach(f) {
+    const link = byRemote.get(f[0]);
+    if (!link) return;
+    byRemote.delete(f[0]);
+    links.delete(link.name);
+    const error = f[2]
+      ? amqpError(f[2], provider, `'${link.address}': `)
+      : unavailable(`The emulator detached the link to '${link.address}'.`, 'AMQP_DETACHED', provider);
+    link.failure ??= error;
+    if (waits.has(`detach:${link.name}`)) return answer(`detach:${link.name}`);
+    send(described(CODE.detach, [uint(link.handle), true]));
+    for (const key of [`attach:${link.name}`, `credit:${link.name}`, `filled:${link.name}`, `drain:${link.name}`])
+      waits.get(key)?.reject(link.failure);
+    for (const [id, owner] of sending) if (owner === link) waits.get(`delivery:${id}`)?.reject(link.failure);
+  }
+
+  function handleEnd(f) {
+    fail(
+      f[0] ? amqpError(f[0], provider) : unavailable('The emulator ended the session.', 'AMQP_SESSION_ENDED', provider),
+    );
+  }
+
+  function handleClose(f) {
+    if (closing) return answer('close');
+    send(described(CODE.close, []));
+    fail(
+      f[0]
+        ? amqpError(f[0], provider)
+        : unavailable('The emulator closed the connection.', 'AMQP_CONNECTION_CLOSED', provider),
+    );
+  }
+
   function onFrame({ type, performative, payload }) {
     if (!performative) return; // heartbeat
     const f = performative.value ?? [];
     if (phase === 'sasl') {
-      if (type !== 1) throw new Error('expected a SASL frame');
-      if (performative.descriptor === CODE.saslMechanisms) answer('sasl-mechanisms', [f[0]].flat());
-      if (performative.descriptor === CODE.saslOutcome) {
-        phase = 'amqp-header';
-        answer('sasl-outcome', f[0]);
-      }
+      handleSaslFrame(type, performative, f);
       return; // sasl-challenge is not part of PLAIN
     }
     switch (performative.descriptor) {
       case CODE.open:
-        remoteMaxFrame = Math.max(512, Math.min(f[2] ?? MAX_FRAME, MAX_FRAME));
-        // Idle timeout (2.4.5): send something at least every half of the peer's idle-time-out.
-        if (f[4] > 0) {
-          keepalive = setInterval(() => write(EMPTY_FRAME), Math.max(Math.floor(f[4] / 2), 50));
-          keepalive.unref?.();
-        }
-        return answer('open');
+        return handleOpen(f);
       case CODE.begin:
         nextIncomingId = f[1] ?? 0;
         return answer('begin');
       case CODE.attach: {
-        const link = links.get(f[0]);
-        if (!link) return;
-        link.remote = f[1];
-        byRemote.set(f[1], link);
-        if (link.role === 'receiver') link.deliveryCount = f[9] ?? 0;
-        // A refused attach answers a null terminus and then a detach with the error.
-        if ((link.role === 'sender' ? f[6] : f[5]) == null) return;
-        return answer(`attach:${link.name}`);
+        return handleAttach(f);
       }
-      case CODE.flow: {
-        const link = f[4] == null ? null : byRemote.get(f[4]);
-        if (!link) return; // session-level flow: windows are not enforced (see WINDOW)
-        if (link.role === 'sender') {
-          // 2.6.7: link-credit(snd) = delivery-count(rcv) + link-credit(rcv) - delivery-count(snd)
-          link.credit = (f[5] ?? link.deliveryCount) + (f[6] ?? 0) - link.deliveryCount;
-          if (link.credit > 0) answer(`credit:${link.name}`);
-        } else if (link.draining && (f[6] ?? 0) === 0) {
-          link.deliveryCount = f[5] ?? link.deliveryCount;
-          link.credit = 0;
-          answer(`drain:${link.name}`);
-        }
-        return;
-      }
-      case CODE.transfer: {
-        const link = byRemote.get(f[0]);
-        if (!link) return;
-        if (!link.partial) {
-          link.partial = { deliveryId: f[1], tag: f[2], settled: f[4] === true, chunks: [] };
-          nextIncomingId = (f[1] ?? nextIncomingId) + 1;
-        }
-        if (payload?.length) link.partial.chunks.push(payload);
-        if (f[5] === true) return; // more frames of this delivery follow
-        const delivery = link.partial;
-        link.partial = null;
-        if (f[7] === true) return; // aborted
-        link.deliveryCount += 1;
-        link.credit = Math.max(0, link.credit - 1);
-        link.buffer.push({
-          deliveryId: delivery.deliveryId,
-          tag: delivery.tag,
-          settled: delivery.settled,
-          payload: Buffer.concat(delivery.chunks),
-        });
-        if (link.buffer.length >= link.wanted) answer(`filled:${link.name}`);
-        return;
-      }
-      case CODE.disposition: {
-        if (f[0] !== true) return; // only the broker's settlement of our transfers is awaited
-        const first = f[1],
-          last = f[2] ?? first;
-        for (const id of [...sending.keys()]) if (id >= first && id <= last) answer(`delivery:${id}`, f[4] ?? null);
-        return;
-      }
-      case CODE.detach: {
-        const link = byRemote.get(f[0]);
-        if (!link) return;
-        byRemote.delete(f[0]);
-        links.delete(link.name);
-        const error = f[2]
-          ? amqpError(f[2], provider, `'${link.address}': `)
-          : unavailable(`The emulator detached the link to '${link.address}'.`, 'AMQP_DETACHED', provider);
-        link.failure ??= error;
-        if (waits.has(`detach:${link.name}`)) return answer(`detach:${link.name}`);
-        send(described(CODE.detach, [uint(link.handle), true]));
-        for (const key of [`attach:${link.name}`, `credit:${link.name}`, `filled:${link.name}`, `drain:${link.name}`])
-          waits.get(key)?.reject(link.failure);
-        for (const [id, owner] of sending) if (owner === link) waits.get(`delivery:${id}`)?.reject(link.failure);
-        return;
-      }
+      case CODE.flow:
+        return handleFlow(f);
+      case CODE.transfer:
+        return handleTransfer(f, payload);
+      case CODE.disposition:
+        return handleDisposition(f);
+      case CODE.detach:
+        return handleDetach(f);
       case CODE.end:
-        return fail(
-          f[0]
-            ? amqpError(f[0], provider)
-            : unavailable('The emulator ended the session.', 'AMQP_SESSION_ENDED', provider),
-        );
+        return handleEnd(f);
       case CODE.close:
-        if (closing) return answer('close');
-        send(described(CODE.close, []));
-        return fail(
-          f[0]
-            ? amqpError(f[0], provider)
-            : unavailable('The emulator closed the connection.', 'AMQP_CONNECTION_CLOSED', provider),
-        );
+        return handleClose(f);
       default:
     }
   }
 
   try {
     await expect('connect', 'TCP connection');
+    onProgress('connect');
     phase = 'sasl-header';
     let header = expect('header', 'SASL protocol header');
     const mechanisms = expect('sasl-mechanisms', 'SASL mechanisms');
     write(SASL_HEADER);
     await header;
+    onProgress('sasl-header');
     if (!(await mechanisms).includes('PLAIN'))
       throw new ProviderError('Unauthorized', 'The emulator does not offer SASL PLAIN.', {
         provider,
@@ -672,15 +752,19 @@ export async function connectAmqp({
         { provider, diagnostic: 'SASL_AUTH_FAILED' },
       );
     }
+    onProgress('sasl-outcome');
     header = expect('header', 'AMQP protocol header');
     write(AMQP_HEADER);
     await header;
+    onProgress('amqp-header');
     const opened = expect('open', 'open');
     send(described(CODE.open, [`paqvilo-${randomUUID()}`, hostname, uint(MAX_FRAME), ushort(0), null]));
     await opened;
+    onProgress('open');
     const begun = expect('begin', 'begin');
     send(described(CODE.begin, [null, uint(0), uint(WINDOW), uint(WINDOW)]));
     await begun;
+    onProgress('begin');
   } catch (error) {
     fail(error);
     throw error;
@@ -761,6 +845,7 @@ export async function connectAmqp({
         links.delete(name);
         throw error;
       }
+      onProgress('attach');
       return link;
     },
     /** Send message bytes unsettled and await the broker's disposition: accepted resolves, rejected throws its error. */
@@ -847,6 +932,7 @@ export async function connectAmqp({
       send(described(CODE.detach, [uint(link.handle), true]));
       await soft(done);
       links.delete(link.name);
+      onProgress('detach');
     },
     async close() {
       if (failure) return;
@@ -854,6 +940,7 @@ export async function connectAmqp({
       const done = expect('close', 'close answer');
       send(described(CODE.close, []));
       await soft(done).catch(() => {});
+      onProgress('close');
       fail(unavailable('The connection was closed.', 'AMQP_CONNECTION_CLOSED', provider));
     },
   };

@@ -1,3 +1,4 @@
+// @test-kind contract: release documentation link rules designed by this project (version tag or main, existing paths).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -18,6 +19,8 @@ test('a prerelease links to main and a missing repository yields paths only', ()
   assert.equal(docsLinks('0.9.6', undefined).setup.href, null);
 });
 
+// @test-kind tooling: verifies the documented paths exist in this repository.
 test('every documented path exists in the repository', async () => {
-  for (const path of Object.values(DOC_PATHS)) await fs.access(new URL(`../../${path}`, import.meta.url));
+  for (const path of Object.values(DOC_PATHS))
+    assert.equal(await fs.access(new URL(`../../${path}`, import.meta.url)), undefined);
 });

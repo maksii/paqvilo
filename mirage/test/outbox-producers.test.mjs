@@ -1,4 +1,5 @@
 // SendEmail and BackgroundSendEmail capture outgoing email in the outbox (outbox.mjs) through the full Web API.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -43,7 +44,7 @@ async function fixture(t, { withOutbox = true } = {}) {
     providers: { outbox },
     extensions: [providers, ...EXTENSIONS],
   });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   const token = (
     await (
       await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
@@ -111,7 +112,7 @@ test('SendEmail with IssueSend true queues the entry and BackgroundSendEmail mar
   assert.equal(response.status, 200, response.text);
   const [entry] = outbox.list();
   assert.equal(entry.state, 'delivered');
-  assert.ok(entry.deliveredOn);
+  assert.match(entry.deliveredOn, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   assert.equal(emailRow(store, id).statuscode, 6, 'the email row itself is unchanged');
 });
 

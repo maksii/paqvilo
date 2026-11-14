@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { STATUS_CODES } from 'node:http';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
+import { recordHttpError } from './trace-store.mjs';
 
 const MAX_REQUESTS = 1000;
 const JSON_TYPE = 'application/json; odata.metadata=minimal; odata.streaming=true';
@@ -31,16 +32,16 @@ function boundaryOf(contentType) {
   return match[1] ?? match[2];
 }
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 // A line that reads as the delimiter of another multipart body (RFC 2046 bchars, optional close). Its text is never executed.
-const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?=\r?\n|$)/;
+const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+(?:\t[ \t]*)?(?=\r?\n|$)/;
 
 // Splits on delimiter lines that match this boundary exactly (CRLF, the boundary, optional "--", padding, CRLF).
 // A longer boundary that starts with this one is content, not a delimiter. Returns the text after each delimiter line.
 // Only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
 function sections(text, boundary) {
   const framed = `\r\n${text}`;
-  const delimiter = new RegExp(`\\r\\n--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r\\n|$)`, 'g');
+  const delimiter = new RegExp(String.raw`\r\n--${escapeRegExp(boundary)}(--)?[ \t]*(?=\r\n|$)`, 'g');
   const found = [...framed.matchAll(delimiter)];
   if (found.length === 0) {
     if (framed.includes(`\r\n--${boundary}`)) throw invalid(FRAME_ERROR); // declared delimiter without valid CRLF framing
@@ -131,16 +132,17 @@ function jsonItem(item) {
   };
 }
 
-function orderJson(items) {
-  const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
-  if (new Set(ids).size !== ids.length) throw invalid('The batch contains a duplicate request id.'); // native message not known
+function validateJsonDependencies(items, ids) {
   for (const item of items) {
-    const missing = item.dependsOn.find((dep) => !ids.includes(dep));
-    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // native message not known
+    const missing = item.dependsOn.find((dependency) => !ids.includes(dependency));
+    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`);
   }
-  const units = [],
-    groups = new Map(),
-    owners = new Map();
+}
+
+function groupJsonItems(items) {
+  const units = [];
+  const groups = new Map();
+  const owners = new Map();
   for (const item of items) {
     let unit = item.group === null ? null : groups.get(item.group);
     if (unit && unit !== units.at(-1)) throw invalid('Atomicity group members must be consecutive.');
@@ -152,6 +154,28 @@ function orderJson(items) {
     unit.items.push(item);
     if (item.refId !== undefined) owners.set(item.refId, unit);
   }
+  return { units, owners };
+}
+
+function orderUnitMembers(unit, owners, ordered) {
+  const done = new Set();
+  let members = unit.items;
+  while (members.length) {
+    const next = members.find((item) =>
+      item.dependsOn.every((dependency) => owners.get(dependency) !== unit || done.has(dependency)),
+    );
+    if (!next) throw invalid('The batch dependsOn ordering contains a cycle.');
+    ordered.push(next);
+    if (next.refId !== undefined) done.add(next.refId);
+    members = members.filter((item) => item !== next);
+  }
+}
+
+function orderJson(items) {
+  const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
+  if (new Set(ids).size !== ids.length) throw invalid('The batch contains a duplicate request id.'); // native message not known
+  validateJsonDependencies(items, ids);
+  const { units, owners } = groupJsonItems(items);
   const ordered = [],
     completed = new Set();
   let pending = units;
@@ -162,15 +186,7 @@ function orderJson(items) {
       ),
     );
     if (!unit) throw invalid('The batch dependsOn ordering contains a cycle.');
-    const done = new Set();
-    let members = unit.items;
-    while (members.length) {
-      const next = members.find((item) => item.dependsOn.every((dep) => owners.get(dep) !== unit || done.has(dep)));
-      if (!next) throw invalid('The batch dependsOn ordering contains a cycle.');
-      ordered.push(next);
-      if (next.refId !== undefined) done.add(next.refId);
-      members = members.filter((item) => item !== next);
-    }
+    orderUnitMembers(unit, owners, ordered);
     completed.add(unit);
     pending = pending.filter((item) => item !== unit);
   }
@@ -231,9 +247,41 @@ const badReference = (contentId) => ({
   },
 });
 
+// Tracing (D-R3-8): with context.traces a batch is one `batch` span, each changeset a `changeset` span and each request a
+// `part` span under it; a part's error answer is its span's error, and a rolled-back changeset ends `error` with
+// `rolledBack: true` on it and on the parts that ran before the failure. Without traces nothing is opened.
+// The error a part answer names: the dispatch's own failure member, else the error member of an object body.
+const partError = (response) =>
+  response.failure ?? (response.body && typeof response.body === 'object' ? response.body.error : null) ?? {};
+
+async function execute(request, context, refs) {
+  const { traces } = context;
+  if (!traces) return executeRequest(request, context, refs);
+  const span = traces.start({
+    kind: 'part',
+    name: `${request.method} ${pathOf(request.url).split('?')[0]}`,
+    module: 'dataverse',
+    operation: request.method,
+    attributes: { method: request.method, contentId: request.contentId ?? request.refId },
+    input: () => ({ url: request.url, headers: request.headers, body: request.body }),
+  });
+  context.parts?.push(span);
+  try {
+    const response = await traces.run(span, () => executeRequest(request, context, refs));
+    span.set({ statusCode: response.status });
+    recordHttpError(span, response.status, partError(response));
+    span.output(() => ({ status: response.status, body: response.body }));
+    span.end();
+    return response;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
 // Runs one request. $n references resolve against entities created earlier in the same changeset.
 // Relative URLs (JSON batches: "WhoAmI") resolve against the service root, which is base; absolute paths against origin.
-async function execute(request, { dispatch, origin, base }, refs) {
+async function executeRequest(request, { dispatch, origin, base }, refs) {
   let url = request.url;
   const head = /^\$([^/?]+)/.exec(url);
   if (head) {
@@ -280,7 +328,38 @@ const remember = (refs, request, response) => {
 };
 
 // batchRefs: references the batch has committed so far. A rolled-back changeset publishes none of its own.
-async function runChangeset(changeset, context, batchRefs = new Map()) {
+async function runChangeset(changeset, context, batchRefs = new Map(), number = 1) {
+  const { traces } = context;
+  if (!traces) return changesetRun(changeset, context, batchRefs);
+  const span = traces.start({
+    kind: 'changeset',
+    name: `changeset ${number}`,
+    module: 'dataverse',
+    operation: 'changeset',
+    attributes: { requests: changeset.requests.length, boundary: changeset.boundary ?? undefined },
+  });
+  const parts = [];
+  try {
+    const outcome = await traces.run(span, () => changesetRun(changeset, { ...context, parts }, batchRefs));
+    if (outcome.failure) {
+      // The parts that ran before the failure (the failing one is the last) were rolled back with it.
+      for (const part of parts.slice(0, -1)) part.set({ rolledBack: true });
+      span.set({
+        rolledBack: true,
+        failedContentId: outcome.failure.request.contentId ?? outcome.failure.request.refId,
+      });
+      recordHttpError(span, outcome.failure.response.status, partError(outcome.failure.response));
+      span.setStatus('error');
+    }
+    span.end();
+    return outcome;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
+async function changesetRun(changeset, context, batchRefs) {
   const responses = [];
   const refs = new Map(batchRefs);
   const run = async () => {
@@ -293,7 +372,7 @@ async function runChangeset(changeset, context, batchRefs = new Map()) {
   };
   try {
     // ponytail: without a dispatch.transaction hook, writes made before a failing changeset item persist.
-    if (context.dispatch.transaction) await context.dispatch.transaction(run);
+    if (context.dispatch.transaction) await context.dispatch.transaction(run, { requests: changeset.requests.length });
     else await run();
   } catch (error) {
     if (error !== ROLLBACK) throw error;
@@ -309,8 +388,10 @@ const mimeLines = (contentId) => [
   ...(contentId ? [`Content-ID: ${contentId}`] : []),
 ];
 
-const partOf = (boundary, mime, content) =>
-  `--${boundary}\r\n${mime.map((line) => `${line}\r\n`).join('')}\r\n${content}\r\n`;
+const partOf = (boundary, mime, content) => {
+  const headers = mime.map((line) => `${line}\r\n`).join('');
+  return `--${boundary}\r\n${headers}\r\n${content}\r\n`;
+};
 
 // Envelope headers that a top-level answer carries but a native batch part does not: the service request ids and dop
 // hint, expires, Allow, Public, the transport headers and CORS. REQ_ID is not here: the dispatch supplies it on entity-engine errors only.
@@ -319,28 +400,33 @@ const PART_ENVELOPE =
 // The JSON type a native multipart part carries; a JSON batch answers with streaming too.
 const PART_JSON_TYPE = 'application/json; odata.metadata=minimal';
 
-function httpBlock(response, { json = false } = {}) {
-  const headers = new Map();
-  const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
+function copyPartHeaders(response, headers, set) {
   // A native error part carries no Cache-Control; the no-cache pair is for reads.
   for (const [name, value] of Object.entries(response.headers ?? {})) {
     if (value === undefined || value === null || PART_ENVELOPE.test(name)) continue;
     if (response.status >= 400 && /^cache-control$/i.test(name)) continue;
     set(name, value);
   }
+}
+
+function addSuccessfulPartHeaders(headers, set) {
+  // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair.
+  if (!headers.has('x-content-type-options')) set('X-Content-Type-Options', 'nosniff');
+  if (headers.has('etag')) {
+    if (!headers.has('cache-control')) set('Cache-Control', 'no-cache');
+    if (!headers.has('pragma')) set('Pragma', 'no-cache');
+  }
+}
+
+function httpBlock(response, { json = false } = {}) {
+  const headers = new Map();
+  const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
+  copyPartHeaders(response, headers, set);
   const body = response.body ?? undefined;
   const text = body === undefined || typeof body === 'string' ? body : stringifyExactJson(body);
   if (text && !headers.has('content-type')) set('Content-Type', json ? JSON_TYPE : PART_JSON_TYPE);
   if (!headers.has('odata-version')) set('OData-Version', '4.0');
-  if (response.status < 400) {
-    // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair
-    // (seen on record reads only; other entity responses are assumed alike); a WhoAmI part carries neither.
-    if (!headers.has('x-content-type-options')) set('X-Content-Type-Options', 'nosniff');
-    if (headers.has('etag')) {
-      if (!headers.has('cache-control')) set('Cache-Control', 'no-cache');
-      if (!headers.has('pragma')) set('Pragma', 'no-cache');
-    }
-  }
+  if (response.status < 400) addSuccessfulPartHeaders(headers, set);
   const entity = headers.get('odata-entityid')?.[1];
   if (response.status === 204 && entity && !headers.has('location')) set('Location', entity);
   const lines = [
@@ -368,10 +454,45 @@ function result(boundary, status, blocks) {
   };
 }
 
-export async function executeBatch(parsed, { dispatch, origin, base, continueOnError = false } = {}) {
+// traces: the trace store when the batch is traced (its level on), else null. A failed batch result carries a non-enumerable
+// `failure` ({ code, message } of the failing part) for the caller's root span.
+export async function executeBatch(parsed, { dispatch, origin, base, continueOnError = false, traces = null } = {}) {
+  if (!traces?.enabled) return runBatch(parsed, { dispatch, origin, base, traces: null }, continueOnError);
+  const changesets = parsed.parts.filter((part) => part.kind === 'changeset');
+  const span = traces.start({
+    kind: 'batch',
+    name: '$batch',
+    module: 'dataverse',
+    operation: 'batch',
+    attributes: {
+      parts: parsed.parts.length,
+      changesets: changesets.length,
+      requests: parsed.parts.length - changesets.length + changesets.reduce((n, part) => n + part.requests.length, 0),
+      json: parsed.json === true,
+      continueOnError: continueOnError === true,
+    },
+  });
+  try {
+    const answer = await traces.run(span, () => runBatch(parsed, { dispatch, origin, base, traces }, continueOnError));
+    span.set({ statusCode: answer.status });
+    recordHttpError(span, answer.status, answer.failure ?? {});
+    span.end();
+    return answer;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
+// A failed changeset answers with the failing response alone (rollback); a complete one with all of its responses.
+const changesetAnswers = (failure, responses) => (failure ? [failure] : responses);
+
+async function runBatch(parsed, context, continueOnError) {
   const boundary = `batchresponse_${randomUUID()}`;
-  const context = { dispatch, origin, base };
   const json = parsed.json === true;
+  let changesetNumber = 0;
+  const failed = (answer, response) =>
+    Object.defineProperty(answer, 'failure', { value: { status: response.status, ...partError(response) } });
   // A JSON batch shares its references across items; a multipart part scopes them to its own changeset.
   const shared = new Map();
   const blocks = [];
@@ -384,13 +505,14 @@ export async function executeBatch(parsed, { dispatch, origin, base, continueOnE
       // Native echoes Content-ID only inside a changeset: a top-level part answers without one.
       const block = partOf(boundary, mimeLines(), httpBlock(response, { json }));
       blocks.push(block);
-      if (response.status >= 400 && !continueOnError) return result(boundary, response.status, blocks);
+      if (response.status >= 400 && !continueOnError)
+        return failed(result(boundary, response.status, blocks), response);
     } else {
-      const { responses, failure } = await runChangeset(part, context, refs);
-      // A failed changeset answers as a changeset part holding the failing response (rollback), Content-ID kept.
+      const { responses, failure } = await runChangeset(part, context, refs, ++changesetNumber);
+      // A failed changeset answers as a changeset part holding only the failing response (rollback), Content-ID kept.
+      blocks.push(changesetPart(boundary, changesetAnswers(failure, responses), json));
       if (failure && !continueOnError)
-        return result(boundary, failure.response.status, [...blocks, changesetPart(boundary, [failure], json)]);
-      blocks.push(changesetPart(boundary, responses, json));
+        return failed(result(boundary, failure.response.status, blocks), failure.response);
     }
   }
   return result(boundary, 200, blocks);

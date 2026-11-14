@@ -1,3 +1,4 @@
+// @test-kind contract: element provenance offers static source selectors as candidates, bounded in size and in work.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { elementSourceHints, scriptSourceHints, elementSourceHintCacheStats } from '../lense/element-provenance.mjs';
@@ -72,18 +73,20 @@ test('wide markup under the 1 MB cap is walked without spreading children into c
   assert.deepEqual(elementSourceHints('<br>'.repeat(200_000), {}), []);
 });
 test('repeated selectors are collected in linear time', () => {
-  const time = (count) => {
-    const body = '<p class="note"></p>'.repeat(count),
-      started = performance.now();
-    elementSourceHints(body, { sourceFile: `/invented/repeat-${count}-${Math.random()}.html` });
-    return performance.now() - started;
+  // The scan's own count of nodes visited and selectors looked up, not the clock, measures the work.
+  const work = (count) => {
+    const before = elementSourceHintCacheStats().visits;
+    const hints = elementSourceHints('<p class="note"></p>'.repeat(count), {
+      sourceFile: `/invented/repeat-${count}.html`,
+    });
+    assert.equal(hints[0].occurrences, count);
+    return elementSourceHintCacheStats().visits - before;
   };
-  time(500);
-  // 8x the repeats: linear collection takes about 8x the time, quadratic about 64x; the bound sits far from both.
-  const best = (count) => Math.min(time(count), time(count), time(count));
-  const small = best(2500),
-    large = best(20000);
-  assert.ok(large < small * 24, `8x repeats took ${(large / small).toFixed(1)}x the time`);
+  const small = work(2500),
+    large = work(20000);
+  assert.ok(small >= 2500, `the scan counted ${small} visits for 2500 elements`);
+  // Linear work grows at most 8x for 8x the repeats; quadratic work grows about 64x.
+  assert.ok(large <= small * 8, `8x repeats took ${(large / small).toFixed(1)}x the work`);
 });
 test('Liquid comments and manifests cannot supply rendered markup evidence', () => {
   const rows = elementSourceHints(

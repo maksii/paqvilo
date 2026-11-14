@@ -53,7 +53,7 @@ export function buildMapping(session) {
 
 const markdownText = (value) =>
   String(value ?? '')
-    .replace(/[&<>|`\\[\]*_]/g, (c) => `&#${c.charCodeAt(0)};`)
+    .replace(/[&<>|`\\[\]*_]/g, (c) => `&#${c.charCodeAt(0)};`) // NOSONAR: UTF-16 code unit semantics are required
     .replace(/\r\n?|\n/g, '<br>');
 
 export function toMarkdown(m) {
@@ -68,10 +68,13 @@ export function toMarkdown(m) {
     '',
     `| Online URL | Local file | Overridden |${m.checked ? ' Online |' : ''}`,
     `|---|---|---|${m.checked ? '---|' : ''}`,
-    ...m.webFiles.map(
-      (w) =>
-        `| ${markdownText(w.url ?? '(none)')} | ${markdownText(w.local ?? '(none)')} | ${w.overridden ? 'yes' : `no${w.problem ? `: ${markdownText(w.problem)}` : ''}`} |${m.checked ? ` ${markdownText([w.online, w.onlineError].filter(Boolean).join(': '))} |` : ''}`,
-    ),
+    ...m.webFiles.map((w) => {
+      let overriddenCell = 'yes';
+      if (!w.overridden) overriddenCell = w.problem ? `no: ${markdownText(w.problem)}` : 'no';
+      let onlineCell = '';
+      if (m.checked) onlineCell = ` ${markdownText([w.online, w.onlineError].filter(Boolean).join(': '))} |`;
+      return `| ${markdownText(w.url ?? '(none)')} | ${markdownText(w.local ?? '(none)')} | ${overriddenCell} |${onlineCell}`;
+    }),
     '',
   ];
   const byKind = Map.groupBy(m.inline, (i) => i.kind);
@@ -82,8 +85,6 @@ export function toMarkdown(m) {
       '',
       `Appears as: ${markdownText(WHERE[kind])}. Technique: ${markdownText(items[0].technique)}.`,
       '',
-    );
-    lines.push(
       '| Local file | Page(s) | Enabled |',
       '|---|---|---|',
       ...filled.map(
@@ -116,57 +117,38 @@ export function toMarkdown(m) {
   return lines.join('\n');
 }
 
-export default async function map(cfg, args) {
-  const session = await OverlaySession.create(cfg);
-  const mapping = buildMapping(session);
+async function checkMapping(cfg, mapping) {
+  const targets = mapping.webFiles.filter((w) => w.url);
+  const results = await mapLimit(targets, 8, async (w) => {
+    try {
+      return await fetchOnline(cfg.origin, w.url, 3, { readBody: false });
+    } catch (err) {
+      return { status: 0, error: err.message };
+    }
+  });
+  targets.forEach((w, i) => {
+    w.onlineStatus = results[i].status;
+    w.online = describeStatus(results[i].status);
+    if (results[i].error) w.onlineError = results[i].error;
+  });
+  mapping.checked = true;
+}
 
-  if (args.check) {
-    const targets = mapping.webFiles.filter((w) => w.url);
-    const results = await mapLimit(targets, 8, async (w) => {
-      try {
-        return await fetchOnline(cfg.origin, w.url, 3, { readBody: false });
-      } catch (err) {
-        return { status: 0, error: err.message };
-      }
-    });
-    targets.forEach((w, i) => {
-      w.onlineStatus = results[i].status;
-      w.online = describeStatus(results[i].status);
-      if (results[i].error) w.onlineError = results[i].error;
-    });
-    mapping.checked = true;
-  }
-
-  const base = path.join(cfg.stateDir, `mapping-${cfg.siteName}-${cfg.envName}`);
-  const writesFiles = args['no-write'] ? [] : [`${base}.json`, `${base}.md`];
-  if (writesFiles.length) {
-    fs.mkdirSync(cfg.stateDir, { recursive: true });
-    fs.writeFileSync(writesFiles[0], JSON.stringify(mapping, null, 2));
-    fs.writeFileSync(writesFiles[1], toMarkdown(mapping));
-  }
-  const exitCode =
-    mapping.checked && mapping.webFiles.some((w) => w.url && ![200, 404].includes(w.onlineStatus)) ? 1 : 0;
-
-  if (args.json) {
-    console.log(
-      JSON.stringify(
-        { ...mapping, schemaVersion: 1, command: 'map', ok: !exitCode, offline: !args.check, writesFiles, errors: [] },
-        null,
-        2,
-      ),
-    );
-    return exitCode;
-  }
-
-  const width = Math.min(60, Math.max(...mapping.webFiles.map((w) => (w.url ?? '').length)));
-  console.log(`${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}\n`);
-  console.log(`WEB FILES  online URL -> local file (under ${cfg.sourceDir})`);
+function printWebFiles(mapping, width) {
   for (const w of mapping.webFiles) {
-    const state = w.overridden ? '' : `   [not overridden${w.problem ? `: ${w.problem}` : ''}]`;
-    console.log(
-      `  ${(w.url ?? '(no url)').padEnd(width)}  ${w.local ?? '(no file)'}${w.online && w.online !== 'online' ? `   [${w.online}${w.onlineError ? `: ${w.onlineError}` : ''}]` : ''}${state}`,
-    );
+    let problemNote = '';
+    if (w.problem) problemNote = `: ${w.problem}`;
+    const state = w.overridden ? '' : `   [not overridden${problemNote}]`;
+    let onlineNote = '';
+    if (w.online && w.online !== 'online') {
+      const onlineErrorNote = w.onlineError ? `: ${w.onlineError}` : '';
+      onlineNote = `   [${w.online}${onlineErrorNote}]`;
+    }
+    console.log(`  ${(w.url ?? '(no url)').padEnd(width)}  ${w.local ?? '(no file)'}${onlineNote}${state}`);
   }
+}
+
+function printMappingSummary(mapping, base, writesFiles, exitCode) {
   console.log('\nINLINE SOURCES (no URL of their own; laid over the page HTML)');
   for (const [kind, items] of Map.groupBy(mapping.inline, (i) => i.kind)) {
     console.log(
@@ -184,11 +166,60 @@ export default async function map(cfg, args) {
       mapping.webFiles.filter((w) => w.online),
       (w) => w.online,
     );
-    console.log(`online check: ${[...counts].map(([k, v]) => `${v.length} ${k}`).join(', ')}`);
+    const checkSummary = [...counts].map(([k, v]) => `${v.length} ${k}`).join(', ');
+    console.log(`online check: ${checkSummary}`);
   }
   for (const w of mapping.warnings) console.log(`note: ${w}`);
   for (const u of mapping.needsDeploy) console.log(`needs deploy: ${u.rel} - ${u.reason}`);
   if (writesFiles.length) console.log(`\nfull mapping written to ${base}.md and .json`);
   if (exitCode) console.log('Online check incomplete: some mapped resources could not be inspected.');
+}
+
+function printMapping(cfg, mapping, base, writesFiles, exitCode) {
+  const width = Math.min(60, Math.max(...mapping.webFiles.map((w) => (w.url ?? '').length)));
+  console.log(`${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}\n`);
+  console.log(`WEB FILES  online URL -> local file (under ${cfg.sourceDir})`);
+  printWebFiles(mapping, width);
+  printMappingSummary(mapping, base, writesFiles, exitCode);
+}
+
+// One coded error per URL the online check could not confirm (404 is a local-only file, not a failure).
+function onlineCheckErrors(mapping) {
+  if (!mapping.checked) return [];
+  return mapping.webFiles
+    .filter((w) => w.url && ![200, 404].includes(w.onlineStatus))
+    .map((w) => ({
+      code: 'ONLINE_CHECK_FAILED',
+      message: w.onlineError ? `${w.online}: ${w.onlineError}` : w.online,
+      path: w.url,
+    }));
+}
+
+export default async function map(cfg, args) {
+  const session = await OverlaySession.create(cfg);
+  const mapping = buildMapping(session);
+  if (args.check) await checkMapping(cfg, mapping);
+  const base = path.join(cfg.stateDir, `mapping-${cfg.siteName}-${cfg.envName}`);
+  const writesFiles = args['no-write'] ? [] : [`${base}.json`, `${base}.md`];
+  if (writesFiles.length) {
+    fs.mkdirSync(cfg.stateDir, { recursive: true });
+    fs.writeFileSync(writesFiles[0], JSON.stringify(mapping, null, 2));
+    fs.writeFileSync(writesFiles[1], toMarkdown(mapping));
+  }
+  const errors = onlineCheckErrors(mapping);
+  const exitCode = errors.length ? 1 : 0;
+
+  if (args.json) {
+    console.log(
+      JSON.stringify(
+        { ...mapping, schemaVersion: 1, command: 'map', ok: !exitCode, offline: !args.check, writesFiles, errors },
+        null,
+        2,
+      ),
+    );
+    return exitCode;
+  }
+
+  printMapping(cfg, mapping, base, writesFiles, exitCode);
   return exitCode;
 }

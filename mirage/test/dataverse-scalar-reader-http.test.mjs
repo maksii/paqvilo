@@ -1,5 +1,9 @@
+// @test-kind contract: HTTP fixture setup, local diagnostic stack policy, SDK compatibility and nonmutation checks; native scalar assertions are tagged individually below.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { webApiScalarReaderCases } from '../testing/webapi-contract.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
@@ -69,7 +73,7 @@ test('HTTP scalar errors retain native type/format causes and exact numeric toke
       }),
       log: () => {},
     });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
     if (previous === undefined) delete process.env[SECRET];
     else process.env[SECRET] = previous;
@@ -87,50 +91,33 @@ test('HTTP scalar errors retain native type/format causes and exact numeric toke
   assert.equal(auth.status, 200);
   const token = (await auth.json()).access_token;
   const initial = JSON.stringify(store.state.tables.sample);
-  const cases = [
-    ['name', '1', nativeCause('1', 'Edm.String', 'Edm.Int32')],
-    ['name', '1.0', nativeCause('1.0', 'Edm.String', 'Edm.Decimal')],
-    ['name', '9007199254740993', nativeCause('9007199254740993', 'Edm.String', 'Edm.Decimal')],
-    ['name', 'false', nativeCause('False', 'Edm.String', 'Edm.Boolean')],
-    ['quantity', 'true', nativeCause('True', 'Edm.Int32', 'Edm.Boolean')],
-    ['quantity', '1.25', nativeCause('1.25', 'Edm.Int32', 'Edm.Decimal')],
-    [
-      'quantity',
-      '"not-a-number"',
-      nativeFormat('not-a-number', 'Edm.Int32', 'Input string was not in a correct format.'),
-    ],
-    ['enabled', '1', nativeCause('1', 'Edm.Boolean', 'Edm.Int32')],
-    ['enabled', '2', nativeCause('2', 'Edm.Boolean', 'Edm.Int32')],
-    ['enabled', '""', nativeFormat('', 'Edm.Boolean', 'String was not recognized as a valid Boolean.')],
-    ['price', 'true', nativeCause('True', 'Edm.Decimal', 'Edm.Boolean')],
-    ['ratio', 'false', nativeCause('False', 'Edm.Double', 'Edm.Boolean')],
-    [
-      'stamp',
-      '"2020-02-31T12:00:00Z"',
-      nativeFormat(
-        '2020-02-31T12:00:00Z',
-        'Edm.DateTimeOffset',
-        "The string '2020-02-31T12:00:00Z' is not a valid AllXsd value.",
-      ),
-    ],
-    ['stamp', '0', nativeCause('0', 'Edm.DateTimeOffset', 'Edm.Int32')],
-    [
-      'day',
-      '"bad-date"',
-      nativeFormat('bad-date', 'Edm.Date', "String 'bad-date' was not recognized as a valid Edm.Date."),
-    ],
-    ['choice', 'false', nativeCause('False', 'Edm.Int32', 'Edm.Boolean')],
-    ['tags', '2', nativeCause('2', 'Edm.String', 'Edm.Int32')],
-  ];
-  const encodedCases = cases.flatMap((entry) =>
+  const cases = webApiScalarReaderCases();
+  const diagnostics = [];
+  const encodedCases = cases.flatMap((entry, index) =>
     [
       ['plain', ''],
       ['UTF-8 BOM', '\uFEFF'],
-    ].map(([encoding, prefix]) => [...entry, encoding, prefix]),
+    ].map(([encoding, prefix]) => [...entry, encoding, prefix, index]),
   );
-  for (const [field, tokenText, cause, encoding, prefix] of encodedCases)
+  for (const [field, tokenText, cause, encoding, prefix, index] of encodedCases)
     for (const method of ['POST', 'PATCH'])
+      // @test-kind observation: fixtures/webapi-native-scalar-reader.json records per case the status, code and first cause line plus two native raw-response hashes, with the request built by the shared producer in mirage/testing; no full native body is recorded, so not a replay case.
       await t.test(`${encoding} ${method} ${field} ${tokenText}`, async () => {
+        const nativeBytes = fs.readFileSync(new URL('./fixtures/webapi-native-scalar-reader.json', import.meta.url));
+        const nativeProof = JSON.parse(nativeBytes);
+        const expected = nativeProof.cases.find(
+          (entry) => entry.id === `reader.${index}.${prefix ? 'bom' : 'plain'}.${method}`,
+        );
+        assert.deepEqual(
+          { field, token: tokenText, cause, encoding: prefix ? 'bom' : 'plain', method },
+          {
+            field: expected.field,
+            token: expected.token,
+            cause: expected.cause,
+            encoding: expected.encoding,
+            method: expected.method,
+          },
+        );
         const response = await fetch(
           api.origin + '/api/data/v9.2/' + (method === 'POST' ? 'samples' : `samples(${ID})`),
           {
@@ -142,13 +129,21 @@ test('HTTP scalar errors retain native type/format causes and exact numeric toke
             body: prefix + `{"${field}":${tokenText}}`,
           },
         );
-        assert.equal(response.status, 400);
+        assert.equal(response.status, expected.status);
         const error = (await response.json()).error;
-        assert.equal(error.code, '0x80048d19');
-        assert.ok(error.message.includes(cause), error.message);
+        assert.equal(error.code, expected.code);
+        assert.ok(error.message.includes(expected.cause), error.message);
         assert.ok(error.message.includes(method === 'POST' ? "Entity :'samples'" : "Entity :''"));
-        assert.equal(error.message.includes('   at '), false);
+        diagnostics.push(error.message);
       });
+  // @test-kind observation: completeness of the 68-case native scalar universe recorded in fixtures/webapi-native-scalar-reader.json against the shared producer bytes; not a replay case.
+  await t.test('all68 original native scalar cases execute', () => {
+    assert.equal(diagnostics.length, 68);
+  });
+  assert.ok(
+    diagnostics.every((message) => !message.includes('   at ')),
+    'default local diagnostic mode does not fabricate CLR stack frames',
+  );
   for (const prefix of ['', '\uFEFF']) {
     const response = await fetch(api.origin + '/api/data/v9.2/samples(20000000-0000-4000-8000-000000000099)', {
       method: 'PATCH',
@@ -219,9 +214,9 @@ test('custom API actions obtain scalar causes through the actual HTTP transport'
       ],
     }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   const transport = await startDataverseApi({ organization });
-  t.after(() => transport.close());
+  ownedFixture(t).add(() => transport.close());
   const tokenResponse = await fetch(transport.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({
@@ -270,12 +265,13 @@ test('custom API internal callers retain original diagnostics while the actual H
   Object.assign(state.tables, rows);
   const store = new DataStore({ state }),
     ops = [];
-  install({
+  // Awaited: install also queues its seeding transaction, which must not outlive the test.
+  await install({
     store,
     change: (fn) => fn(),
     registry: { register: (op) => ops.push(op), has: () => false },
     principals: { privileges: () => new Map() },
-  });
+  }).ready;
   const op = ops.find((op) => op.name === 'sample_Action');
   assert.ok(op);
   for (const [body, fragment] of [

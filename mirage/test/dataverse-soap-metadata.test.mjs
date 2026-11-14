@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own SOAP metadata messages over the Dataverse emulation, with invented schemas and fixture organisations
 // Dataverse SOAP metadata messages: DataContract XML in xrm/2011/Metadata, parsed back with the SOAP codec.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -103,9 +104,10 @@ test('entity key AsyncJob is a SOAP EntityReference while its Web API value is a
   assert.equal(job.text, '');
 });
 
-test('the six metadata requests are registered by request name', () => {
+test('the seven metadata requests are registered by request name', () => {
   assert.deepEqual([...handlers.keys()].filter((name) => name.startsWith('Retrieve')).sort(), [
     'RetrieveAllEntities',
+    'RetrieveAllOptionSets',
     'RetrieveAttribute',
     'RetrieveEntity',
     'RetrieveMetadataChanges',
@@ -264,12 +266,14 @@ test('an enum member is written as its DataContract name, not its number (Privil
   );
 });
 
-test('RetrieveAllEntities returns a collection of both invented tables in the contracts namespace', () => {
+// RetrieveAllEntitiesResponse.EntityMetadata casts its result to EntityMetadata[], so the value is the metadata array
+// (ArrayOfEntityMetadata, items in xrm/2011/Metadata); an EntityMetadataCollection fails that cast.
+test('RetrieveAllEntities returns an EntityMetadata array of both invented tables in the metadata namespace', () => {
   const value = valueOf(run('RetrieveAllEntities', [['EntityFilters', 1]]), 'EntityMetadata');
-  assert.equal(typeOfNode(value), 'a:EntityMetadataCollection');
+  assert.equal(typeOfNode(value), 'm:ArrayOfEntityMetadata');
   const logical = value.children.map((item) => textOfChild(item, 'LogicalName'));
-  assert.ok(logical.includes('invented_widget') && logical.includes('invented_owner'));
-  assert.ok(value.children.every((item) => item.name === 'EntityMetadata' && item.ns === NS.a));
+  assert.deepEqual(logical.sort(), ['invented_owner', 'invented_widget']);
+  assert.ok(value.children.every((item) => item.name === 'EntityMetadata' && item.ns === METADATA_NS));
 });
 
 test('RetrieveRelationship returns the one-to-many relationship by SchemaName, typed', () => {
@@ -421,6 +425,12 @@ const attributeXml = (schema) =>
   `<m:Attribute i:type="m:IntegerAttributeMetadata"><m:SchemaName>${schema}</m:SchemaName>` +
   `${labelXml('DisplayName', 'Quantity')}<m:MinValue>0</m:MinValue><m:MaxValue>100</m:MaxValue></m:Attribute>`;
 
+// A Boolean column whose option set names its type by the SDK enum value 'Boolean', with the True and False options.
+const booleanAttributeXml = (schema) =>
+  `<m:Attribute i:type="m:BooleanAttributeMetadata"><m:SchemaName>${schema}</m:SchemaName>` +
+  `${labelXml('DisplayName', 'Flag')}<m:OptionSet><m:OptionSetType>Boolean</m:OptionSetType>` +
+  `<m:TrueOption><m:Value>1</m:Value></m:TrueOption><m:FalseOption><m:Value>0</m:Value></m:FalseOption></m:OptionSet></m:Attribute>`;
+
 async function writeSession() {
   const { DataStore, emptyState } = await import('../lib/data.mjs');
   const { createPrincipals, ensureSecurityModel } = await import('../lib/dataverse-security.mjs');
@@ -465,7 +475,9 @@ test('CreateEntity decodes the typed EntityMetadata and its primary column, crea
   const mapping = store.state.mappings.new_bankaccount;
   assert.ok(mapping, 'the invented table exists');
   assert.equal(mapping.dataverseMetadata.labels.DisplayName[1033], 'Bank Account');
-  assert.ok(store.state.mappings.new_bankaccount.fields.new_accountname, 'the primary column is created');
+  assert.equal(mapping.nameColumn, 'new_accountname', 'the primary column is the primary name');
+  assert.equal(mapping.fields.new_accountname?.dataverseType, 'nvarchar');
+  assert.equal(mapping.fields.new_accountname.columnMetadata.maxLength, 100);
 });
 
 test('CreateAttribute adds a typed column and answers its AttributeId; DeleteAttribute and DeleteEntity remove them', async () => {
@@ -488,7 +500,9 @@ test('CreateAttribute adds a typed column and answers its AttributeId; DeleteAtt
   );
   assert.equal(created.responseType, 'CreateAttributeResponse');
   assert.match(created.results.get('AttributeId').value, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
-  assert.ok(store.state.mappings.new_shelf.fields.new_quantity, 'the column is created with the Web API writer');
+  const quantity = store.state.mappings.new_shelf.fields.new_quantity;
+  assert.equal(quantity?.dataverseType, 'int', 'the column is created with the Web API writer');
+  assert.deepEqual([quantity.columnMetadata.minValue, quantity.columnMetadata.maxValue], [0, 100]);
 
   await handlers.get('DeleteAttribute')(
     new Map([
@@ -527,4 +541,93 @@ test('a typed request without its required member is refused as InvalidRequest',
     handlers.get('CreateEntity')(new Map(), session),
     (error) => error instanceof DataError && error.status === 400,
   );
+});
+
+// Wire shapes the .NET Framework SDK (Microsoft.Xrm.Sdk 9.0, CrmServiceClient) reads; each case below failed its
+// DataContract deserialization before.
+const runOn = (state, name, entries) => metadataRequests({ ...api, store: { state } }).get(name)(new Map(entries));
+
+test('EntityMetadata managed properties are BooleanManagedProperty elements, never plain values', () => {
+  const state = { mappings: structuredClone(mappings) };
+  state.mappings.invented_widget.tableType = 'Elastic';
+  const value = valueOf(
+    runOn(state, 'RetrieveEntity', [
+      ['LogicalName', text('invented_widget')],
+      ['EntityFilters', 1],
+    ]),
+    'EntityMetadata',
+  );
+  // The elastic shape writes CanCreateCharts and IsDuplicateDetectionEnabled as plain false in the Web API JSON.
+  for (const name of ['CanCreateCharts', 'IsDuplicateDetectionEnabled']) {
+    assert.deepEqual(names(child(value, name)), ['CanBeChanged', 'ManagedPropertyLogicalName', 'Value'], name);
+    assert.equal(textOfChild(child(value, name), 'Value'), 'false');
+  }
+  assert.equal(textOfChild(child(value, 'CanCreateCharts'), 'ManagedPropertyLogicalName'), 'cancreatecharts');
+});
+
+test('decimal ranges are written in full, since xs:decimal has no exponent form', () => {
+  const state = { mappings: structuredClone(mappings) };
+  state.mappings.invented_widget.fields.invented_rate = { dataverseType: 'decimal', minValue: 1e-12, maxValue: 1e21 };
+  const value = valueOf(
+    runOn(state, 'RetrieveAttribute', [
+      ['EntityLogicalName', text('invented_widget')],
+      ['LogicalName', text('invented_rate')],
+    ]),
+    'AttributeMetadata',
+  );
+  assert.equal(typeOfNode(value), 'm:DecimalAttributeMetadata');
+  assert.equal(textOfChild(value, 'MinValue'), '0.000000000001');
+  assert.equal(textOfChild(value, 'MaxValue'), '1000000000000000000000');
+});
+
+test('RetrieveMetadataChanges writes SDK contract types and a typed DeletedMetadataCollection', () => {
+  const result = run('RetrieveMetadataChanges', []);
+  const items = valueOf(result, 'EntityMetadata').children;
+  assert.ok(items.length > 0);
+  // The Web API answers ComplexEntityMetadata; the SDK knows only EntityMetadata.
+  assert.ok(
+    items.every((item) => typeOfNode(item) === 'm:EntityMetadata'),
+    items.map(typeOfNode).join(),
+  );
+  const deleted = valueOf(result, 'DeletedMetadata');
+  assert.equal(typeOfNode(deleted), 'q:DeletedMetadataCollection');
+  assert.equal(deleted.scope.get('q'), `${METADATA_NS}/Query`);
+});
+
+test('CreateAttribute of a Boolean column keeps TrueOption and FalseOption on the SOAP RetrieveAttribute read', async () => {
+  const { session, handlers } = await writeSession();
+  await handlers.get('CreateEntity')(
+    new Map([
+      ['Entity', typed(entityXml('new_Shelf'))],
+      ['PrimaryAttribute', typed(primaryXml('new_ShelfName'))],
+      ['HasActivities', { type: 'boolean', value: false }],
+      ['HasNotes', { type: 'boolean', value: false }],
+    ]),
+    session,
+  );
+  const created = await handlers.get('CreateAttribute')(
+    new Map([
+      ['EntityName', text('new_shelf')],
+      ['Attribute', typed(booleanAttributeXml('new_Flag'))],
+    ]),
+    session,
+  );
+  assert.equal(created.responseType, 'CreateAttributeResponse');
+  const read = handlers.get('RetrieveAttribute')(
+    new Map([
+      ['EntityLogicalName', text('new_shelf')],
+      ['LogicalName', text('new_flag')],
+    ]),
+  );
+  const value = valueOf(read, 'AttributeMetadata');
+  assert.equal(typeOfNode(value), 'm:BooleanAttributeMetadata');
+  const optionSet = child(value, 'OptionSet');
+  assert.ok(child(optionSet, 'TrueOption'), 'TrueOption');
+  assert.ok(child(optionSet, 'FalseOption'), 'FalseOption');
+});
+
+test('RetrieveAllOptionSets returns an OptionSetMetadataBase array', () => {
+  const value = valueOf(run('RetrieveAllOptionSets', []), 'OptionSetMetadata');
+  assert.equal(typeOfNode(value), 'm:ArrayOfOptionSetMetadataBase');
+  assert.ok(value.children.every((item) => item.name === 'OptionSetMetadataBase' && item.ns === METADATA_NS));
 });

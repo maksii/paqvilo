@@ -1,9 +1,6 @@
+// @test-kind contract: Sign-in, session cookies and return routes are designed runtime behaviour of the simulator.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import os from 'node:os';
-import { createSimulator } from '../server.mjs';
 import {
   AUTH_COOKIE,
   authCookieName,
@@ -15,7 +12,7 @@ import {
   signInContent,
 } from '../lib/auth-session.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { makeFixtureDirectory, startLocalSimulator, writeFixtureFiles } from './support/origin-requests.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -133,20 +130,9 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
 });
 
 async function simulator(t, initial = initialState()) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-auth-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  for (const [name, body] of Object.entries(portalFiles)) {
-    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
-    await fs.writeFile(path.join(dir, name), body);
-  }
-  const app = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
-    port: 0,
-    watch: false,
-    initial,
-  });
-  ownedFixture(t).add(() => app.close());
+  const dir = await makeFixtureDirectory(t, 'pp-auth-');
+  await writeFixtureFiles(dir, portalFiles);
+  const app = await startLocalSimulator(t, dir, initial);
   const state = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   // A browser sends Fetch Metadata (Sec-Fetch-Site) with every request.
   const browser = (target, { cookie, headers = {}, ...init } = {}) =>
@@ -198,12 +184,18 @@ test('session cookies are signed, scoped and reject tampering', () => {
   assert.deepEqual([sample.read(both), second.read(both)], [{ contactId: 'alex' }, { contactId: 'blair' }]);
 });
 
+// @test-kind security: an open redirect through the return URL would send a signed-in user to another site.
 test('return URLs must be same-origin relative paths', () => {
   for (const [value, expected] of [
     ['/members/?tab=1#top', '/members/?tab=1#top'],
     ['/', '/'],
+    ['/a/../b?x=1', '/b?x=1'],
     ['//evil.example/x', '/'],
     ['/%2F/evil.example', '/'],
+    ['/.//evil.example', '/'],
+    ['/a/..//evil.example', '/'],
+    ['/%2e//evil.example', '/'],
+    ['/%2e%2e//evil.example', '/'],
     ['https://evil.example/', '/'],
     ['javascript:alert(1)', '/'],
     ['/\\evil.example', '/'],
@@ -254,13 +246,25 @@ test('configured authentication routes trim trailing slashes in linear time with
     'configured-route trimming does not broaden sign-out matching',
   );
   const nearMatch = '/' + '/'.repeat(200_000) + 'x';
-  const started = performance.now();
-  assert.equal(authRoute(nearMatch, 'GET', { loginPath: '/custom/login' }), null);
-  assert.equal(authRoute('/custom/login', 'GET', { loginPath: nearMatch }), null);
-  assert.deepEqual(authRoute('/custom/login' + '/'.repeat(200_000), 'GET', { loginPath: '/custom/login' }), {
-    kind: 'sign-in-page',
-  });
-  assert.ok(performance.now() - started < 1500, 'long slash runs must not trigger repeated suffix scans');
+  // Count the characters the trimming reads instead of timing it: a single backward scan reads each trailing slash
+  // once and the first other character once, where a repeated suffix scan (/\/+$/ backtracking) would be quadratic.
+  const codePointAt = String.prototype.codePointAt;
+  let reads = 0;
+  String.prototype.codePointAt = function (...args) {
+    reads++;
+    return codePointAt.apply(this, args);
+  };
+  try {
+    assert.equal(authRoute(nearMatch, 'GET', { loginPath: '/custom/login' }), null);
+    assert.equal(authRoute('/custom/login', 'GET', { loginPath: nearMatch }), null);
+    assert.deepEqual(authRoute('/custom/login' + '/'.repeat(200_000), 'GET', { loginPath: '/custom/login' }), {
+      kind: 'sign-in-page',
+    });
+  } finally {
+    String.prototype.codePointAt = codePointAt;
+  }
+  // Six compared values read one non-slash character each; one of them also reads its 200,000 trailing slashes.
+  assert.equal(reads, 6 + 200_000, 'long slash runs must be read once, not rescanned');
 });
 
 test('the sign-in content lists personas, labels the simulation and escapes values', () => {
@@ -502,13 +506,14 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
 test('the session API signs the calling browser in and out (CSRF-protected) with optional role overrides', async (t) => {
   const { app, csrf, browser, signIn } = await simulator(t);
   const api = (route, body, { cookie, token = csrf } = {}) =>
-    fetch(app.url + '/_sim/api/session' + route, {
+    fetch(app.adminOrigin + '/_sim/api/session' + route, {
       method: body ? 'POST' : 'GET',
       headers: {
         'content-type': 'application/json',
         ...(token ? { 'x-sim-csrf': token } : {}),
         ...(cookie ? { cookie } : {}),
         'sec-fetch-site': 'same-origin',
+        ...(body ? { origin: app.adminOrigin } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });

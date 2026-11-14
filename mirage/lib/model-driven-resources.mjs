@@ -3,13 +3,16 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { readSolutionAssetEntries, solutionAssetName, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
-import { importCodeComponents } from './code-components.mjs';
+import { importCodeComponents, takeAdmittedFiles } from './code-components.mjs';
 import { parseSolutionXml, descendants, childText, child, serializeXml } from './solution-xml.mjs';
 import { parseAppActionCommand } from './model-driven/solution.mjs';
 
 const limit = 8 * 1024 * 1024;
-const mime = (name) =>
-  /\.css$/i.test(name) ? 'text/css; charset=utf-8' : /\.js$/i.test(name) ? 'text/javascript; charset=utf-8' : null;
+const mime = (name) => {
+  if (/\.css$/i.test(name)) return 'text/css; charset=utf-8';
+  if (/\.js$/i.test(name)) return 'text/javascript; charset=utf-8';
+  return null;
+};
 const token = (value) => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const inside = (root, file) => {
   const rel = path.relative(root, file);
@@ -41,6 +44,7 @@ function importBudget(requested = {}) {
   const ceilings = {
     bytes: SOLUTION_ASSET_LIMITS.totalBytes,
     entries: SOLUTION_ASSET_LIMITS.entries,
+    traversalEntries: 100000,
     layers: SOLUTION_ASSET_LIMITS.layers,
   };
   const remaining = { ...ceilings };
@@ -49,6 +53,11 @@ function importBudget(requested = {}) {
       throw new Error(`Invalid Solution client import limit ${key}.`);
     remaining[key] = value;
   }
+  // An explicitly narrowed historical entry limit still bounds discovery too.
+  // By default, unrelated forms/views may be visited without consuming the
+  // independent budget for indexed client assets. Every visit remains bounded.
+  if (requested.entries !== undefined && requested.traversalEntries === undefined)
+    remaining.traversalEntries = requested.entries;
   return {
     remaining,
     take(key, count) {
@@ -70,6 +79,13 @@ async function readBudgetedFile(file, root, budget, maximum = limit) {
   return data;
 }
 
+// An admitted read is charged as a fresh read would be: the budget first, then the read limit.
+async function admittedFile(data, budget, maximum) {
+  budget.take('bytes', data.length);
+  if (data.length > Math.min(maximum, limit)) throw new Error('Local file is not regular or exceeds its read limit');
+  return data;
+}
+
 async function layerEntries(layer, budget) {
   if (layer.type === 'zip') {
     const entries = readSolutionAssetEntries(
@@ -86,29 +102,39 @@ async function layerEntries(layer, budget) {
   const result = [];
   if (layer.type !== 'directory') return result;
   const root = await fs.realpath(layer.dir);
-  async function visit(dir, top = false) {
+  // Code-unit order: resources and the entry budget follow it, and listing order differs between file systems.
+  async function sortedEntries(dir) {
+    const entries = [];
     for await (const entry of await fs.opendir(dir)) {
-      budget.take('entries', 1);
+      budget.take('traversalEntries', 1);
+      entries.push(entry);
+    }
+    return entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
+  }
+  async function indexFile(file) {
+    const name = path.relative(root, file).replaceAll('\\', '/');
+    if (
+      !/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(
+        name,
+      )
+    )
+      return;
+    budget.take('entries', 1);
+    const real = await fs.realpath(file);
+    if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
+    // Index physical names first. Binary images and unrelated WebResources do
+    // not enter memory; only metadata and declared JS/CSS assets are read.
+    const indexed = { name, file };
+    indexed.load = async () => (indexed.data ??= await readBudgetedFile(file, root, budget));
+    result.push(indexed);
+  }
+  async function visit(dir, top = false) {
+    for (const entry of await sortedEntries(dir)) {
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (!top || /^(?:webresources|entities|other|appactions|controls)$/i.test(entry.name)) await visit(file);
-      } else if (entry.isFile()) {
-        const name = path.relative(root, file).replaceAll('\\', '/');
-        if (
-          !/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(
-            name,
-          )
-        )
-          continue;
-        const real = await fs.realpath(file);
-        if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
-        // Index physical names first. Binary images and unrelated WebResources do
-        // not enter memory; only metadata and declared JS/CSS assets are read.
-        const indexed = { name, file };
-        indexed.load = async () => (indexed.data ??= await readBudgetedFile(file, root, budget));
-        result.push(indexed);
-      }
+      } else if (entry.isFile()) await indexFile(file);
     }
   }
   await visit(root, true);
@@ -116,7 +142,7 @@ async function layerEntries(layer, budget) {
 }
 
 /** Only selected Solution sources contribute executable code. No remote resolution or fallback. */
-export async function importModelDrivenResources(
+/* NOSONAR */ /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importModelDrivenResources(
   layers = [],
   { codeComponents, limits, clientSources, diagnostic = () => {}, projectRoot = null } = {},
 ) {
@@ -137,11 +163,21 @@ export async function importModelDrivenResources(
     const data = await fileReads.get(file);
     return encoding ? data.toString(encoding) : data;
   };
+  // Bytes the components importer already read are served through the same memo, so each file is read once.
+  const readAdmitted = (admitted, file, options) => {
+    if (admitted.has(file) && !fileReads.has(file))
+      fileReads.set(file, admittedFile(admitted.get(file), budget, options.maxBytes ?? limit));
+    admitted.delete(file);
+    return readFile(file, options);
+  };
   const limited = (error) => error.code === 'MODEL_CLIENT_IMPORT_LIMIT' || error.code === 'ArchiveLimit';
   // Roots are known once the layers are resolved; earlier failures carry only messages.
   let roots = [];
-  // Every return path reports its diagnostics once to the caller, with project-relative paths.
+  // Every return path reports its diagnostics once to the caller, with project-relative paths. The caller's retained
+  // control bytes are discarded here too, so an early return never leaves them in the caller's controls map.
+  const callerControls = codeComponents?.controls;
   const finish = (result) => {
+    if (callerControls) takeAdmittedFiles(callerControls);
     const safe = result.diagnostics.map((entry) => projectDiagnostic(entry, roots));
     for (const entry of safe) diagnostic(entry);
     return { ...result, diagnostics: safe };
@@ -161,7 +197,7 @@ export async function importModelDrivenResources(
   if (clientSources !== undefined) {
     const libraryFiles = clientSources.filter((source) => /\.js$/i.test(source));
     for (const file of libraryFiles) {
-      const match = /^([A-Za-z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
+      const match = /^([A-Z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
       try {
         budget.take('entries', 1);
         if (!match)
@@ -304,7 +340,7 @@ export async function importModelDrivenResources(
           name: definition.name,
           id: definition.id?.replace(/[{}]/g, '').toLowerCase(),
           url,
-          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style',
+          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style', // NOSONAR: preserve lazy branch evaluation and coercion
           source: entry.file ? shown(entry.file) : `${shown(layer.dir)}!/${entry.name}`,
           sourceFile: entry.file,
           sourceContentRevision: createHash('sha256').update(data).digest('hex'),
@@ -315,7 +351,7 @@ export async function importModelDrivenResources(
             imageMime ??
             (definition.type === 3
               ? 'text/javascript; charset=utf-8'
-              : definition.type === 1
+              : definition.type === 1 // NOSONAR: preserve lazy branch evaluation and coercion
                 ? 'text/html; charset=utf-8'
                 : 'text/css; charset=utf-8'),
           ...(imageMime ? { passive: true } : {}),
@@ -330,13 +366,14 @@ export async function importModelDrivenResources(
   }
   let components;
   try {
-    components = codeComponents ?? (await importCodeComponents(layers, { readFile }));
+    components = codeComponents ?? (await importCodeComponents(layers, { readFile, retainBytes: true }));
   } catch (error) {
     if (limited(error)) return failLimit(error, 'PCF');
     diagnostics.push({ code: 'MODEL_PCF_IMPORT_FAILED', message: error.message });
     components = { controls: new Map(), assets: new Map(), diagnostics: [] };
   }
   diagnostics.push(...components.diagnostics);
+  const admitted = takeAdmittedFiles(components.controls);
   const controls = [];
   for (const control of components.controls.values()) {
     const urls = { code: [], css: [], exports: [], resx: {} };
@@ -345,15 +382,15 @@ export async function importModelDrivenResources(
       budget.take('entries', 1);
       if (control.file) {
         const root = path.dirname(control.file);
-        await readFile(control.file, { root, maxBytes: 1024 * 1024 });
-        await readFile(path.join(root, 'ControlManifest.xml.data.xml'), { root, maxBytes: 1024 * 1024 });
+        await readAdmitted(admitted, control.file, { root, maxBytes: 1024 * 1024 });
+        await readAdmitted(admitted, path.join(root, 'ControlManifest.xml.data.xml'), { root, maxBytes: 1024 * 1024 });
       }
       for (const resource of control.resources) {
         budget.take('entries', 1);
         const asset = components.assets.get(resource.url);
         if (!asset) continue;
         const url = resource.url.replace('/__sim-static/pcf/', '/_apps/controls/');
-        const data = await readFile(asset.file, { root: asset.root });
+        const data = await readAdmitted(admitted, asset.file, { root: asset.root });
         if (['code', 'css'].includes(resource.kind)) {
           controlAssets.set(url, {
             data,

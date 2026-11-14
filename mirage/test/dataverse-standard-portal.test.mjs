@@ -6,10 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('seeded standard, plug-in and process tables are not enabled on the portal Web API', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-standard-portal-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-standard-portal-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Standard portal\n');
   await fs.writeFile(

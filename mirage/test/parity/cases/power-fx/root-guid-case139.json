@@ -1,0 +1,81 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-guid-case139",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "The two case-139 GUID formulas evaluated by the official interpreter in two processes with a fixed clock, Pacific time zone and en-US culture. Establishes these two outcomes only."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "f49e4befb18ea482a230b534d315b754365ffb105d14e0eed4114e3fc886c11a",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "run-2",
+      "sha256": "d78ddba78f2030faec4035dd10a0e005387c4c0a1a4d2a9170be51104720cd70",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-139-1",
+      "input": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "host": {
+          "fixedClock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false,
+          "dontFakeMonotonic": "1"
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errorKind", "errorKindName"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "phase": "evaluation",
+        "kind": "error",
+        "type": "ErrorValue",
+        "errorKind": 25,
+        "errorKindName": "InvalidArgument"
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-139-2",
+      "input": {
+        "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+        "host": {
+          "fixedClock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false,
+          "dontFakeMonotonic": "1"
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errorKind", "errorKindName"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

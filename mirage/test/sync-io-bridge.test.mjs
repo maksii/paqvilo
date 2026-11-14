@@ -1,3 +1,4 @@
+// @test-kind contract: the bridge is Mirage's own runtime seam between its threads; each test pins a designed behaviour of it.
 // The synchronous I/O bridge (sync-io-bridge.mjs): a synchronous plug-in step that posts (a Service Bus emulator send, a web
 // hook) on the synchronous SDK drive - a plug-in's own SDK call - runs inside the operation through
 // a worker thread and fails it when the post fails (a synchronous registered plug-in gets an exception). The broker and the
@@ -5,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { Worker } from 'node:worker_threads';
+import { MessagePort, Worker } from 'node:worker_threads';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { serviceEndpointDelivery } from '../lib/dataverse-webhooks.mjs';
 import {
@@ -17,7 +18,12 @@ import {
 import { pluginPhaseRequiresCheckpoint, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
-import { closeSyncIoBridge, syncIo } from '../lib/sync-io-bridge.mjs';
+import { closeSyncIoBridge, syncIo, syncIoWorker } from '../lib/sync-io-bridge.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { makeTemporaryDirectory, ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const KEY = 'invented-key-pl1-4c2d',
   VARIABLE = 'FX_PL1_SB';
@@ -135,7 +141,7 @@ async function world(t, { endpoint, brokerPort = 9, entity = 'x-queue' }) {
     settings: settings.sb,
     entities: mappedEntities(settings, 'sb'),
   });
-  t.after(() => emulator.close());
+  ownedFixture(t).add(() => emulator.close());
   const webhooks = serviceEndpointDelivery(store, {
     messaging: {
       bus: createLocalMessageBus({ store }),
@@ -198,8 +204,8 @@ test('the bridge gives up at its deadline with 504 SyncIoTimeout, and the next c
   // A receiver on the waiting main thread can never answer: the call ends at the deadline.
   const server = http.createServer((req, res) => res.end());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const started = Date.now();
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  // The message names the deadline that ended the call, so the 10 s default cannot pass for the requested 300 ms.
   assert.throws(
     () =>
       syncIo(
@@ -207,11 +213,59 @@ test('the bridge gives up at its deadline with 504 SyncIoTimeout, and the next c
         { url: `http://127.0.0.1:${server.address().port}/hang`, headers: {}, body: '{}' },
         { timeoutMs: 300 },
       ),
-    (error) => error.status === 504 && error.code === 'SyncIoTimeout',
+    (error) => error.status === 504 && error.code === 'SyncIoTimeout' && /within 300 ms/.test(error.message),
   );
-  assert.ok(Date.now() - started < 5000);
   const receiver = await threadReceiver(t);
   assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/204`, headers: {}, body: '{}' }), 204);
+});
+
+// Makes the bridge start `source` as its worker body for one test; the bridge's own body is restored afterwards.
+async function replaceWorkerBody(t, source) {
+  const owner = ownedFixture(t);
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-sync-io-body-'));
+  owner.remove(() => removeFixtureDirectory(dir));
+  const file = path.join(dir, 'body.mjs');
+  await fs.writeFile(file, source);
+  const real = syncIoWorker.url;
+  owner.add(async () => {
+    syncIoWorker.url = real;
+    await closeSyncIoBridge();
+  });
+  await closeSyncIoBridge();
+  syncIoWorker.url = pathToFileURL(file);
+}
+
+test('a worker whose body fails to import answers the waiting call at once, and the next call gets a new worker', async (t) => {
+  const receiver = await threadReceiver(t);
+  await replaceWorkerBody(t, "import './invented-missing-dependency.mjs';\n");
+  // The main thread waits in Atomics.wait and cannot see the worker's error: only an answer through the shared memory
+  // ends the call before its deadline, which would fail with a timeout code instead.
+  assert.throws(
+    () => syncIo('http-post', { url: `${receiver.origin}/status/200`, headers: {}, body: '{}' }, { timeoutMs: 20_000 }),
+    (error) =>
+      error.status === 502 && error.code === 'SyncIoWorkerFailed' && /invented-missing-dependency/.test(error.message),
+  );
+  syncIoWorker.url = new URL('../lib/sync-io-worker.mjs', import.meta.url);
+  assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/204`, headers: {}, body: '{}' }), 204);
+});
+
+// A worker body that loads this long after the call is longer than the call's own deadline below.
+const SLOW_BODY_LOAD_MS = 1000;
+test("a call's deadline starts when the worker has loaded, not while it starts", async (t) => {
+  // The body answers the queued request while it loads, before the worker reports that it has loaded: the answer is
+  // waiting when the main thread learns the worker started, whatever the machine's speed.
+  await replaceWorkerBody(
+    t,
+    `import { receiveMessageOnPort, workerData } from 'node:worker_threads';
+await new Promise((resolve) => setTimeout(resolve, ${SLOW_BODY_LOAD_MS}));
+const { id } = receiveMessageOnPort(workerData.port).message;
+workerData.port.postMessage({ id, value: 'answered after a slow load' });
+`,
+  );
+  assert.equal(
+    syncIo('http-post', { url: 'http://127.0.0.1:9/', headers: {}, body: '{}' }, { timeoutMs: 100 }),
+    'answered after a slow load',
+  );
 });
 
 test('a plug-in SDK create whose synchronous step sends to the emulator posts through the bridge inside the operation', async (t) => {
@@ -272,4 +326,40 @@ test('a flow Dataverse CreateRecord action (the asynchronous drive) awaits the s
     (error) => error.code === 'ServiceEndpointFailed',
   );
   assert.equal(refused.rows('x_widget'), 0);
+});
+
+test('closing the bridge terminates its idle worker before the port is closed, and the worker exits terminated', async (t) => {
+  const receiver = await threadReceiver(t);
+  const order = [],
+    terminated = [],
+    exits = [];
+  const terminate = Worker.prototype.terminate;
+  t.mock.method(Worker.prototype, 'terminate', function (...args) {
+    order.push('terminate');
+    terminated.push(this);
+    return terminate.apply(this, args);
+  });
+  const close = MessagePort.prototype.close;
+  t.mock.method(MessagePort.prototype, 'close', function (...args) {
+    order.push('port-close');
+    return close.apply(this, args);
+  });
+  const emit = Worker.prototype.emit;
+  t.mock.method(Worker.prototype, 'emit', function (name, ...args) {
+    if (name === 'exit') exits.push({ worker: this, code: args[0] });
+    return emit.call(this, name, ...args);
+  });
+  assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/200`, headers: {}, body: '{}' }), 200);
+  await closeSyncIoBridge();
+  assert.deepEqual(
+    order.slice(0, 2),
+    ['terminate', 'port-close'],
+    'the worker is terminated while it still idles on its port',
+  );
+  assert.equal(terminated.length, 1, 'terminate is called once');
+  assert.deepEqual(
+    exits.filter((exit) => exit.worker === terminated[0]).map((exit) => exit.code),
+    [1],
+    'the worker exits with the terminate code, not by itself',
+  );
 });

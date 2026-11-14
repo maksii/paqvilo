@@ -1,7 +1,7 @@
+// @test-kind contract: generated project files, script identities, editor refresh and offline readiness remain consistent and preserve project choices
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
@@ -13,11 +13,14 @@ import { loadCatalogue } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 async function project(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-'));
+  const directory = await tempDir('paqvilo-init-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -32,13 +35,18 @@ const node = (args, options = {}) =>
         execFile(
           process.execPath,
           args,
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options },
+          { env, encoding: 'utf8', windowsHide: true, ...options },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
       ),
   );
 const run = (directory, ...args) => node([cli, 'init', directory, ...args]);
+// The completion markers the generator wrote, counted independently of the completion scanner.
+const writtenMarkers = async (directory, created) =>
+  (await Promise.all(created.map((name) => read(directory, name))))
+    .flatMap((body) => body.split(/\r?\n/))
+    .filter((line) => line.includes('TODO(paqvilo-init):')).length;
 
 test('defaults generate a complete empty project, valid catalogue and bound offline pack', async (t) => {
   const directory = await project(t);
@@ -72,7 +80,9 @@ test('defaults generate a complete empty project, valid catalogue and bound offl
   assert.ok(files.includes('sample.code-workspace'));
   const unfinished = checkProject(directory);
   assert.equal(unfinished.ok, false);
-  assert.equal(unfinished.todo.filter((item) => item.kind === 'marker').length, 7);
+  const markers = await writtenMarkers(directory, result.created);
+  assert.ok(markers > 0);
+  assert.equal(unfinished.todo.filter((item) => item.kind === 'marker').length, markers);
   assert.ok(unfinished.todo.every((item) => item.line > 0 && item.file));
   assert.match(scaffoldWarning(directory), /paqvilo init --check/);
 });
@@ -114,12 +124,16 @@ test('multiple sites/packs, chrome, custom paths and dependency specification ar
       assert.equal(task.args[task.args.indexOf('--browser') + 1], 'chrome');
     }
   }
-  for (const launch of launches.configurations) {
+  const browserLaunches = launches.configurations.filter((launch) => launch.type !== 'clr');
+  for (const launch of browserLaunches) {
     assert.equal(launch.type, 'chrome');
     assert.ok(labels.has(launch.preLaunchTask));
     assert.equal(launch.webRoot, '${workspaceFolder}/../exports');
   }
-  assert.equal(launches.configurations.length, 6);
+  // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
+  assert.equal(browserLaunches.length, 2 * options.sites.length + 2);
+  assert.equal(launches.configurations.filter((launch) => launch.type === 'clr').length, 1);
+  assert.equal(launches.configurations.length, browserLaunches.length + 1);
   assert.ok(new RegExp(DEV_BACKGROUND.endsPattern).test(DEV_READY));
   const context = await createMirageContext({ config: pathToFileURL(path.join(first, 'paqvilo.config.yml')) });
   assert.deepEqual(
@@ -149,7 +163,7 @@ test('no-pack/no-vscode generate runnable tests without pack adapters or editor 
   assert.ok(!manifest.scripts.setup.includes('refresh-editor'));
   assert.equal(YAML.parse(await read(directory, 'paqvilo.config.yml')).sites.portal.mirage.dataPacks, undefined);
   assert.match(manifest.scripts.test, /test\/\*\.test\.mjs$/);
-  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /from 'paqvilo\/mirage'/);
+  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /await import\('paqvilo\/mirage'\)/);
 });
 
 test('agent guidance is concise, covers setup/validation/boundaries and links to maintained toolkit docs', async (t) => {
@@ -195,8 +209,14 @@ test('site IDs that resemble workflow names preserve project-wide picker and deb
   const tasks = await readJson(directory, '.vscode/tasks.json');
   assert.equal(new Set(tasks.tasks.map((task) => task.label)).size, tasks.tasks.length);
   const launches = await readJson(directory, '.vscode/launch.json');
-  assert.equal(launches.configurations.length, 8);
-  for (const launch of launches.configurations) {
+  // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
+  const browserLaunches = launches.configurations.filter((launch) => launch.type === 'msedge');
+  assert.equal(browserLaunches.length, 2 * 3 + 2);
+  const clrLaunches = launches.configurations.filter((launch) => launch.type === 'clr');
+  assert.equal(clrLaunches.length, 1);
+  assert.equal(clrLaunches[0].processId, '${command:pickProcess}');
+  assert.equal(launches.configurations.length, browserLaunches.length + clrLaunches.length);
+  for (const launch of browserLaunches) {
     const task = tasks.tasks.find((task) => task.label === launch.preLaunchTask);
     assert.equal(task.args[task.args.indexOf('--debug-port') + 1], String(launch.port));
   }
@@ -311,6 +331,7 @@ test('completion rejects unusable site/environment selections and personal overr
   );
 });
 
+// @test-kind security: editor output path validation refuses unsafe destinations before changing other documents
 test('unsafe editor outputs fail before other documents change, and generated alternatives are reported as created', async (t) => {
   const directory = await project(t);
   await prepareProject(directory, { name: 'safe' });
@@ -340,7 +361,7 @@ test('generated browser runner ignores empty pack folders and propagates real te
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 20000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   assert.equal(execute().status, 0, 'all-empty directories are allowed');
   await fs.writeFile(
@@ -383,6 +404,7 @@ test('generated smoke exercises enhanced and code-site exports instead of silent
   );
 });
 
+// @test-kind security: scaffold writes cannot replace unrelated content or follow symbolic output paths
 test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async (t) => {
   const directory = await project(t);
   const unrelated = path.join(directory, 'project');
@@ -434,13 +456,17 @@ test('CLI help, JSON errors and exclusive writes protect unrelated content and s
   assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
 });
 
+// @test-kind security: project checks inspect definitions without executing external pack code or changing project files
 test('completion checks report schema, packs, origins, paths and markers without writing or importing packs', async (t) => {
   const directory = await project(t);
   const plan = await prepareProject(directory, { name: 'sample' });
   const before = new Map(await Promise.all(plan.created.map(async (name) => [name, await read(directory, name)])));
   const fresh = await run(directory, '--check', '--json');
   assert.equal(fresh.status, 1);
-  assert.equal(JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length, 7);
+  assert.equal(
+    JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length,
+    await writtenMarkers(directory, plan.created),
+  );
   for (const [name, body] of before) assert.equal(await read(directory, name), body);
   await fs.writeFile(
     path.join(directory, 'pack/pack.mjs'),
@@ -522,4 +548,20 @@ test('editor refresh follows catalogue/.env/worktree paths and preserves edited 
   const before = await read(directory, '.vscode/tasks.json');
   await refreshEditor(directory, { workspaceOnly: true, processEnv: { PAQVILO_REPO: worktree } });
   assert.equal(await read(directory, '.vscode/tasks.json'), before);
+});
+
+test('every generated development task parses with the CLI option parser for each browser choice', async (t) => {
+  for (const browser of [undefined, 'msedge', 'chrome', 'chromium']) {
+    const directory = await project(t);
+    await prepareProject(directory, { name: 'guarded', noPack: true, browser });
+    const processTasks = (await readJson(directory, '.vscode/tasks.json')).tasks.filter(
+      (task) => task.type === 'process',
+    );
+    assert.ok(processTasks.length >= 8, 'the lense and mirage development workflows are generated as tasks');
+    for (const task of processTasks) {
+      const args = task.args.slice(1).map((arg) => arg.replace('${workspaceFolder}', directory));
+      const result = await node([cli, ...args, '--help'], { cwd: directory });
+      assert.equal(result.status, 0, `${task.label} (${browser ?? 'default browser'}): ${result.stderr.trim()}`);
+    }
+  }
 });

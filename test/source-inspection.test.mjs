@@ -1,11 +1,96 @@
+// @test-kind unproven: the checks in this file exercise source inspection with local fixtures; no native capture establishes the behaviour they assert.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
+import {
+  createApiRouteObserver,
+  createSourceInspector,
+  inspectionSources,
+  inspectRenderedPage,
+} from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
+
+// @test-kind contract: the serialized browser collector retains its public function identity
+test('the serialized browser collector retains its public function identity', () => {
+  assert.equal(inspectRenderedPage.name, 'inspectRenderedPage');
+  assert.equal(inspectRenderedPage.length, 0);
+  const embedded = vm.runInNewContext('(' + inspectRenderedPage.toString() + ')');
+  assert.equal(embedded.name, 'inspectRenderedPage');
+  assert.equal(embedded.length, 0);
+});
+
+// @test-kind contract: the route observer keeps the Web API routes the session itself saw, independent of the page's resource buffer
+test('the route observer records entity sets and server logic routes from request URLs and resets', () => {
+  const observer = createApiRouteObserver();
+  const document = 'https://portal.invalid/p';
+  observer.record('https://portal.invalid/_api/x_things(1)', document);
+  observer.record('https://portal.invalid/_api/serverlogics/x_logic?x=1', document);
+  observer.record('https://portal.invalid/other', document);
+  observer.record('not a url', document);
+  const rendered = { assets: [], controls: [], apiSets: ['x_fromPage'] };
+  const merged = observer.merge(rendered);
+  assert.deepEqual(merged, {
+    assets: [],
+    controls: [],
+    apiSets: ['x_fromPage', 'x_things', 'serverlogics'],
+    serverLogicPaths: ['/_api/serverlogics/x_logic'],
+  });
+  assert.deepEqual(rendered, { assets: [], controls: [], apiSets: ['x_fromPage'] });
+  observer.navigationRequested(document);
+  observer.committed(document);
+  const afterReset = observer.merge({ assets: [], controls: [] });
+  assert.deepEqual(afterReset, { assets: [], controls: [], apiSets: [] });
+  assert.equal('serverLogicPaths' in afterReset, false);
+});
+
+// @test-kind contract: only the navigation the main frame requested and committed clears the routes of the document it replaces
+test('the route observer keeps routes through same-document navigations, downloads and empty responses', () => {
+  const observer = createApiRouteObserver();
+  observer.record('https://portal.invalid/_api/x_a', 'https://portal.invalid/p');
+  const apiSets = () => observer.merge({ assets: [], controls: [] }).apiSets;
+  observer.committed('https://portal.invalid/p?page=2');
+  assert.deepEqual(apiSets(), ['x_a'], 'a commit without a requested navigation keeps the routes');
+  observer.navigationRequested('https://portal.invalid/dl');
+  observer.committed('https://portal.invalid/p#x');
+  assert.deepEqual(apiSets(), ['x_a'], 'a navigation that never commits keeps the routes');
+  observer.navigationRequested('https://portal.invalid/next');
+  observer.committed('https://portal.invalid/next#top');
+  assert.deepEqual(apiSets(), [], 'the committed navigation clears the routes, ignoring the fragment');
+});
+
+// @test-kind contract: a request to another origin is never evidence for the page that the observer watches
+test('the route observer ignores requests to another origin than the document', () => {
+  const observer = createApiRouteObserver();
+  observer.record('https://other.invalid/_api/x_b', 'https://portal.invalid/p');
+  observer.record('https://other.invalid/_api/serverlogics/x_c', 'https://portal.invalid/p');
+  assert.deepEqual(observer.merge({ assets: [], controls: [] }), { assets: [], controls: [], apiSets: [] });
+});
+
+// @test-kind contract: a server logic route called after the page's resource buffer filled is attributed as an observed request
+test('a server logic called after the resource buffer filled is still reported as an observed request', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const dir = path.join(fx.portal, 'server-logic');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'orders.serverlogic.yml'), 'adx_serverlogicid: orders-logic\nadx_name: orders');
+  fs.writeFileSync(path.join(dir, 'orders.js'), 'function get() {}');
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '<p>No script references the operation.</p>',
+  );
+  const observer = createApiRouteObserver();
+  observer.record('https://portal.invalid/_api/serverlogics/orders?$top=1', 'https://portal.invalid/');
+  const rendered = observer.merge({ assets: [], controls: [] });
+  const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/', rendered);
+  const rows = report.logic
+    .filter((row) => row.kind === 'server-logic')
+    .map((row) => ({ name: row.name, evidence: row.evidence }));
+  assert.deepEqual(rows, [{ name: 'orders', evidence: 'observed-request' }]);
+});
 
 test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {
   const fx = inspectionFixture();
@@ -40,6 +125,7 @@ test('list action modal forms and Web API column candidates come from the select
   assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
+// @test-kind contract: element candidates preserve page, template, snippet and script source identity without runtime ownership claims
 test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -104,6 +190,7 @@ test('platform routes index the website shell includes while authored bare-shell
   );
 });
 
+// @test-kind contract: source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies
 test('source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -147,6 +234,7 @@ test('a rendered classic list adds its configured view and columns even without 
   assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
+// @test-kind contract: repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly
 test('repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -166,6 +254,8 @@ test('repeated enrichment keeps unresolved diagnostics stable and rejects absent
 });
 
 test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
@@ -326,6 +416,7 @@ test('live inspection selects exported route languages and matching snippet sour
   assert.equal((await inspector.inspect('/zz-ZZ/')).report.page, null);
 });
 
+// @test-kind contract: asset inspection follows relative declared references with exact browser path matching
 test('asset inspection follows relative declared references with exact browser path matching', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -519,6 +610,7 @@ test('project-selected Solution metadata provides exact FormXml and field paths;
   assert.equal((await inspector.inspect('/')).report.snippets[0].value, 'Fresh banner');
 });
 
+// @test-kind contract: missing or mismatched Solution configuration preserves portal inspection and does not select an unrelated project
 test('missing or mismatched Solution configuration preserves portal inspection and does not select an unrelated project', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -535,6 +627,7 @@ test('missing or mismatched Solution configuration preserves portal inspection a
   assert.equal(mismatched.diagnostics[0].code, 'INSPECT_PROJECT_UNAVAILABLE');
 });
 
+// @test-kind contract: the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names
 test('the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names', () => {
   // page.evaluate serializes the function, so module-scope helpers would be missing in the browser.
   const page = {
@@ -690,6 +783,9 @@ test('native subgrids and quick views trace child views, tables, fields, action 
     false,
   );
   const grid = report.nativeComponents.find((control) => control.id === 'ChildGrid');
+  const quick = report.nativeComponents.find((control) => control.id === 'ChildQuick');
+  assert.equal(quick.ownerFormXmlId, 'widget-form');
+  assert.equal(quick.targetFormId, 'quick-form');
   assert.equal(grid.evidence, 'rendered-control-id');
   assert.equal(grid.relationship, 'fx_widget_children');
   assert.equal(

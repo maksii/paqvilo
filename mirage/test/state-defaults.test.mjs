@@ -5,8 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { importSolutionData, applySolutionData } from '../lib/solution-data.mjs';
 import { DataStore } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 test('Source-declared state/status defaults make a newly created record visible in authored active-record queries', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-state-default-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-state-default-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'Entity.xml');
   await fs.writeFile(
@@ -99,7 +100,7 @@ test('Authored recently-added queries include only the previous specified hours,
 });
 
 test("a configured (preset) mapping keeps the Solution's create defaults it does not name", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-state-default-preset-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-state-default-preset-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'Entity.xml');
   await fs.writeFile(

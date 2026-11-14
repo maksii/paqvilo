@@ -1,18 +1,19 @@
+// @test-kind contract: the baseline hook protocol stops, reconciles and reports persona, reset and admin hook failures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-const candidate = fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url));
+import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const ids = ['fixture/alpha-one', 'fixture/alpha-two', 'fixture/beta-one', 'fixture/beta-two'];
 
 async function bridgeFixture() {
   const fs = await import('node:fs');
   const readline = await import('node:readline');
   const [closed, events, mode] = process.argv.slice(2);
-  const watchdog = setTimeout(() => process.exit(99), 6000);
+  // Only ends an orphan whose parent never closes stdin; it is longer than any run, so it never decides a result.
+  const watchdog = setTimeout(() => process.exit(99), 300_000);
   const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   readline
     .createInterface({ input: process.stdin })
@@ -68,8 +69,8 @@ async function bridgeFixture() {
       process.exit(0);
     });
 }
-async function fixture(mode) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline uncertain hook '));
+async function fixture(t, mode) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline uncertain hook '));
   try {
     const server = path.join(directory, 'bridge.mjs'),
       hook = path.join(directory, 'hook.mjs');
@@ -105,35 +106,18 @@ async function fixture(mode) {
     const matrixFile = path.join(directory, 'matrix.json'),
       out = path.join(directory, 'out');
     await fs.writeFile(matrixFile, JSON.stringify(matrix));
-    const child = spawn(
-      process.execPath,
-      [candidate, 'capture', '--matrix', matrixFile, '--out', out, '--side', 'live'],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    // A matrix that configures the cache clear needs write permission for it (set-up refuses it otherwise).
+    const writes = live.clearCache ? ['--allow-writes'] : [];
+    // A run that never exits fails on the test timeout, whose abort signal also stops the child.
+    const { code: exit, output } = await runBaselineCapture(
+      ['--matrix', matrixFile, '--out', out, '--side', 'live', '--all-scenarios', ...writes],
+      t.signal,
     );
-    let output = '',
-      timedOut = false;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk;
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 8000);
-    let exit;
-    try {
-      exit = await new Promise((resolve, reject) => {
-        child.once('exit', resolve);
-        child.once('error', reject);
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    assert.equal(timedOut, false, output);
-    assert.equal(await fs.readFile(closed, 'utf8'), 'closed');
-    const run = JSON.parse(await fs.readFile(path.join(out, 'run-live.json'), 'utf8'));
+    // A missing file fails with the CLI output, which says why the run ended before writing it.
+    const readWritten = (file) =>
+      fs.readFile(file, 'utf8').catch((error) => assert.fail(`${error.message}\nCLI exit ${exit}:\n${output}`));
+    assert.equal(await readWritten(closed), 'closed', output);
+    const run = JSON.parse(await readWritten(path.join(out, 'run-live.json')));
     const readEvents = async (file) => {
       try {
         return (await fs.readFile(file, 'utf8')).trim().split('\n').filter(Boolean);
@@ -153,8 +137,8 @@ async function fixture(mode) {
     await walk(out);
     return { exit, run, hooks: await readEvents(hookEvents), bridge: await readEvents(bridgeEvents), files, output };
   } finally {
-    assert.ok(directory.startsWith(os.tmpdir() + path.sep));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 function assertBlocked(result, hook, phase) {
@@ -188,40 +172,40 @@ function assertBlocked(result, hook, phase) {
   }
 }
 
-test('failed mutating persona hook blocks both remaining persona groups without extra calls', async () => {
-  const result = await fixture('persona-error');
+test('failed mutating persona hook blocks both remaining persona groups without extra calls', async (t) => {
+  const result = await fixture(t, 'persona-error');
   assertBlocked(result, 'livePersona', 'persona');
   assert.deepEqual(result.hooks, ['persona:alpha']);
   assert.deepEqual(result.bridge, []);
   assert.match(result.run.scenarios[0].problems[0], /Hook failed \(7\)/);
 });
-test('failed reset hook runs once and blocks every remaining case rather than blindly retrying', async () => {
-  const result = await fixture('reset-error');
+test('failed reset hook runs once and blocks every remaining case rather than blindly retrying', async (t) => {
+  const result = await fixture(t, 'reset-error');
   assertBlocked(result, 'liveReset', 'reset');
   assert.deepEqual(result.hooks, ['persona:alpha', 'reset']);
   assert.deepEqual(result.bridge, ['persona-alpha-1']);
 });
-test('uncertain admin add does not remove unknown original membership or attempt another persona', async () => {
-  const result = await fixture('admin-add-error');
+test('uncertain admin add does not remove unknown original membership or attempt another persona', async (t) => {
+  const result = await fixture(t, 'admin-add-error');
   assertBlocked(result, 'liveAdminAdd', 'persona');
   assert.deepEqual(result.hooks, ['persona:alpha', 'add']);
   assert.deepEqual(result.bridge, ['persona-alpha-1']);
 });
-test('failed admin removal after successful grant and cache cycle blocks later groups', async () => {
-  const result = await fixture('admin-remove-error');
+test('failed admin removal after successful grant and cache cycle blocks later groups', async (t) => {
+  const result = await fixture(t, 'admin-remove-error');
   assertBlocked(result, 'liveAdminRemove', 'persona');
   assert.deepEqual(result.hooks, ['persona:alpha', 'add', 'remove']);
   assert.deepEqual(result.bridge, ['persona-alpha-1', 'clear-cache']);
 });
-test('aggregate cache and cleanup failure retains both errors and its mutating-hook stop marker', async () => {
-  const result = await fixture('aggregate-error');
+test('aggregate cache and cleanup failure retains both errors and its mutating-hook stop marker', async (t) => {
+  const result = await fixture(t, 'aggregate-error');
   assertBlocked(result, 'liveAdminRemove', 'persona');
   assert.deepEqual(result.hooks, ['persona:alpha', 'add', 'remove']);
   assert.match(result.run.scenarios[0].problems[0], /Invented cache transport failure/);
   assert.match(result.run.scenarios[0].problems[0], /admin role cleanup also failed/);
 });
-test('ordinary read-only probe mismatch still lets a different persona group capture', async () => {
-  const result = await fixture('probe-error');
+test('ordinary read-only probe mismatch still lets a different persona group capture', async (t) => {
+  const result = await fixture(t, 'probe-error');
   assert.equal(result.exit, 2);
   assert.deepEqual(
     result.run.scenarios.map((row) => row.id),
@@ -237,8 +221,8 @@ test('ordinary read-only probe mismatch still lets a different persona group cap
   assert.deepEqual(result.hooks, []);
   assert.deepEqual(result.bridge, ['persona-alpha-1', 'persona-beta-1', ids[2], ids[3]]);
 });
-test('successful hook protocol still captures both personas and all four cases', async () => {
-  const result = await fixture('success');
+test('successful hook protocol still captures both personas and all four cases', async (t) => {
+  const result = await fixture(t, 'success');
   assert.equal(result.exit, 0, result.output);
   assert.equal(result.run.totals.captured, 4);
   assert.equal(result.run.totals.error, 0);

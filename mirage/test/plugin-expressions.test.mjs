@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo related-expression traversal over declared relationships only, trimmed by the caller's table permissions and never widening reads
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';

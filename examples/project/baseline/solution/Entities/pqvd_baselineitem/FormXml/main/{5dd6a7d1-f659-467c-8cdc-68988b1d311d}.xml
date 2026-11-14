@@ -550,6 +550,11 @@
                         </control>
                       </cell>
                     </row>
+                    <row />
+                    <row />
+                    <row />
+                    <row />
+                    <row />
                     <row>
                       <cell id="{A6C9462B-2BAA-41B3-863F-8C6E3462C25C}" showlabel="false" rowspan="6">
                         <labels>
@@ -558,6 +563,11 @@
                         <control id="notescontrol" classid="{06375649-C143-495E-A496-C962E5B4488E}" disabled="false" />
                       </cell>
                     </row>
+                    <row />
+                    <row />
+                    <row />
+                    <row />
+                    <row />
                     <row>
                       <cell id="{07808525-00C7-4BBF-84AE-5889C03FE6F6}" showlabel="true" rowspan="2">
                         <labels>
@@ -575,6 +585,7 @@
                         </control>
                       </cell>
                     </row>
+                    <row />
                     <row>
                       <cell id="{12176941-052F-46E0-88B4-39300D4A559A}" showlabel="true" rowspan="4">
                         <labels>
@@ -592,6 +603,9 @@
                         </control>
                       </cell>
                     </row>
+                    <row />
+                    <row />
+                    <row />
                     <row>
                       <cell id="{F22549D2-23F6-41E9-8594-B0668095FD6D}" showlabel="false" userspacer="true">
                         <labels>

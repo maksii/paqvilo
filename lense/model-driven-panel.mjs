@@ -3,6 +3,13 @@ import { modelDrivenResourcePath } from './model-driven.mjs';
 import { GitBaseline, gitHead } from './git.mjs';
 import { comparison } from './panel.mjs';
 
+const problemType = (type) => {
+  if (['pageerror', 'error'].includes(type)) return 'error';
+  if (['warn', 'warning'].includes(type)) return 'warning';
+  if (type === 'requestfailed') return 'failed';
+  return type;
+};
+
 /** The canonical panel's data contract. Model-driven code supplies facts, never a second shell. */
 export function modelDrivenPanelData(
   state,
@@ -11,15 +18,15 @@ export function modelDrivenPanelData(
   const resources = state.resources ?? [];
   const forms = state.catalogue?.forms ?? [];
   const sourceDir = cfg.sourceDir ?? cfg.projectRoot ?? '';
+  const resourceGroup = (item) => {
+    if (/(?:javascript|ecmascript)/i.test(item.mime ?? '')) return 'js';
+    if (/text\/css/i.test(item.mime ?? '')) return 'css';
+    if (/\.(?:png|svg|jpg|woff2?)$/i.test(item.name)) return 'media';
+    return 'other';
+  };
   const resource = (item) => ({
     kind: 'web-file',
-    group: /(?:javascript|ecmascript)/i.test(item.mime ?? '')
-      ? 'js'
-      : /text\/css/i.test(item.mime ?? '')
-        ? 'css'
-        : /\.(?:png|svg|jpg|woff2?)$/i.test(item.name)
-          ? 'media'
-          : 'other',
+    group: resourceGroup(item),
     title: item.name,
     rel: item.name,
     path: item.source,
@@ -48,13 +55,7 @@ export function modelDrivenPanelData(
     }
     return {
       ...item,
-      type: ['pageerror', 'error'].includes(item.type)
-        ? 'error'
-        : ['warn', 'warning'].includes(item.type)
-          ? 'warning'
-          : item.type === 'requestfailed'
-            ? 'failed'
-            : item.type,
+      type: problemType(item.type),
       at: item.at ?? Date.now(),
       where,
       ...(resource
@@ -205,18 +206,17 @@ export function modelDrivenPanelInspection(state) {
   const exact = onForm ? catalogue.forms.filter((form) => form.id === context.formId) : [];
   // Missing current identity leaves configured forms as candidates. Operation
   // formType=1 does not distinguish a main create form from quick create.
-  const forms = !onForm
-    ? []
-    : exact.length
-      ? exact
-      : catalogue.forms.filter(
-          (form) => form.entity === context.entity && (!form.type || /^(?:main|quick create|mobile)/.test(form.type)),
-        );
-  const evidence = exact.length
-    ? state.localSimulation
-      ? 'mirage-form-id'
-      : 'native-form-id'
-    : 'candidate-table-form';
+  let forms;
+  if (!onForm) forms = [];
+  else if (exact.length) forms = exact;
+  else
+    forms = catalogue.forms.filter(
+      (form) => form.entity === context.entity && (!form.type || /^(?:main|quick create|mobile)/.test(form.type)),
+    );
+  let evidence;
+  if (!exact.length) evidence = 'candidate-table-form';
+  else if (state.localSimulation) evidence = 'mirage-form-id';
+  else evidence = 'native-form-id';
   const evidenceLabel = exact.length
     ? 'Form ID of this page matched to the selected Solution'
     : `Candidate: an exported form of ${context.entity ?? 'this table'}; current form identity is unavailable`;
@@ -272,6 +272,23 @@ export function modelDrivenPanelInspection(state) {
       ),
     ),
   ];
+  const viewColumns = () => {
+    if (onForm) return columns;
+    if (!view) return [];
+    return view.columns.map((name) => {
+      const table = tables.get(context.entity),
+        meta = column(table, name);
+      return {
+        entity: context.entity,
+        name,
+        label: meta?.label,
+        type: meta?.type,
+        resolved: Boolean(meta),
+        ref: meta?.source ?? table?.source,
+        evidence: 'view-column',
+      };
+    });
+  };
   return {
     evidence: {
       source:
@@ -306,23 +323,7 @@ export function modelDrivenPanelInspection(state) {
         : []),
     ],
     forms: mapped,
-    columns: onForm
-      ? columns
-      : view
-        ? view.columns.map((name) => {
-            const table = tables.get(context.entity),
-              meta = column(table, name);
-            return {
-              entity: context.entity,
-              name,
-              label: meta?.label,
-              type: meta?.type,
-              resolved: Boolean(meta),
-              ref: meta?.source ?? table?.source,
-              evidence: 'view-column',
-            };
-          })
-        : [],
+    columns: viewColumns(),
     views: views.map((item) => ({
       ...item,
       fields: item.columns.map((name) => ({ name })),
@@ -446,6 +447,39 @@ export function modelDrivenSourceFiles(state) {
   return allowed;
 }
 
+function discardMissingNativeAssets(currentAssets, native, nativeBytes) {
+  for (const [name, bytes] of native)
+    if (!currentAssets.has(name)) {
+      native.delete(name);
+      nativeBytes -= bytes.length;
+    }
+  return nativeBytes;
+}
+
+function groupCurrentAssets(assets, rootOf) {
+  const grouped = new Map();
+  for (const asset of assets.values())
+    if (asset.file) {
+      const root = rootOf(asset.file);
+      if (!grouped.has(root)) grouped.set(root, []);
+      grouped.get(root).push(asset);
+    }
+  return grouped;
+}
+
+function setUnrootedAssetFacts(assets, native, facts) {
+  for (const asset of assets.values())
+    if (!facts.has(asset.name)) {
+      const bytes = native.get(asset.name);
+      facts.set(asset.name, {
+        edited: undefined,
+        canDiff: Boolean(bytes),
+        differs: bytes ? !bytes.equals(asset.data) : null,
+        before: null,
+      });
+    }
+}
+
 /** Git supplies the edited/scope baseline; only actually observed native bytes supply online equality. */
 export async function createModelDrivenPanelSources(imported) {
   const byName = (value) => ({
@@ -488,21 +522,12 @@ export async function createModelDrivenPanelSources(imported) {
       })();
     return updating;
   }
-  async function readUpdate(next, repin) {
+  // The inline awaits preserve the public update/coalescing order.
+  async function /* NOSONAR */ readUpdate(next, repin) {
     current = byName(next);
     if (repin) baselines.clear();
-    for (const [name, bytes] of native)
-      if (!current.assets.has(name)) {
-        native.delete(name);
-        nativeBytes -= bytes.length;
-      }
-    const grouped = new Map();
-    for (const asset of current.assets.values())
-      if (asset.file) {
-        const root = rootOf(asset.file);
-        if (!grouped.has(root)) grouped.set(root, []);
-        grouped.get(root).push(asset);
-      }
+    nativeBytes = discardMissingNativeAssets(current.assets, native, nativeBytes);
+    const grouped = groupCurrentAssets(current.assets, rootOf);
     state.facts = new Map();
     for (const [root, assets] of grouped) {
       let baseline = baselines.get(root);
@@ -524,18 +549,10 @@ export async function createModelDrivenPanelSources(imported) {
         });
       }
     }
-    for (const asset of current.assets.values())
-      if (!state.facts.has(asset.name)) {
-        const bytes = native.get(asset.name);
-        state.facts.set(asset.name, {
-          edited: undefined,
-          canDiff: Boolean(bytes),
-          differs: bytes ? !bytes.equals(asset.data) : null,
-          before: null,
-        });
-      }
+    setUnrootedAssetFacts(current.assets, native, state.facts);
     const first = [...baselines.entries()][0],
-      head = first ? await gitHead(first[0]) : null;
+      // A HEAD read Git does not answer leaves the Git state unknown; the next update asks again.
+      head = first ? await gitHead(first[0]).catch(() => null) : null;
     state.git = head
       ? {
           ...head,
@@ -562,13 +579,13 @@ export async function createModelDrivenPanelSources(imported) {
       return new Set([...state.facts].filter(([, fact]) => fact.edited === true).map(([name]) => name));
     },
     setScope(value) {
-      if (!['all', 'changed'].includes(value)) throw Error('Scope must be all or changed.');
+      if (!['all', 'changed'].includes(value)) throw new Error('Scope must be all or changed.');
       if (
         value === 'changed' &&
         (state.facts.size !== current.assets.size ||
           [...state.facts.values()].some((fact) => fact.edited === undefined))
       )
-        throw Error('Changed scope requires a readable Git HEAD for every selected source root.');
+        throw new Error('Changed scope requires a readable Git HEAD for every selected source root.');
       state.scope = value;
     },
     observe(name, bytes) {

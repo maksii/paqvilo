@@ -14,6 +14,9 @@ const MAX_ITEMS = 200;
 const MAX_IMAGE = 8 * 1024 * 1024;
 const MAX_JSON = 4 * 1024 * 1024;
 const DEFAULT_STYLES = ['display', 'visibility', 'position', 'color', 'background-color', 'font-size'];
+const SUSPENDED_MESSAGE = 'The owned tab is outside the target origin; it resumes when the tab returns';
+// Hang guard for one page operation when the caller sends no timeoutMs: a page paused in the debugger never answers.
+const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
 
 export function redactUrl(value) {
   try {
@@ -41,7 +44,7 @@ export function redactText(value, limit = MAX_TEXT) {
     .replace(/\bBearer\s+[\w.+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, '[redacted JWT]')
     .replace(
-      /((?:["']?)(?:password|passwd|secret|token|access_token|refresh_token|id_token|authorization|cookie|api[_-]?key)(?:["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      /((?:["']?)(?:password|passwd|secret|token|access_token|refresh_token|id_token|authorization|cookie|api[_-]?key)(?:["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, // NOSONAR: regex kept: a rewrite would change matches or captures
       '$1[redacted]',
     )
     .slice(0, limit);
@@ -130,7 +133,9 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
     let text = '';
     let inspected = 0;
-    for (let child; (child = walker.nextNode()) && text.length < textLimit && inspected++ < 300;) {
+    for (;;) {
+      const child = walker.nextNode();
+      if (!child || text.length >= textLimit || inspected++ >= 300) break;
       if (!child.parentElement?.closest(blocked)) text += child.data.slice(0, textLimit - text.length) + ' ';
     }
     return text.replace(/\s+/g, ' ').trim().slice(0, textLimit);
@@ -212,6 +217,16 @@ export async function startAgentServer({
   let pageNumber = 0;
   let stopped = false;
   let operations = 0;
+  // Playwright calls with their own deadline (page.screenshot, page.goto) that have started and not settled. close()
+  // waits for these after the HTTP server stops. Calls without a deadline of their own (page reads and viewport
+  // resizes) are not tracked: they end with the page, which the session owns, so close() never waits on a page that
+  // does not answer.
+  const operationsRunning = new Set();
+  const owned = (promise) => {
+    operationsRunning.add(promise);
+    promise.finally(() => operationsRunning.delete(promise)).catch(() => {});
+    return promise;
+  };
   let closing;
   let discovery;
   const on = (target, name, handler, local) => {
@@ -245,7 +260,12 @@ export async function startAgentServer({
     }
   };
   const ownsPage = options.ownsPage ?? (() => true);
-  const active = (page) => ownsPage(page) && !page.isClosed() && sameOrigin(page.url(), cfg.origin);
+  // The agent is bound to cfg.origin for its whole life. The attached inspector serves page routes; while none
+  // is attached, the bound origin still classifies the owned tab's requests and navigations.
+  let inspector = options.deferred ? null : { origin: cfg.origin };
+  const inOrigin = (url) => sameOrigin(url, cfg.origin);
+  const active = (page) =>
+    Boolean(inspector) && ownsPage(page) && !page.isClosed() && sameOrigin(page.url(), inspector.origin);
   const documentUrl = (url) => {
     try {
       const value = new URL(url);
@@ -294,8 +314,8 @@ export async function startAgentServer({
     if (
       page
         ? !active(page) &&
-          !(sameOrigin(request.url(), cfg.origin) && (page.url() === 'about:blank' || request.isNavigationRequest?.()))
-        : !sameOrigin(request.url(), cfg.origin)
+          !(inOrigin(request.url()) && (page.url() === 'about:blank' || request.isNavigationRequest?.()))
+        : !inOrigin(request.url())
     )
       return;
     const record = {
@@ -383,10 +403,11 @@ export async function startAgentServer({
         pendingNavigations.delete(page);
         // History restoration and documents already present at startup have no observed request.
         // Treat them as unknown instead of assuming the current document was loaded with GET.
-        if (pending && pending.url === documentUrl(frame.url()))
+        if (pending?.url === documentUrl(frame.url()))
           documents.set(page, { method: pending.method, url: pending.url });
         else documents.delete(page);
         const previous = currentDocuments.get(page);
+        const wasInOrigin = inOrigin(previous?.url);
         const address = frame.url();
         // Fragment-only changes retain current errors. New documents and SPA route changes
         // get distinct diagnostic revisions, including history restoration without a request.
@@ -394,17 +415,15 @@ export async function startAgentServer({
           !pending && previous?.url !== address && documentUrl(previous?.url) === documentUrl(address);
         if (!fragmentOnly) currentDocuments.set(page, { id: pending?.documentId ?? nextDocument(page), url: address });
         else previous.url = address;
-        push(
-          sameOrigin(address, cfg.origin)
-            ? {
-                type: 'navigation',
-                pageId,
-                documentId: currentDocuments.get(page).id,
-                url: redactUrl(address),
-                method: documents.get(page)?.method ?? null,
-              }
-            : { type: 'page-left-origin', pageId },
-        );
+        if (!inOrigin(address)) push({ type: 'page-left-origin', pageId });
+        else
+          push({
+            type: wasInOrigin ? 'navigation' : 'page-entered-origin',
+            pageId,
+            documentId: currentDocuments.get(page).id,
+            url: redactUrl(address),
+            method: documents.get(page)?.method ?? null,
+          });
       },
       local,
     );
@@ -511,98 +530,102 @@ export async function startAgentServer({
     }),
   );
 
+  /* NOSONAR: mixed return values are part of the contract */ const textRowValue = (key, value) => {
+    if (typeof value === 'string') {
+      if (key === 'url') return location(value);
+      return redactText(value);
+    }
+    if (typeof value === 'boolean' || typeof value === 'number') return value;
+    return null;
+  };
   const textRows = (rows, keys) =>
     (rows ?? [])
       .slice(0, MAX_ITEMS)
       .map((row) =>
         Object.fromEntries(
-          keys
-            .filter((key) => row[key] !== undefined)
-            .map((key) => [
-              key,
-              typeof row[key] === 'string'
-                ? key === 'url'
-                  ? location(row[key])
-                  : redactText(row[key])
-                : typeof row[key] === 'boolean' || typeof row[key] === 'number'
-                  ? row[key]
-                  : null,
-            ]),
+          keys.filter((key) => row[key] !== undefined).map((key) => [key, textRowValue(key, row[key])]),
         ),
       );
-  const sessionState = () =>
-    options.sessionState
+  const header = () => ({
+    id,
+    session: { ...discovery, token: undefined },
+    readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
+    debugger: { port: runtime.debugPort ?? null, attached: false },
+  });
+  const tabAccess = () => ({
+    portalPageCount: pageList().length,
+    externalTabCount: [...pages.values()].filter(
+      (page) => !page.isClosed() && !active(page) && page.url() !== 'about:blank',
+    ).length,
+    blankTabCount: [...pages.values()].filter((page) => !page.isClosed() && page.url() === 'about:blank').length,
+  });
+  const suspendedState = () => ({
+    ...header(),
+    inspection: { suspended: true, reason: 'non-target-origin' },
+    access: tabAccess(),
+    pages: pageList(),
+  });
+  const attachedState = () => {
+    const state = inspector.sessionState();
+    return { ...header(), ...state, inspection: { ...state.inspection, suspended: false }, pages: pageList() };
+  };
+  const portalState = () => ({
+    ...header(),
+    browserScope: {
+      mode: cfg.portals ?? 'selected',
+      stopScope: 'browser',
+      targets: (cfg.devTargets ?? [{ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin }]).map(
+        ({ siteName, envName, origin }) => ({ site: siteName, environment: envName, origin }),
+      ),
+    },
+    access: tabAccess(),
+    baseline: {
+      spec: session.baseline.spec,
+      requested: cfg.site.markup?.requestedBaseline ?? session.baseline.spec,
+      commit: session.baseline.commit,
+      available: session.baseline.available,
+      ...(session.baseline.error ? { error: redactText(session.baseline.error) } : {}),
+    },
+    git: session.head
       ? {
-          id,
-          session: { ...discovery, token: undefined },
-          readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
-          debugger: { port: runtime.debugPort ?? null, attached: false },
-          ...options.sessionState(),
-          pages: pageList(),
+          branch: session.head.branch,
+          commit: session.head.commit,
+          detached: Boolean(session.head.detached),
+          headMoved: Boolean(session.baseline.available && session.head.commit !== session.baseline.commit),
         }
-      : {
-          id,
-          session: { ...discovery, token: undefined },
-          readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
-          browserScope: {
-            mode: cfg.portals ?? 'selected',
-            stopScope: 'browser',
-            targets: (cfg.devTargets ?? [{ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin }]).map(
-              ({ siteName, envName, origin }) => ({ site: siteName, environment: envName, origin }),
-            ),
-          },
-          access: {
-            portalPageCount: pageList().length,
-            externalTabCount: [...pages.values()].filter(
-              (page) => !page.isClosed() && !active(page) && page.url() !== 'about:blank',
-            ).length,
-            blankTabCount: [...pages.values()].filter((page) => !page.isClosed() && page.url() === 'about:blank')
-              .length,
-          },
-          debugger: { port: runtime.debugPort ?? null, attached: false },
-          baseline: {
-            spec: session.baseline.spec,
-            requested: cfg.site.markup?.requestedBaseline ?? session.baseline.spec,
-            commit: session.baseline.commit,
-            available: session.baseline.available,
-            ...(session.baseline.error ? { error: redactText(session.baseline.error) } : {}),
-          },
-          git: session.head
-            ? {
-                branch: session.head.branch,
-                commit: session.head.commit,
-                detached: Boolean(session.head.detached),
-                headMoved: Boolean(session.baseline.available && session.head.commit !== session.baseline.commit),
-              }
-            : null,
-          overlay: {
-            scope: cfg.site.scope,
-            bypass: session.bypass,
-            liveReload: session.liveReload,
-            stats: {
-              webFiles: session.model.webFileByUrl.size,
-              inlineBlocks: session.rewriter.activeBlocks,
-              patches: session.rewriter.patches.length,
-            },
-            changedFiles: [...session.changedFiles].slice(0, MAX_ITEMS).map((file) => session.rel(file)),
-            changedCount: session.changedFiles.size,
-            disabledSources: [...(session.disabled ?? [])].slice(0, MAX_ITEMS),
-            disabledCount: session.disabled?.size ?? 0,
-            needsDeploy: textRows(session.rewriter.unsupported, ['rel', 'reason']),
-            warnings: (session.model.warnings ?? []).slice(0, MAX_ITEMS).map((value) => redactText(value)),
-          },
-          truncated: {
-            changedFiles: session.changedFiles.size > MAX_ITEMS,
-            disabledSources: (session.disabled?.size ?? 0) > MAX_ITEMS,
-            needsDeploy: session.rewriter.unsupported.length > MAX_ITEMS,
-            warnings: (session.model.warnings?.length ?? 0) > MAX_ITEMS,
-          },
-          pages: pageList(),
-        };
+      : null,
+    overlay: {
+      scope: cfg.site.scope,
+      bypass: session.bypass,
+      liveReload: session.liveReload,
+      stats: {
+        webFiles: session.model.webFileByUrl.size,
+        inlineBlocks: session.rewriter.activeBlocks,
+        patches: session.rewriter.patches.length,
+      },
+      changedFiles: [...session.changedFiles].slice(0, MAX_ITEMS).map((file) => session.rel(file)),
+      changedCount: session.changedFiles.size,
+      disabledSources: [...(session.disabled ?? [])].slice(0, MAX_ITEMS),
+      disabledCount: session.disabled?.size ?? 0,
+      needsDeploy: textRows(session.rewriter.unsupported, ['rel', 'reason']),
+      warnings: (session.model.warnings ?? []).slice(0, MAX_ITEMS).map((value) => redactText(value)),
+    },
+    truncated: {
+      changedFiles: session.changedFiles.size > MAX_ITEMS,
+      disabledSources: (session.disabled?.size ?? 0) > MAX_ITEMS,
+      needsDeploy: session.rewriter.unsupported.length > MAX_ITEMS,
+      warnings: (session.model.warnings?.length ?? 0) > MAX_ITEMS,
+    },
+    pages: pageList(),
+  });
+  const sessionState = () => {
+    if (!inspector) return suspendedState();
+    return inspector.sessionState ? attachedState() : portalState();
+  };
   const pageState = (page, pageId) => {
-    if (options.pageState)
+    if (inspector?.pageState)
       return {
-        ...options.pageState(page),
+        ...inspector.pageState(page),
         page: {
           id: pageId,
           documentId: currentDocuments.get(page)?.id,
@@ -713,7 +736,7 @@ export async function startAgentServer({
       clearTimeout(timer);
     }
   };
-  const server = http.createServer(async (request, response) => {
+  /* NOSONAR */ const server = http.createServer(async (request, response) => {
     try {
       if (stopped) throw fault(503, 'stopping', 'Development session is stopping');
       if (
@@ -756,6 +779,8 @@ export async function startAgentServer({
       const requestedPage = /^\/v1\/pages\/([^/]+)\//.exec(url.pathname)?.[1];
       if (requestedPage !== undefined) integer(requestedPage, undefined, Number.MAX_SAFE_INTEGER);
       if (!match) throw fault(404, 'not_found', 'Unknown agent API endpoint');
+      const scope = inspector;
+      if (!scope) throw fault(409, 'session_suspended', SUSPENDED_MESSAGE);
       const [, pageId, action] = match;
       const page = pages.get(pageId);
       if (!page || !active(page))
@@ -765,18 +790,19 @@ export async function startAgentServer({
         throw fault(405, 'method_not_allowed', 'Unsupported HTTP method');
       const body = await readBody(request);
       if (action === 'viewport') {
-        fields(body, ['width', 'height']);
+        fields(body, ['width', 'height', 'timeoutMs']);
         if (body.width == null || body.height == null)
           throw fault(400, 'invalid_argument', 'width and height are required');
         const viewport = {
           width: integer(body.width, undefined, 4096, 320),
           height: integer(body.height, undefined, 4096, 240),
         };
-        await withPage(page, 10_000, () => page.setViewportSize(viewport));
+        const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        await withPage(page, timeout, () => page.setViewportSize(viewport));
         return json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, viewport });
       }
       if (action === 'dom') {
-        fields(body, ['selector', 'limit', 'textLimit', 'styles']);
+        fields(body, ['selector', 'limit', 'textLimit', 'styles', 'timeoutMs']);
         const selector = body.selector ?? 'body *';
         if (typeof selector !== 'string' || selector.length > 1000 || !selector.trim())
           throw fault(400, 'invalid_argument', 'selector must be a non-empty CSS selector of at most 1000 characters');
@@ -787,9 +813,10 @@ export async function startAgentServer({
           styles.some((name) => typeof name !== 'string' || name.length > 80 || !/^(?:[a-z-]+|--[\w-]+)$/.test(name))
         )
           throw fault(400, 'invalid_argument', 'styles must contain at most 20 CSS property names');
-        const result = await withPage(page, 10_000, () =>
+        const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        const result = await withPage(page, timeout, () =>
           page.evaluate(inspectDom, {
-            origin: cfg.origin,
+            origin: scope.origin,
             selector,
             limit: integer(body.limit, 100, MAX_ITEMS),
             textLimit: integer(body.textLimit, 500, 2000, 0),
@@ -818,12 +845,13 @@ export async function startAgentServer({
         return json(response, 200, result);
       }
       if (action === 'screenshot') {
-        fields(body, ['fullPage', 'includePanel']);
+        fields(body, ['fullPage', 'includePanel', 'timeoutMs']);
         if (body.fullPage !== undefined && typeof body.fullPage !== 'boolean')
           throw fault(400, 'invalid_argument', 'fullPage must be true or false');
         if (body.includePanel !== undefined && typeof body.includePanel !== 'boolean')
           throw fault(400, 'invalid_argument', 'includePanel must be true or false');
-        const image = await withPage(page, 15_000, async () => {
+        const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        const image = await withPage(page, timeout, async () => {
           const dimensions = await page.evaluate(
             ({ origin, full }) =>
               location.origin !== origin
@@ -832,7 +860,7 @@ export async function startAgentServer({
                     width: full ? Math.max(document.documentElement.scrollWidth, innerWidth) : innerWidth,
                     height: full ? Math.max(document.documentElement.scrollHeight, innerHeight) : innerHeight,
                   },
-            { origin: cfg.origin, full: Boolean(body.fullPage) },
+            { origin: scope.origin, full: Boolean(body.fullPage) },
           );
           if (!dimensions) throw fault(403, 'origin_changed', 'The page left the configured portal origin');
           const { width, height } = dimensions;
@@ -842,16 +870,20 @@ export async function startAgentServer({
               'image_too_large',
               'Screenshot is limited to 8 megapixels and 8192 pixels per side; use the viewport',
             );
-          const bytes = await page.screenshot({
-            type: 'png',
-            scale: 'css',
-            fullPage: Boolean(body.fullPage),
-            ...(body.includePanel
-              ? {}
-              : { style: '#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector { visibility: hidden !important; }' }),
-            ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}),
-            timeout: 10_000,
-          });
+          const bytes = await owned(
+            page.screenshot({
+              type: 'png',
+              scale: 'css',
+              fullPage: Boolean(body.fullPage),
+              ...(body.includePanel
+                ? {}
+                : {
+                    style: '#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector { visibility: hidden !important; }',
+                  }),
+              ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}),
+              timeout,
+            }),
+          );
           if (bytes.length > MAX_IMAGE) throw fault(413, 'image_too_large', 'Screenshot exceeds 8 MiB');
           return bytes;
         });
@@ -875,11 +907,11 @@ export async function startAgentServer({
         if (typeof body.url !== 'string' || body.url.length > 4096 || /[\\\x00-\x20]/.test(body.url))
           throw fault(400, 'invalid_argument', 'url must be a portal URL or path without whitespace/backslashes');
         try {
-          target = new URL(body.url, cfg.origin);
+          target = new URL(body.url, scope.origin);
         } catch {
           throw fault(400, 'invalid_argument', 'Invalid navigation URL');
         }
-        if (target.origin !== cfg.origin || target.username || target.password)
+        if (target.origin !== scope.origin || target.username || target.password)
           throw fault(403, 'foreign_origin', 'Navigation must start on the configured portal origin');
       }
       if (action === 'reload' && !reloadAllowed(page))
@@ -893,7 +925,7 @@ export async function startAgentServer({
       const destination = action === 'navigate' ? target.href : refreshUrl(page.url());
       let navigated;
       try {
-        navigated = await withPage(page, timeout + 50, () => page.goto(destination, { waitUntil, timeout }));
+        navigated = await withPage(page, timeout + 50, () => owned(page.goto(destination, { waitUntil, timeout })));
       } catch (cause) {
         if (cause.name === 'TimeoutError' || cause.code === 'action_timeout') {
           try {
@@ -919,24 +951,23 @@ export async function startAgentServer({
         // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
         .replace(/[\x00-\x1f\x7f]/g, ' ')
         .slice(0, 1000);
-      const status =
-        error.status ??
-        (error.name === 'TimeoutError'
-          ? 504
-          : /(?:not a valid selector|querySelectorAll.*not valid)/i.test(error.message)
-            ? 400
-            : 500);
+      let status = error.status;
+      if (status === null || status === undefined) {
+        if (error.name === 'TimeoutError') status = 504;
+        else if (/(?:not a valid selector|querySelectorAll.*not valid)/i.test(error.message)) status = 400;
+        else status = 500;
+      }
       if (status >= 500) push({ type: 'action-error', code: error.code ?? 'action_failed', text: message });
       if (!request.complete) response.setHeader('connection', 'close');
+      let code = error.code;
+      if (code === null || code === undefined) {
+        if (status === 504) code = 'action_timeout';
+        else if (status === 400 && /selector/i.test(message)) code = 'invalid_selector';
+        else code = 'action_failed';
+      }
       json(response, status, {
         error: {
-          code:
-            error.code ??
-            (status === 504
-              ? 'action_timeout'
-              : status === 400 && /selector/i.test(message)
-                ? 'invalid_selector'
-                : 'action_failed'),
+          code,
           message,
         },
       });
@@ -951,6 +982,14 @@ export async function startAgentServer({
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
   });
+  // The state adapter is { origin, sessionState(), pageState(page) }; null suspends page-scoped routes.
+  // An agent serves one target origin. Attaching an inspector for another origin is refused; the owner opens
+  // a separate agent for that target instead.
+  const setInspector = (next) => {
+    if (next && next.origin !== cfg.origin)
+      throw new Error('An agent API serves one target origin; open a separate agent for the other target');
+    inspector = next ?? null;
+  };
   const close = () =>
     (closing ??= (async () => {
       stopped = true;
@@ -968,6 +1007,7 @@ export async function startAgentServer({
         });
         server.closeIdleConnections();
       });
+      await Promise.allSettled(operationsRunning);
       fs.rmSync(discoveryFile, { force: true });
     })());
   try {
@@ -1004,7 +1044,7 @@ export async function startAgentServer({
     on(context, 'close', () => {
       close().catch(() => {});
     });
-    return { discoveryFile, endpoint: discovery.endpoint, close };
+    return { discoveryFile, endpoint: discovery.endpoint, close, setInspector };
   } catch (error) {
     await close();
     throw error;

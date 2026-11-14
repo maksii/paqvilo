@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // Dataverse data messages: the recycle bin (the delete record hook, Restore, EmptyRecycleBin) and the classic import job
 // (ParseImport, TransformImport, ImportRecordsImport). Assumptions: undocumented error codes and message texts, the
 // privilege names, and the asyncoperation operationtype values chosen below.
@@ -6,12 +7,14 @@ import { DataError } from './data-error.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
+import { denied } from './dataverse-fls.mjs';
 import { parseEntityReference } from './data.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { requireMetadataPrivilege } from './dataverse-metadata-relationships.mjs';
 
 const CRM = 'Microsoft.Dynamics.CRM.';
+const BIND = '@odata.bind';
 const nowIso = () => new Date().toISOString();
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const bodyOf = (c) => {
@@ -58,7 +61,9 @@ function writeReference(store, entries, identity) {
   const name = `${mapping.logicalName}.json`;
   const data = Buffer.from(JSON.stringify(entries));
   const fileId = randomUUID();
-  ((store.state.dataverse ??= {}).files ??= {})[fileId] = {
+  store.state.dataverse ??= {};
+  store.state.dataverse.files ??= {};
+  store.state.dataverse.files[fileId] = {
     entity: REFERENCE,
     recordId: refId,
     column: 'deletedrecords',
@@ -68,7 +73,8 @@ function writeReference(store, entries, identity) {
     data: data.toString('base64'),
     createdOn: nowIso(),
   };
-  store.insertRow(REFERENCE, (store.state.tables[REFERENCE] ??= []), {
+  store.state.tables[REFERENCE] ??= [];
+  store.insertRow(REFERENCE, store.state.tables[REFERENCE], {
     deleteditemreferenceid: refId,
     name: String(snapshot[mapping.nameColumn] ?? id),
     deletedobject: id,
@@ -96,9 +102,9 @@ export function binRows(store, logical) {
     .filter((ref) => ref.validforrestore)
     .flatMap((ref) => snapshotsOf(store, ref))
     .filter((entry) => entry.logicalName === logical)
-    .map((entry) => structuredClone(entry.row));
+    .map((entry) => cloneStateData(entry.row));
 }
-const retainedRows = (store, logical) => structuredClone(store.state.dataverse?.retained?.[logical] ?? []);
+const retainedRows = (store, logical) => cloneStateData(store.state.dataverse?.retained?.[logical] ?? []);
 const eligible = (mapping) =>
   !NEVER_RECYCLED.has(mapping.logicalName) &&
   !/^(?:elastic|virtual)$/i.test(mapping.tableType ?? '') &&
@@ -126,7 +132,9 @@ const targetRef = (store, target) => {
 
 // Deletes a reference and its snapshot file; the caller holds the transaction.
 function dropReference(store, key) {
-  const files = ((store.state.dataverse ??= {}).files ??= {});
+  store.state.dataverse ??= {};
+  store.state.dataverse.files ??= {};
+  const files = store.state.dataverse.files;
   const rows = store.state.tables[REFERENCE] ?? [];
   const index = rows.findIndex((r) => guidKey(r.deleteditemreferenceid) === key);
   if (index < 0) return;
@@ -137,6 +145,111 @@ function dropReference(store, key) {
 // Restore takes the deleted record as Target; a deleteditemreference target is accepted too.
 // The documented conflict codes distinguish primary keys, alternate keys, removed choices and missing lookups;
 // the refusal text and status are guesses where the reference gives no wire response.
+function cascadeSnapshotExists(store, target) {
+  return (store.state.tables[REFERENCE] ?? []).some((reference) =>
+    snapshotsOf(store, reference).some(
+      (entry) =>
+        entry.logicalName === target.mapping.logicalName && guidKey(entry.row[target.mapping.idColumn]) === target.id,
+    ),
+  );
+}
+
+function validateRestoreField(store, mapping, row, column, definition) {
+  const value = row[column]?.id ?? row[column];
+  if (value == null) return;
+  if (
+    definition.options?.length &&
+    definition.optionSetOpen !== true &&
+    !definition.options.some((option) => String(option.value ?? option.Value) === String(value))
+  )
+    throw invalid(
+      'Picklist value not valid, please add the invalid value back to the picklist before restoring record. See inner exception for details.',
+      '0x80049949',
+    );
+  const targets = definition.targets ?? definition.lookupTargets;
+  if (
+    targets?.length &&
+    !targets.some((name) => {
+      const targetMapping = store.resolveMapping(name);
+      return (store.state.tables[name] ?? []).some(
+        (targetRow) => guidKey(targetRow[targetMapping.idColumn]) === guidKey(value),
+      );
+    })
+  )
+    throw invalid(
+      `Entity with id '${value}' and logical name '${targets[0]}' does not exist. We cannot restore the reference '${column}' that must be restored as part of this Restore call.`,
+      '0x80049959',
+    );
+}
+
+// The Target columns pass the store's create reader: normalizeRecord resolves @odata.bind keys to lookups and refuses
+// undeclared ones, coerceRecord converts values and refuses mistyped ones. The reader keeps a column the table does not
+// declare, so that case is refused here with the create path's unknown-property error.
+const unknownColumn = (mapping, name) =>
+  new DataError(
+    `Error identified in Payload provided by the user for Entity :'${mapping.entitySet}', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.Crm.CrmException: Invalid property '${name}' was found in entity '${CRM}${mapping.logicalName}'.`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x80048d19' },
+  );
+function overrideRow(api, c, mapping, target) {
+  const { store } = api;
+  const data = {};
+  for (const [name, value] of Object.entries(target)) {
+    if (name.startsWith('@odata.')) continue;
+    if (
+      name !== mapping.idColumn &&
+      !name.endsWith(BIND) &&
+      !store.fieldDefinition(mapping.logicalName, name, api.metadataFields)
+    )
+      throw unknownColumn(mapping, name);
+    data[name] = value;
+  }
+  const row = store.normalizeRecord(mapping, data, c.identity);
+  store.coerceRecord(mapping, row, {
+    coerce: true,
+    metadata: api.metadataFields,
+    dataverseWebApi: true,
+    dataverseHttpReader: c.dataverseHttpReader,
+  });
+  return row;
+}
+
+// The Target columns are written as a create. Each one needs that column's create permission (api.fieldSecurity, the check
+// a create runs), and the lookups bound in Target need the create's lookup authorisation (api.records).
+function authorizeOverride(api, c, mapping, recordId, override) {
+  const fls = api.fieldSecurity;
+  for (const column of Object.keys(override))
+    if (fls && !fls.canWrite(c.user, mapping.logicalName, column, 'create', recordId))
+      throw denied('create', c.user, column, mapping.logicalName);
+  api.records.authorizeLookupValues(c, mapping, override);
+}
+
+function restoreEntry(api, c, entry, root, snapshot) {
+  const { store } = api;
+  const row = entry === root ? snapshot : entry.row,
+    mapping = store.resolveMapping(entry.logicalName),
+    rows = (store.state.tables[mapping.logicalName] ??= []);
+  api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'create', row, mapping });
+  if (rows.some((item) => guidKey(item[mapping.idColumn]) === guidKey(row[mapping.idColumn])))
+    throw invalid(
+      `Please delete the existing conflicting record '${mapping.logicalName}' with primary key '${mapping.idColumn}' and primary key value '${row[mapping.idColumn]}' before attempting restore.`,
+      '0x80049939',
+    );
+  try {
+    store.assertAlternateKeys(mapping, row, rows, -1);
+  } catch (error) {
+    if (error.code !== 'DuplicateRecord') throw error;
+    throw invalid(
+      `Duplicate entity key preventing restore of record '${mapping.logicalName}' with primary key '${mapping.idColumn}' and primary key value '${row[mapping.idColumn]}'. See inner exception for entity key details.`,
+      '0x80049929',
+    );
+  }
+  for (const [column, definition] of Object.entries(mapping.fields ?? {}))
+    validateRestoreField(store, mapping, row, column, definition);
+  store.insertRow(mapping.logicalName, rows, cloneStateData(row));
+}
+
 function restore(api) {
   return async (c) => {
     const { store } = api;
@@ -149,15 +262,7 @@ function restore(api) {
         : r.deletedobjectidtype === target.mapping.logicalName && guidKey(r.deletedobject) === target.id,
     );
     if (!ref) {
-      if (
-        references.some((r) =>
-          snapshotsOf(store, r).some(
-            (entry) =>
-              entry.logicalName === target.mapping.logicalName &&
-              guidKey(entry.row[target.mapping.idColumn]) === target.id,
-          ),
-        )
-      ) {
+      if (cascadeSnapshotExists(store, target)) {
         throw invalid('A record deleted by a cascade is restored with its parent.');
       }
       throw new DataError(`${REFERENCE} With Id = ${target.id} Does Not Exist`, 404, 'NotFound', {
@@ -170,65 +275,17 @@ function restore(api) {
     const root = entries.at(-1),
       logical = root.logicalName,
       mapping = store.resolveMapping(logical);
-    const snapshot = {
-      ...root.row,
-      ...Object.fromEntries(
-        Object.entries(input.Target ?? {}).filter(
-          ([name]) => !name.startsWith('@odata.') && target.mapping.logicalName !== REFERENCE,
-        ),
-      ),
-    };
-    api.principals.authorize({ user: c.user, entity: logical, operation: 'create', mapping });
+    // The snapshot row decides whether the caller may create it, before any Target value is read.
+    api.principals.authorize({ user: c.user, entity: logical, operation: 'create', row: root.row, mapping });
+    const override = target.mapping.logicalName === REFERENCE ? {} : overrideRow(api, c, mapping, input.Target ?? {});
+    authorizeOverride(api, c, mapping, root.row[mapping.idColumn], override);
+    const snapshot = { ...root.row, ...override };
+    store.assertStateStatus(mapping, snapshot, { metadata: api.metadataFields });
     const id = snapshot[mapping.idColumn];
     await api.change(() =>
       store.transact(
         () => {
-          for (const entry of [...entries].reverse()) {
-            const row = entry === root ? snapshot : entry.row,
-              m = store.resolveMapping(entry.logicalName),
-              rows = (store.state.tables[m.logicalName] ??= []);
-            api.principals.authorize({ user: c.user, entity: m.logicalName, operation: 'create', mapping: m });
-            if (rows.some((r) => guidKey(r[m.idColumn]) === guidKey(row[m.idColumn])))
-              throw invalid(
-                `Please delete the existing conflicting record '${m.logicalName}' with primary key '${m.idColumn}' and primary key value '${row[m.idColumn]}' before attempting restore.`,
-                '0x80049939',
-              );
-            try {
-              store.assertAlternateKeys(m, row, rows, -1);
-            } catch (error) {
-              if (error.code !== 'DuplicateRecord') throw error;
-              throw invalid(
-                `Duplicate entity key preventing restore of record '${m.logicalName}' with primary key '${m.idColumn}' and primary key value '${row[m.idColumn]}'. See inner exception for entity key details.`,
-                '0x80049929',
-              );
-            }
-            for (const [column, definition] of Object.entries(m.fields ?? {})) {
-              const value = row[column]?.id ?? row[column];
-              if (value == null) continue;
-              if (
-                definition.options?.length &&
-                definition.optionSetOpen !== true &&
-                !definition.options.some((option) => String(option.value ?? option.Value) === String(value))
-              )
-                throw invalid(
-                  'Picklist value not valid, please add the invalid value back to the picklist before restoring record. See inner exception for details.',
-                  '0x80049949',
-                );
-              const targets = definition.targets ?? definition.lookupTargets;
-              if (
-                targets?.length &&
-                !targets.some((name) => {
-                  const m = store.resolveMapping(name);
-                  return (store.state.tables[name] ?? []).some((r) => guidKey(r[m.idColumn]) === guidKey(value));
-                })
-              )
-                throw invalid(
-                  `Entity with id '${value}' and logical name '${targets[0]}' does not exist. We cannot restore the reference '${column}' that must be restored as part of this Restore call.`,
-                  '0x80049959',
-                );
-            }
-            store.insertRow(m.logicalName, rows, structuredClone(row));
-          }
+          for (const entry of [...entries].reverse()) restoreEntry(api, c, entry, root, snapshot);
           dropReference(store, guidKey(ref.deleteditemreferenceid));
         },
         { isolated: true },
@@ -275,36 +332,38 @@ const OPERATION = { importFileParse: 3, import: 5 }; // assumed: TransformImport
 const LOG_PHASE_CREATE = 2; // importlog.logphasecode: 0 parse, 1 transform, 2 create, 3 update
 
 // CSV fields use the standard importfile delimiter choices, including doubled quotes and CR/LF/CRLF line endings.
+function consumeCsvCharacter(text, index, delimiter, quote, state) {
+  const ch = text[index];
+  if (state.quoted) {
+    if (ch !== quote) state.field += ch;
+    else if (text[index + 1] === quote) {
+      state.field += quote;
+      return index + 1;
+    } else state.quoted = false;
+  } else if (quote && ch === quote) state.quoted = true;
+  else if (ch === delimiter) {
+    state.row.push(state.field);
+    state.field = '';
+  } else if (ch === '\n' || ch === '\r') {
+    if (ch === '\r' && text[index + 1] === '\n') index++;
+    state.row.push(state.field);
+    state.rows.push(state.row);
+    state.row = [];
+    state.field = '';
+  } else state.field += ch;
+  return index;
+}
+
 export function parseCsv(text, { delimiter = ',', quote = '"' } = {}) {
-  const rows = [];
-  let row = [];
-  let field = '';
-  let quoted = false;
+  const state = { rows: [], row: [], field: '', quoted: false };
   for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quoted) {
-      if (ch !== quote) field += ch;
-      else if (text[i + 1] === quote) {
-        field += quote;
-        i++;
-      } else quoted = false;
-    } else if (quote && ch === quote) quoted = true;
-    else if (ch === delimiter) {
-      row.push(field);
-      field = '';
-    } else if (ch === '\n' || ch === '\r') {
-      if (ch === '\r' && text[i + 1] === '\n') i++;
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = '';
-    } else field += ch;
+    i = consumeCsvCharacter(text, i, delimiter, quote, state); // NOSONAR: loop cursor is advanced in the body on purpose
   }
-  if (field !== '' || row.length) {
-    row.push(field);
-    rows.push(row);
+  if (state.field !== '' || state.row.length) {
+    state.row.push(state.field);
+    state.rows.push(state.row);
   }
-  return rows.filter((r) => !(r.length === 1 && r[0] === ''));
+  return state.rows.filter((r) => !(r.length === 1 && r[0] === ''));
 }
 const csvOf = (file) =>
   parseCsv(String(file.content ?? ''), {
@@ -315,7 +374,7 @@ const idOf = (value) => guidKey(value?.id ?? value);
 const sameId = (a, b) => idOf(a) != null && idOf(a) === idOf(b);
 const mapOf = (store, file) => {
   if (!file.importmapid) return null;
-  const map = (store.state.tables.importmap ?? []).find((row) => sameId(row.importmapid, file.importmapid));
+  const map = (store.state.tables.importmap ?? []).some((row) => sameId(row.importmapid, file.importmapid));
   if (!map) throw invalid('The import map does not exist.');
   return (store.state.tables.columnmapping ?? []).filter(
     (row) =>
@@ -325,8 +384,9 @@ const mapOf = (store, file) => {
       (!row.sourceentityname || !file.sourceentityname || row.sourceentityname === file.sourceentityname),
   );
 };
-const logFailure = (store, file, phase, line, message) =>
-  store.insertRow('importlog', (store.state.tables.importlog ??= []), {
+const logFailure = (store, file, phase, line, message) => {
+  store.state.tables.importlog ??= [];
+  return store.insertRow('importlog', store.state.tables.importlog, {
     importlogid: randomUUID(),
     importfileid: file.importfileid,
     linenumber: line,
@@ -335,6 +395,7 @@ const logFailure = (store, file, phase, line, message) =>
     errornumber: 0,
     createdon: nowIso(),
   });
+};
 
 // The import's files, in table order.
 const filesOfImport = (store, importId) =>
@@ -428,6 +489,78 @@ function transformWork(api) {
   };
 }
 
+function importFieldValue(store, file, column, cell) {
+  const field = column?.targetattributename;
+  if (!field || cell === undefined || cell === '') return null;
+  let value = cell;
+  const choices = (store.state.tables.picklistmapping ?? []).filter(
+    (row) => sameId(row.columnmappingid, column.columnmappingid) && Number(row.processcode ?? 1) === 1,
+  );
+  if (choices.length) {
+    const choice = choices.find((row) => String(row.sourcevalue) === cell);
+    if (!choice) throw invalid(`No picklist mapping for '${cell}'.`);
+    value = choice.targetvalue;
+  }
+  const lookups = (store.state.tables.lookupmapping ?? []).filter(
+    (row) => sameId(row.columnmappingid, column.columnmappingid) && Number(row.processcode ?? 1) === 1,
+  );
+  if (lookups.length) {
+    if (lookups.some((lookup) => Number(lookup.lookupsourcecode) !== 1))
+      throw invalid('Source-file lookup mappings require an imported source-row adapter.');
+    const match = lookups
+      .map((lookup) => {
+        const target = store.resolveMapping(lookup.lookupentityname);
+        const row = (store.state.tables[target.logicalName] ?? []).find(
+          (row) => String(row[lookup.lookupattributename]) === cell,
+        );
+        return row ? { id: row[target.idColumn], logical_name: target.logicalName } : null;
+      })
+      .find(Boolean);
+    if (!match) throw invalid(`No lookup mapping for '${cell}'.`);
+    value = match;
+  }
+  if (field === 'ownerid' && file.importmapid) {
+    const owner = (store.state.tables.ownermapping ?? []).find(
+      (row) =>
+        sameId(row.importmapid, file.importmapid) &&
+        row.sourcesystemusername === cell &&
+        Number(row.processcode ?? 1) === 1,
+    );
+    if (owner) value = { id: owner.targetsystemuserid, logical_name: 'systemuser' };
+  }
+  return { field, value };
+}
+
+function importRowData(store, file, fields, cells) {
+  const data = {};
+  for (const [index, column] of fields.entries()) {
+    const mapped = importFieldValue(store, file, column, cells[index]);
+    if (mapped) data[mapped.field] = mapped.value;
+  }
+  return data;
+}
+
+function importedRowRequest(api, c, mapping, data) {
+  const { store } = api;
+  store.coerceRecord(mapping, data, { metadata: api.metadataFields });
+  for (const [field, value] of Object.entries(data)) {
+    if (!value || typeof value !== 'object' || !value.id || !value.logical_name) continue;
+    const target = store.resolveMapping(value.logical_name);
+    delete data[field];
+    data[`${field}@odata.bind`] = `/${target.entitySet}(${value.id})`;
+  }
+  const url = new URL(`${c.origin}/api/data/${c.version}/${mapping.entitySet}`);
+  return api.records.handle({
+    ...c,
+    method: 'POST',
+    url,
+    route: parseDataverseRoute(url.pathname),
+    body: data,
+    headers: { 'content-type': 'application/json' },
+    prefer: parsePrefer(undefined),
+  });
+}
+
 // ImportRecordsImport applies configured column, picklist, system lookup and owner mappings. Without an import map,
 // logical column names remain the fallback. A failed row is logged and subsequent rows continue.
 function importWork(api, c) {
@@ -460,69 +593,11 @@ function importWork(api, c) {
       const body = file.isfirstrowheader === false ? rows : rows.slice(1);
       let line = file.isfirstrowheader === false ? 1 : 2;
       for (const cells of body) {
-        const data = {};
         try {
-          fields.forEach((column, index) => {
-            const field = column?.targetattributename,
-              cell = cells[index];
-            if (!field || cell === undefined || cell === '') return;
-            let value = cell;
-            const choices = (store.state.tables.picklistmapping ?? []).filter(
-              (row) => sameId(row.columnmappingid, column.columnmappingid) && Number(row.processcode ?? 1) === 1,
-            );
-            if (choices.length) {
-              const choice = choices.find((row) => String(row.sourcevalue) === cell);
-              if (!choice) throw invalid(`No picklist mapping for '${cell}'.`);
-              value = choice.targetvalue;
-            }
-            const lookups = (store.state.tables.lookupmapping ?? []).filter(
-              (row) => sameId(row.columnmappingid, column.columnmappingid) && Number(row.processcode ?? 1) === 1,
-            );
-            if (lookups.length) {
-              if (lookups.some((lookup) => Number(lookup.lookupsourcecode) !== 1))
-                throw invalid('Source-file lookup mappings require an imported source-row adapter.');
-              const match = lookups
-                .map((lookup) => {
-                  const target = store.resolveMapping(lookup.lookupentityname);
-                  const row = (store.state.tables[target.logicalName] ?? []).find(
-                    (row) => String(row[lookup.lookupattributename]) === cell,
-                  );
-                  return row ? { id: row[target.idColumn], logical_name: target.logicalName } : null;
-                })
-                .find(Boolean);
-              if (!match) throw invalid(`No lookup mapping for '${cell}'.`);
-              value = match;
-            }
-            if (field === 'ownerid' && file.importmapid) {
-              const owner = (store.state.tables.ownermapping ?? []).find(
-                (row) =>
-                  sameId(row.importmapid, file.importmapid) &&
-                  row.sourcesystemusername === cell &&
-                  Number(row.processcode ?? 1) === 1,
-              );
-              if (owner) value = { id: owner.targetsystemuserid, logical_name: 'systemuser' };
-            }
-            data[field] = value;
-          });
           // CSV values pass the import transformer first, then the same caller-authorized record pipeline as a
           // normal Dataverse create. Its transaction supplies system stamps, lookup/FLS checks and real-time hooks.
-          store.coerceRecord(mapping, data, { metadata: api.metadataFields });
-          for (const [field, value] of Object.entries(data)) {
-            if (!value || typeof value !== 'object' || !value.id || !value.logical_name) continue;
-            const target = store.resolveMapping(value.logical_name);
-            delete data[field];
-            data[`${field}@odata.bind`] = `/${target.entitySet}(${value.id})`;
-          }
-          const url = new URL(`${c.origin}/api/data/${c.version}/${mapping.entitySet}`);
-          const result = await api.records.handle({
-            ...c,
-            method: 'POST',
-            url,
-            route: parseDataverseRoute(url.pathname),
-            body: data,
-            headers: { 'content-type': 'application/json' },
-            prefer: parsePrefer(undefined),
-          });
+          const data = importRowData(store, file, fields, cells);
+          const result = await importedRowRequest(api, c, mapping, data);
           if (result.status >= 400) throw invalid(result.body?.error?.message ?? 'The imported row was refused.');
           created++;
           fileCreated++;
@@ -550,7 +625,7 @@ function importWork(api, c) {
   };
 }
 
-const argsOf = (c) => ({ ...bodyOf(c), ...(c.params ?? {}) });
+const argsOf = (c) => ({ ...bodyOf(c), ...c.params });
 const authorize = (api, c, logical, operation, row) =>
   api.principals.authorize({
     user: c.user,
@@ -872,6 +947,25 @@ function installRetentionMessages(api) {
       ['RetentionConfigId', 'Edm.Guid'],
     ],
   };
+  const responseOf = (name) => {
+    if (name === 'ValidateRetentionConfig')
+      return [
+        ['IsValidationSuccessful', 'Edm.Boolean'],
+        ['ErrorMessage', 'Edm.String'],
+      ];
+    if (name === 'BulkRetain')
+      return [
+        ['PagingCookie', 'Edm.String'],
+        ['MaxMarkedVersion', 'Edm.Int64'],
+        ['HasMoreRecords', 'Edm.Boolean'],
+        ['FailedRecords', 'Edm.Int32'],
+        ['EntityCountCollection', 'mscrm.EntityRecordCountCollection'],
+      ];
+    return [
+      ...(name === 'PurgeRetainedContent' ? [['HasMoreRecords', 'Edm.Boolean']] : []),
+      ['EntityCountCollection', 'mscrm.EntityRecordCountCollection'],
+    ];
+  };
   for (const [name, values] of Object.entries(params))
     registerInternalMessage(api, {
       name,
@@ -879,24 +973,7 @@ function installRetentionMessages(api) {
       binding: 'unbound',
       signature: {
         params: values,
-        response:
-          name === 'ValidateRetentionConfig'
-            ? [
-                ['IsValidationSuccessful', 'Edm.Boolean'],
-                ['ErrorMessage', 'Edm.String'],
-              ]
-            : name === 'BulkRetain'
-              ? [
-                  ['PagingCookie', 'Edm.String'],
-                  ['MaxMarkedVersion', 'Edm.Int64'],
-                  ['HasMoreRecords', 'Edm.Boolean'],
-                  ['FailedRecords', 'Edm.Int32'],
-                  ['EntityCountCollection', 'mscrm.EntityRecordCountCollection'],
-                ]
-              : [
-                  ...(name === 'PurgeRetainedContent' ? [['HasMoreRecords', 'Edm.Boolean']] : []),
-                  ['EntityCountCollection', 'mscrm.EntityRecordCountCollection'],
-                ],
+        response: responseOf(name),
       },
     });
   api.registry.register({
@@ -917,28 +994,34 @@ function installRetentionMessages(api) {
       if (!logical) throw invalid('FetchXml requires an entity.');
       authorize(api, c, logical, 'read');
       const xml = String(input.FetchXml).replace(/<fetch\b[^>]*>/i, (opening) =>
-        opening.replace(/\s+datasource\s*=\s*(?:"[^"]*"|'[^']*')/i, '').replace(/>$/, ' datasource="retained">'),
+        opening.replace(/(?<!\s)\s+datasource\s*=\s*(?:"[^"]*"|'[^']*')/i, '').replace(/>$/, ' datasource="retained">'),
       );
       // Column security as on every FetchXML read: a masked operand answers 0x80041155 and the workbook carries what the caller
       // receives (hidden columns null through datasourceRows, masked columns masked).
       const secured = api.store.recordPipeline?.secureInternal?.(c, logical, { fetchXml: xml }) ?? {};
       const view = { unmask: false, single: false };
       const result = api.store.fetchXml(xml, c.identity, secured);
-      const rows = (result.entities ?? []).map(
-        (row) => api.fieldSecurity?.mask?.(c.user, logical, row, { view }) ?? row,
-      );
+      const entities = result.entities ?? [];
+      const rows = api.fieldSecurity?.maskAll?.(c.user, logical, entities, { view }) ?? entities;
       const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
-      const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Retained data"><Table><Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(name)}</Data></Cell>`).join('')}</Row>${rows.map((row) => `<Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(String(row[name]?.value ?? row[name] ?? ''))}</Data></Cell>`).join('')}</Row>`).join('')}</Table></Worksheet></Workbook>`;
+      const cell = (text) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(text)}</Data></Cell>`;
+      const headerRow = `<Row>${columns.map((name) => cell(name)).join('')}</Row>`;
+      const dataRows = rows
+        .map((row) => `<Row>${columns.map((name) => cell(String(row[name]?.value ?? row[name] ?? ''))).join('')}</Row>`)
+        .join('');
+      const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Retained data"><Table>${headerRow}${dataRows}</Table></Worksheet></Workbook>`;
       authorize(api, c, 'retaineddataexcel', 'create');
       const id = randomUUID();
       await api.change(() =>
         api.store.transact(
-          () =>
-            api.store.insertRow('retaineddataexcel', (api.store.state.tables.retaineddataexcel ??= []), {
+          () => {
+            api.store.state.tables.retaineddataexcel ??= [];
+            return api.store.insertRow('retaineddataexcel', api.store.state.tables.retaineddataexcel, {
               retaineddataexcelid: id,
               name: 'Retained data',
               excelcontent: Buffer.from(workbook).toString('base64'),
-            }),
+            });
+          },
           { isolated: true },
         ),
       );
@@ -960,7 +1043,9 @@ export function install(api) {
     // The Dataverse-only fourth argument comes from the planned query, so ordinary portal fetches are untouched.
     if (source === 'retained' && (context.plan?.aggregate || context.plan?.links?.length))
       throw invalid('Retained data queries support one table only; joins and aggregate functions are not supported.');
-    const rows = source === 'bin' ? binRows(store, logical) : source === 'retained' ? retainedRows(store, logical) : [];
+    let rows = [];
+    if (source === 'bin') rows = binRows(store, logical);
+    else if (source === 'retained') rows = retainedRows(store, logical);
     const target = api.principals.byId(identity?.systemUserId ?? identity?.id),
       caller = api.principals.byId(identity?.dataverse?.callerId);
     if (!target) return [];
@@ -969,7 +1054,8 @@ export function install(api) {
         ? api.principals.effectivePrincipal(caller, target)
         : target;
     const filter = api.principals.readFilter({ user, entity: logical });
-    return (filter ? rows.filter(filter) : rows).map((row) => api.fieldSecurity?.mask?.(user, logical, row) ?? row);
+    const visible = filter ? rows.filter(filter) : rows;
+    return api.fieldSecurity?.maskAll?.(user, logical, visible) ?? visible;
   };
   registry.register({
     name: 'GetEntitiesEligibleForRecycleBin',
@@ -982,7 +1068,7 @@ export function install(api) {
           Object.entries(store.state.mappings)
             .filter(([name, mapping]) => eligible({ logicalName: name, ...mapping }))
             .map(([name]) => name)
-            .sort(),
+            .sort(/* NOSONAR: preserve default string coercion */),
         ),
       }),
   });

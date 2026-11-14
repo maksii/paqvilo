@@ -1,7 +1,7 @@
+// @test-kind contract: an acknowledged local response is attributed only to the notification of its own request, bounded by count and bytes
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createResponseProofQueue } from '../lense/response-proof-queue.mjs';
 
 const url = 'https://fixture.invalid/script.js?version=invented';
@@ -47,21 +47,56 @@ test('an acknowledged body waits for its actual Network frame, loader and full U
   assert.equal(await queue.fulfill(event, proof), false);
 });
 
-test('expired or evicted acknowledgements never acquire evidence from later requests', async (t) => {
+test('evicted acknowledgements never acquire evidence from later requests', async () => {
   const requests = new Map(),
     admitted = [];
   const queue = createResponseProofQueue({ requests, admit: (...args) => admitted.push(args) });
-  t.after(() => queue.clear());
   for (let i = 0; i < 257; i++) await queue.fulfill({ ...event, networkId: String(i) }, { proofId: String(i) });
   queue.requested('0', request);
   queue.requested('256', request);
   await Promise.resolve();
   assert.equal(admitted.length, 1);
   assert.equal(admitted[0][2].proofId, '256');
-  await delay(3100);
+  queue.clear();
   queue.requested('255', request);
   await Promise.resolve();
-  assert.equal(admitted.length, 1);
+  assert.equal(admitted.length, 1, 'a cleared queue admits nothing');
+});
+
+test('a frame waits while its acknowledgement is queued, and forget or eviction ends that wait', async () => {
+  const requests = new Map(),
+    evicted = [];
+  const queue = createResponseProofQueue({ requests, admit: () => true, evicted: (frameId) => evicted.push(frameId) });
+  assert.equal(queue.waiting('actual-frame'), false);
+  await queue.fulfill(event, { proofId: 'queued' });
+  assert.equal(queue.waiting('actual-frame'), true);
+  assert.equal(queue.waiting('other-frame'), false);
+  queue.forget('actual-frame');
+  assert.equal(queue.waiting('actual-frame'), false, 'the replaced document no longer holds the frame');
+  for (let i = 0; i < 257; i++) await queue.fulfill({ ...event, networkId: String(i) }, { proofId: String(i) });
+  assert.deepEqual(evicted, ['actual-frame'], 'the discarded acknowledgement names its frame');
+  queue.requested('256', request);
+  await Promise.resolve();
+  queue.clear();
+  assert.equal(queue.waiting('actual-frame'), false);
+});
+
+test('an acknowledgement whose network notification trails by any time is still admitted', async (t) => {
+  const requests = new Map(),
+    admitted = [];
+  // The clocks the queue could read are owned here and moved far past any sweep interval.
+  let now = performance.now();
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const queue = createResponseProofQueue({ requests, admit: (...args) => admitted.push(args) });
+  t.after(() => queue.clear());
+  const proof = { version: 1, proofId: 'late-notification' };
+  assert.equal(await queue.fulfill(event, proof), true);
+  now += 600_000;
+  t.mock.timers.tick(600_000);
+  queue.requested(event.networkId, request);
+  await Promise.resolve();
+  assert.deepEqual(admitted, [[request.frameId, request.loaderId, proof, request]]);
 });
 
 test('byte bounds discard old metadata and failed admission remains observed without unhandled rejection', async (t) => {

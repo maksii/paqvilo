@@ -1,6 +1,8 @@
+// @test-kind contract: The Dataverse Web API's OData parsing, routing and error envelopes are designed runtime behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataError } from '../lib/data-error.mjs';
+import { parseODataExpression } from '../lib/odata-query.mjs';
 import { dateTimeRangeError } from '../lib/dataverse-values.mjs';
 import {
   VERSIONS,
@@ -260,6 +262,7 @@ test('annotation matcher and URL helpers', () => {
   );
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse Web API: page results (learn.microsoft.com/power-apps/developer/data-platform/webapi/query/page-results)
 test('skiptoken encodes the documented paging cookie exactly and round-trips', () => {
   // A paging nextLink cookie, percent-encoded once in the query string.
   const sample =
@@ -321,6 +324,7 @@ test('key text with control characters is a DataError 400 0x80060888, mapped to 
   } catch (error) {
     thrown = error;
   }
+  assert.ok(thrown instanceof DataError, 'a key with CR/LF is refused');
   const mapped = dataverseError(thrown, { requestId: 'req-3' });
   assert.equal(mapped.status, 400);
   assert.deepEqual(mapped.body, {
@@ -375,6 +379,7 @@ test('parsePrefer flags a backslash outside a quoted-string and unterminated quo
   assert.deepEqual(parsePrefer('odata.include-annotations="a\\b"').annotations, ['a\\b']);
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse Web API: Prefer header values (learn.microsoft.com/power-apps/developer/data-platform/webapi/compose-http-requests-handle-errors#http-headers) and RFC 7240 Preference-Applied
 test('preferenceApplied echoes only applied preferences, representation first; continue-on-error and respond-async are never echoed', () => {
   const all = parsePrefer(
     'odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error, odata.track-changes, respond-async',
@@ -873,6 +878,7 @@ test('non-hex store codes without a native status keep the status the throw site
   );
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse service protection API limits: 429 with Retry-After (learn.microsoft.com/power-apps/developer/data-platform/api-limits)
 test('every 429 gets Retry-After from its details, including the concurrency and execution-time limits', () => {
   const concurrent = dataverseError(
     new DataError('concurrent', 429, 'ServiceProtection', { innerCode: '0x80072326', retryAfter: 1 }),
@@ -925,4 +931,33 @@ test('baseHeaders carries Expires, Allow and Public on every Dataverse response'
   assert.equal(headers.expires, '-1');
   assert.equal(headers.Allow, 'OPTIONS,GET,HEAD,POST');
   assert.equal(headers.Public, 'OPTIONS,GET,HEAD,POST');
+});
+
+test('a filter nested beyond the parser limit is an unsupported query, and a shallow one still parses', () => {
+  const nested = (depth) => `${'('.repeat(depth)}name eq 'a'${')'.repeat(depth)}`;
+  assert.throws(() => parseODataExpression(nested(2000)), {
+    status: 400,
+    code: 'UnsupportedQuery',
+    message: 'OData filter nesting is too deep',
+  });
+  assert.doesNotThrow(() => parseODataExpression(nested(50)));
+});
+
+test('function calls nested beyond the parser limit are an unsupported query, and shallow ones still parse', () => {
+  const calls = (depth) => `${'tolower('.repeat(depth)}name${')'.repeat(depth)} eq 'a'`;
+  assert.throws(() => parseODataExpression(calls(2000), { dialect: 'extended' }), {
+    status: 400,
+    code: 'UnsupportedQuery',
+    message: 'OData filter nesting is too deep',
+  });
+  assert.doesNotThrow(() => parseODataExpression(calls(3), { dialect: 'extended' }));
+});
+
+// @test-kind compatibility: OData v4 URL conventions define parameter aliases (@name) for function parameters, which the built-in functions here already accept.
+test('a single-segment name with an alias is an operation candidate, and a publisher prefix with an underscore is a function name', () => {
+  assert.equal(route('new_fn(Count=@c)').kind, 'invalid');
+  assert.equal(route('new_fn(Count=@c)').candidate.name, 'new_fn');
+  assert.equal(route('new_fn(Count=@c)').candidate.params, 'Count=@c');
+  assert.equal(route('accounts(accountid=@p1)').kind, 'invalid');
+  assert.deepEqual(route('Pub_Fn(Count=5)'), { version: 'v9.2', kind: 'function', name: 'Pub_Fn', params: 'Count=5' });
 });

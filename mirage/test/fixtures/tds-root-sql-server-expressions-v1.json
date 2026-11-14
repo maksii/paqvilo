@@ -1,0 +1,956 @@
+{
+  "scope": "Repeated Microsoft SQL Server engine expression execution; no Dataverse TDS transport or authorization claim.",
+  "producer": {
+    "image": "mcr.microsoft.com/mssql/server@sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "binarySha256": "35299486743d9f126940617b5152d9a584861879811357fabec74202154fbd4d",
+    "version": "16.0.4305.5",
+    "collation": "SQL_Latin1_General_CP1_CI_AS",
+    "language": "us_english",
+    "captureSha256": [
+      "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c"
+    ]
+  },
+  "results": [
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#11",
+      "query": "SELECT 9223372036854775807 + 1 AS d",
+      "captures": [
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "decimal",
+                  "clrType": "System.Decimal",
+                  "precision": 20,
+                  "scale": 0
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "exact": "9223372036854775808",
+                    "kind": "sql-decimal",
+                    "positive": true,
+                    "scale": 0,
+                    "words": [
+                      "0",
+                      "-2147483648",
+                      "0",
+                      "0"
+                    ],
+                    "precision": 20
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 9223372036854775807 + 1 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#11"
+        },
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "decimal",
+                  "clrType": "System.Decimal",
+                  "precision": 20,
+                  "scale": 0
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "precision": 20,
+                    "kind": "sql-decimal",
+                    "scale": 0,
+                    "words": [
+                      "0",
+                      "-2147483648",
+                      "0",
+                      "0"
+                    ],
+                    "positive": true,
+                    "exact": "9223372036854775808"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 9223372036854775807 + 1 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#11"
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#12",
+      "query": "SELECT 2147483647 * 4294967296 AS d",
+      "captures": [
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "decimal",
+                  "clrType": "System.Decimal",
+                  "precision": 21,
+                  "scale": 0
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "exact": "9223372032559808512",
+                    "kind": "sql-decimal",
+                    "positive": true,
+                    "scale": 0,
+                    "words": [
+                      "0",
+                      "2147483647",
+                      "0",
+                      "0"
+                    ],
+                    "precision": 21
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 2147483647 * 4294967296 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#12"
+        },
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "decimal",
+                  "clrType": "System.Decimal",
+                  "precision": 21,
+                  "scale": 0
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "precision": 21,
+                    "kind": "sql-decimal",
+                    "scale": 0,
+                    "words": [
+                      "0",
+                      "2147483647",
+                      "0",
+                      "0"
+                    ],
+                    "positive": true,
+                    "exact": "9223372032559808512"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 2147483647 * 4294967296 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#12"
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#19",
+      "query": "SELECT 1 = '1' AS d",
+      "captures": [
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 1 = '1' AS d",
+          "errors": [
+            {
+              "severity": 15,
+              "line": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='.",
+              "state": 1
+            }
+          ],
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#19"
+        },
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 1 = '1' AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#19",
+          "errors": [
+            {
+              "line": 1,
+              "severity": 15,
+              "state": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#20",
+      "query": "SELECT 2.5 = '2.50' AS d",
+      "captures": [
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 2.5 = '2.50' AS d",
+          "errors": [
+            {
+              "severity": 15,
+              "line": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='.",
+              "state": 1
+            }
+          ],
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#20"
+        },
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 2.5 = '2.50' AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#20",
+          "errors": [
+            {
+              "line": 1,
+              "severity": 15,
+              "state": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#21",
+      "query": "SELECT 'abc' = 1 AS d",
+      "captures": [
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 'abc' = 1 AS d",
+          "errors": [
+            {
+              "severity": 15,
+              "line": 1,
+              "number": 156,
+              "message": "Incorrect syntax near the keyword 'AS'.",
+              "state": 1
+            }
+          ],
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#21"
+        },
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 'abc' = 1 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#21",
+          "errors": [
+            {
+              "line": 1,
+              "severity": 15,
+              "state": 1,
+              "number": 156,
+              "message": "Incorrect syntax near the keyword 'AS'."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#22",
+      "query": "SELECT '2020-13-01' = CAST('2020-01-01' AS datetime) AS d",
+      "captures": [
+        {
+          "outcome": "sql-error",
+          "query": "SELECT '2020-13-01' = CAST('2020-01-01' AS datetime) AS d",
+          "errors": [
+            {
+              "severity": 15,
+              "line": 1,
+              "number": 156,
+              "message": "Incorrect syntax near the keyword 'AS'.",
+              "state": 1
+            }
+          ],
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#22"
+        },
+        {
+          "outcome": "sql-error",
+          "query": "SELECT '2020-13-01' = CAST('2020-01-01' AS datetime) AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#22",
+          "errors": [
+            {
+              "line": 1,
+              "severity": 15,
+              "state": 1,
+              "number": 156,
+              "message": "Incorrect syntax near the keyword 'AS'."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#41",
+      "query": "SELECT 0x0102 = 258 AS d",
+      "captures": [
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 0x0102 = 258 AS d",
+          "errors": [
+            {
+              "severity": 15,
+              "line": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='.",
+              "state": 1
+            }
+          ],
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#41"
+        },
+        {
+          "outcome": "sql-error",
+          "query": "SELECT 0x0102 = 258 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#41",
+          "errors": [
+            {
+              "line": 1,
+              "severity": 15,
+              "state": 1,
+              "number": 102,
+              "message": "Incorrect syntax near '='."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#44",
+      "query": "SELECT 0x41 + 1 AS d",
+      "captures": [
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "int",
+                  "clrType": "System.Int32",
+                  "precision": 10,
+                  "scale": 255
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "kind": "System.Int32",
+                    "exact": "66"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 0x41 + 1 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#44"
+        },
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "d",
+                  "sqlType": "int",
+                  "clrType": "System.Int32",
+                  "precision": 10,
+                  "scale": 255
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "kind": "System.Int32",
+                    "exact": "66"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT 0x41 + 1 AS d",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#44"
+        }
+      ]
+    },
+    {
+      "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#11",
+      "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s",
+      "captures": [
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "s",
+                  "sqlType": "nvarchar",
+                  "clrType": "System.String",
+                  "precision": 255,
+                  "scale": 255
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "kind": "string",
+                    "value": "扡"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#11"
+        },
+        {
+          "outcome": "result",
+          "resultSets": [
+            {
+              "columns": [
+                {
+                  "name": "s",
+                  "sqlType": "nvarchar",
+                  "clrType": "System.String",
+                  "precision": 255,
+                  "scale": 255
+                }
+              ],
+              "rows": [
+                [
+                  {
+                    "value": "扡",
+                    "kind": "string"
+                  }
+                ]
+              ]
+            }
+          ],
+          "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s",
+          "id": "mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#11"
+        }
+      ]
+    }
+  ],
+  "literalControls": {
+    "captureSha256": [
+      "80e195a260a64fa7d607879c8a738c2a046149578520b8dc5f811669b67c9b22",
+      "92fe61445a5bd044a20ae783a9f87f8a5deb590a9c97b22e539d1f58169e2d5d"
+    ],
+    "results": [
+      {
+        "id": "literal-2147483648",
+        "query": "SELECT 2147483648 AS value",
+        "captures": [
+          {
+            "id": "literal-2147483648",
+            "outcome": "result",
+            "query": "SELECT 2147483648 AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 10,
+                    "scale": 0
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "scale": 0,
+                      "words": [
+                        "-2147483648",
+                        "0",
+                        "0",
+                        "0"
+                      ],
+                      "kind": "sql-decimal",
+                      "exact": "2147483648",
+                      "precision": 10,
+                      "positive": true
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT 2147483648 AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "exact": "2147483648",
+                      "kind": "sql-decimal",
+                      "positive": true,
+                      "words": [
+                        "-2147483648",
+                        "0",
+                        "0",
+                        "0"
+                      ],
+                      "precision": 10,
+                      "scale": 0
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 10,
+                    "scale": 0
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "literal-2147483648"
+          }
+        ]
+      },
+      {
+        "id": "literal-int-max",
+        "query": "SELECT 2147483647 AS value",
+        "captures": [
+          {
+            "id": "literal-int-max",
+            "outcome": "result",
+            "query": "SELECT 2147483647 AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "exact": "2147483647",
+                      "kind": "System.Int32"
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT 2147483647 AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "exact": "2147483647",
+                      "kind": "System.Int32"
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "literal-int-max"
+          }
+        ]
+      },
+      {
+        "id": "literal-bigint-max",
+        "query": "SELECT 9223372036854775807 AS value",
+        "captures": [
+          {
+            "id": "literal-bigint-max",
+            "outcome": "result",
+            "query": "SELECT 9223372036854775807 AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 19,
+                    "scale": 0
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "scale": 0,
+                      "words": [
+                        "-1",
+                        "2147483647",
+                        "0",
+                        "0"
+                      ],
+                      "kind": "sql-decimal",
+                      "exact": "9223372036854775807",
+                      "precision": 19,
+                      "positive": true
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT 9223372036854775807 AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "exact": "9223372036854775807",
+                      "kind": "sql-decimal",
+                      "positive": true,
+                      "words": [
+                        "-1",
+                        "2147483647",
+                        "0",
+                        "0"
+                      ],
+                      "precision": 19,
+                      "scale": 0
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 19,
+                    "scale": 0
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "literal-bigint-max"
+          }
+        ]
+      },
+      {
+        "id": "literal-over-bigint",
+        "query": "SELECT 9223372036854775808 AS value",
+        "captures": [
+          {
+            "id": "literal-over-bigint",
+            "outcome": "result",
+            "query": "SELECT 9223372036854775808 AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 19,
+                    "scale": 0
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "scale": 0,
+                      "words": [
+                        "0",
+                        "-2147483648",
+                        "0",
+                        "0"
+                      ],
+                      "kind": "sql-decimal",
+                      "exact": "9223372036854775808",
+                      "precision": 19,
+                      "positive": true
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT 9223372036854775808 AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "exact": "9223372036854775808",
+                      "kind": "sql-decimal",
+                      "positive": true,
+                      "words": [
+                        "0",
+                        "-2147483648",
+                        "0",
+                        "0"
+                      ],
+                      "precision": 19,
+                      "scale": 0
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "decimal",
+                    "clrType": "System.Decimal",
+                    "precision": 19,
+                    "scale": 0
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "literal-over-bigint"
+          }
+        ]
+      },
+      {
+        "id": "explicit-bigint-overflow",
+        "query": "SELECT CAST(9223372036854775807 AS bigint) + 1 AS value",
+        "captures": [
+          {
+            "id": "explicit-bigint-overflow",
+            "outcome": "sql-error",
+            "query": "SELECT CAST(9223372036854775807 AS bigint) + 1 AS value",
+            "errors": [
+              {
+                "severity": 16,
+                "state": 2,
+                "number": 8115,
+                "message": "Arithmetic overflow error converting expression to data type bigint.",
+                "line": 1
+              }
+            ]
+          },
+          {
+            "query": "SELECT CAST(9223372036854775807 AS bigint) + 1 AS value",
+            "errors": [
+              {
+                "number": 8115,
+                "line": 1,
+                "message": "Arithmetic overflow error converting expression to data type bigint.",
+                "state": 2,
+                "severity": 16
+              }
+            ],
+            "outcome": "sql-error",
+            "id": "explicit-bigint-overflow"
+          }
+        ]
+      },
+      {
+        "id": "literal-type-2147483648",
+        "query": "SELECT SQL_VARIANT_PROPERTY(2147483648, 'BaseType') AS value",
+        "captures": [
+          {
+            "id": "literal-type-2147483648",
+            "outcome": "result",
+            "query": "SELECT SQL_VARIANT_PROPERTY(2147483648, 'BaseType') AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "sql_variant",
+                    "clrType": "System.Object",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "value": "numeric",
+                      "kind": "string"
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT SQL_VARIANT_PROPERTY(2147483648, 'BaseType') AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "value": "numeric",
+                      "kind": "string"
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "sql_variant",
+                    "clrType": "System.Object",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "literal-type-2147483648"
+          }
+        ]
+      },
+      {
+        "id": "varchar-binary-encoding",
+        "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+        "captures": [
+          {
+            "id": "varchar-binary-encoding",
+            "outcome": "result",
+            "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "nvarchar",
+                    "clrType": "System.String",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "value": "扡",
+                      "kind": "string"
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "value": "扡",
+                      "kind": "string"
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "nvarchar",
+                    "clrType": "System.String",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "varchar-binary-encoding"
+          }
+        ]
+      },
+      {
+        "id": "nvarchar-binary-encoding",
+        "query": "SELECT CAST(CAST(N'ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+        "captures": [
+          {
+            "id": "nvarchar-binary-encoding",
+            "outcome": "result",
+            "query": "SELECT CAST(CAST(N'ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "nvarchar",
+                    "clrType": "System.String",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "value": "ab",
+                      "kind": "string"
+                    }
+                  ]
+                ]
+              }
+            ]
+          },
+          {
+            "query": "SELECT CAST(CAST(N'ab' AS varbinary(8)) AS nvarchar(10)) AS value",
+            "resultSets": [
+              {
+                "rows": [
+                  [
+                    {
+                      "value": "ab",
+                      "kind": "string"
+                    }
+                  ]
+                ],
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "nvarchar",
+                    "clrType": "System.String",
+                    "precision": 255,
+                    "scale": 255
+                  }
+                ]
+              }
+            ],
+            "outcome": "result",
+            "id": "nvarchar-binary-encoding"
+          }
+        ]
+      }
+    ]
+  }
+}

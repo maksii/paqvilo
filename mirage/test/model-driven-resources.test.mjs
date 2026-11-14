@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's client resource import, budgets and extension catalogue are designed runtime behaviour, exercised with invented fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,13 +12,15 @@ import { createSimulator } from '../server.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { importModelDrivenProject } from '../../lense/model-driven.mjs';
-import { importCodeComponents } from '../lib/code-components.mjs';
+import { importCodeComponents, takeAdmittedFiles } from '../lib/code-components.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { mapLimit } from '../lib/solution-cache.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 async function fixture(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-client-resources-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-client-resources-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, data] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -25,6 +28,24 @@ async function fixture(t, files) {
   }
   return root;
 }
+
+test('unrelated form XML does not consume the executable asset entry budget', async (t) => {
+  const root = await fixture(t, {
+    'WebResources/events.js': 'window.Invented = {};',
+    'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+  });
+  const forms = path.join(root, 'Entities/x_wide/FormXml/main');
+  await fs.mkdir(forms, { recursive: true });
+  await mapLimit(
+    Array.from({ length: 10001 }, (_, i) => i),
+    32,
+    (i) => fs.writeFile(path.join(forms, 'form-' + i + '.xml'), '<systemform/>'),
+  );
+  const result = await importModelDrivenResources([{ type: 'directory', dir: root }]);
+  assert.equal(result.resources.length, 1);
+  assert.equal(result.resources[0].name, 'x_/events.js');
+  assert.deepEqual(result.diagnostics, []);
+});
 
 test('selected unpacked and ZIP WebResources resolve declared filenames, layers and packed entity ribbons', async (t) => {
   const root = await fixture(t, {
@@ -104,6 +125,7 @@ test('client extension trust is explicit, validated and cannot be inferred from 
   assert.equal(clientExtensionCatalogue({ resources: [] }, modelDrivenSettings()).trusted, false);
 });
 
+// @test-kind security: client asset import refuses traversal and stops at its size limits
 test('client import reads declared assets lazily and fails closed at aggregate layer, byte and traversal limits', async (t) => {
   const root = await fixture(t, {
     'WebResources/events.js': 'window.Example = {};',
@@ -117,6 +139,8 @@ test('client import reads declared assets lazily and fails closed at aggregate l
   for (const [layers, limits] of [
     [[layer], { bytes: 16 }],
     [[layer], { entries: 2 }],
+    [[layer], { entries: 1, traversalEntries: 128 }],
+    [[layer], { traversalEntries: 2 }],
     [[layer, layer], { layers: 1 }],
     [[layer, layer], { bytes: 256 }],
   ]) {
@@ -138,6 +162,7 @@ test('client import reads declared assets lazily and fails closed at aggregate l
   assert.equal(zipped.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
 });
 
+// @test-kind security: client sources stay confined to their directory and fail closed at their budget
 test('explicit client sources are independent of metadata, ordered, confined and fail closed at their own budget', async (t) => {
   const metadata = await fixture(t, {
     'Other/Solution.xml':
@@ -259,6 +284,22 @@ test('PCF client budgets include manifests, RESX and images and reuse the admitt
   const manifest = await importModelDrivenResources([], { clientSources: [root], limits: { bytes: 1024 } });
   assert.equal(manifest.assets.size, 0);
   assert.equal(manifest.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
+test('a client import that ends at a limit leaves no retained control bytes in the caller controls map', async (t) => {
+  const base = await fixture(t, {
+    'Controls/folder/ControlManifest.xml':
+      '<manifest><control namespace="fx" constructor="Widget" control-type="standard"><resources><code path="bundle.js"/></resources></control></manifest>',
+    'Controls/folder/ControlManifest.xml.data.xml': '<CustomControl><Name>fx.Widget</Name></CustomControl>',
+    'Controls/folder/bundle.js': 'window.Widget = true;',
+  });
+  const empty = await fixture(t, {});
+  const layers = [base, empty].map((dir) => ({ type: 'directory', dir }));
+  const components = await importCodeComponents(layers.slice(0, 1), { retainBytes: true });
+  assert.equal(components.controls.size, 1);
+  const exhausted = await importModelDrivenResources(layers, { codeComponents: components, limits: { layers: 1 } });
+  assert.ok(exhausted.diagnostics.some((item) => item.code === 'MODEL_CLIENT_IMPORT_LIMIT'));
+  assert.equal(takeAdmittedFiles(components.controls).size, 0);
 });
 
 test('PCF overriding declarations remove stale executables, preserve unrelated controls and allow later valid recovery', async (t) => {
@@ -396,7 +437,7 @@ test('an empty model-driven client allowlist preserves the separate Power Pages 
     watch: false,
     port: 0,
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const catalogue = await fetch(runtime.url + '/_apps/api').then((response) => response.json());
   assert.equal(catalogue.clientExtensions.trusted, false);
   assert.deepEqual(catalogue.clientExtensions.pcf.controls, []);
@@ -511,6 +552,7 @@ test('create defers omitted platform-required columns without relaxing explicit 
   assert.throws(() => validateValues(table, {}, 'create'), /Name is required/);
 });
 
+// @test-kind security: untrusted solution code is denied and assets are served only after opt-in
 test('standalone HTTP denies untrusted code and only serves declared assets after opt-in', async (t) => {
   const root = await fixture(t, {
     'WebResources/x_events.js': 'window.Example = {};',
@@ -563,7 +605,7 @@ test('application icons use passive declared image resources without enabling So
     modelDriven: { trustedExtensions: false },
     watch: false,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const catalogue = await (await fetch(sim.url + '/_apps/api')).json();
   assert.equal(catalogue.clientExtensions.trusted, false);
   const icon = catalogue.clientExtensions.resources.find((resource) => resource.type === 'image');
@@ -586,7 +628,7 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     'on is the default and is not echoed',
   );
   assert.throws(() => modelDrivenSettings({ enabled: 'no' }), /enabled must be true or false/);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-md-off-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-md-off-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const portal = fileURLToPath(new URL('../../examples/project/portal', import.meta.url));
   for (const options of [
@@ -597,7 +639,9 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     try {
       const status = await (await fetch(sim.url + '/_sim/api/status')).json();
       assert.equal(status.links.modelDriven, null);
-      assert.notEqual((await fetch(sim.url + '/main.aspx', { redirect: 'manual' })).status, 200);
+      // The shell and its catalogue API are not served at all (an error page would also be "not 200").
+      for (const route of ['/main.aspx', '/_apps/api'])
+        assert.equal((await fetch(sim.url + route, { redirect: 'manual' })).status, 404, route);
     } finally {
       await sim.close();
     }

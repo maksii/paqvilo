@@ -18,6 +18,7 @@ import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { relationshipsOf, standardGlobalOptionSets } from './dataverse-standard.mjs';
 import { assertElasticManyToMany, assertElasticOneToMany, isElastic, partitionColumnOf } from './dataverse-elastic.mjs';
 import { metadataComponentId } from './dataverse-metadata.mjs';
+import { SCHEMA_NAME, schemaNameError } from './dataverse-metadata-tables.mjs';
 
 const ROUTE = /^\/api\/data\/v[\d.]+\/(RelationshipDefinitions|GlobalOptionSetDefinitions)(?:\(([^()]*)\))?\/?$/i;
 const FIRST_VALUE = 100000000; // option values start from a publisher prefix base; the base is not modelled
@@ -35,7 +36,12 @@ const globalId = (api, name) => metadataComponentId(orgId(api), 'optionset', nam
 const mappings = (api) => api.store.state.mappings;
 const globalSets = (api) => {
   const dv = (api.store.state.dataverse ??= {});
-  return (dv.globalOptionSets ??= {});
+  let sets = dv.globalOptionSets;
+  if (sets == null) {
+    sets = {};
+    dv.globalOptionSets = sets;
+  }
+  return sets;
 };
 
 function requiredText(value, name) {
@@ -46,7 +52,17 @@ function requiredText(value, name) {
 // Appends one entry to state.dataverse.metadataLog, the change log the metadata reader consumes. Call it inside the
 // write's transaction, so a failed write logs nothing. logical is the table (or the option set name for a global set).
 export function logMetadataChange(api, op, kind, logical, name = null) {
-  const log = ((api.store.state.dataverse ??= {}).metadataLog ??= []);
+  const state = api.store.state;
+  let dataverse = state.dataverse;
+  if (dataverse == null) {
+    dataverse = {};
+    state.dataverse = dataverse;
+  }
+  let log = dataverse.metadataLog;
+  if (log == null) {
+    log = [];
+    dataverse.metadataLog = log;
+  }
   const at = new Date(api.clock?.() ?? Date.now()).toISOString();
   log.push({ seq: (log.at(-1)?.seq ?? 0) + 1, at, op, kind, logical, name });
 }
@@ -122,23 +138,32 @@ export function projectManagedFlags(api) {
     if (on) target.managedLayer = true;
     else delete target.managedLayer;
   };
-  for (const [logical, mapping] of Object.entries(state.mappings ?? {})) {
-    const tableOwned = has('entity', logical);
-    if (tableOwned) (mapping.dataverseMetadata ??= {}).managedLayer = true;
-    else if (mapping.dataverseMetadata) delete mapping.dataverseMetadata.managedLayer;
-    const bucket = state.dataverse?.customColumns?.[logical] ?? {};
-    for (const [name, field] of Object.entries(mapping.fields ?? {})) {
-      if (!field || typeof field !== 'object') continue;
-      const on = has('attribute', logical, name);
-      if (on && field.managedLayer !== true)
-        mapping.fields[name] = { ...field, managedLayer: true }; // a field object may be shared
-      else if (!on && field.managedLayer) mapping.fields[name] = (({ managedLayer, ...rest }) => rest)(field);
-      mark(bucket[name], on);
+  for (const [logical, mapping] of Object.entries(state.mappings ?? {}))
+    projectMappingManagedFlags(state, logical, mapping, has, mark);
+}
+
+function projectMappingManagedFlags(state, logical, mapping, has, mark) {
+  const tableOwned = has('entity', logical);
+  if (tableOwned) {
+    let metadata = mapping.dataverseMetadata;
+    if (metadata == null) {
+      metadata = {};
+      mapping.dataverseMetadata = metadata;
     }
-    for (const key of mapping.alternateKeys ?? []) mark(key, has('key', logical, key.name));
-    for (const [nav, rel] of Object.entries(mapping.relationships ?? {}))
-      mark(rel, has('relationship', null, schemaOf(logical, nav, rel)));
+    metadata.managedLayer = true;
+  } else if (mapping.dataverseMetadata) delete mapping.dataverseMetadata.managedLayer;
+  const bucket = state.dataverse?.customColumns?.[logical] ?? {};
+  for (const [name, field] of Object.entries(mapping.fields ?? {})) {
+    if (!field || typeof field !== 'object') continue;
+    const on = has('attribute', logical, name);
+    if (on && field.managedLayer !== true)
+      mapping.fields[name] = { ...field, managedLayer: true }; // a field object may be shared
+    else if (!on && field.managedLayer) mapping.fields[name] = (({ managedLayer, ...rest }) => rest)(field);
+    mark(bucket[name], on);
   }
+  for (const key of mapping.alternateKeys ?? []) mark(key, has('key', logical, key.name));
+  for (const [nav, rel] of Object.entries(mapping.relationships ?? {}))
+    mark(rel, has('relationship', null, schemaOf(logical, nav, rel)));
 }
 
 // Solution membership. A metadata write that names a solution in the MSCRM.SolutionUniqueName header adds the components it
@@ -150,7 +175,17 @@ const solutionHeaderOf = (headers) =>
   ).trim() || null;
 export const lastMetadataSeq = (api) => api.store.state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
 export function addSolutionComponents(api, solution, entries, options) {
-  const bag = ((api.store.state.dataverse ??= {}).solutionComponents ??= {});
+  const state = api.store.state;
+  let dataverse = state.dataverse;
+  if (dataverse == null) {
+    dataverse = {};
+    state.dataverse = dataverse;
+  }
+  let bag = dataverse.solutionComponents;
+  if (bag == null) {
+    bag = {};
+    dataverse.solutionComponents = bag;
+  }
   const list = (bag[lower(solution)] ??= []);
   for (const entry of entries) {
     const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? '')}`;
@@ -192,31 +227,33 @@ function addSolutionComponentRows(api, solution, entries, { defaultSolution = tr
   for (const name of new Set(defaultSolution ? [solution, DEFAULT_SOLUTION] : [solution])) {
     const row = solutionRowOf(store, name, { create: name === DEFAULT_SOLUTION });
     if (!row) continue; // a header that names no solution row adds the component to the Default solution only
-    for (const entry of entries) {
-      // A payload component (form, view, web resource, ...) carries its own type and row id; a metadata component its MetadataId.
-      const metadata = SOLUTION_COMPONENT_TYPE[entry.kind] !== undefined;
-      const componenttype = metadata ? SOLUTION_COMPONENT_TYPE[entry.kind] : entry.type;
-      if (componenttype === undefined) continue;
-      const objectid = metadata ? componentObjectId(entry, orgId(api)) : lower(entry.id);
-      if (
-        rows.some(
-          (r) =>
-            lower(r.solutionid) === lower(row.solutionid) &&
-            lower(r.objectid) === objectid &&
-            r.componenttype === componenttype,
-        )
-      )
-        continue;
-      rows.push({
-        solutioncomponentid: randomUUID(),
-        solutionid: row.solutionid,
-        objectid,
-        componenttype,
-        rootcomponentbehavior: 0,
-        ismetadata: metadata,
-      });
-    }
+    for (const entry of entries) addSolutionComponentRow(api, rows, row, entry);
   }
+}
+
+function addSolutionComponentRow(api, rows, solution, entry) {
+  // A payload component (form, view, web resource, ...) carries its own type and row id; a metadata component its MetadataId.
+  const metadata = SOLUTION_COMPONENT_TYPE[entry.kind] !== undefined;
+  const componenttype = metadata ? SOLUTION_COMPONENT_TYPE[entry.kind] : entry.type;
+  if (componenttype === undefined) return;
+  const objectid = metadata ? componentObjectId(entry, orgId(api)) : lower(entry.id);
+  if (
+    rows.some(
+      (r) =>
+        lower(r.solutionid) === lower(solution.solutionid) &&
+        lower(r.objectid) === objectid &&
+        r.componenttype === componenttype,
+    )
+  )
+    return;
+  rows.push({
+    solutioncomponentid: randomUUID(),
+    solutionid: solution.solutionid,
+    objectid,
+    componenttype,
+    rootcomponentbehavior: 0,
+    ismetadata: metadata,
+  });
 }
 // Patch lock: a base solution that has patches is locked, so it cannot be changed or exported.
 // Throws 0x80048538 when the row has patches. The caller passes the base solution row.
@@ -287,8 +324,7 @@ const labelsOf = (block) =>
       .map((l) => [String(l.LanguageCode ?? LCID), String(l.Label)]),
   );
 // MergeLabels keeps the languages the write does not name; without it the write replaces them.
-const mergedLabels = (previous, block, merge) =>
-  merge ? { ...(previous ?? {}), ...labelsOf(block) } : labelsOf(block);
+const mergedLabels = (previous, block, merge) => (merge ? { ...previous, ...labelsOf(block) } : labelsOf(block));
 const mergeLabelsHeader = (c) =>
   Object.entries(c.headers ?? {}).some(
     ([name, value]) => lower(name) === 'mscrm.mergelabels' && lower(value) === 'true',
@@ -340,9 +376,26 @@ function guardHits(api, schema, hits) {
   for (const { rel } of hits) if (rel.intersect) writable(mappings(api)[rel.intersect.entity], rel.intersect.entity);
 }
 
+// A relationship or lookup SchemaName carries the customization prefix, as tables do.
+function prefixedName(name, type) {
+  if (!SCHEMA_NAME.test(name)) throw schemaNameError(name, type);
+  return name;
+}
+
+// A navigation property, lookup or intersect name is a plain identifier. Every name Object.prototype defines (and
+// `prototype`) is refused, so a stored entry can never replace or shadow a member of the map it is written into.
+const IDENTIFIER = /^[A-Za-z_]\w*$/;
+const isPrototypeKey = (value) => value === 'prototype' || value in Object.prototype;
+function identifierOf(value, what) {
+  if (typeof value !== 'string' || !IDENTIFIER.test(value) || isPrototypeKey(value))
+    throw bad(`${what} ${String(value)} is not a valid name.`);
+  return value;
+}
+
 function lookupNameOf(lookup) {
   // Assumed: a missing LogicalName is derived from SchemaName, lowercased.
-  return lower(requiredText(lookup?.LogicalName ?? lookup?.SchemaName, 'Lookup.LogicalName'));
+  if (lookup?.SchemaName != null) prefixedName(requiredText(lookup.SchemaName, 'SchemaName'), 'Attribute');
+  return identifierOf(lower(requiredText(lookup?.LogicalName ?? lookup?.SchemaName, 'Lookup.LogicalName')), 'Lookup');
 }
 
 function lookupField(lookup, targets, dataverseType) {
@@ -364,9 +417,10 @@ function planOneToMany(api, body, { lookupName, referencingNav }) {
   const referenced = tableOf(api, referencedLogical);
   const referencing = tableOf(api, referencingLogical);
   writable(referencing, referencingLogical);
+  prefixedName(schemaName, 'Relationship');
   const cascade = assertElasticOneToMany({ referencing, referenced, cascade: body.CascadeConfiguration }); // elastic rules (dataverse-elastic.mjs)
   const referencedAttribute = lower(body.ReferencedAttribute ?? referenced.idColumn); // assumed default: the key
-  const referencedNav = body.ReferencedEntityNavigationPropertyName ?? schemaName;
+  const referencedNav = identifierOf(body.ReferencedEntityNavigationPropertyName ?? schemaName, 'Navigation property');
   if (entriesOf(api, schemaName).length) throw bad(`A relationship named ${schemaName} already exists.`);
   if (!hasField(referenced, referencedAttribute))
     throw missing(`Attribute ${referencedLogical}.${referencedAttribute}`);
@@ -404,7 +458,12 @@ function writeOneToMany(api, plan, field) {
   const referenced = mappings(api)[plan.referencedLogical];
   const referencing = mappings(api)[plan.referencingLogical];
   if (field) {
-    (referencing.fields ??= {})[plan.lookupName] = field;
+    let fields = referencing.fields;
+    if (fields == null) {
+      fields = {};
+      referencing.fields = fields;
+    }
+    fields[plan.lookupName] = field;
     // A lookup to an elastic table also gets <lookup>pid, the partitionid of the row it points at.
     if (isElastic(referenced)) referencing.fields[partitionColumnOf(plan.lookupName)] = { dataverseType: 'nvarchar' };
     logMetadataChange(api, 'add', 'attribute', plan.referencingLogical, plan.lookupName);
@@ -418,7 +477,12 @@ function writeOneToMany(api, plan, field) {
     ...(plan.associatedMenu ? { associatedMenu: plan.associatedMenu } : {}),
     ...(plan.hierarchical ? { hierarchical: true } : {}),
   };
-  (referenced.relationships ??= {})[plan.referencedNav] = {
+  let referencedRelationships = referenced.relationships;
+  if (referencedRelationships == null) {
+    referencedRelationships = {};
+    referenced.relationships = referencedRelationships;
+  }
+  referencedRelationships[plan.referencedNav] = {
     entity: plan.referencingLogical,
     from: plan.referencedAttribute,
     to: plan.lookupName,
@@ -426,7 +490,12 @@ function writeOneToMany(api, plan, field) {
     partner: plan.referencingNav,
     ...shared,
   };
-  (referencing.relationships ??= {})[plan.referencingNav] = {
+  let referencingRelationships = referencing.relationships;
+  if (referencingRelationships == null) {
+    referencingRelationships = {};
+    referencing.relationships = referencingRelationships;
+  }
+  referencingRelationships[plan.referencingNav] = {
     entity: plan.referencedLogical,
     from: plan.lookupName,
     to: plan.referencedAttribute,
@@ -441,7 +510,7 @@ export function createOneToMany(api, body) {
   const lookupName = lookupNameOf(body.Lookup);
   const plan = planOneToMany(api, body, {
     lookupName,
-    referencingNav: body.ReferencingEntityNavigationPropertyName ?? lookupName,
+    referencingNav: identifierOf(body.ReferencingEntityNavigationPropertyName ?? lookupName, 'Navigation property'),
   });
   writeOneToMany(api, plan, lookupField(body.Lookup, [plan.referencedLogical], 'lookup'));
   return plan.schemaName;
@@ -457,7 +526,10 @@ function createPolymorphic(api, body) {
     planOneToMany(api, rel, {
       lookupName,
       // Assumed default: each navigation is named per target so the relationships do not collide.
-      referencingNav: rel.ReferencingEntityNavigationPropertyName ?? `${lookupName}_${lower(rel.ReferencedEntity)}`,
+      referencingNav: identifierOf(
+        rel.ReferencingEntityNavigationPropertyName ?? `${lookupName}_${lower(rel.ReferencedEntity)}`,
+        'Navigation property',
+      ),
     }),
   );
   const [first] = plans;
@@ -487,15 +559,19 @@ export function createManyToMany(api, body) {
   const schemaName = requiredText(body.SchemaName, 'SchemaName');
   const l1 = lower(requiredText(body.Entity1LogicalName, 'Entity1LogicalName'));
   const l2 = lower(requiredText(body.Entity2LogicalName, 'Entity2LogicalName'));
-  const intersect = lower(requiredText(body.IntersectEntityName, 'IntersectEntityName'));
+  const intersect = identifierOf(
+    lower(requiredText(body.IntersectEntityName, 'IntersectEntityName')),
+    'Intersect table',
+  );
   const e1 = tableOf(api, l1);
   const e2 = tableOf(api, l2);
   assertElasticManyToMany(e1, e2); // no N:N with an elastic table (dataverse-elastic.mjs)
+  prefixedName(schemaName, 'Relationship');
   if (entriesOf(api, schemaName).length || mappings(api)[intersect]) throw bad(`${schemaName} already exists.`);
-  const attr1 = lower(body.Entity1IntersectAttribute ?? e1.idColumn);
-  const attr2 = lower(body.Entity2IntersectAttribute ?? e2.idColumn);
-  const nav1 = body.Entity1NavigationPropertyName ?? schemaName;
-  const nav2 = body.Entity2NavigationPropertyName ?? schemaName;
+  const attr1 = identifierOf(lower(body.Entity1IntersectAttribute ?? e1.idColumn), 'Intersect attribute');
+  const attr2 = identifierOf(lower(body.Entity2IntersectAttribute ?? e2.idColumn), 'Intersect attribute');
+  const nav1 = identifierOf(body.Entity1NavigationPropertyName ?? schemaName, 'Navigation property');
+  const nav2 = identifierOf(body.Entity2NavigationPropertyName ?? schemaName, 'Navigation property');
   // A self-referencing relationship has both sides on one table: its intersect columns and navigation names must differ.
   if (
     l1 === l2 &&
@@ -521,7 +597,12 @@ export function createManyToMany(api, body) {
     relationships: {},
   };
   api.store.state.tables[intersect] ??= [];
-  (e1.relationships ??= {})[nav1] = {
+  let relationships1 = e1.relationships;
+  if (relationships1 == null) {
+    relationships1 = {};
+    e1.relationships = relationships1;
+  }
+  relationships1[nav1] = {
     entity: l2,
     from: e1.idColumn,
     to: e2.idColumn,
@@ -532,7 +613,12 @@ export function createManyToMany(api, body) {
     isCustomizable: true,
     intersect: { entity: intersect, from: attr1, to: attr2 },
   };
-  (e2.relationships ??= {})[nav2] = {
+  let relationships2 = e2.relationships;
+  if (relationships2 == null) {
+    relationships2 = {};
+    e2.relationships = relationships2;
+  }
+  relationships2[nav2] = {
     entity: l1,
     from: e2.idColumn,
     to: e1.idColumn,
@@ -862,6 +948,11 @@ function updateState(api, c) {
 const privilegeOf = (method) =>
   ({ POST: 'prvCreateAttribute', PUT: 'prvWriteAttribute', DELETE: 'prvDeleteAttribute' })[method];
 
+function runMetadataWrite(api, c, privilege, fn) {
+  requireMetadataPrivilege(api, c, privilege, 'attribute');
+  return api.change(() => api.store.transact(() => withSolutionMembership(api, c.headers, () => fn(c))));
+}
+
 /** Routes for api.addRoute: RelationshipDefinitions and GlobalOptionSetDefinitions writes. */
 export function metadataWriteRoutes(api) {
   const is = (set, keyed) => (pathname, method) => {
@@ -870,10 +961,7 @@ export function metadataWriteRoutes(api) {
     return (keyed ? m[2] !== undefined : m[2] === undefined) && (keyed ? ['PUT', 'DELETE'] : ['POST']).includes(method);
   };
   const keyOf = (c) => decodeURIComponent(ROUTE.exec(pathOf(c))?.[2] ?? '');
-  const run = (fn) => async (c) => {
-    requireMetadataPrivilege(api, c, privilegeOf(c.method), 'attribute');
-    return api.change(() => api.store.transact(() => withSolutionMembership(api, c.headers, () => fn(c))));
-  };
+  const run = (fn) => async (c) => runMetadataWrite(api, c, privilegeOf(c.method), fn);
   return [
     { match: is('RelationshipDefinitions', false), handle: run((c) => relationshipCreate(api, c)) },
     {
@@ -918,10 +1006,7 @@ export function metadataWriteOperations(api) {
     name,
     kind: 'action',
     binding: 'unbound',
-    handle: async (c) => {
-      requireMetadataPrivilege(api, c, privilege, 'attribute');
-      return api.change(() => api.store.transact(() => withSolutionMembership(api, c.headers, () => fn(c))));
-    },
+    handle: async (c) => runMetadataWrite(api, c, privilege, fn),
   });
   return [
     op('CreateCustomerRelationships', 'prvCreateAttribute', (c) => ({

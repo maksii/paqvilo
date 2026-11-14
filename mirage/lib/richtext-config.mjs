@@ -159,8 +159,7 @@ export async function captureRichTextConfiguration(cache, live, { portal, resour
 
 function profileStatus(portal, resource, baseline, origin) {
   if (
-    !baseline ||
-    baseline.version !== 1 ||
+    baseline?.version !== 1 ||
     baseline.kind !== 'rich-text-json' ||
     baseline.url !== resource.url ||
     baseline.sourceFile !== sourcePath(portal, resource) ||

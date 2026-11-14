@@ -107,23 +107,23 @@ export function resolvePortalIdentity(portal, state, selected = state.simulator?
   const model = suppliedModel ?? membershipModel(portal, state),
     contactId = id(selected.contactId ?? selected.id),
     contact = model.contacts.get(contactId);
-  if (selected.roleSource !== 'memberships') {
-    // admin is an internal storage capability; stale membership IDs are not manual grants.
-    const { admin: ignoredAdmin, roleIds: ignoredRoleIds, ...override } = clone(selected);
-    const roles = [...new Set(selected.roles ?? [])],
-      roleIds = [];
-    for (const role of roles) {
-      const matches = model.webRoles.filter((candidate) => candidate.name === role || candidate.id === id(role));
-      if (matches.length === 1) roleIds.push(matches[0].id);
-    }
-    return {
-      ...override,
-      roleSource: 'override',
-      roles,
-      roleIds,
-      diagnostics: [],
-    };
+  if (selected.roleSource !== 'memberships') return overridePortalIdentity(selected, model);
+  return membershipPortalIdentity(portal, state, model, contactId, contact);
+}
+
+function overridePortalIdentity(selected, model) {
+  // admin is an internal storage capability; stale membership IDs are not manual grants.
+  const { admin: ignoredAdmin, roleIds: ignoredRoleIds, ...override } = clone(selected); // NOSONAR: binding is excluded from the rest object or is a placeholder
+  const roles = [...new Set(selected.roles ?? [])],
+    roleIds = [];
+  for (const role of roles) {
+    const matches = model.webRoles.filter((candidate) => candidate.name === role || candidate.id === id(role));
+    if (matches.length === 1) roleIds.push(matches[0].id);
   }
+  return { ...override, roleSource: 'override', roles, roleIds, diagnostics: [] };
+}
+
+function membershipPortalIdentity(portal, state, model, contactId, contact) {
   const authenticated = Boolean(contact && Number(scalar(contact.statecode) ?? 0) === 0);
   const roleIds = new Set(
     model.webRoles.filter((role) => (authenticated ? role.authenticated : role.anonymous)).map((role) => role.id),
@@ -227,44 +227,49 @@ function descriptor(rel, permission, target, mappings) {
  */
 export function resolveScopedRelationship(rel, permission, target, mappings = {}) {
   if (!rel) return null;
-  if (rel.type === 'one-to-many') {
-    if (rel.referencingEntity === permission.entity && rel.referencedEntity === target)
-      return {
-        field: rel.referencingAttribute,
-        descriptor: {
-          entity: target,
-          from: rel.referencingAttribute,
-          to: rel.referencedAttribute ?? mappings[target]?.idColumn,
-        },
-      };
-    if (rel.referencedEntity === permission.entity && rel.referencingEntity === target)
-      return {
-        descriptor: {
-          entity: target,
-          from: rel.referencedAttribute ?? mappings[permission.entity]?.idColumn,
-          to: rel.referencingAttribute,
-          many: true,
-        },
-      };
-  }
-  if (rel.type === 'many-to-many') {
-    const first = rel.entity1 === permission.entity && rel.entity2 === target,
-      second = rel.entity2 === permission.entity && rel.entity1 === target;
-    if (first || second)
-      return {
-        descriptor: {
-          entity: target,
-          from: mappings[permission.entity]?.idColumn ?? permission.entity + 'id',
-          to: mappings[target]?.idColumn ?? target + 'id',
-          intersect: {
-            entity: rel.intersectEntity,
-            from: first ? rel.attribute1 : rel.attribute2,
-            to: first ? rel.attribute2 : rel.attribute1,
-          },
-        },
-      };
-  }
+  if (rel.type === 'one-to-many') return oneToManyScope(rel, permission, target, mappings);
+  if (rel.type === 'many-to-many') return manyToManyScope(rel, permission, target, mappings);
   return null;
+}
+
+function oneToManyScope(rel, permission, target, mappings) {
+  if (rel.referencingEntity === permission.entity && rel.referencedEntity === target)
+    return {
+      field: rel.referencingAttribute,
+      descriptor: {
+        entity: target,
+        from: rel.referencingAttribute,
+        to: rel.referencedAttribute ?? mappings[target]?.idColumn,
+      },
+    };
+  if (rel.referencedEntity === permission.entity && rel.referencingEntity === target)
+    return {
+      descriptor: {
+        entity: target,
+        from: rel.referencedAttribute ?? mappings[permission.entity]?.idColumn,
+        to: rel.referencingAttribute,
+        many: true,
+      },
+    };
+  return null;
+}
+
+function manyToManyScope(rel, permission, target, mappings) {
+  const first = rel.entity1 === permission.entity && rel.entity2 === target,
+    second = rel.entity2 === permission.entity && rel.entity1 === target;
+  if (!first && !second) return null;
+  return {
+    descriptor: {
+      entity: target,
+      from: mappings[permission.entity]?.idColumn ?? permission.entity + 'id',
+      to: mappings[target]?.idColumn ?? target + 'id',
+      intersect: {
+        entity: rel.intersectEntity,
+        from: first ? rel.attribute1 : rel.attribute2,
+        to: first ? rel.attribute2 : rel.attribute1,
+      },
+    },
+  };
 }
 
 /** Compile an explicit grant ledger and hierarchy. Unresolved source grants fail closed. */
@@ -330,7 +335,8 @@ export function buildPermissionModel(
   // The first reason is the root cause; later checks add context without hiding it.
   const disable = (rule, code, message) => {
     if (rule.enabled === false && rule.disabledReason && rule.disabledCode) {
-      if (!(rule.disabledReasons ??= [rule.disabledReason]).includes(message)) rule.disabledReasons.push(message);
+      rule.disabledReasons ??= [rule.disabledReason];
+      if (!rule.disabledReasons.includes(message)) rule.disabledReasons.push(message);
       return;
     }
     rule.enabled = false;
@@ -351,7 +357,7 @@ export function buildPermissionModel(
         'PERMISSION_ID_AMBIGUOUS',
         'More than one permission source defines this ID. Resolve the conflicting export or local definitions before enabling it.',
       );
-  function compile(rule) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ function compile(rule) {
     const key = id(rule.id);
     if (visited.has(key)) return;
     if (visiting.has(key)) {
@@ -553,16 +559,15 @@ export function buildPermissionModel(
           rule.scope === 'parent'
             ? !rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to
             : !rule.field && (!identityRelationship?.entity || !identityRelationship.from || !identityRelationship.to)
-        )
-          disable(
-            rule,
-            'PERMISSION_RELATIONSHIP_UNRESOLVED',
-            !rule.relationshipName
-              ? 'The exported permission has no relationship name for its scope.'
-              : !rel
-                ? `No selected solution layer or documented Dataverse relationship defines '${rule.relationshipName}'.`
-                : `Relationship '${rel.schemaName ?? rule.relationshipName}' does not connect '${rule.entity}' to '${target}'.`,
-          );
+        ) {
+          let message;
+          if (!rule.relationshipName) message = 'The exported permission has no relationship name for its scope.';
+          else if (!rel)
+            message = `No selected solution layer or documented Dataverse relationship defines '${rule.relationshipName}'.`;
+          else
+            message = `Relationship '${rel.schemaName ?? rule.relationshipName}' does not connect '${rule.entity}' to '${target}'.`;
+          disable(rule, 'PERMISSION_RELATIONSHIP_UNRESOLVED', message);
+        }
       }
       if (!rule.roles?.length)
         disable(

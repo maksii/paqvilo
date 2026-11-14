@@ -1,9 +1,11 @@
+// @test-kind security: every test in this file asserts the Dataverse column (field) security model, which governs which secured values a caller can read or write.
 // Simulated Dataverse column (field) security: profile matrix, team profiles, field sharing, administrator bypass,
 // write errors, aliased projection, aggregates, api.fieldSecurity and RetrievePrincipalAttributePrivileges.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { createModelDrivenRecordService } from '../lib/dataverse-model-driven.mjs';
 import { createPrincipals, ensureSecurityModel, uuidV5 } from '../lib/dataverse-security.mjs';
 import {
   ensureFieldSecurity,
@@ -11,6 +13,8 @@ import {
   isSecuredField,
   SYSTEM_ADMINISTRATOR_PROFILE_ID,
 } from '../lib/dataverse-fls.mjs';
+import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
+import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
 const ADMIN_OID = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -200,6 +204,44 @@ test('catalogue field rights reuse one metadata snapshot and immediately recheck
   assert.equal(f.api.fieldSecurity.capabilities(basic, 'widget', ['source_secret']).source_secret.read, true);
 });
 
+test('wide model-driven capabilities derive source metadata once per table and recheck source security', async () => {
+  let calls = 0;
+  const source = Object.fromEntries(
+    Array.from({ length: 257 }, (_, index) => [
+      'column' + index,
+      { dataverseType: 'nvarchar', isSecured: index === 0 },
+    ]),
+  );
+  const f = await setup(() => {
+    calls++;
+    return source;
+  });
+  const fields = { ...source };
+  const service = createModelDrivenRecordService({
+    organization: { store: f.store, principals: f.principals, api: f.api },
+    principal: () => f.user(BASIC_OID),
+  });
+  calls = 0;
+  const before = service.capabilities('widget', {}, { fields });
+  assert.ok(calls <= 2, `Expected at most two table metadata derivations, received ${calls}`);
+  assert.equal(before.fields.column0.secured, true);
+  assert.equal(before.fields.column0.read, false);
+  const compact = service.capabilities('widget', {}, { fields, compact: true });
+  assert.deepEqual(compact, before);
+  assert.equal(JSON.stringify(compact), JSON.stringify(before));
+  assert.ok(new Set(Object.values(compact.fields)).size <= 2, 'Private export rights reuse only boolean combinations.');
+  assert.ok(Object.isFrozen(compact.fields.column1));
+  assert.notEqual(before.fields.column1, before.fields.column2, 'Public field rights remain independently mutable.');
+  const raw = f.api.fieldSecurity.capabilities(f.user(BASIC_OID), 'widget', ['column1', 'column2']);
+  assert.notEqual(raw.column1, raw.column2, 'Public field-security API retains separate values.');
+  source.column0 = { dataverseType: 'nvarchar', isSecured: false };
+  calls = 0;
+  const after = service.capabilities('widget', {}, { fields });
+  assert.ok(calls <= 2);
+  assert.equal(after.fields.column0.secured, false);
+  assert.equal(after.fields.column0.read, after.read);
+});
+
 test('seeds dataverse-only field security mappings and the System Administrator profile once', async () => {
   const { store } = await setup();
   await ensureFieldSecurity(store);
@@ -246,6 +288,7 @@ test('install seeds the field security tables itself and exposes api.fieldSecuri
     'capabilities',
     'diagnostics',
     'mask',
+    'maskAll',
     'maskValue',
     'maskedFor',
     'maskedOperand',
@@ -536,4 +579,165 @@ test('reset(api) re-seeds the field security tables and the System Administrator
     ).length,
     1,
   );
+});
+
+// An elastic notes table with one secured column, written through the Web API record handlers with field security installed.
+async function elasticSetup() {
+  const state = emptyState();
+  state.mappings.note = {
+    logicalName: 'note',
+    entitySet: 'notes',
+    idColumn: 'noteid',
+    nameColumn: 'name',
+    ownership: 'UserOwned',
+    tableType: 'Elastic',
+    fields: {
+      name: text,
+      secret: { ...text, columnMetadata: { isSecured: true } },
+      partitionid: text,
+      ttlinseconds: { dataverseType: 'int' },
+    },
+  };
+  state.tables.note = [];
+  const store = new DataStore({ state });
+  await ensureSecurityModel(store, SETTINGS);
+  const principals = createPrincipals(store, SETTINGS);
+  const hooks = createRecordHooks();
+  const api = {
+    store,
+    principals,
+    settings: { ...SETTINGS, organizationId: null },
+    change: (fn) => fn(),
+    registry: { register() {} },
+    recordHooks: hooks,
+  };
+  const handlers = createRecordHandlers({
+    store,
+    change: (fn) => fn(),
+    principals,
+    metadataFields: () => undefined,
+    hooks,
+    fieldSecurity: () => api.fieldSecurity,
+  });
+  await fieldSecurity.install(api);
+  const send = (method, id, { user, body }) => {
+    const url = new URL(`http://127.0.0.1:5555/api/data/v9.2/notes(${id})`);
+    return handlers.handle({
+      method,
+      route: parseDataverseRoute(url.pathname),
+      url,
+      origin: url.origin,
+      version: 'v9.2',
+      prefer: parsePrefer(undefined),
+      headers: {},
+      body,
+      user,
+      caller: user,
+      identity: { admin: true, id: user.systemuserid, systemUserId: user.systemuserid },
+      requestId: 'test',
+    });
+  };
+  return { store, send, admin: principals.byObjectId(ADMIN_OID), basic: principals.byObjectId(BASIC_OID) };
+}
+
+// @test-kind security: An elastic PATCH upsert is checked as the create or the update it is, so a secured column needs the field permission that write needs.
+test('an elastic PATCH upsert naming a secured column needs the field permission for its create or its update', async () => {
+  const t = await elasticSetup();
+  const created = '11111111-0000-4000-8000-0000000000a1';
+  const owned = '11111111-0000-4000-8000-0000000000a2';
+  await assert.rejects(
+    t.send('PATCH', created, { user: t.basic, body: { name: 'n', secret: 'x' } }),
+    (error) => error.details.innerCode === '0x8004f502',
+  );
+  assert.equal(t.store.state.tables.note.length, 0, 'a refused upsert-create stores nothing');
+  assert.equal((await t.send('PATCH', created, { user: t.admin, body: { name: 'n', secret: 'admin' } })).status, 204);
+  assert.equal((await t.send('PATCH', owned, { user: t.basic, body: { name: 'n' } })).status, 204);
+  await assert.rejects(
+    t.send('PATCH', owned, { user: t.basic, body: { secret: 'overwritten' } }),
+    (error) => error.details.innerCode === '0x8004f507',
+  );
+  const row = () => t.store.state.tables.note.find((item) => item.noteid === owned);
+  assert.equal(row().secret, undefined, 'a refused upsert-update leaves the column unchanged');
+  assert.equal((await t.send('PATCH', owned, { user: t.admin, body: { secret: 'admin-set' } })).status, 204);
+  assert.equal(row().secret, 'admin-set');
+});
+
+// Regression: the hidden and secured column names were resolved for every row of a projection. The field table of the
+// mapping is enumerated once per projection, so its count does not grow with the row count.
+test('project resolves the hidden and secured column names once per projection, not once per row', async () => {
+  const t = await setup();
+  const basic = t.user(BASIC_OID);
+  const projectRows = (rowCount) => {
+    let enumerations = 0;
+    const fields = new Proxy(t.mapping.fields, {
+      ownKeys(target) {
+        enumerations += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const rows = Array.from({ length: rowCount }, () => t.formatted(W1));
+    t.hooks.project({ user: basic }, { ...t.mapping, fields }, rows);
+    assert.ok(
+      rows.every((row) => row.secret === null && row.grade === null),
+      'every row is masked',
+    );
+    return enumerations;
+  };
+  assert.equal(projectRows(50), projectRows(1));
+});
+
+// Regression: mask is called per row by the row loops of the record, search and elastic reads. maskAll answers a batch of rows of
+// one table for one caller, and each row equals what mask answers for it; the names are resolved once for the batch.
+test('maskAll answers each row as mask does for a caller without the field permission', async () => {
+  const t = await setup();
+  t.mapping.fields.internal = { ...text, validForRead: false };
+  const basic = t.user(BASIC_OID);
+  const { mask, maskAll } = t.api.fieldSecurity;
+  const rows = [t.formatted(W1), null, { ...t.formatted(W2), internal: 'hidden' }];
+  const masked = maskAll(basic, 'widget', rows);
+  assert.deepEqual(
+    masked,
+    rows.map((row) => mask(basic, 'widget', row)),
+  );
+  assert.equal(masked[0].secret, null);
+  assert.equal(masked[2].internal, null);
+  assert.equal(rows[0].secret, 's1', 'the source rows are not mutated');
+});
+
+test('maskAll resolves the field names once for all its rows, where mask resolves them for every row', async () => {
+  let reads = 0;
+  const t = await setup(() => {
+    reads += 1;
+    return undefined;
+  });
+  t.mapping.fields.internal = { ...text, validForRead: false };
+  const basic = t.user(BASIC_OID);
+  const { mask, maskAll } = t.api.fieldSecurity;
+  const rows = Array.from({ length: 50 }, () => t.formatted(W1));
+  reads = 0;
+  mask(basic, 'widget', rows[0]);
+  const perResolution = reads;
+  assert.ok(perResolution > 0, 'a projection resolves the field names');
+  reads = 0;
+  maskAll(basic, 'widget', rows);
+  assert.equal(reads, perResolution, 'a batch resolves the field names once');
+  reads = 0;
+  for (const row of rows) mask(basic, 'widget', row);
+  assert.equal(reads, perResolution * rows.length, 'mask resolves the field names for every row');
+});
+
+// @test-kind contract: one mask resolves the table metadata a bounded number of times, independent of the column count
+test('one mask resolves the table metadata a bounded number of times, independent of the column count', async () => {
+  let resolutions = 0;
+  const source = Object.fromEntries(
+    Array.from({ length: 300 }, (_, index) => ['column' + index, { dataverseType: 'nvarchar' }]),
+  );
+  const t = await setup((logical) => {
+    resolutions += 1;
+    return logical === 'widget' ? source : undefined;
+  });
+  const basic = t.user(BASIC_OID);
+  resolutions = 0;
+  t.api.fieldSecurity.mask(basic, 'widget', t.formatted(W1));
+  assert.ok(resolutions <= 2, `Expected at most two metadata resolutions for one mask, received ${resolutions}`);
 });

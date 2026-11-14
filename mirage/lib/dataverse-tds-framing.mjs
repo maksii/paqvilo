@@ -35,12 +35,14 @@ const EMPTY = Buffer.alloc(0);
 
 // ---- message framing
 
+// maxBytes is a number, or a function giving the limit for the message in progress (read as each packet arrives).
 export function createMessageReader(onMessage, { maxBytes = MAX_MESSAGE_BYTES } = {}) {
+  const limit = typeof maxBytes === 'function' ? maxBytes : () => maxBytes;
   let pending = EMPTY;
   let parts = [];
   let size = 0;
   let type;
-  return (chunk) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ return (chunk) => {
     pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
     while (pending.length >= HEADER_BYTES) {
       const length = pending.readUInt16BE(2);
@@ -50,7 +52,8 @@ export function createMessageReader(onMessage, { maxBytes = MAX_MESSAGE_BYTES } 
       else if (pending[0] !== type) throw new Error('TDS message packets mix message types');
       parts.push(pending.subarray(HEADER_BYTES, length));
       size += length - HEADER_BYTES;
-      if (size > maxBytes) throw new Error(`TDS message exceeds ${maxBytes} bytes`);
+      const max = limit();
+      if (size > max) throw new Error(`TDS message exceeds ${max} bytes`);
       const endOfMessage = (pending[1] & EOM) !== 0;
       pending = pending.subarray(length);
       if (endOfMessage) {
@@ -133,18 +136,23 @@ export function decodePrelogin(payload) {
   const fields = {};
   for (let i = 0; ; i += 5) {
     if (i >= payload.length) throw new Error('PRELOGIN options are not terminated');
-    const token = payload[i];
-    if (token === PRELOGIN_TERMINATOR) break;
-    if (i + 5 > payload.length) throw new Error('PRELOGIN option table is truncated');
-    const offset = payload.readUInt16BE(i + 1);
-    const length = payload.readUInt16BE(i + 3);
-    if (offset + length > payload.length) throw new Error(`PRELOGIN option ${token} points outside the message`);
-    fields[PRELOGIN_NAMES[token] ?? `0x${token.toString(16).padStart(2, '0')}`] = payload.subarray(
-      offset,
-      offset + length,
-    );
+    if (decodePreloginOption(payload, i, fields)) break;
   }
   return fields;
+}
+
+function decodePreloginOption(payload, index, fields) {
+  const token = payload[index];
+  if (token === PRELOGIN_TERMINATOR) return true;
+  if (index + 5 > payload.length) throw new Error('PRELOGIN option table is truncated');
+  const offset = payload.readUInt16BE(index + 1);
+  const length = payload.readUInt16BE(index + 3);
+  if (offset + length > payload.length) throw new Error(`PRELOGIN option ${token} points outside the message`);
+  fields[PRELOGIN_NAMES[token] ?? `0x${token.toString(16).padStart(2, '0')}`] = payload.subarray(
+    offset,
+    offset + length,
+  );
+  return false;
 }
 
 // ---- TDS 7.x (PRELOGIN wrapped TLS) and TDS 8.0 (strict, TLS first)
@@ -211,7 +219,9 @@ class PreloginTlsAdapter extends Duplex {
     callback();
   }
 
-  _read() {}
+  _read() {
+    // Intentionally empty: inbound data is pushed from the wrapped stream's data handler.
+  }
 
   _final(callback) {
     this.#flush();

@@ -10,6 +10,8 @@
 // mismatches raise the .NET exception that renders as "Liquid error: ...".
 import sanitize from 'sanitize-html';
 import { parseFragment, serializeOuter } from 'parse5';
+import { stripTrailingCharacter } from './text-scanning.mjs';
+import { clockFunction, systemClock } from './runtime-clock.mjs';
 import {
   LiquidError,
   NetDecimal,
@@ -183,7 +185,13 @@ export const FILTER_SIGNATURES = Object.freeze({
 });
 export function createFilterSignatures(host = {}) {
   return host.filterRegistration === 'observed'
-    ? { ...FILTER_SIGNATURES, currency: ['@context, value, record, attribute, format?'] }
+    ? {
+        ...FILTER_SIGNATURES,
+        currency: ['@context, value, record, attribute, format?'],
+        // Recorded natively (power-pages-recorded-20261111 wrong-arg-count-slice; followup slice-no-argument):
+        // the missing parameter of slice is reported as 'start'.
+        slice: ['@context, input, start, length?'],
+      }
     : FILTER_SIGNATURES;
 }
 // ---- Strainer parameter conversion
@@ -261,32 +269,10 @@ function mathOperation(input, operand, operation) {
     );
   }
   if (kindA === 'double' || kindB === 'double') {
-    const a = toNumber(input),
-      b = toNumber(operand);
-    const result =
-      operation === 'add'
-        ? a + b
-        : operation === 'subtract'
-          ? a - b
-          : operation === 'multiply'
-            ? a * b
-            : operation === 'divide'
-              ? a / b
-              : a % b;
-    return new NetDouble(result);
+    return doubleMathOperation(input, operand, operation);
   }
   if (kindA === 'decimal' || kindB === 'decimal') {
-    const result =
-      operation === 'add'
-        ? decimalAdd(input, operand)
-        : operation === 'subtract'
-          ? decimalAdd(input, operand, -1n)
-          : operation === 'multiply'
-            ? decimalMultiply(input, operand)
-            : operation === 'divide'
-              ? decimalDivide(input, operand)
-              : decimalModulo(input, operand);
-    return result;
+    return decimalMathOperation(input, operand, operation);
   }
   const a = Number(input),
     b = Number(operand);
@@ -305,6 +291,24 @@ function mathOperation(input, operand, operation) {
       return a % b;
   }
 }
+function doubleMathOperation(input, operand, operation) {
+  const a = toNumber(input),
+    b = toNumber(operand);
+  let result;
+  if (operation === 'add') result = a + b;
+  else if (operation === 'subtract') result = a - b;
+  else if (operation === 'multiply') result = a * b;
+  else if (operation === 'divide') result = a / b;
+  else result = a % b;
+  return new NetDouble(result);
+}
+function decimalMathOperation(input, operand, operation) {
+  if (operation === 'add') return decimalAdd(input, operand);
+  if (operation === 'subtract') return decimalAdd(input, operand, -1n);
+  if (operation === 'multiply') return decimalMultiply(input, operand);
+  if (operation === 'divide') return decimalDivide(input, operand);
+  return decimalModulo(input, operand);
+}
 /** Math.Round(decimal, int) uses MidpointRounding.ToEven. */
 function roundDecimal(value, decimals) {
   const decimal = NetDecimal.from(value);
@@ -317,7 +321,7 @@ function roundDecimal(value, decimals) {
   if (twice > factor || (twice === factor && quotient % 2n !== 0n)) rounded += decimal.mantissa < 0n ? -1n : 1n;
   return new NetDecimal(rounded, decimals);
 }
-const toDecimalValue = (value) => (typeof value === 'string' ? toNetDecimal(value) : toNetDecimal(value));
+const toDecimalValue = (value) => toNetDecimal(value);
 const decimalToInt = (decimal) => {
   const value = Number(decimal.toFixedString());
   if (value < -2147483648 || value > 2147483647)
@@ -355,9 +359,13 @@ function compareForOrder(a, b) {
   if (isNumber(a) && isNumber(b)) return Math.sign(toNumber(a) - toNumber(b));
   if (isDate(a) && isDate(b)) return Math.sign(a.getTime() - b.getTime());
   if (typeof a === 'string' && typeof b === 'string') return Math.sign(COLLATOR.compare(a, b));
-  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return compareBooleans(a, b);
   if (typeof a === typeof b) return 0;
   throw new LiquidError('Failed to compare two elements in the array.', 'System.InvalidOperationException');
+}
+function compareBooleans(a, b) {
+  if (a === b) return 0;
+  return a ? 1 : -1;
 }
 const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'variant' });
 /**
@@ -372,7 +380,9 @@ function sortCompare(a, b, characters) {
   if (typeof a === 'string' && typeof b === 'string') {
     const left = characters ? a : a.toUpperCase(),
       right = characters ? b : b.toUpperCase();
-    return left < right ? -1 : left > right ? 1 : 0;
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
   }
   const comparable = (item) => typeof item === 'string' || typeof item === 'boolean' || isNumber(item) || isDate(item);
   if (!comparable(a) || !comparable(b))
@@ -399,7 +409,7 @@ async function orderBy(items, key, direction, context, previous) {
     if (index === 0 || entry.prior !== last.prior || compareForOrder(last.value, entry.value) !== 0) rank++;
     ranks.set(entry.item, rank);
     last = entry;
-    void signature;
+    void signature; // NOSONAR: void is intentional here
   });
   result.ranks = ranks;
   return result;
@@ -432,18 +442,21 @@ function buildQuery(pairs) {
     else groups.push({ key, values: [value] });
   }
   const parts = [];
-  for (const group of groups)
-    for (const value of group.values)
-      if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? '' : antiXssUrlEncode(value)}`);
-      else parts.push(antiXssUrlEncode(value ?? ''));
+  for (const group of groups) appendQueryGroup(parts, group);
   return parts.length ? `?${parts.join('&')}` : '';
+}
+function appendQueryGroup(parts, group) {
+  for (const value of group.values) {
+    if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? '' : antiXssUrlEncode(value)}`);
+    else parts.push(antiXssUrlEncode(value ?? ''));
+  }
 }
 /**
  * add_query/remove_query: the query is rebuilt through QueryStringCollection (decoded, then
  * AntiXSS-encoded). Absolute input yields Uri.AbsoluteUri; relative input keeps its own
  * path text and fragment (portal navigation may prefix the result with "../").
  */
-function rebuild(url, mutate) {
+function rebuild(url, mutate, relativeResolution) {
   if (url == null) return null;
   const text = String(url);
   const hashIndex = text.indexOf('#');
@@ -458,6 +471,10 @@ function rebuild(url, mutate) {
       const parsed = new URL(text);
       return `${parsed.origin}${parsed.pathname}${query}${parsed.hash}`;
     }
+    if (relativeResolution === 'root' && !path.startsWith('//')) {
+      const resolved = new URL(path || '/', 'http://localhost/');
+      return `${resolved.pathname}${query}`;
+    }
     return `${path}${query}${fragment}`;
   } catch {
     return text;
@@ -469,10 +486,57 @@ const portOf = (url) => {
 };
 
 // ---- Text helpers
+/**
+ * Simple (single-character) uppercase mappings of UnicodeData.txt for the code points whose full uppercase form is
+ * longer than one character and which have one: U+1F80..U+1F87, U+1F90..U+1F97 and U+1FA0..U+1FA7 map to +8, and
+ * U+1FB3, U+1FC3, U+1FF3 map to U+1FBC, U+1FCC, U+1FFC. The other such characters (ß, ŉ, ǰ, ΐ, ΰ, և, ᾲ, ...) have no
+ * simple uppercase mapping. Recorded natively: upcase-iota-1f80, upcase-iota-1f97, upcase-iota-1fc3,
+ * upcase-iota-1ff3 (power-pages-recorded-20261111-casemap), upcase-ypogegrammeni-alpha (followup, 'ᾳ' gives 'ᾼ').
+ */
+const SIMPLE_UPPER_MULTI = Object.freeze(
+  new Map([
+    ...[0x1f80, 0x1f90, 0x1fa0].flatMap((start) =>
+      Array.from({ length: 8 }, (_, offset) => [start + offset, start + offset + 8]),
+    ),
+    [0x1fb3, 0x1fbc],
+    [0x1fc3, 0x1fcc],
+    [0x1ff3, 0x1ffc],
+  ]),
+);
+/**
+ * Power Pages (observed runtime) uppercase mapping, one code point at a time, as .NET invariant casing does: the
+ * full uppercase form when it is one character, else the simple mapping, else the character unchanged.
+ * Recorded natively: upcase-sharp-s and upcase-ligature-fi keep the characters whose uppercase form is more than
+ * one character (power-pages-recorded-20261111 upcase-sharp-s; followup upcase-ligature-fi, capitalize-sharp-s);
+ * upcase-no-simple-1fb2, upcase-no-simple-0149 and upcase-no-simple-0390 (casemap) keep the characters without one.
+ */
+function nativeUpper(text) {
+  return [...text]
+    .map((character) => {
+      const upper = character.toUpperCase();
+      if ([...upper].length === 1) return upper;
+      const simple = SIMPLE_UPPER_MULTI.get(character.codePointAt(0));
+      return simple === undefined ? character : String.fromCodePoint(simple);
+    })
+    .join('');
+}
+/**
+ * Lowercase per code point without the final-sigma context rule. Recorded natively: downcase-greek-capital-sigma
+ * ('ΟΔΟΣ' gives 'οδοσ'); downcase-dotted-capital-i ('İ' gives 'i'): the first character of the full lowercase
+ * form is the simple mapping, the only unconditional multi-character lowercase mapping being U+0130.
+ */
+function nativeLower(text) {
+  return [...text].map((character) => [...character.toLowerCase()][0]).join('');
+}
 /** TextInfo.ToTitleCase (en-US): words in all capitals are kept. */
-function toTitleCase(input) {
+function toTitleCase(input, native = false) {
   return input.replace(/[\p{L}\p{Mn}\p{Nd}']+/gu, (word) => {
     if (word === word.toUpperCase() && /\p{L}/u.test(word)) return word;
+    if (native) {
+      // Recorded natively: capitalize-two-words ('hello big world' gives 'Hello Big World'), capitalize-ascii.
+      const [head] = [...word];
+      return nativeUpper(head) + nativeLower(word.slice(head.length));
+    }
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   });
 }
@@ -491,7 +555,7 @@ function simpleHtml(input, linkify = true, lineBreak = '<br />') {
   return text
     .split(/\r\n\r\n|\n\n/)
     .filter((block) => block !== '')
-    .map((block) => `<p>${block.replace(/\r\n/g, lineBreak).replace(/\n/g, lineBreak)}</p>`)
+    .map((block) => `<p>${block.replaceAll('\r\n', lineBreak).replaceAll('\n', lineBreak)}</p>`)
     .join('');
 }
 /** Adxstudio FileSize.ToString(precision). */
@@ -519,38 +583,46 @@ function formatN(value, decimals) {
   const text = scaled.toFixedString();
   const negative = text.startsWith('-');
   const [whole, fraction] = text.replace('-', '').split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}${grouped}${fraction ? `.${fraction}` : ''}`;
+  const groups = [];
+  for (let end = whole.length; end > 0; end -= 3) groups.push(whole.slice(Math.max(0, end - 3), end));
+  const grouped = groups.reverse().join(','); // NOSONAR: retain in-place receiver mutation and ordering
+  const sign = negative ? '-' : '',
+    suffix = fraction ? '.' + fraction : '';
+  return sign + grouped + suffix;
 }
 /** .NET numeric format strings used by the `format` filter (subset: N/F/C/P/D and custom 0/#). */
 function formatNumberString(value, format) {
   const decimal = NetDecimal.from(value);
   const m = /^([NnFfCcPpDd])(\d*)$/.exec(format ?? '');
-  if (m) {
-    const precision = m[2] === '' ? (/[Dd]/.test(m[1]) ? 0 : 2) : Number(m[2]);
-    if (/[Nn]/.test(m[1])) return formatN(decimal, precision);
-    if (/[Ff]/.test(m[1])) return formatN(decimal, precision).replace(/,/g, '');
-    if (/[Cc]/.test(m[1])) {
-      const text = formatN(decimal, precision);
-      return text.startsWith('-') ? `($${text.slice(1)})` : `$${text}`;
-    }
-    if (/[Pp]/.test(m[1])) return `${formatN(decimalMultiply(decimal, 100), precision)} %`;
-    return String(Math.trunc(decimal.valueOf())).padStart(precision, '0');
-  }
-  if (/^[0#,.]+$/.test(format ?? '')) {
-    const [, fractionPattern = ''] = format.split('.');
-    const required = (fractionPattern.match(/0/g) ?? []).length;
-    const optional = (fractionPattern.match(/#/g) ?? []).length;
-    let text = formatN(decimal, required + optional);
-    if (!format.includes(',')) text = text.replace(/,/g, '');
-    if (optional) {
-      const [whole, fraction = ''] = text.split('.');
-      const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, '');
-      text = trimmed ? `${whole}.${trimmed}` : whole;
-    }
-    return text;
-  }
+  if (m) return formatStandardNumber(decimal, m);
+  if (/^[0#,.]+$/.test(format ?? '')) return formatCustomNumber(decimal, format);
   throw new LiquidError('Format specifier was invalid.', 'System.FormatException');
+}
+function formatStandardNumber(decimal, match) {
+  let precision;
+  if (match[2] === '') precision = /[Dd]/.test(match[1]) ? 0 : 2;
+  else precision = Number(match[2]);
+  if (/[Nn]/.test(match[1])) return formatN(decimal, precision);
+  if (/[Ff]/.test(match[1])) return formatN(decimal, precision).replaceAll(',', '');
+  if (/[Cc]/.test(match[1])) {
+    const text = formatN(decimal, precision);
+    return text.startsWith('-') ? `($${text.slice(1)})` : `$${text}`;
+  }
+  if (/[Pp]/.test(match[1])) return `${formatN(decimalMultiply(decimal, 100), precision)} %`;
+  return String(Math.trunc(decimal.valueOf())).padStart(precision, '0');
+}
+function formatCustomNumber(decimal, format) {
+  const [, fractionPattern = ''] = format.split('.');
+  const required = (fractionPattern.match(/0/g) ?? []).length;
+  const optional = (fractionPattern.match(/#/g) ?? []).length;
+  let text = formatN(decimal, required + optional);
+  if (!format.includes(',')) text = text.replaceAll(',', '');
+  if (optional) {
+    const [whole, fraction = ''] = text.split('.');
+    const trimmed = fraction.slice(0, required) + stripTrailingCharacter(fraction.slice(required), '0');
+    text = trimmed ? `${whole}.${trimmed}` : whole;
+  }
+  return text;
 }
 
 // ---- html_safe_escape: closest local equivalent of the managed HTML sanitizer.
@@ -598,13 +670,15 @@ function htmlVoidSerialization(markup) {
   const visit = (node) => {
     if (voidTags.has(node.tagName) && node.sourceCodeLocation?.startTag) {
       const location = node.sourceCodeLocation.startTag;
-      replacements.push({ start: location.startOffset, end: location.endOffset, value: serializeOuter(node) });
+      // The hosted sanitizer escapes greater-than signs inside attribute values.
+      const value = serializeOuter(node).replace(/"[^"]*"/g, (attribute) => attribute.replaceAll('>', '&gt;'));
+      replacements.push({ start: location.startOffset, end: location.endOffset, value });
     }
     for (const child of node.childNodes ?? []) visit(child);
     if (node.content) visit(node.content);
   };
   visit(parseFragment(markup, { sourceCodeLocationInfo: true }));
-  for (const replacement of replacements.sort((a, b) => b.start - a.start))
+  for (const replacement of replacements.toSorted((a, b) => b.start - a.start))
     markup = markup.slice(0, replacement.start) + replacement.value + markup.slice(replacement.end);
   return markup;
 }
@@ -620,9 +694,12 @@ function htmlVoidSerialization(markup) {
 // - other values are written like Json.NET defaults: nil as null, booleans and numbers as JSON, ISO
 //   dates, nested arrays and objects; a self-referencing graph raises Json.NET's loop error.
 // Json.NET also escapes NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR.
-const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, 'g');
+const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCodePoint(0x85, 0x2028, 0x2029)}]`, 'g');
 const jsonString = (text) =>
-  JSON.stringify(text).replace(JSON_EXTRA_ESCAPES, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  JSON.stringify(text).replace(
+    JSON_EXTRA_ESCAPES,
+    (char) => String.raw`\u${char.codePointAt(0).toString(16).padStart(4, '0')}`,
+  );
 function jsonDate(date) {
   const iso = date.toISOString();
   return iso.endsWith('.000Z') ? `${iso.slice(0, -5)}Z` : iso;
@@ -634,75 +711,236 @@ function jsonSerialize(value, seen, property = null) {
   if (isDate(value)) return jsonString(jsonDate(value));
   if (typeof value === 'string') return jsonString(value);
   if (typeof value !== 'object') return 'null';
-  if (seen.has(value))
+  if (seen.has(value)) {
+    const propertyMessage = property ? " for property '" + property + "'" : '';
     throw new LiquidError(
-      `Self referencing loop detected${property ? ` for property '${property}'` : ''}.`,
+      'Self referencing loop detected' + propertyMessage + '.',
       'Newtonsoft.Json.JsonSerializationException',
     );
+  }
   seen.add(value);
   try {
-    if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(',')}]`;
-    if (value instanceof KeyValuePair)
-      return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, 'Value')}}`;
-    const entries =
-      value instanceof LiquidHash
-        ? [...value.entries()]
-        : value instanceof LiquidDrop
-          ? []
-          : Object.entries(value).filter(
-              ([key, item]) => !key.startsWith('__') && typeof item !== 'function' && item !== undefined,
-            );
-    return `{${entries.map(([key, item]) => `${jsonString(String(key))}:${jsonSerialize(item, seen, key)}`).join(',')}}`;
+    return serializeComplexValue(value, seen);
   } finally {
     seen.delete(value);
   }
 }
+function serializeComplexValue(value, seen) {
+  if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(',')}]`;
+  if (value instanceof KeyValuePair)
+    return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, 'Value')}}`;
+  let entries;
+  if (value instanceof LiquidHash) entries = [...value.entries()];
+  else if (value instanceof LiquidDrop) entries = [];
+  else
+    entries = Object.entries(value).filter(
+      ([key, item]) => !key.startsWith('__') && typeof item !== 'function' && item !== undefined,
+    );
+  const serializedEntries = entries
+    .map(([key, item]) => jsonString(String(key)) + ':' + jsonSerialize(item, seen, key))
+    .join(',');
+  return '{' + serializedEntries + '}';
+}
+
+function sliceString(input, start, len) {
+  let s = start,
+    l = len;
+  if (s > input.length) return null;
+  if (s < 0) {
+    s += input.length;
+    if (s < 0) {
+      l = Math.max(0, l + s);
+      s = 0;
+    }
+  }
+  if (s + l > input.length) l = input.length - s;
+  return input.substr(s, l);
+}
+
+function sliceEnumerable(input, start, len) {
+  const list = toList(input);
+  let skip = start,
+    take = len;
+  if (start < 0) {
+    if (Math.abs(start) < list.length) skip = list.length + start;
+    else {
+      skip = 0;
+      take = list.length + start + len;
+    }
+  }
+  return list.slice(skip, skip + Math.max(0, take));
+}
+
+// These preserve the platform's text transformation; they are not an HTML sanitizer.
+function stripHtmlBlocks(text, preserveScript = false) {
+  // ASCII folding preserves UTF-16 offsets (full Unicode lowercasing can expand a character).
+  const folded = text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const blocks = [
+    ...(!preserveScript ? [{ open: '<script', close: '</script>', end: -2 }] : []),
+    { open: '<!--', close: '-->', end: -2 },
+    { open: '<style', close: '</style>', end: -2 },
+  ];
+  const parts = [];
+  let cursor = 0;
+  let search = 0;
+  while (search < text.length) {
+    const start = folded.indexOf('<', search);
+    if (start < 0) break;
+    const block = blocks.find((item) => folded.startsWith(item.open, start));
+    search = start + 1;
+    if (!block || block.end === -1) continue;
+    if (block.end < start + block.open.length) block.end = folded.indexOf(block.close, start + block.open.length);
+    if (block.end < 0) continue;
+    parts.push(text.slice(cursor, start));
+    cursor = block.end + block.close.length;
+    search = cursor;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+function stripHtmlTags(text) {
+  const parts = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor);
+    if (start < 0) break;
+    const end = text.indexOf('>', start + 1);
+    if (end < 0) break;
+    parts.push(text.slice(cursor, start));
+    cursor = end + 1;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+function* searchFilterValues(text) {
+  for (const segment of text.split(';')) {
+    let start = 0;
+    while (segment[start] === ':') start++;
+    const colon = segment.indexOf(':', start + 1);
+    if (colon < 0 || colon === segment.length - 1) continue;
+    const raw = segment.slice(colon + 1);
+    // The old greedy whitespace prefix backtracked one code unit for an all-whitespace value.
+    const value = raw.trimStart() || raw.slice(-1);
+    yield value.replaceAll(' ', '');
+  }
+}
 
 // ---- Filter catalogue
+function validateObservedTimes(input, operand) {
+  const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
+  if ((numberKind(input) === 'int' && typeof operand === 'string') || (stringArray && numberKind(operand) === 'int'))
+    throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+  if (stringArray && numberKind(operand) === 'decimal')
+    throw new LiquidError(
+      "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
+      'System.InvalidCastException',
+    );
+}
+
 /** `this` is the LiquidContext for every filter. */
+// The currency of each culture the portal ships resources for (liquid-resx.mjs) and of en-US. currency(value, tag) formats
+// in these cultures; a culture outside the table is refused. Keys are lowercase, as .NET culture names compare.
+const CULTURE_CURRENCIES = new Map(
+  Object.entries({
+    'en-US': 'USD',
+    'bg-BG': 'BGN',
+    'ca-ES': 'EUR',
+    'cs-CZ': 'CZK',
+    'da-DK': 'DKK',
+    'de-DE': 'EUR',
+    'el-GR': 'EUR',
+    'es-ES': 'EUR',
+    'et-EE': 'EUR',
+    'eu-ES': 'EUR',
+    'fi-FI': 'EUR',
+    'fr-FR': 'EUR',
+    'gl-ES': 'EUR',
+    'hi-IN': 'INR',
+    'hr-HR': 'EUR',
+    'hu-HU': 'HUF',
+    'id-ID': 'IDR',
+    'it-IT': 'EUR',
+    'ja-JP': 'JPY',
+    'kk-KZ': 'KZT',
+    'ko-KR': 'KRW',
+    'lt-LT': 'EUR',
+    'lv-LV': 'EUR',
+    'ms-MY': 'MYR',
+    'nb-NO': 'NOK',
+    'nl-NL': 'EUR',
+    'pl-PL': 'PLN',
+    'pt-BR': 'BRL',
+    'pt-PT': 'EUR',
+    'ro-RO': 'RON',
+    'ru-RU': 'RUB',
+    'sk-SK': 'EUR',
+    'sl-SI': 'EUR',
+    'sr-Cyrl-CS': 'CSD',
+    'sr-Cyrl-RS': 'RSD',
+    'sr-Latn-CS': 'CSD',
+    'sr-Latn-RS': 'RSD',
+    'sv-SE': 'SEK',
+    'th-TH': 'THB',
+    'tr-TR': 'TRY',
+    'uk-UA': 'UAH',
+    'vi-VN': 'VND',
+    'zh-CN': 'CNY',
+    'zh-HK': 'HKD',
+    'zh-TW': 'TWD',
+  }).map(([culture, code]) => [culture.toLowerCase(), code]),
+);
+
+/** The number a currency filter formats: a number, or a numeric string (currency symbols and spaces ignored); null otherwise. */
+function currencyAmount(input) {
+  if (isNumber(input)) return Number(input);
+  try {
+    return toNetDecimal(String(input).replaceAll(/[$\s]/g, '')).valueOf();
+  } catch {
+    return null;
+  }
+}
+
+/** currency(value, tag) for a culture: the culture's currency pattern from Intl, as the .NET CultureInfo lookup refuses an unknown culture. */
+function currencyInCulture(input, tag) {
+  const currency = CULTURE_CURRENCIES.get(tag.toLowerCase());
+  if (!currency)
+    throw new LiquidError(
+      `Culture is not supported.\r\nParameter name: name\r\nActual value was ${tag}.`,
+      'System.Globalization.CultureNotFoundException',
+    );
+  const amount = currencyAmount(input);
+  if (amount === null) return formatItem(input);
+  return new Intl.NumberFormat(tag, { style: 'currency', currency }).format(amount);
+}
+
 export function createFilters(host = {}) {
+  // host.clock is the runtime clock (wall time when absent): the date filter's now and today, and time-only values.
+  const clock = clockFunction(host.clock ?? systemClock);
   const filters = {
     // ---- DotLiquid StandardFilters (DotLiquid20)
-    size: (input) => (typeof input === 'string' ? input.length : isEnumerable(input) ? toList(input).length : 0),
+    size: (input) => {
+      if (typeof input === 'string') return input.length;
+      if (isEnumerable(input)) return toList(input).length;
+      return 0;
+    },
     slice(input, offset, length = 1) {
       const start = asInt(offset),
         len = asInt(length ?? 1);
-      if (typeof input === 'string') {
-        let s = start,
-          l = len;
-        if (s > input.length) return null;
-        if (s < 0) {
-          s += input.length;
-          if (s < 0) {
-            l = Math.max(0, l + s);
-            s = 0;
-          }
-        }
-        if (s + l > input.length) l = input.length - s;
-        return input.substr(s, l);
-      }
-      if (isEnumerable(input)) {
-        const list = toList(input);
-        let skip = start,
-          take = len;
-        if (start < 0) {
-          if (Math.abs(start) < list.length) skip = list.length + start;
-          else {
-            skip = 0;
-            take = list.length + start + len;
-          }
-        }
-        return list.slice(skip, skip + Math.max(0, take));
-      }
+      if (typeof input === 'string') return sliceString(input, start, len);
+      if (isEnumerable(input)) return sliceEnumerable(input, start, len);
       return input;
     },
     downcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toLowerCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeLower(s) : s.toLowerCase();
     },
     upcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toUpperCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeUpper(s) : s.toUpperCase();
     },
     url_encode: (input) => {
       const s = asString(input);
@@ -714,7 +952,7 @@ export function createFilters(host = {}) {
     },
     capitalize: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : toTitleCase(s);
+      return isNullOrWhiteSpace(s) ? s : toTitleCase(s, host.runtimeCompatibility === 'observed');
     },
     escape: (input) => {
       const s = asString(input);
@@ -727,6 +965,7 @@ export function createFilters(host = {}) {
     },
     escape_once: (input) => {
       const s = asString(input);
+      if (host.escapeOnce === 'passthrough') return s;
       return s == null || s === '' ? s : htmlEncode(htmlDecode(s));
     },
     truncate(input, length = 50, truncateString = '...') {
@@ -736,7 +975,11 @@ export function createFilters(host = {}) {
       const tail = arguments.length > 2 ? (asString(truncateString) ?? '') : '...';
       if (max < 0) return tail;
       const keep = max - tail.length;
-      return s.length > max ? s.slice(0, keep < 0 ? 0 : keep) + tail : s;
+      if (s.length > max) {
+        const end = Math.max(0, keep);
+        return s.slice(0, end) + tail;
+      }
+      return s;
     },
     truncate_words(input, words = 15, truncateString = '...') {
       const s = asString(input);
@@ -757,9 +1000,7 @@ export function createFilters(host = {}) {
     strip_html: (input) => {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return s
-        .replace(/<script[\s\S]*?<\/script>|<!--[\s\S]*?-->|<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[\s\S]*?>/g, '');
+      return stripHtmlTags(stripHtmlBlocks(s, host.stripHtmlScriptText === 'preserve'));
     },
     strip: (input) => {
       const s = asString(input);
@@ -789,14 +1030,12 @@ export function createFilters(host = {}) {
       const key = asString(property);
       // A string input sorts its characters, which compare ordinally (char.CompareTo).
       const characters = typeof input === 'string';
-      const value = (item) =>
-        key
-          ? item instanceof LiquidHash
-            ? item.get(key)
-            : isPlainObject(item)
-              ? item[ownKey(item, key) ?? key]
-              : null
-          : item;
+      const value = (item) => {
+        if (!key) return item;
+        if (item instanceof LiquidHash) return item.get(key);
+        if (isPlainObject(item)) return item[ownKey(item, key) ?? key];
+        return null;
+      };
       return list
         .map((item, index) => ({ item, index }))
         .sort((x, y) => sortCompare(value(x.item), value(y.item), characters) || x.index - y.index)
@@ -843,10 +1082,12 @@ export function createFilters(host = {}) {
     },
     // master: $"{input}{@string}" and $"{@string}{input}" (nil renders as nothing).
     append(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return s + (asString(value) ?? '');
     },
     prepend(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return (asString(value) ?? '') + s;
     },
@@ -863,10 +1104,10 @@ export function createFilters(host = {}) {
       const value = formatItem(input);
       let date;
       if (/^(now|today)$/i.test(value)) {
-        date = new Date();
+        date = new Date(clock());
         if (isNullOrWhiteSpace(pattern)) return dateToNetString(date);
       } else {
-        date = parseNetDate(value);
+        date = parseNetDate(value, { clock });
         if (!date) return value;
       }
       if (isNullOrWhiteSpace(pattern)) return value;
@@ -883,6 +1124,8 @@ export function createFilters(host = {}) {
     plus(input, operand) {
       // DotLiquid20: a string input concatenates (string.Concat uses object.ToString()).
       if (typeof input === 'string') return input + netToString(operand);
+      if (host.filterErrors === 'observed' && numberKind(input) === 'int' && typeof operand === 'string')
+        throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       return mathOperation(input, operand, 'add');
     },
     minus(input, operand) {
@@ -894,17 +1137,9 @@ export function createFilters(host = {}) {
     },
     times(input, operand) {
       if (host.timesDispatch === 'observed') {
-        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
-        if (
-          (numberKind(input) === 'int' && typeof operand === 'string') ||
-          (stringArray && numberKind(operand) === 'int')
-        )
-          throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
-        if (stringArray && numberKind(operand) === 'decimal')
-          throw new LiquidError(
-            "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
-            'System.InvalidCastException',
-          );
+        if (numberKind(input) === 'decimal' && typeof operand === 'string')
+          return mathOperation(input, toNetDecimal(operand), 'multiply');
+        validateObservedTimes(input, operand);
       }
       // An observed portal can opt into decimal string conversion without changing
       // the pinned DotLiquid20 string repetition and operator contracts elsewhere.
@@ -929,9 +1164,10 @@ export function createFilters(host = {}) {
         throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       if (
         host.filterErrors === 'observed' &&
-        numberKind(input) === 'int' &&
-        asInt(input) !== 0 &&
-        numberKind(operand) === 'decimal' &&
+        numberKind(input) &&
+        toNumber(input) !== 0 &&
+        (numberKind(input) === 'decimal' || numberKind(operand) === 'decimal') &&
+        numberKind(operand) &&
         toNumber(operand) === 0
       )
         return new NetDouble(toNumber(input) / toNumber(operand));
@@ -947,7 +1183,7 @@ export function createFilters(host = {}) {
       return result;
     },
     abs(input) {
-      const parsed = Number(String(formatItem(input)).replace(/,/g, ''));
+      const parsed = Number(String(formatItem(input)).replaceAll(',', ''));
       return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
     },
     at_least(input, minimum) {
@@ -967,6 +1203,11 @@ export function createFilters(host = {}) {
     },
     reverse(input) {
       if (input == null || typeof input === 'string') return input;
+      // Recorded natively (observed runtime): an array comes back in its original order, so the reverse filter
+      // does nothing; only the for-loop `reversed` parameter reverses. Evidence: power-pages-recorded-20261111
+      // reverse-split; recorded-20261111-followup reverse-split-first, reverse-split-last, reverse-sort-join,
+      // reverse-twice-join, for-split-reversed (reversed loop, 'cba') and for-range-reversed (321).
+      if (host.runtimeCompatibility === 'observed' && Array.isArray(input)) return input;
       const list = asEnumerable(input);
       return [...list].reverse();
     },
@@ -981,18 +1222,25 @@ export function createFilters(host = {}) {
     base64_url_safe_encode: (input) =>
       input == null
         ? ''
-        : Buffer.from(asString(input), 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
+        : Buffer.from(asString(input), 'utf8').toString('base64').replaceAll('+', '-').replaceAll('/', '_'),
     base64_url_safe_decode(input) {
       if (input == null || input === '') return '';
-      let text = asString(input).replace(/_/g, '/').replace(/-/g, '+');
-      if (!text.endsWith('=')) text += text.length % 4 === 2 ? '==' : text.length % 4 === 3 ? '=' : '';
+      let text = asString(input).replaceAll('_', '/').replaceAll('-', '+');
+      if (!text.endsWith('=')) {
+        const remainder = text.length % 4;
+        if (remainder === 2) text += '==';
+        else if (remainder === 3) text += '=';
+        else text += '';
+      }
       if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0)
         throw new LiquidError('Invalid base64 provided to base64_url_safe_decode', 'System.ArgumentException');
       return Buffer.from(text, 'base64').toString('utf8');
     },
     currency(input, languageTag) {
       if (input == null) return null;
-      void languageTag;
+      const tag = languageTag == null ? '' : asString(languageTag);
+      // en-US uses the .NET en-US pattern that the tag-less path formats with, so both paths agree.
+      if (tag && tag.toLowerCase() !== 'en-us') return currencyInCulture(input, tag);
       if (isNumber(input)) return formatNumberString(input, 'C');
       try {
         return formatNumberString(toNetDecimal(String(input).replace(/[$\s]/g, '')), 'C');
@@ -1101,7 +1349,10 @@ export function createFilters(host = {}) {
       for (const item of list) {
         const groupKey = await memberOf(item, asString(key), this);
         let group = groups.find((entry) => strictEquals(entry.key, groupKey));
-        if (!group) groups.push((group = { key: groupKey, items: [] }));
+        if (!group) {
+          group = { key: groupKey, items: [] };
+          groups.push(group);
+        }
         group.items.push(item);
       }
       return groups.map((group) => new LiquidHash({ key: group.key, items: group.items }));
@@ -1120,12 +1371,11 @@ export function createFilters(host = {}) {
           Array.isArray(input) &&
           input.length > 0 &&
           input.every((item) => typeof item === 'string');
-        const type =
-          host.filterErrors === 'observed' && Array.isArray(input) && input.length === 0
-            ? 'System.Linq.Enumerable+WhereArrayIterator`1[System.Object]'
-            : stringArray
-              ? 'System.String[]'
-              : netTypeName(input);
+        let type;
+        if (host.filterErrors === 'observed' && Array.isArray(input) && input.length === 0)
+          type = 'System.Linq.Enumerable+WhereArrayIterator`1[System.Object]';
+        else if (stringArray) type = 'System.String[]';
+        else type = netTypeName(input);
         throw new LiquidError(
           `Object of type '${type}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`,
           'System.ArgumentException',
@@ -1148,7 +1398,7 @@ export function createFilters(host = {}) {
           'Specified argument was out of the range of valid values.',
           'System.ArgumentOutOfRangeException',
         );
-      return list[Math.floor(Math.random() * list.length)];
+      return list[Math.floor(Math.random() * list.length)]; // NOSONAR: pseudo-random value for simulation, not a secret
     },
     async select(input, key) {
       const list = asEnumerable(input) ?? [];
@@ -1159,7 +1409,7 @@ export function createFilters(host = {}) {
     shuffle(input) {
       const list = [...(asEnumerable(input) ?? [])];
       for (let i = 0; i < list.length; i++) {
-        const j = i + Math.floor(Math.random() * (list.length - i));
+        const j = i + Math.floor(Math.random() * (list.length - i)); // NOSONAR: pseudo-random value for simulation, not a secret
         [list[i], list[j]] = [list[j], list[i]];
       }
       return list;
@@ -1270,7 +1520,7 @@ export function createFilters(host = {}) {
       if (s == null) return null;
       return simpleHtml(
         s,
-        arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== 'false' : true,
+        arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== 'false' : true, // NOSONAR: window and globalThis are compared deliberately
         host.htmlVoidSerialization === 'html' ? '<br>' : '<br />',
       );
     },
@@ -1303,7 +1553,7 @@ export function createFilters(host = {}) {
     },
     max_decimals(number, decimals) {
       let result = formatN(toNetDecimal(number), asInt(decimals));
-      if (result.includes('.')) result = result.replace(/0+$/, '').replace(/\.$/, '');
+      if (result.includes('.')) result = stripTrailingCharacter(result, '0').replace(/\.$/, '');
       return result;
     },
     invariant_culture_decimal_value(number, decimals) {
@@ -1323,27 +1573,33 @@ export function createFilters(host = {}) {
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
       const text = value == null ? '' : formatItem(value);
-      return rebuild(target, (pairs) => {
-        const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
-        if (existing.length) {
-          const first = pairs.indexOf(existing[0]);
-          const remaining = pairs.filter((pair) => !existing.includes(pair));
-          remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
-            existing[0][0],
-            text,
-          ]);
-          return remaining;
-        }
-        return [...pairs, [name, text]];
-      });
+      return rebuild(
+        target,
+        (pairs) => {
+          const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
+          if (existing.length) {
+            const first = pairs.indexOf(existing[0]);
+            const remaining = pairs.filter((pair) => !existing.includes(pair));
+            remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
+              existing[0][0],
+              text,
+            ]);
+            return remaining;
+          }
+          return [...pairs, [name, text]];
+        },
+        host.relativeQueryResolution,
+      );
     },
     remove_query(url, parameterName) {
       const target = asString(url);
       if (target == null) return null;
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
-      return rebuild(target, (pairs) =>
-        pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+      return rebuild(
+        target,
+        (pairs) => pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+        host.relativeQueryResolution,
       );
     },
     base(url) {
@@ -1391,8 +1647,7 @@ export function createFilters(host = {}) {
       const text = input == null ? '' : formatItem(input);
       if (!text) return null;
       const options = [];
-      for (const m of text.matchAll(/\s*([^:;]+?)\s*:\s*([^;]+)\s*/g)) {
-        const value = m[2].replace(/ /g, '');
+      for (const value of searchFilterValues(text)) {
         options.push({
           display_name: host.localizeRecordType ? host.localizeRecordType(value.split(',')[0]) : value.split(',')[0],
           value,
@@ -1424,7 +1679,7 @@ function addMonths(date, months) {
   const targetYear = year + Math.floor(month / 12),
     targetMonth = ((month % 12) + 12) % 12;
   const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
-  const result = new Date(value.getTime());
+  const result = new Date(value.getTime()); // NOSONAR: Date subclass may override getTime
   result.setUTCFullYear(targetYear, targetMonth, Math.min(value.getUTCDate(), lastDay));
   return result;
 }

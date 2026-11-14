@@ -1,3 +1,5 @@
+// @test-kind unproven: the checks in this file exercise panel with local fixtures; no native capture establishes the behaviour they assert.
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,10 +12,12 @@ import { panelUi } from '../lense/panel-ui.mjs';
 import { createFixture, SITE, SCRIPTS_ID } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
 import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
 
 const ORIGIN = 'https://portal.example.com';
+const PANEL = import.meta.resolve('../lense/panel.mjs');
 const fx = createFixture();
-const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-'));
+const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-'));
 const panels = [];
 after(() => {
   panels.forEach((panel) => panel.dispose());
@@ -21,7 +25,24 @@ after(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+/** Resolves with the data of the first evaluation in `page` that `accept` admits. */
+const evaluation = (page, accept) =>
+  new Promise((resolve) => {
+    const evaluate = page.evaluate;
+    page.evaluate = async (fn, data) => {
+      const result = await evaluate(fn, data);
+      if (accept(fn, data)) {
+        page.evaluate = evaluate;
+        resolve(data);
+      }
+      return result;
+    };
+  });
+// The panel redraws a tab after every state change it schedules, so the first
+// draw whose state satisfies `ready` is the event a test waits for.
+const drawn = (page, ready = () => true) => evaluation(page, (_fn, data) => Array.isArray(data?.items) && ready(data));
+const settled = (state) => state.inspection != null && state.inspection.loading === false;
+const sessionFlow = (page) => evaluation(page, (fn) => fn?.name === 'runSessionFlow');
 
 /** A dev loop with one tab on the portal, and a way to press the buttons of its panel. */
 async function setup(online = {}, overrides = {}, panelOptions = {}) {
@@ -67,7 +88,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`));
-      }, 5_000);
+      }, 60_000);
       pending.set(id, () => {
         clearTimeout(timer);
         pending.delete(id);
@@ -93,6 +114,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
   return { b, tab, session, panel, call, opened, request };
 }
 
+// @test-kind security+contract: evidence editor links revalidate identity and revisions and ignore a forged file or line
 test('evidence editor links revalidate identity and revisions and ignore a forged file or line', async (t) => {
   const { session, call, opened, tab } = await setup();
   await call('inspect');
@@ -137,11 +159,13 @@ test('evidence editor links revalidate identity and revisions and ignore a forge
   assert.equal(opened.length, 1, 'a stale definition never invokes the editor');
 });
 
+// @test-kind contract: the panel function is self-contained: it is sent to the browser as text
 test('the panel function is self-contained: it is sent to the browser as text', () => {
   // must compile on its own, without this module around it
   assert.doesNotThrow(() => new Function(`return (${panelUi.toString()})`));
 });
 
+// @test-kind security+contract: selected-source editor admission rechecks a source edited during the final browser round trip
 test('selected-source editor admission rechecks a source edited during the final browser round trip', async (t) => {
   const { session, call, opened, tab } = await setup();
   await call('inspect');
@@ -172,8 +196,9 @@ test('selected-source editor admission rechecks a source edited during the final
   assert.equal(opened.length, 0, 'a source changed during the browser check never invokes the editor');
 });
 
+// @test-kind security+contract: editor admission checks open only the selected external deployment profile and refuse neighboring files
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const selected = path.join(directory, 'selected.yml'),
     neighbor = path.join(directory, 'neighbor.yml');
@@ -210,6 +235,7 @@ test('guarded editor admission opens only the selected external deployment profi
   assert.equal(opened.length, 1);
 });
 
+// @test-kind security+contract: JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies
 test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {
   const { tab, panel } = await setup();
   let reads = 0;
@@ -233,11 +259,12 @@ test('JSON request failures retain bounded distinct causes and redact query valu
     });
     tab.cdp.emit('Network.loadingFinished', { requestId });
   };
+  const reported = drawn(tab.page, (state) => state.problems.filter((item) => item.where).length >= 2);
   response('<img src=x onerror=alert(1)> Missing lookup');
   response('Different lookup');
   response('Large', { 'content-type': 'application/json', 'content-length': '40000' });
   response('HTML', { 'content-type': 'text/html', 'content-length': '100' });
-  await tick();
+  await reported;
   const issues = panel.stateFor(tab.page).problems;
   assert.equal(reads, 2);
   assert.equal(issues.filter((item) => item.where).length, 2);
@@ -245,6 +272,7 @@ test('JSON request failures retain bounded distinct causes and redact query valu
   assert.ok(issues.every((item) => !JSON.stringify(item).includes('private')));
 });
 
+// @test-kind security+contract: URL-less browser console errors name only the page path
 test('URL-less browser console errors name only the page path', async () => {
   const { tab, panel } = await setup();
   tab.page.emit('console', {
@@ -255,6 +283,7 @@ test('URL-less browser console errors name only the page path', async () => {
   assert.equal(panel.stateFor(tab.page).problems.find((row) => row.type === 'console').where, '/scripts/');
 });
 
+// @test-kind contract: page source buttons distinguish root and language layers without changing a single-layer label
 test('page source buttons distinguish root and language layers without changing a single-layer label', async () => {
   const own = createFixture();
   try {
@@ -282,6 +311,7 @@ test('page source buttons distinguish root and language layers without changing 
   }
 });
 
+// @test-kind contract: panel persistence separates actual browser roots and named profiles, and headless starts collapsed
 test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed', async () => {
   const first = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-one' } });
   await first.call('ui', { open: true, tab: 'issues' });
@@ -294,6 +324,7 @@ test('panel persistence separates actual browser roots and named profiles, and h
   assert.equal(first.panel.stateFor(first.tab.page).ui.open, true);
 });
 
+// @test-kind contract: default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated
 test('default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated', async () => {
   const base = { browser: { profileDir: 'default-audit-profiles', headless: false } };
   const first = await setup({}, base);
@@ -323,6 +354,7 @@ test('default profile namespaces follow selected site and environment; attached 
   );
 });
 
+// @test-kind contract: selective CSS refresh preserves an unrelated tab's earlier pending save and baseline banner
 test("selective CSS refresh preserves an unrelated tab's earlier pending save and baseline banner", async () => {
   const { b, tab, session, panel } = await setup();
   const home = b.openTab(`${ORIGIN}/`);
@@ -352,6 +384,7 @@ test("selective CSS refresh preserves an unrelated tab's earlier pending save an
   assert.equal(panel.stateFor(home.page).pendingBaseline, true);
 });
 
+// @test-kind contract: a comparison lists changed lines with a little context and folds the rest
 test('a comparison lists changed lines with a little context and folds the rest', () => {
   const before = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
   const changed = before.replace('line 15', 'line fifteen').replace('line 30', 'line 30\nline 31');
@@ -374,13 +407,15 @@ test('a comparison lists changed lines with a little context and folds the rest'
   assert.equal(comparison('a\r\nb\r\n', 'a\nb\n').lines.length, 0, 'line endings are not a difference');
 });
 
+// @test-kind contract: what a tab served from local sources is what its panel lists
 test('what a tab served from local sources is what its panel lists', async () => {
   const { tab, panel, request } = await setup();
+  const redrawn = drawn(tab.page, (state) => state.items.length > 0);
   await Promise.all([
     request(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
     request(tab, 'r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
   ]);
-  await tick(350);
+  await redrawn;
   const [item, ...more] = panel.stateFor(tab.page).items;
   assert.equal(more.length, 0);
   assert.deepEqual(
@@ -391,6 +426,7 @@ test('what a tab served from local sources is what its panel lists', async () =>
   assert.equal(tab.page.drawn.items.length, 1, 'the tab was redrawn');
 });
 
+// @test-kind security+contract: the buttons only work for the panel itself
 test('the buttons only work for the panel itself', async () => {
   const { call, session } = await setup();
   const refused = await call('mode', { online: true }, {});
@@ -399,6 +435,7 @@ test('the buttons only work for the panel itself', async () => {
   assert.equal((await call('nothing-like-this', {})).status, 403);
 });
 
+// @test-kind security+contract: a file opens in the editor at the line asked for, and only files of the sources do
 test('a file opens in the editor at the line asked for, and only files of the sources do', async () => {
   const { call, opened } = await setup();
   assert.equal((await call('open', { rel: 'web-files/app.js', line: 7, col: 3 })).ok, true);
@@ -408,6 +445,7 @@ test('a file opens in the editor at the line asked for, and only files of the so
   assert.equal(opened.length, 1);
 });
 
+// @test-kind contract: a paused override shows the online file until it is switched back on
 test('a paused override shows the online file until it is switched back on', async () => {
   const { b, tab, call, panel, request } = await setup();
   assert.equal((await call('toggle', { rel: 'web-files/app.js', off: true })).ok, true);
@@ -425,43 +463,38 @@ test('a paused override shows the online file until it is switched back on', asy
   assert.equal(b.answers('r2')[0].method, 'Fetch.fulfillRequest');
 });
 
-test(
-  'a panel request waits for the actual browser answer while script-source inspection is held',
-  { timeout: 60_000 },
-  async (t) => {
-    const { b, tab, session, request } = await setup();
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    const held = Promise.withResolvers();
-    const entered = Promise.withResolvers();
-    t.after(() => held.resolve());
-    const sourceIndexFor = session.sourceInspector.sourceIndexFor.bind(session.sourceInspector);
-    t.mock.method(session.sourceInspector, 'sourceIndexFor', async (...args) => {
-      entered.resolve();
-      await held.promise;
-      return sourceIndexFor(...args);
-    });
-    let completed = false;
-    const answer = request(tab, 'held-script', `${ORIGIN}/scripts/app.js`, { type: 'Script' }).then((answers) => {
-      completed = true;
-      return answers;
-    });
-    await entered.promise;
-    // Reproduce the old fixed wait without allowing the asynchronous proof to finish.
-    t.mock.timers.tick(30);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(completed, false, 'starting asynchronous source inspection is not a browser answer');
-    assert.deepEqual(b.answers('held-script'), []);
-    held.resolve();
-    const answers = await answer;
-    assert.equal(answers.length, 1);
-    assert.equal(answers[0].method, 'Fetch.fulfillRequest');
-    assert.equal(
-      Buffer.from(answers[0].body, 'base64').toString(),
-      fs.readFileSync(fx.file('web-files/app.js'), 'utf8'),
-    );
-  },
-);
+// @test-kind contract: a panel request waits for the actual browser answer while script-source inspection is held
+test('a panel request waits for the actual browser answer while script-source inspection is held', async (t) => {
+  const { b, tab, session, request } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const held = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  t.after(() => held.resolve());
+  const sourceIndexFor = session.sourceInspector.sourceIndexFor.bind(session.sourceInspector);
+  t.mock.method(session.sourceInspector, 'sourceIndexFor', async (...args) => {
+    entered.resolve();
+    await held.promise;
+    return sourceIndexFor(...args);
+  });
+  let completed = false;
+  const answer = request(tab, 'held-script', `${ORIGIN}/scripts/app.js`, { type: 'Script' }).then((answers) => {
+    completed = true;
+    return answers;
+  });
+  await entered.promise;
+  // Reproduce the old fixed wait without allowing the asynchronous proof to finish.
+  t.mock.timers.tick(30);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false, 'starting asynchronous source inspection is not a browser answer');
+  assert.deepEqual(b.answers('held-script'), []);
+  held.resolve();
+  const answers = await answer;
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0].method, 'Fetch.fulfillRequest');
+  assert.equal(Buffer.from(answers[0].body, 'base64').toString(), fs.readFileSync(fx.file('web-files/app.js'), 'utf8'));
+});
 
+// @test-kind contract: online mode overrides nothing, and the panel still answers
 test('online mode overrides nothing, and the panel still answers', async () => {
   const { b, tab, call, panel, request } = await setup();
   await call('mode', { online: true });
@@ -483,6 +516,7 @@ test('online mode overrides nothing, and the panel still answers', async () => {
   assert.equal(b.answers('r3')[0].method, 'Fetch.fulfillRequest');
 });
 
+// @test-kind contract: a web file is compared with what the environment serves
 test('a web file is compared with what the environment serves', async () => {
   const { call } = await setup({ [`${ORIGIN}/scripts/app.js`]: { body: 'console.log("online app");\n' } });
   const diff = await call('diff', { rel: 'web-files/app.js', url: '/scripts/app.js' });
@@ -497,6 +531,7 @@ test('a web file is compared with what the environment serves', async () => {
   );
 });
 
+// @test-kind contract: scope and live reload are switched while the loop runs; the position is remembered
 test('scope and live reload are switched while the loop runs; the position is remembered', async () => {
   const { call, session, panel, tab } = await setup();
   await call('scope', { scope: 'changed' });
@@ -512,6 +547,7 @@ test('scope and live reload are switched while the loop runs; the position is re
   assert.equal(panel.stateFor(tab.page).ui.hidden, true);
 });
 
+// @test-kind security+contract: lookalike portal origins receive neither the panel nor its token
 test('lookalike portal origins receive neither the panel nor its token', async () => {
   const { b, panel } = await setup();
   for (const url of [`${ORIGIN}.evil.test/`, `${ORIGIN}:444/`, 'about:blank']) {
@@ -521,6 +557,7 @@ test('lookalike portal origins receive neither the panel nor its token', async (
   }
 });
 
+// @test-kind contract: panel state exposes configured destinations while retaining the active session identity
 test('panel state exposes configured destinations while retaining the active session identity', async () => {
   const { session, tab, panel } = await setup();
   session.cfg.devTargets = [
@@ -580,8 +617,8 @@ function fakeMirage(b, { report, status = {}, personas = null, onWrite } = {}) {
 
 test('Mirage inspection: redraws carry a compact summary; the Inspect report arrives on request with openable portal and Solution sources', async () => {
   const { b, tab, session, panel, call, opened } = await setup();
-  const solution = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-'));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
+  const solution = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-solution-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
   try {
     const entity = path.join(solution, 'Entities', 'contact', 'Entity.xml');
     fs.mkdirSync(path.dirname(entity), { recursive: true });
@@ -633,8 +670,9 @@ test('Mirage inspection: redraws carry a compact summary; the Inspect report arr
       },
     };
     fakeMirage(b, { report });
+    const loaded = drawn(tab.page, settled);
     session.emit('hit', { page: tab.page, navigation: true });
-    await tick(80);
+    await loaded;
     const state = panel.stateFor(tab.page);
     assert.equal(state.mirage.active, true);
     assert.equal(state.git, null, 'Mirage pages do not advertise a Git deployment baseline');
@@ -712,8 +750,9 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
       return { status: 200, body: { identity: { name: 'Alex Local' } } };
     },
   });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const tweaks = await call('tweaks');
   assert.equal(tweaks.ok, true);
   assert.deepEqual(tweaks.personas, [
@@ -757,18 +796,29 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   assert.ok(routes.includes('POST /_sim/api/scenarios/reviewer/apply {}'));
 });
 
+// @test-kind contract: Mirage administration pages are neither decorated nor inspected
 test('Mirage administration pages are neither decorated nor inspected', async () => {
-  const { b, session, panel } = await setup();
+  const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
   const calls = fakeMirage(b, { report: { path: '/', page: null } });
   const admin = b.openTab(`${ORIGIN}/_sim/#records`);
   session.emit('hit', { page: admin.page, navigation: true });
-  await tick(300);
+  assert.equal(calls.length, 0);
+  // A portal tab hit afterwards bounds the admin hit: any redraw or inspection
+  // the admin hit had scheduled would have run before this tab's settled draw.
+  const control = drawn(tab.page, settled);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await control;
   await panel.draw(admin.page);
   assert.equal(admin.page.drawn, null);
-  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    calls.filter(([, url]) => url.includes('/page-resources?')).map(([, url]) => new URL(url).searchParams.get('path')),
+    ['/scripts/'],
+    'only the portal tab is inspected',
+  );
 });
 
+// @test-kind contract: Mirage inspections of one tab coalesce while a request is running
 test('Mirage inspections of one tab coalesce while a request is running', async () => {
   const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
@@ -782,9 +832,10 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
     await gate;
     return get(url, options);
   };
+  const loaded = drawn(tab.page, settled);
   for (let n = 0; n < 5; n++) session.emit('hit', { page: tab.page, navigation: true });
   release();
-  await tick(120);
+  await loaded;
   assert.equal(
     calls.filter(([, url]) => url.includes('/page-resources?')).length,
     2,
@@ -793,6 +844,137 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
 });
 
+// @test-kind contract: a runtime read that fails every immediate attempt must be read again by the next navigation, not stay inactive
+test('a Mirage runtime read that fails every immediate attempt is read again by the next navigation', async () => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let failing = true;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (failing && String(url).includes('/status')) {
+      statusReads += 1;
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.active === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await stored;
+  assert.equal(statusReads, 3, 'the immediate attempts all failed and stored an inactive runtime');
+  failing = false;
+  const recovered = drawn(tab.page, (state) => state.mirage?.active === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await recovered;
+  assert.equal(statusReads, 3, 'the next navigation reached the status read without another failure');
+});
+
+// @test-kind contract: a runtime read that fails once is read again at once, and no inactive runtime is ever drawn
+test('a Mirage runtime read that fails once is read again at once and stores the runtime', async () => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      statusReads += 1;
+      if (statusReads === 1) throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const shown = [];
+  const recovered = drawn(tab.page, (state) => {
+    shown.push(state.mirage?.active);
+    return state.mirage?.active === true;
+  });
+  session.emit('hit', { page: tab.page, navigation: true });
+  await recovered;
+  assert.deepEqual(
+    shown.filter((active) => active === false),
+    [],
+    'no drawn state showed the failed read as an inactive runtime',
+  );
+  assert.equal(statusReads, 2, 'the failed read was read again once');
+});
+
+// @test-kind contract: a runtime read that used up the read guard period is not read again but stored as the failure
+test('a Mirage runtime read that used up its guard is not read again', async (t) => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  t.mock.timers.enable({ apis: ['Date'] });
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      statusReads += 1;
+      t.mock.timers.tick(60_000);
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.active === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await stored;
+  assert.equal(statusReads, 1, 'the read that used up the guard period was not read again');
+});
+
+// @test-kind contract: a pending Mirage status read stores no inactive runtime, and its answer stores the runtime
+test('a pending Mirage status read stores no inactive runtime, and its answer stores the runtime', async () => {
+  const { b, tab, session, panel } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) await gate;
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.loading === false);
+  const pendingDraw = drawn(tab.page, (state) => state.mirage?.loading === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  const shown = await pendingDraw;
+  assert.notEqual(shown.mirage.active, false, 'a pending read stores no inactive runtime');
+  release();
+  await stored;
+  assert.equal(panel.stateFor(tab.page).mirage.active, true, 'the answer stores the runtime');
+});
+
+// @test-kind contract: a failed Mirage status read stores the failure in place of the runtime the page had
+test('a Mirage status read that fails replaces the runtime the page had with the failure', async () => {
+  const { b, tab, session, panel } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  const loaded = drawn(tab.page, (state) => state.mirage?.loading === false && state.mirage?.active === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await loaded;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      await gate;
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const failed = drawn(tab.page, (state) => state.mirage?.loading === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  release();
+  await failed;
+  const runtime = panel.stateFor(tab.page).mirage;
+  assert.equal(runtime.active, false, 'a failed read replaces the stored runtime with an inactive one');
+  assert.equal(typeof runtime.error, 'string', 'the failure is stored as the error of the runtime');
+});
+
+// @test-kind contract: inspection summaries expose cold loading and clear progress after a failed metadata read
 test('inspection summaries expose cold loading and clear progress after a failed metadata read', async () => {
   const { b, session, panel } = await setup();
   session.cfg.mirage = true;
@@ -805,6 +987,7 @@ test('inspection summaries expose cold loading and clear progress after a failed
     await gate;
     throw new Error('Metadata unavailable');
   };
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
   const pending = panel.stateFor(tab.page).inspection;
   assert.equal(pending.loading, true);
@@ -812,7 +995,7 @@ test('inspection summaries expose cold loading and clear progress after a failed
   assert.equal(pending.version, 0, 'a pending report must not advertise a usable version');
   assert.match(pending.phase, /Reading local runtime metadata/);
   release();
-  await tick(80);
+  await loaded;
   const failed = panel.stateFor(tab.page).inspection;
   assert.equal(failed.loading, false);
   assert.equal(failed.active, false);
@@ -821,12 +1004,14 @@ test('inspection summaries expose cold loading and clear progress after a failed
   assert.equal(failed.loadingId, null);
 });
 
+// @test-kind contract: detailed inspection publishes progress while matching the DOM and clears it on success or failure
 test('detailed inspection publishes progress while matching the DOM and clears it on success or failure', async () => {
   const { b, tab, session, panel, call } = await setup();
   session.cfg.mirage = true;
   fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const evaluate = tab.page.evaluate;
   for (const fail of [false, true]) {
     let release, entered;
@@ -860,9 +1045,13 @@ test('detailed inspection publishes progress while matching the DOM and clears i
   tab.page.evaluate = evaluate;
 });
 
+// @test-kind security+contract: panels ignore foreign console errors and avoid scheduling foreign tab redraws
 test('panels ignore foreign console errors and avoid scheduling foreign tab redraws', async () => {
-  const { b, panel } = await setup();
+  const { b, tab, panel } = await setup();
   const other = b.openTab('https://other.example/');
+  // A tab opened in the context is watched like any other; only its origin is foreign.
+  b.context.emit('page', other.page);
+  assert.ok(other.page.listenerCount('console') > 0, 'the panel observes the foreign tab');
   other.page.emit('pageerror', new Error('foreign problem'));
   other.page.emit('console', {
     type: () => 'error',
@@ -872,11 +1061,16 @@ test('panels ignore foreign console errors and avoid scheduling foreign tab redr
   });
   other.page.emit('domcontentloaded');
   other.page.emit('load');
-  await tick(300);
+  // The same event on a portal tab, emitted later, bounds any redraw the
+  // foreign events had scheduled: redraw timers share one delay and fire in order.
+  const control = drawn(tab.page);
+  tab.page.emit('load');
+  await control;
   assert.deepEqual(panel.stateFor(other.page).problems, []);
   assert.equal(other.page.drawn, null);
 });
 
+// @test-kind security+contract: comparison refuses unrelated and authority-changing URLs without any request
 test('comparison refuses unrelated and authority-changing URLs without any request', async () => {
   const { b, call } = await setup();
   for (const url of [
@@ -892,8 +1086,9 @@ test('comparison refuses unrelated and authority-changing URLs without any reque
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind security+contract: the panel refuses sources reached through a directory junction escaping the extract
 test('the panel refuses sources reached through a directory junction escaping the extract', async () => {
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-outside-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-outside-'));
   const linked = fx.file('outside-link');
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside');
   fs.symlinkSync(outside, linked, 'junction');
@@ -907,6 +1102,7 @@ test('the panel refuses sources reached through a directory junction escaping th
   }
 });
 
+// @test-kind contract: comparison totals include hidden hunks and output allocation stays bounded
 test('comparison totals include hidden hunks and output allocation stays bounded', () => {
   const before = Array.from({ length: 20 }, (_, n) => `old ${n}`).join('\n');
   const after = Array.from({ length: 20 }, (_, n) => `new ${n}`).join('\n');
@@ -919,6 +1115,7 @@ test('comparison totals include hidden hunks and output allocation stays bounded
   assert.equal(exact.truncated, false);
 });
 
+// @test-kind contract: a navigation only clears pending changes for the tab that loaded them
 test('a navigation only clears pending changes for the tab that loaded them', async () => {
   const { b, tab, session, panel } = await setup();
   const other = b.openTab(`${ORIGIN}/about-us/`);
@@ -929,6 +1126,7 @@ test('a navigation only clears pending changes for the tab that loaded them', as
   assert.deepEqual(panel.stateFor(other.page).pending, [session.rel(changed)]);
 });
 
+// @test-kind security+contract: malformed UI settings and oversized API input are safely rejected
 test('malformed UI settings and oversized API input are safely rejected', async () => {
   const { call, panel, tab } = await setup();
   await call('ui', { tab: 'issues', open: true });
@@ -938,17 +1136,188 @@ test('malformed UI settings and oversized API input are safely rejected', async 
   assert.equal((await call('mode', { online: true, padding: 'x'.repeat(32768) })).status, 413);
 });
 
-test('disposing the panel clears scheduled work and releases session listeners', async () => {
+// @test-kind contract: disposing the panel clears scheduled work and releases session listeners
+test('disposing the panel clears scheduled work and releases session listeners', async (t) => {
   const { b, tab, session, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   session.emit('hit', { page: tab.page });
   await panel.dispose();
-  await tick(300);
+  // Fire every timer that is still scheduled, including any redraw the hit queued.
+  t.mock.timers.runAll();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'only the UI cleanup is evaluated');
   assert.equal(session.listenerCount('refreshed'), 0);
   assert.equal(session.api, null);
   assert.equal(b.context.listenerCount('page'), 1, 'only interception remains');
 });
 
+/** Holds the removal evaluation of `page` until the test answers it, and counts the panel's live timers. */
+function heldRemoval(t, page) {
+  const held = Promise.withResolvers(),
+    asked = Promise.withResolvers(),
+    live = new Set();
+  const evaluate = page.evaluate;
+  page.evaluate = (fn, data) => {
+    if (fn?.name !== 'removePanelUi') return evaluate(fn, data);
+    asked.resolve();
+    return held.promise.then(() => evaluate(fn, data));
+  };
+  const set = globalThis.setTimeout,
+    clear = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
+    if (!calledFrom(PANEL, import.meta.url)) return set(callback, delay, ...rest);
+    const handle = set(
+      (...args) => {
+        live.delete(handle);
+        callback(...args);
+      },
+      delay,
+      ...rest,
+    );
+    live.add(handle);
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (handle) => {
+    live.delete(handle);
+    return clear(handle);
+  });
+  return { held, asked: asked.promise, live };
+}
+
+// @test-kind contract: disposing the panel means it was removed from every tab, however late a tab answers
+test('dispose resolves once a tab confirms the removal, however late it answers, and leaves nothing armed', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const removal = heldRemoval(t, tab.page);
+  let settled = false;
+  const disposal = panel.dispose().then(() => {
+    settled = true;
+  });
+  await removal.asked;
+  t.mock.timers.tick(2_001);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the removal is still awaited past the old 2 s deadline');
+  removal.held.resolve();
+  await disposal;
+  assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'the removal ran in the tab');
+  assert.equal(removal.live.size, 0, 'no removal guard remains armed');
+});
+
+// @test-kind contract: a closed tab ends the panel removal at once
+test('a tab that closes during the removal ends dispose at once', async (t) => {
+  const closing = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const closed = heldRemoval(t, closing.tab.page);
+  let settled = false;
+  const disposal = closing.panel.dispose().then(() => {
+    settled = true;
+  });
+  await closed.asked;
+  closing.tab.page.isClosed = () => true;
+  closing.tab.page.emit('close');
+  for (let i = 0; i < 20 && !settled; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, true, 'no timer had to fire');
+  await disposal;
+  assert.equal(closed.live.size, 0);
+});
+
+// @test-kind contract: a panel removal that a tab never answers is reported, not resolved as removed
+test('a tab that never answers the removal makes dispose report it', async (t) => {
+  const silent = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const unanswered = heldRemoval(t, silent.tab.page);
+  const reported = assert.rejects(
+    silent.panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): a tab did not answer within 30000 ms/,
+  );
+  await unanswered.asked;
+  t.mock.timers.tick(30_000);
+  await reported;
+  assert.equal(unanswered.live.size, 0);
+});
+
+/** Answers each removal ask of `page` with the next of `answers`: a function run when the ask arrives. */
+function scriptedRemoval(page, answers) {
+  const evaluate = page.evaluate;
+  let asks = 0;
+  page.evaluate = (fn, data) => {
+    if (fn?.name !== 'removePanelUi') return evaluate(fn, data);
+    const answer = answers[asks++];
+    return answer ? answer() : evaluate(fn, data);
+  };
+  return { asks: () => asks };
+}
+
+// @test-kind contract: a removal ask that a committed document replaced is asked again in each new document
+test('dispose asks again in every document a tab commits during the removal', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const main = tab.page.mainFrame();
+  const replaced = () => Promise.reject(new Error('Execution context was destroyed'));
+  const removal = scriptedRemoval(tab.page, [
+    // The first document is replaced, and its commit is reported after the failed ask.
+    () =>
+      replaced().finally(() =>
+        setImmediate(() => {
+          tab.page.emit('framenavigated', {});
+          tab.page.emit('framenavigated', main);
+        }),
+      ),
+    // The second document is replaced too, its commit reported before the failed ask.
+    () => {
+      tab.page.emit('framenavigated', main);
+      return replaced();
+    },
+  ]);
+  await panel.dispose();
+  assert.equal(removal.asks(), 3, 'each committed document was asked once');
+  assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'the removal ran in the last document');
+});
+
+// @test-kind contract: a removal ask that fails without a new document is reported once the guard ends the wait
+test('a removal ask that fails without a new document is reported with its reason', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let asked;
+  const failedAsk = new Promise((resolve) => {
+    asked = resolve;
+  });
+  const removal = scriptedRemoval(tab.page, [
+    () => {
+      asked();
+      return Promise.reject(new Error('invented evaluation failure'));
+    },
+  ]);
+  const reported = assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): invented evaluation failure/,
+  );
+  await failedAsk;
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  await reported;
+  assert.equal(removal.asks(), 1);
+});
+
+// @test-kind contract: a tab that crashes during the removal ends the wait at once and is reported with the ask's reason
+test('a tab that crashes during the removal makes dispose report it at once', async (t) => {
+  const { tab, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // A crashed tab rejects the ask and emits `crash`, never `close`; the crash may be reported after the failed ask.
+  scriptedRemoval(tab.page, [
+    () =>
+      Promise.reject(new Error('page.evaluate: Target crashed')).finally(() =>
+        setImmediate(() => tab.page.emit('crash', tab.page)),
+      ),
+  ]);
+  await assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): page\.evaluate: Target crashed/,
+  );
+  assert.equal(tab.page.listenerCount('crash'), 0, 'the removal released its crash listener');
+});
+
+// @test-kind contract: closing a tab immediately releases its panel listeners
 test('closing a tab immediately releases its panel listeners', async () => {
   const { tab } = await setup();
   assert.ok(tab.page.listenerCount('console') > 0);
@@ -957,11 +1326,13 @@ test('closing a tab immediately releases its panel listeners', async () => {
   assert.equal(tab.page.listenerCount('pageerror'), 0);
 });
 
+// @test-kind security+contract: editor shell syntax is rejected before starting any process
 test('editor shell syntax is rejected before starting any process', async () => {
   assert.match(await openInEditor('code & unexpected-command', fx.file('web-files/app.js')), /executable/);
   assert.match(await openInEditor('code', fx.file('web-files/unsafe%NAME%.js')), /file name/);
 });
 
+// @test-kind security+contract: unindexed files under the extract are not exposed through panel actions
 test('unindexed files under the extract are not exposed through panel actions', async () => {
   fx.write('private-local-settings.txt', 'sensitive local data');
   try {
@@ -974,6 +1345,7 @@ test('unindexed files under the extract are not exposed through panel actions', 
   }
 });
 
+// @test-kind contract: unchanged panel redraws reuse page/source metadata without filesystem reads
 test('unchanged panel redraws reuse page/source metadata without filesystem reads', async (t) => {
   const { b, panel, session } = await setup();
   const tab = b.openTab(`${ORIGIN}/about-us/`);
@@ -988,25 +1360,28 @@ test('unchanged panel redraws reuse page/source metadata without filesystem read
   assert.ok(read.mock.callCount() > initialReads, 'a source refresh invalidates the page metadata');
 });
 
+// @test-kind contract: a paused page has at most one panel evaluation pending and receives the latest update afterwards
 test('a paused page has at most one panel evaluation pending and receives the latest update afterwards', async () => {
   const { panel, tab, session } = await setup();
-  let finish;
+  const finish = Promise.withResolvers(),
+    started = Promise.withResolvers(),
+    redrawn = Promise.withResolvers();
   let calls = 0;
   tab.page.evaluate = async (_fn, state) => {
     calls++;
     tab.page.drawn = state;
-    if (calls === 1)
-      await new Promise((resolve) => {
-        finish = resolve;
-      });
+    if (calls === 1) {
+      started.resolve();
+      await finish.promise;
+    } else redrawn.resolve();
   };
   const draws = Array.from({ length: 50 }, () => panel.draw(tab.page));
-  await tick();
+  await started.promise;
   assert.equal(calls, 1);
   session.bypass = true;
-  finish();
+  finish.resolve();
   await Promise.all(draws);
-  await tick(300);
+  await redrawn.promise;
   assert.equal(calls, 2);
   assert.equal(tab.page.drawn.online, true);
 });
@@ -1059,8 +1434,9 @@ test('Mirage navigation fetches a page summary; the full Inspect report is fetch
       ? (calls.push(['GET', String(url)]),
         { ok: () => true, status: () => 200, json: async () => structuredClone(summary) })
       : get(url, options);
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true, url: '/scripts/' });
-  await tick(80);
+  await loaded;
   const pageRequests = () => calls.filter(([, url]) => url.includes('/page-resources?'));
   assert.deepEqual(
     pageRequests().map(([, url]) => url.includes('view=summary')),
@@ -1144,8 +1520,9 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const cookieWrites = () => calls.filter(([method, url]) => method === 'POST' && /\/session\//.test(url));
   const flows = tab.page.flows;
 
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const shown = panel.stateFor(tab.page).mirage.session;
   assert.deepEqual(
     [shown.supported, shown.signedIn, shown.contactId, shown.roles],
@@ -1223,8 +1600,16 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const returnsTo = async (cases) => {
     for (const [url, target] of cases) {
       const opened = b.openTab(url);
+      // Interception enables Fetch on a tab only after its paused-request handler is attached.
+      const intercepted = Promise.withResolvers(),
+        send = opened.cdp.send;
+      opened.cdp.send = async (method, params) => {
+        const result = await send(method, params);
+        if (method === 'Fetch.enable') intercepted.resolve();
+        return result;
+      };
       b.context.emit('page', opened.page);
-      await tick(20);
+      await intercepted.promise;
       const result = await callFrom(opened, 'signin', { contactId: 'blair' });
       assert.equal(result.returnUrl, target, url);
       assert.equal(
@@ -1274,27 +1659,33 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const anonymous = await call('scenario', { id: 'anon' });
   assert.deepEqual([anonymous.ok, anonymous.navigating, anonymous.contactId], [true, true, null]);
   assert.equal(flows.length, before, 'nothing runs before the reload');
+  let flow = sessionFlow(tab.page);
   tab.page.emit('load');
-  await tick(60);
+  await flow;
   assert.deepEqual(flows.at(-1), { navigate: '/Account/Login/LogOff?returnUrl=%2Fscripts%2F' });
   signedIn = null;
   const asAlex = await call('scenario', { id: 'as-alex' });
   assert.deepEqual([asAlex.ok, asAlex.navigating, asAlex.contactId], [true, true, 'alex']);
+  flow = sessionFlow(tab.page);
   tab.page.emit('load');
-  await tick(60);
+  await flow;
   assert.deepEqual([flows.at(-1).logOff, flows.at(-1).fields.login_hint], [null, 'alex']);
   signedIn = 'alex';
-  const kept = flows.length;
+  const kept = flows.length,
+    loadListeners = tab.page.listenerCount('load');
   assert.deepEqual(
     [(await call('scenario', { id: 'keep' })).navigating, (await call('scenario', { id: 'as-alex' })).navigating],
     [undefined, undefined],
   );
+  // A session change waits for the reload through a load listener registered
+  // before its answer; an unchanged persona registers none, so a reload runs nothing.
+  assert.equal(tab.page.listenerCount('load'), loadListeners, 'no session flow waits for the reload');
   tab.page.emit('load');
-  await tick(60);
   assert.equal(flows.length, kept);
   assert.deepEqual(cookieWrites(), [], 'the panel never sets the session cookie itself');
 });
 
+// @test-kind contract: Mirage Tweaks report whether local pages are confined to loopback, with the exceptions
 test('Mirage Tweaks report whether local pages are confined to loopback, with the exceptions', async () => {
   const { b, tab, session, call } = await setup();
   session.cfg.mirage = true;
@@ -1302,11 +1693,64 @@ test('Mirage Tweaks report whether local pages are confined to loopback, with th
     report: { path: '/scripts', view: 'summary', page: null, tables: [], counts: {} },
     status: { confinePortalPages: true, externalAssets: false, externalFrameOrigins: 2 },
   });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const tweaks = await call('tweaks');
   assert.deepEqual(
     [tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins],
     [true, false, 2],
+  );
+});
+
+// @test-kind contract: a route the page requests reaches the source inspector as observed evidence, and another origin's route does not
+test('a route the page requests reaches the source inspector as observed evidence', async (t) => {
+  const { tab, call, session } = await setup();
+  const inspect = t.mock.method(session.sourceInspector, 'inspect');
+  const mainFrame = tab.page.mainFrame();
+  const requestOf = (url) => ({ url: () => url, isNavigationRequest: () => false, frame: () => mainFrame });
+  tab.page.emit('request', requestOf(`${ORIGIN}/_api/serverlogics/orders`));
+  tab.page.emit('request', requestOf('https://other.invalid/_api/serverlogics/billing'));
+  // A request from a subframe of the same origin is not a route of the page.
+  tab.page.emit('request', {
+    url: () => `${ORIGIN}/_api/serverlogics/sub`,
+    isNavigationRequest: () => false,
+    frame: () => ({}),
+  });
+  const result = await call('inspect');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [, rendered] = inspect.mock.calls.at(-1).arguments;
+  assert.deepEqual(rendered.serverLogicPaths, ['/_api/serverlogics/orders']);
+});
+
+// @test-kind contract: the main frame's commit of the navigation it requested clears the routes of the replaced document, and a same-document navigation keeps them
+test('the committed main-frame navigation clears the routes of the replaced document and a same-document one keeps them', async (t) => {
+  const { tab, call, session } = await setup();
+  const inspect = t.mock.method(session.sourceInspector, 'inspect');
+  const mainFrame = tab.page.mainFrame();
+  const serverLogicAfter = async () => {
+    assert.equal((await call('inspect')).ok, true);
+    return inspect.mock.calls.at(-1).arguments[1].serverLogicPaths;
+  };
+  tab.page.emit('request', {
+    url: () => `${ORIGIN}/_api/serverlogics/orders`,
+    isNavigationRequest: () => false,
+    frame: () => mainFrame,
+  });
+  tab.page.emit('framenavigated', mainFrame);
+  assert.deepEqual(
+    await serverLogicAfter(),
+    ['/_api/serverlogics/orders'],
+    'a same-document navigation keeps the routes',
+  );
+  tab.page.emit('request', { url: () => `${ORIGIN}/next`, isNavigationRequest: () => true, frame: () => mainFrame });
+  // A subframe navigation does not replace the document that the main frame requested.
+  tab.page.emit('request', { url: () => `${ORIGIN}/frame`, isNavigationRequest: () => true, frame: () => ({}) });
+  t.mock.method(mainFrame, 'url', () => `${ORIGIN}/next`);
+  tab.page.emit('framenavigated', mainFrame);
+  assert.equal(
+    await serverLogicAfter(),
+    undefined,
+    'the committed navigation clears the routes of the replaced document',
   );
 });

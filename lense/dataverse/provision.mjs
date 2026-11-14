@@ -15,7 +15,7 @@ export function metadataXml(source) {
     attrs: Object.fromEntries(
       Object.entries(node.attrs)
         .filter(([key]) => !(isRoot && node.name === 'fetch' && key === 'savedqueryid'))
-        .sort(([a], [b]) => a.localeCompare(b)),
+        .sort(([a], [b]) => a.localeCompare(b, 'en')),
     ),
     text: node.text.trim() ? node.text : '',
     children: node.children.map((n) => normalize(n)),
@@ -26,55 +26,54 @@ export function metadataXml(source) {
 const TYPES = { table: 1, 'table-reference': 1, column: 2, choice: 9, relationship: 10, key: 14, form: 60, view: 26 };
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const escape = (value) => value.replaceAll("'", "''");
-function normalizeExpected(actual, expected, key = '') {
-  if (expected === null || typeof expected !== 'object') {
-    if (
-      typeof actual === 'string' &&
-      typeof expected === 'string' &&
-      ['formxml', 'fetchxml', 'layoutxml'].includes(key)
-    ) {
-      try {
-        return metadataXml(actual);
-      } catch {
-        return actual;
-      }
+function normalizeExpectedScalar(actual, expected, key) {
+  if (
+    typeof actual === 'string' &&
+    typeof expected === 'string' &&
+    ['formxml', 'fetchxml', 'layoutxml'].includes(key)
+  ) {
+    try {
+      return metadataXml(actual);
+    } catch {
+      return actual;
     }
-    if (
-      typeof actual === 'string' &&
-      typeof expected === 'string' &&
-      ['SchemaName', 'LogicalName', 'Name'].includes(key)
-    )
-      return actual.toLowerCase();
-    return actual;
   }
-  if (Array.isArray(expected)) {
-    if (!Array.isArray(actual)) return null;
-    if (key === 'Attributes')
-      return expected.map((e) =>
-        normalizeExpected(
-          actual.find((a) => a.SchemaName?.toLowerCase() === e.SchemaName?.toLowerCase()),
-          e,
-        ),
-      );
-    if (key === 'LocalizedLabels')
-      return expected.map((e) =>
-        normalizeExpected(
-          actual.find((a) => a.LanguageCode === e.LanguageCode),
-          e,
-        ),
-      );
-    if (key === 'Options')
-      return actual.length === expected.length
-        ? expected.map((e) =>
-            normalizeExpected(
-              actual.find((a) => a.Value === e.Value),
-              e,
-            ),
-          )
-        : actual;
-    if (key === 'KeyAttributes') return [...actual].sort();
-    return actual;
-  }
+  if (typeof actual === 'string' && typeof expected === 'string' && ['SchemaName', 'LogicalName', 'Name'].includes(key))
+    return actual.toLowerCase();
+  return actual;
+}
+
+function normalizeExpectedArray(actual, expected, key) {
+  if (!Array.isArray(actual)) return null;
+  if (key === 'Attributes')
+    return expected.map((e) =>
+      normalizeExpected(
+        actual.find((a) => a.SchemaName?.toLowerCase() === e.SchemaName?.toLowerCase()),
+        e,
+      ),
+    );
+  if (key === 'LocalizedLabels')
+    return expected.map((e) =>
+      normalizeExpected(
+        actual.find((a) => a.LanguageCode === e.LanguageCode),
+        e,
+      ),
+    );
+  if (key === 'Options')
+    return actual.length === expected.length
+      ? expected.map((e) =>
+          normalizeExpected(
+            actual.find((a) => a.Value === e.Value),
+            e,
+          ),
+        )
+      : actual;
+  // Preserve Array#sort's string coercion for metadata returned by the service.
+  if (key === 'KeyAttributes') return [...actual].sort(); // NOSONAR: default string coercion is intentional
+  return actual;
+}
+
+function normalizeExpectedObject(actual, expected) {
   const result = {};
   for (const [property, value] of Object.entries(expected)) {
     if (property === '@odata.type' || property === 'CanBeChanged' || property === 'ManagedPropertyLogicalName')
@@ -88,6 +87,14 @@ function normalizeExpected(actual, expected, key = '') {
     else result[property] = normalizeExpected(actual?.[property], value, property);
   }
   return result;
+}
+
+function normalizeExpected(actual, expected, key = '') {
+  if (expected === null || typeof expected !== 'object') {
+    return normalizeExpectedScalar(actual, expected, key);
+  }
+  if (Array.isArray(expected)) return normalizeExpectedArray(actual, expected, key);
+  return normalizeExpectedObject(actual, expected);
 }
 export function compatible(actual, desired) {
   if (!actual) return false;
@@ -120,7 +127,13 @@ async function requiredMetadata(client, route) {
   }
 }
 
-async function existingComponent(client, action) {
+function optionSetExpansion(body, cast) {
+  if (body['GlobalOptionSet@odata.bind']) return '?$expand=GlobalOptionSet';
+  if (cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata') return '?$expand=OptionSet';
+  return '';
+}
+
+/* NOSONAR: preserve client lookup and continuation ordering */ async function existingComponent(client, action) {
   const b = action.body;
   if (action.kind === 'publisher') return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
   if (action.kind === 'solution') return one(client, `solutions?$filter=uniquename eq '${escape(b.uniquename)}'`);
@@ -149,7 +162,7 @@ async function existingComponent(client, action) {
     )
       return attribute;
     return client.get(
-      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${b['GlobalOptionSet@odata.bind'] ? '?$expand=GlobalOptionSet' : cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata' ? '?$expand=OptionSet' : ''}`,
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${optionSetExpansion(b, cast)}`,
     );
   }
   if (action.kind === 'relationship') {
@@ -167,60 +180,185 @@ async function existingComponent(client, action) {
   throw new Error('Unknown provisioning component kind.');
 }
 
+function requiredTableMissing(found, table) {
+  return !found && table.existing;
+}
+
+// Membership rules shared by remote plans and applies, so a plan lists the writes that apply will make.
+function isMember(rows, componentId, componentType) {
+  const id = componentId?.toLowerCase();
+  return Boolean(id) && rows.some((row) => row.componenttype === componentType && row.objectid?.toLowerCase() === id);
+}
+
+function tableRoots(rows) {
+  return rows.filter((row) => row.componenttype === 1 && row.rootcomponentbehavior === 0);
+}
+
+function undeclaredRoots(roots, known) {
+  return roots.filter((root) => !known.has(root.objectid?.toLowerCase()));
+}
+
+function membershipRoute(solutionId) {
+  return `solutioncomponents?$select=solutioncomponentid,objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId}`;
+}
+
+// The primary-name attribute of a table, or the lookup of a one-to-many relationship: apply includes each beside its component.
+function companionColumn(action) {
+  if (action.kind === 'table')
+    return { label: 'Primary-name', table: action.table, column: action.body.PrimaryNameAttribute };
+  if (action.kind === 'relationship' && action.body.Lookup)
+    return {
+      label: 'Lookup',
+      table: action.body.ReferencingEntity,
+      column: action.body.Lookup.SchemaName.toLowerCase(),
+    };
+  return null;
+}
+
+function columnRoute({ table, column }) {
+  return `EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')`;
+}
+
+const readsExisting = (client, action, missingTables) =>
+  Boolean(client) && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table));
+
+// The plan summary: action statuses and the membership operations counted from the membership list.
+const planSummary = (actions, membership) => {
+  const count = (operation) => membership.filter((entry) => entry.operation === operation).length;
+  return {
+    create: actions.filter((a) => a.status === 'create').length,
+    exists: actions.filter((a) => a.status === 'exists').length,
+    drift: actions.filter((a) => a.status === 'drift').length,
+    membershipAdd: count('membership:add'),
+    rootScoping: count('membership:scope-root'),
+    blocked: count('blocked'),
+  };
+};
+
 export async function planManifest(manifest, { client } = {}) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
     actions = [],
     missingTables = new Set();
-  let publisherId;
+  const publisher = { id: undefined };
   if (client) {
     for (const table of manifest.tables) {
       const found = await client.optional(`EntityDefinitions(LogicalName='${table.name}')`);
-      if (!found && table.existing) throw new Error(`Required existing table ${table.name} is absent.`);
+      if (requiredTableMissing(found, table)) throw new Error(`Required existing table ${table.name} is absent.`);
       if (!found) missingTables.add(table.name);
     }
   }
   for (const action of compiled.actions) {
-    const existing =
-      client && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table))
-        ? await existingComponent(client, action)
-        : null;
-    if (action.kind === 'publisher') publisherId = existing?.publisherid;
-    const wrongPublisher =
-      action.kind === 'solution' &&
-      existing &&
-      (!publisherId || existing._publisherid_value?.toLowerCase() !== publisherId.toLowerCase());
-    const status = existing ? (compatible(existing, action.body) && !wrongPublisher ? 'exists' : 'drift') : 'create';
-    actions.push({
-      ...action,
-      status,
-      ...(existing
-        ? {
-            existingId:
-              existing.MetadataId ??
-              existing.publisherid ??
-              existing.solutionid ??
-              existing.formid ??
-              existing.savedqueryid,
-          }
-        : {}),
-      ...(action.kind === 'key' && existing ? { keyStatus: existing.EntityKeyIndexStatus } : {}),
-    });
+    const existing = readsExisting(client, action, missingTables) ? await existingComponent(client, action) : null;
+    actions.push(planActionResult(action, existing, publisher));
   }
+  const membership = client ? await planMembership(client, actions) : [];
   return {
     ...compiled,
     environmentUrl: client?.origin ?? null,
     mode: client ? 'remote-read-only' : 'offline',
     actions,
-    summary: {
-      create: actions.filter((a) => a.status === 'create').length,
-      exists: actions.filter((a) => a.status === 'exists').length,
-      drift: actions.filter((a) => a.status === 'drift').length,
-    },
+    membership,
+    summary: planSummary(actions, membership),
   };
 }
 
-export async function applyManifest(input, { client, journalFile, expectedOrganisationId, onProgress = () => {} }) {
+// Reads solution membership only (GET). Solutions that the plan will create have no membership yet and are skipped.
+async function planMembership(client, actions) {
+  const known = new Map(),
+    membership = [];
+  for (const action of actions) {
+    if (action.kind === 'table' && action.existingId) known.set(action.existingId.toLowerCase(), action.table);
+  }
+  for (const solution of actions.filter((a) => a.kind === 'solution' && a.existingId)) {
+    const name = solution.body.uniquename,
+      rows = await client.list(membershipRoute(solution.existingId));
+    membership.push(...(await planAdditions(client, name, rows, actions)), ...planRootScoping(name, rows, known));
+  }
+  return membership;
+}
+
+async function planAdditions(client, solution, rows, actions) {
+  const additions = [];
+  const want = (objectId, componentType, key) => {
+    if (!isMember(rows, objectId, componentType))
+      additions.push({ operation: 'membership:add', solution, componentType, objectId, key });
+  };
+  for (const action of actions.filter((a) => a.solution === solution && TYPES[a.kind])) {
+    if (action.status === 'create') {
+      // The identity of a component that does not exist yet is known only after apply creates it.
+      additions.push({
+        operation: 'membership:add',
+        solution,
+        componentType: TYPES[action.kind],
+        objectId: null,
+        key: action.key,
+      });
+      continue;
+    }
+    want(action.existingId, TYPES[action.kind], action.key);
+    const companion = companionColumn(action);
+    if (companion) {
+      const attribute = await client.optional(columnRoute(companion));
+      if (attribute?.MetadataId) want(attribute.MetadataId, 2, `${action.key}/${companion.column}`);
+    }
+  }
+  return additions;
+}
+
+function planRootScoping(solution, rows, known) {
+  const roots = tableRoots(rows),
+    undeclared = new Set(undeclaredRoots(roots, known));
+  return roots.map((root) =>
+    undeclared.has(root)
+      ? {
+          operation: 'blocked',
+          solution,
+          componentType: 1,
+          objectId: root.objectid,
+          reason: 'undeclared table root would include unrelated subcomponents',
+        }
+      : {
+          operation: 'membership:scope-root',
+          solution,
+          componentType: 1,
+          objectId: root.objectid,
+          table: known.get(root.objectid.toLowerCase()),
+        },
+  );
+}
+
+function planActionResult(action, existing, publisher) {
+  if (action.kind === 'publisher') publisher.id = existing?.publisherid;
+  const wrongPublisher =
+    action.kind === 'solution' &&
+    existing &&
+    (!publisher.id || existing._publisherid_value?.toLowerCase() !== publisher.id.toLowerCase());
+  let status;
+  if (!existing) status = 'create';
+  else if (compatible(existing, action.body) && !wrongPublisher) status = 'exists';
+  else status = 'drift';
+  return {
+    ...action,
+    status,
+    ...(existing
+      ? {
+          existingId:
+            existing.MetadataId ??
+            existing.publisherid ??
+            existing.solutionid ??
+            existing.formid ??
+            existing.savedqueryid,
+        }
+      : {}),
+    ...(action.kind === 'key' && existing ? { keyStatus: existing.EntityKeyIndexStatus } : {}),
+  };
+}
+
+/* NOSONAR: preserve write, journal and progress callback ordering */ export async function applyManifest(
+  input,
+  { client, journalFile, expectedOrganisationId, onProgress = () => {} },
+) {
   const manifest = validateManifest(input);
   const identity = await client.verify(expectedOrganisationId);
   const plan = await planManifest(manifest, { client });
@@ -228,6 +366,12 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
     throw new Error(
       `Existing metadata has ${plan.summary.drift} incompatible component(s). Inspect a remote plan; additive provisioning will not overwrite them.`,
     );
+  if (plan.summary.blocked) {
+    const roots = plan.membership.filter((e) => e.operation === 'blocked').map((e) => `${e.solution}/${e.objectId}`);
+    throw new Error(
+      `Undeclared table root would include unrelated subcomponents; apply refuses before writing: ${roots.join(', ')}.`,
+    );
+  }
   const journal = {
     schemaVersion: 1,
     manifestHash: plan.manifestHash,
@@ -247,7 +391,7 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
     const included = await client.list(
       `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and objectid eq ${id} and componenttype eq ${type}`,
     );
-    if (!included.length)
+    if (!isMember(included, id, type))
       await client.request('AddSolutionComponent', {
         method: 'POST',
         body: {
@@ -313,24 +457,12 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
           planned.solution,
           ['table', 'table-reference'].includes(planned.kind),
         );
-        if (planned.kind === 'table') {
-          const primaryName = planned.body.PrimaryNameAttribute;
-          const primary = await requiredMetadata(
-            client,
-            `EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${primaryName}')`,
-          );
-          if (!guid.test(primary.MetadataId ?? ''))
-            throw new Error('Primary-name metadata identity is unavailable; reconcile before exporting.');
-          await include(primary.MetadataId, 2, planned.solution);
-        }
-        if (planned.kind === 'relationship' && planned.body.Lookup) {
-          const lookup = await requiredMetadata(
-            client,
-            `EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`,
-          );
-          if (!guid.test(lookup.MetadataId ?? ''))
-            throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');
-          await include(lookup.MetadataId, 2, planned.solution);
+        const companion = companionColumn(planned);
+        if (companion) {
+          const attribute = await requiredMetadata(client, columnRoute(companion));
+          if (!guid.test(attribute.MetadataId ?? ''))
+            throw new Error(`${companion.label} metadata identity is unavailable; reconcile before exporting.`);
+          await include(attribute.MetadataId, 2, planned.solution);
         }
       }
       const entry = {
@@ -368,7 +500,11 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
 // with IncludeSubcomponents. That later pulls another solution's forms/columns
 // into this export. Keep explicitly added subcomponents and narrow only known
 // table roots through the supported AddSolutionComponent action.
-export async function scopeSolutionRoots(input, client, { onProgress = () => {} } = {}) {
+/* NOSONAR: preserve public lifecycle await ordering */ export async function scopeSolutionRoots(
+  input,
+  client,
+  { onProgress = () => {} } = {},
+) {
   const manifest = validateManifest(input),
     known = new Map(),
     changes = [];
@@ -402,10 +538,10 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
     if (rows.length !== 1) throw new Error('Solution identity unavailable for table-root scoping.');
     const sid = rows[0].solutionid;
     solutionIds.set(solution.uniqueName, sid);
-    const route = `solutioncomponents?$select=solutioncomponentid,objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${sid}`,
+    const route = membershipRoute(sid),
       before = await client.list(route),
-      roots = before.filter((row) => row.componenttype === 1 && row.rootcomponentbehavior === 0);
-    if (roots.some((root) => !known.has(root.objectid?.toLowerCase())))
+      roots = tableRoots(before);
+    if (undeclaredRoots(roots, known).length)
       throw new Error('Undeclared table root would include unrelated subcomponents; scoping refused.');
     scopes.push({ solution, sid, route, before, roots });
   }
@@ -414,7 +550,11 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
     // The action does not narrow an existing IncludeAll root. Removing only its
     // solution membership leaves the Dataverse table/data intact. Save every
     // explicit component first; the caller's journal makes interruption reviewable.
-    await onProgress({ state: 'before-membership-replacement', solution: solution.uniqueName, components: before });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'before-membership-replacement',
+      solution: solution.uniqueName,
+      components: before,
+    });
     for (const root of roots) {
       await client.request('RemoveSolutionComponent', {
         method: 'POST',
@@ -445,7 +585,10 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
       );
       if (!present.length) await add(component.objectid, component.componenttype, solution.uniqueName);
     }
-    await onProgress({ state: 'roots-scoped', solution: solution.uniqueName });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'roots-scoped',
+      solution: solution.uniqueName,
+    });
   }
   // IncludeAll roots can mask absent explicit membership. Restore the declared
   // metadata after narrowing; never create/alter a table, column or business row.
@@ -482,7 +625,10 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
     );
     if (!included.length) await add(attribute.MetadataId, 2, relation.solution);
   }
-  await onProgress({ state: 'declared-memberships-restored', changedRoots: changes.length });
+  /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+    state: 'declared-memberships-restored',
+    changedRoots: changes.length,
+  });
   return { changedRoots: changes.length, changes };
 }
 
@@ -583,7 +729,11 @@ export async function exportSolution({ client, solutionName, zipFile, unpackFold
       '--packagetype',
       'Unmanaged',
     ]);
-    if (result.code !== 0 || result.timedOut || /^\s*Error:/im.test(result.stdout + '\n' + result.stderr))
+    /* NOSONAR */ if (
+      result.code !== 0 ||
+      result.timedOut ||
+      /^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(result.stdout + '\n' + result.stderr)
+    )
       throw new Error('PAC unpack failed; exported ZIP preserved. PAC output withheld.');
   }
   return {

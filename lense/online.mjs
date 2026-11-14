@@ -1,9 +1,13 @@
-import { orderedMap } from './async-map.mjs';
+export { orderedMap as mapLimit } from './async-map.mjs';
 // Plain (anonymous) HTTP access to the online site, used by `map --check`, `status` and the dev panel.
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const MAX_COMPARISON_BYTES = 32 * 1024 * 1024;
+const retryableStatus = (status) => status >= 500 || status === 429;
+const retryableAttempt = (status, attempt, attempts) => retryableStatus(status) && attempt < attempts - 1;
+const shouldReadBody = (readBody, status) => readBody && status === 200;
+const exceedsComparisonLimit = (length, limit) => Number(length) > limit;
 
 /** Metadata stores URL paths, sometimes already percent-encoded. Never let them change authority. */
 export function portalResourceUrl(origin, urlPath) {
@@ -36,9 +40,6 @@ export function portalResourceUrl(origin, urlPath) {
   return base.origin + encoded;
 }
 
-/** Runs `fn` over `items` with at most `limit` in flight. Results keep the order of `items`. */
-export const mapLimit = orderedMap;
-
 /** One attempt through a Playwright request context: the browser's own sign-in, no redirects followed. */
 async function fetchWithRequest(request, url, { timeout, readBody }) {
   const res = await request.fetch(url, { method: 'GET', maxRedirects: 0, timeout, failOnStatusCode: false });
@@ -60,7 +61,7 @@ async function fetchWithRequest(request, url, { timeout, readBody }) {
  * browser's sign-in (a signed-in portal serves its web files only to that session).
  * @returns {Promise<{status: number, body: Buffer|null, error?: string}>} status 0 on network failure
  */
-export async function fetchOnline(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function fetchOnline(
   origin,
   urlPath,
   attempts = 3,
@@ -76,7 +77,7 @@ export async function fetchOnline(
       if (request) {
         const result = await fetchWithRequest(request, url, { timeout, readBody });
         if (signal?.aborted) break;
-        if ((result.status >= 500 || result.status === 429) && attempt < attempts - 1) {
+        if (retryableAttempt(result.status, attempt, attempts)) {
           error = `HTTP ${result.status}`;
           continue;
         }
@@ -85,21 +86,21 @@ export async function fetchOnline(
       const timed = AbortSignal.timeout(timeout);
       const res = await fetch(url, { redirect: 'manual', signal: signal ? AbortSignal.any([signal, timed]) : timed });
       // the portal answers 5xx/429 under load; those are worth another try
-      if (res.status >= 500 || res.status === 429) {
+      if (retryableStatus(res.status)) {
         error = `HTTP ${res.status}`;
         if (attempt < attempts - 1) {
           await res.body?.cancel();
           continue;
         }
       }
-      if (!readBody || res.status !== 200) {
+      if (!shouldReadBody(readBody, res.status)) {
         await res.body?.cancel();
         return { status: res.status, body: null };
       }
       const parts = [];
       let size = 0;
       const limit = MAX_COMPARISON_BYTES;
-      if (Number(res.headers.get('content-length')) > limit) {
+      if (exceedsComparisonLimit(res.headers.get('content-length'), limit)) {
         await res.body?.cancel();
         return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
       }

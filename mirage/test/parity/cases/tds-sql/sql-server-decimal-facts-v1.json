@@ -1,0 +1,924 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "tds-sql",
+  "suite": "sql-server-decimal-facts-v1",
+  "oracle": {
+    "kind": "reference-engine",
+    "name": "Microsoft SQL Server",
+    "version": "16.0.4305.5",
+    "scope": "Repeated SQL Server engine results for 14 exact decimal cases and one Int64 case; no Dataverse TDS claim Client-derived encodings (CLR type, precision and scale of fixed-width types, binary layouts of decimal and float values) are not recorded; values are recorded as exact text."
+  },
+  "captures": [
+    {
+      "id": "sqlserver-run-1",
+      "sha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "sqlserver-run-2",
+      "sha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sql-function-decimal-112",
+      "input": {
+        "query": "SELECT ABS(CAST(N'-1.50' AS decimal(3,2))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 3,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "1.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-113",
+      "input": {
+        "query": "SELECT ABS(CAST(N'-7' AS bigint)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "bigint"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int64",
+                  "exact": "7"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-114",
+      "input": {
+        "query": "SELECT CEILING(CAST(N'1.20' AS decimal(3,2))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 3,
+                "scale": 0
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "2"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-115",
+      "input": {
+        "query": "SELECT FLOOR(CAST(N'-1.20' AS decimal(3,2))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 3,
+                "scale": 0
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "-2"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-118",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'123.9994' AS decimal(7,4)), CAST(3 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 7,
+                "scale": 4
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "123.9990"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-119",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'123.9995' AS decimal(7,4)), CAST(3 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 7,
+                "scale": 4
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "124.0000"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-120",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'123.4545' AS decimal(7,4)), CAST(2 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 7,
+                "scale": 4
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "123.4500"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-121",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'123.45' AS decimal(5,2)), CAST(-2 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "100.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-122",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'748.58' AS decimal(5,2)), CAST(-1 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "750.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-123",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'748.58' AS decimal(5,2)), CAST(-2 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "700.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-124",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'748.58' AS decimal(5,2)), CAST(-4 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "0.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-125",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'150.75' AS decimal(5,2)), CAST(0 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "151.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-126",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'150.75' AS decimal(5,2)), CAST(0 AS int), CAST(1 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "150.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-127",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'1.15' AS decimal(3,2)), CAST(1 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 3,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "1.20"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-decimal-128",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'-1.15' AS decimal(3,2)), CAST(1 AS int)) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "decimal",
+                "precision": 3,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "-1.20"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

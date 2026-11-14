@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own state store revision, replacement and admin commit behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -122,25 +123,26 @@ test('runtime configuration rejects stale publication while retaining an SDK com
   assert.equal(read.row.x_name, 'Committed SDK write');
 });
 
-test('operation configuration reapplies only its delta after a background job commits, preserving job rows', async (t) => {
+test('operation configuration commits only its delta beside a background job commit, preserving job rows', async (t) => {
   const { app } = await pluginFixture(t),
     replace = app.store.replaceState.bind(app.store);
   const jobId = '77777777-7777-4777-8777-777777777790',
     operationKey = `plugin-step:${pluginId(7)}`;
   let attempts = 0;
   app.store.replaceState = async (state, options) => {
-    if (++attempts === 1)
-      await app.store.transact(() => {
-        app.store.state.tables.asyncoperation ??= [];
-        app.store.state.tables.asyncoperation.push({
-          asyncoperationid: jobId,
-          statecode: 3,
-          statuscode: 30,
-          message: 'Background completion retained',
-        });
-      });
+    attempts++;
     return replace(state, options);
   };
+  // The background job's commit is queued when the request arrives.
+  void app.store.transact(() => {
+    app.store.state.tables.asyncoperation ??= [];
+    app.store.state.tables.asyncoperation.push({
+      asyncoperationid: jobId,
+      statecode: 3,
+      statuscode: 30,
+      message: 'Background completion retained',
+    });
+  });
   t.after(() => {
     app.store.replaceState = replace;
   });
@@ -150,7 +152,7 @@ test('operation configuration reapplies only its delta after a background job co
     body: JSON.stringify({ mode: 'mock', body: { target: { fx_title: 'Configured' } } }),
   });
   assert.equal(response.status, 200, await response.clone().text());
-  assert.equal(attempts, 2, 'the stale full snapshot is rejected before the explicit delta retries');
+  assert.equal(attempts, 0, 'the delta is a queued transaction, never a whole-state replacement');
   assert.equal(app.store.state.simulator.operations[operationKey].mode, 'mock');
   assert.equal(
     app.store.state.tables.asyncoperation.find((row) => row.asyncoperationid === jobId).message,

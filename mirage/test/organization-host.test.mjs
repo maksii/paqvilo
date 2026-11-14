@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own shared host composition, close order and retry behaviour for the organization runtime.
 // Shared host composition (lib/organization-host.mjs): both hosts compose through it. A runtime switch of a plug-in step to
 // clr in the standalone host prepares the CLR runtime before the choice is stored, close runs in one order and
 // the operation catalogue is memoised while the store revision and the sources are unchanged.
@@ -11,14 +12,16 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeOrganizationHost } from '../lib/organization-host.mjs';
+import { tracedFetch } from '../lib/trace-hosts.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { statusResponseChunks } from '../lib/status-response.mjs';
 
 const GUID = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
 
 test('a standalone runtime switch to clr prepares the CLR runtime and stores nothing when preparation fails', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':
@@ -80,7 +83,7 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
   assert.equal(sim.store.state.simulator.operations?.[key], undefined, 'nothing is stored when preparation fails');
 });
 
-async function composed(t) {
+async function composed(t, extra = {}) {
   const store = await new DataStore({ state: emptyState() }).init();
   const sources = await loadOrganizationSources({ solutionRoots: [] });
   const notes = [];
@@ -90,10 +93,45 @@ async function composed(t) {
     sourcesKey: () => sources,
     overrides: () => store.state.simulator?.operations ?? null,
     diagnostic: (entry) => notes.push(entry),
+    ...extra,
   });
-  t.after(() => host.close());
+  ownedFixture(t).add(() => host.close());
   return { store, host, notes };
 }
+
+test('HTTP capability status reuses private snapshots and bytes, with fresh public and exposed registry reads', async (t) => {
+  const { host, store } = await composed(t);
+  const first = host.capabilityStatus({ reuse: true });
+  assert.equal(host.capabilityStatus({ reuse: true }), first);
+  assert.ok(Object.isFrozen(first.capabilityReport.modules[0].operations));
+  const bytes = (value) => statusResponseChunks(value, { encoded: () => undefined }).filter(Buffer.isBuffer);
+  const initialBytes = bytes(first);
+  assert.equal(initialBytes.length, 2);
+  assert.deepEqual(bytes(host.capabilityStatus({ reuse: true })), initialBytes);
+  assert.equal(bytes(first)[1], initialBytes[1], 'The large report buffer is reused.');
+  const publicValue = host.capabilityStatus();
+  const capabilityName = Object.keys(first.capabilities)[0];
+  publicValue.capabilities[capabilityName] = 'edited';
+  publicValue.capabilityReport.modules.length = 0;
+  assert.equal(host.capabilityStatus().capabilities[capabilityName], first.capabilities[capabilityName]);
+  assert.ok(host.capabilityStatus().capabilityReport.modules.length);
+  store.revision++;
+  const revised = host.capabilityStatus({ reuse: true });
+  assert.notEqual(revised, first);
+  assert.deepEqual(revised, first);
+  const registry = host.capabilities();
+  const added = registry.add({ name: 'invented-late', kind: 'provider', level: 'contract' });
+  assert.ok(host.capabilityStatus({ reuse: true }).capabilityReport.modules.some((row) => row.name === added.name));
+  added.reason = 'Edited without a store revision';
+  assert.equal(
+    host.capabilityStatus({ reuse: true }).capabilityReport.modules.find((row) => row.name === added.name).reason,
+    added.reason,
+  );
+  assert.equal(
+    first.capabilityReport.modules.some((row) => row.name === added.name),
+    false,
+  );
+});
 
 test('close runs backend, organization, Dataverse API and managed identity in that order', async (t) => {
   const { host } = await composed(t);
@@ -122,8 +160,96 @@ test('close runs backend, organization, Dataverse API and managed identity in th
   spy('organization', organization);
   spy('api', host.dataverse);
   spy('managed-identity', host.managedIdentity);
+  // The connector runtime is the host's providers.connectors: closeProviders closes it as the last step.
+  spy('providers', host.connectors);
+  // The trace store is frozen, so its close is recorded through the cancel of the capture it closes.
+  await openNeverEndingCapture(host.traces, () => order.push('traces'));
   await host.close();
-  assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity']);
+  assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity', 'traces', 'providers']);
+});
+
+// A fake answer whose clone is the stream the capture reads; the caller never reads the answer itself.
+function openBodyAnswer(clone) {
+  return {
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': 'text/plain' }),
+    body: new ReadableStream(),
+    clone: () => ({ body: clone }),
+  };
+}
+
+test('closing the host cancels an open capture of a body that never ends', async (t) => {
+  const { host } = await composed(t);
+  const cancelled = await openNeverEndingCapture(host.traces);
+  await host.close();
+  assert.equal(cancelled(), true, 'the host close cancels the body its capture reads');
+});
+
+// Opens a capture of a body that never ends in `traces` and resolves once the capture reads it; the returned function
+// reports whether that body has been cancelled, and onCancel runs when it is.
+async function openNeverEndingCapture(traces, onCancel = () => {}) {
+  traces.configure({ level: 'full' });
+  let readStarted;
+  const started = new Promise((resolve) => {
+    readStarted = resolve;
+  });
+  let cancelled = false;
+  const clone = new ReadableStream(
+    {
+      pull() {
+        readStarted();
+        return new Promise(() => {});
+      },
+      cancel() {
+        cancelled = true;
+        onCancel();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  await tracedFetch(traces, { url: 'http://127.0.0.1/never-ends', fetch: async () => openBodyAnswer(clone) });
+  await started;
+  return () => cancelled;
+}
+
+test('closing a host that was given its trace store leaves the open captures of the store owner running', async (t) => {
+  const parent = await composed(t);
+  const persona = await composed(t, { traces: parent.host.traces });
+  const cancelled = await openNeverEndingCapture(parent.host.traces);
+  await persona.host.close();
+  assert.equal(cancelled(), false, 'closing a host that does not own the store leaves the owner capture running');
+  await parent.host.close();
+  assert.equal(cancelled(), true, 'closing the owning host cancels the capture it opened');
+});
+
+test('a host close whose backend close rejects is retried by the next close, and a fulfilled close is not repeated', async (t) => {
+  const { host } = await composed(t);
+  await host.createBackend();
+  const realClose = host.backend.close.bind(host.backend);
+  let backendCloses = 0;
+  host.backend.close = async () => {
+    backendCloses += 1;
+    if (backendCloses === 1) throw new Error('Invented backend close failure');
+    return realClose();
+  };
+  await assert.rejects(host.close(), AggregateError);
+  await host.close();
+  await host.close();
+  assert.equal(backendCloses, 2, 'the rejected close is retried once, and the fulfilled one is not run again');
+});
+
+test('concurrent host closes share one backend close', async (t) => {
+  const { host } = await composed(t);
+  await host.createBackend();
+  const realClose = host.backend.close.bind(host.backend);
+  let backendCloses = 0;
+  host.backend.close = async () => {
+    backendCloses += 1;
+    return realClose();
+  };
+  await Promise.all([host.close(), host.close()]);
+  assert.equal(backendCloses, 1);
 });
 
 test('the operation catalogue is memoised on an unchanged store revision and rebuilt after a commit', async (t) => {
@@ -138,7 +264,7 @@ test('the operation catalogue is memoised on an unchanged store revision and reb
 });
 
 test('host clock and ids reach the store and the organization in the standalone host', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-clock-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-clock-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(
@@ -165,4 +291,21 @@ test('host clock and ids reach the store and the organization in the standalone 
   assert.equal(sim.organization.clock(), start);
   clock.advance(1000);
   assert.equal(sim.organization.clock(), start + 1000);
+});
+
+test("the host's trace store dates spans by the runtime's clock and times them by its own", async (t) => {
+  const start = Date.parse('2026-03-01T00:00:00.000Z');
+  const clock = fixedClock(start);
+  const store = await new DataStore({ state: emptyState(), clock }).init();
+  const { host } = await composed(t, { store });
+  host.traces.configure({ level: 'summary' });
+  const span = host.traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+  clock.advance(86_400_000);
+  span.end();
+  // The Health timeline compares span dates with runtime.startedAt, so both come from the runtime's clock.
+  assert.equal(host.traces.span(span.spanId).startedAt, new Date(start).toISOString());
+  assert.equal(host.startedAt, start);
+  // A day on the runtime's clock passed while the span ran for an instant: its duration is the real one.
+  const { durationMs } = host.traces.span(span.spanId);
+  assert.ok(durationMs >= 0 && durationMs < 86_400_000, String(durationMs));
 });

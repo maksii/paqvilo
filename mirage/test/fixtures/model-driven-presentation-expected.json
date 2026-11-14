@@ -1,0 +1,224 @@
+[
+  {
+    "id": "form.type",
+    "value": 1
+  },
+  {
+    "id": "form.newId",
+    "value": ""
+  },
+  {
+    "id": "form.entityMatchesInput",
+    "value": true
+  },
+  {
+    "id": "control.type.quantity",
+    "value": "standard"
+  },
+  {
+    "id": "control.type.email",
+    "value": "standard"
+  },
+  {
+    "id": "control.type.choice",
+    "value": "optionset"
+  },
+  {
+    "id": "control.type.multi",
+    "value": "multiselectoptionset"
+  },
+  {
+    "id": "control.type.boolean",
+    "value": "standard"
+  },
+  {
+    "id": "control.type.date",
+    "value": "standard"
+  },
+  {
+    "id": "control.type.lookup",
+    "value": "lookup"
+  },
+  {
+    "id": "form.primaryValue",
+    "value": "Draft presentation proof"
+  },
+  {
+    "id": "dirty.email.baseline",
+    "value": false
+  },
+  {
+    "id": "dirty.email.edited",
+    "value": true
+  },
+  {
+    "id": "dirty.entity.edited",
+    "value": true
+  },
+  {
+    "id": "dirty.data.edited",
+    "value": true
+  },
+  {
+    "id": "dirty.email.restored",
+    "value": false
+  },
+  {
+    "id": "control.label.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "control.label.readback",
+    "value": "Invented quantity"
+  },
+  {
+    "id": "control.disabled.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "control.disabled.readback",
+    "value": true
+  },
+  {
+    "id": "control.enabled.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "control.enabled.readback",
+    "value": false
+  },
+  {
+    "id": "control.hidden.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "control.hidden.readback",
+    "value": false
+  },
+  {
+    "id": "control.visible.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "control.visible.readback",
+    "value": true
+  },
+  {
+    "id": "control.parentIsSection",
+    "value": true
+  },
+  {
+    "id": "section.parentIsTab",
+    "value": true
+  },
+  {
+    "id": "tab.label.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "tab.label.readback",
+    "value": "Invented tab"
+  },
+  {
+    "id": "section.label.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "section.label.readback",
+    "value": "Invented section"
+  },
+  {
+    "id": "section.hidden.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "section.hidden.readback",
+    "value": false
+  },
+  {
+    "id": "section.visible.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "section.visible.readback",
+    "value": true
+  },
+  {
+    "id": "tab.hidden.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "tab.hidden.readback",
+    "value": false
+  },
+  {
+    "id": "tab.visible.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "tab.visible.readback",
+    "value": true
+  },
+  {
+    "id": "control.notification.set",
+    "value": true
+  },
+  {
+    "id": "control.notification.clear",
+    "value": true
+  },
+  {
+    "id": "control.notification.clearMissing",
+    "value": false
+  },
+  {
+    "id": "form.notification.set.INFO",
+    "value": true
+  },
+  {
+    "id": "form.notification.clear.INFO",
+    "value": true
+  },
+  {
+    "id": "form.notification.set.WARNING",
+    "value": true
+  },
+  {
+    "id": "form.notification.clear.WARNING",
+    "value": true
+  },
+  {
+    "id": "form.notification.set.ERROR",
+    "value": true
+  },
+  {
+    "id": "form.notification.clear.ERROR",
+    "value": true
+  },
+  {
+    "id": "form.notification.clearMissing",
+    "value": false
+  }
+]

@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { whenJobSettled } from './dataverse-async.mjs';
 import { readSolutionZip, parseSchemaDocument } from './solution-schema.mjs';
 import { parseSolutionXml, child, childText, labelsOf, pickLabel } from './solution-xml.mjs';
 import { createTable, createColumn, createKey, updateTable, activateKey } from './dataverse-metadata-tables.mjs';
@@ -41,13 +42,20 @@ import {
   entriesOfSolution,
   holdingArchive,
   assertStageable,
+  baseMissingError,
+  dropHoldingMarkers,
+  reserveImportJobId,
+  releaseImportJobId,
   metadataIdOf,
   componentsOf,
   addMemberRows,
 } from './dataverse-solution-messages.mjs';
+import { markStagedUpgrades } from './state-migration.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { securityDefinitions, mergeInventory } from './solution-inventory.mjs';
-import { importSolutionSecurity } from './dataverse-security.mjs';
+import { importSolutionSecurity, ownerColumns } from './dataverse-security.mjs';
+import { nextRowVersion } from './dataverse-changes.mjs';
+import { isoUtc } from './dataverse-values.mjs';
 import {
   createOneToMany,
   createManyToMany,
@@ -62,6 +70,7 @@ import {
   layerStack,
   activeOnTop,
   projectManagedFlags,
+  DEFAULT_SOLUTION,
 } from './dataverse-metadata-relationships.mjs';
 
 const DEFAULT_LCID = 1033;
@@ -233,7 +242,7 @@ const el = (name, text) =>
 const nilEl = (name, text) =>
   text === undefined || text === null || text === '' ? `<${name} xsi:nil="true" />` : `<${name}>${esc(text)}</${name}>`;
 const XSI = 'http://www.w3.org/2001/XMLSchema-instance';
-const ORG_VERSION = '9.2.0.0'; // the simulated organization's version, as the export header states it
+const ORG_VERSION = '9.2.0.0'; // NOSONAR: version string, not a network target; the simulated organization's version as the export header states it
 const labelRows = (tag, labels, row) =>
   `<${tag}>${Object.entries(labels ?? {})
     .map(([code, text]) => `<${row} description="${esc(text)}" languagecode="${esc(code)}" />`)
@@ -284,7 +293,9 @@ function attributeXml(name, field, primary) {
   const options = f.optionSet?.options ?? [];
   const optionXml =
     !setName && options.length
-      ? `<optionset Name="${esc(f.schemaName ?? name)}"><options>${options.map((o) => `<option value="${Number(o.value)}">${labelRows('labels', o.labels, 'label')}</option>`).join('')}</options></optionset>`
+      ? `<optionset Name="${esc(f.schemaName ?? name)}"><options>${options
+          .map((o) => '<option value="' + Number(o.value) + '">' + labelRows('labels', o.labels, 'label') + '</option>')
+          .join('')}</options></optionset>`
       : '';
   // Member order as a Dataverse export writes it: Type, Name, LogicalName, RequiredLevel, DisplayMask, IsCustomField, the labels,
   // then Format, Behavior, MaxLength, MinValue, MaxValue and the option set. Accuracy stays (the reader takes it for precision).
@@ -338,10 +349,8 @@ function entityXml(mapping, logical, names) {
     el('TableType', mapping.tableType ?? dm.TableType),
     el('DataSourceId', dm.DataSourceId),
     el('DataProviderId', dm.DataProviderId),
-    typeof dm.ChangeTrackingEnabled === 'boolean' ? el('ChangeTrackingEnabled', dm.ChangeTrackingEnabled ? 1 : 0) : '',
-    typeof dm.IsOptimisticConcurrencyEnabled === 'boolean'
-      ? el('IsOptimisticConcurrencyEnabled', dm.IsOptimisticConcurrencyEnabled ? 1 : 0)
-      : '',
+    optionalBooleanXml(dm.ChangeTrackingEnabled, 'ChangeTrackingEnabled'),
+    optionalBooleanXml(dm.IsOptimisticConcurrencyEnabled, 'IsOptimisticConcurrencyEnabled'),
     el('OwnershipTypeMask', mapping.ownership ?? 'OrganizationOwned'),
     el('IsActivity', dm.IsActivity === true ? 1 : 0),
     el('HasRelatedNotes', dm.HasNotes === true ? 1 : 0),
@@ -419,10 +428,15 @@ function relationshipFactsXml(rel) {
       isManaged: 'IsManaged',
       isCustomRelationship: 'IsCustomRelationship',
       isValidForAdvancedFind: 'IsValidForAdvancedFind',
-    }).map(([key, name]) => (typeof rel[key] === 'boolean' ? el(name, rel[key] ? 1 : 0) : '')),
+    }).map(([key, name]) => optionalBooleanXml(rel[key], name)),
     el('RelationshipBehavior', rel.relationshipBehavior),
     el('SecurityTypes', rel.securityTypes),
   ].join('');
+}
+
+function optionalBooleanXml(value, name) {
+  if (typeof value !== 'boolean') return '';
+  return el(name, value ? 1 : 0);
 }
 
 function menuXml(menu) {
@@ -431,12 +445,28 @@ function menuXml(menu) {
     el('NavPaneDisplayOption', menu.behavior),
     el('NavPaneArea', menu.group),
     el('NavPaneOrder', menu.order),
-    typeof menu.isCustomizable === 'boolean' ? el('IsCustomizable', menu.isCustomizable ? 1 : 0) : '',
+    optionalBooleanXml(menu.isCustomizable, 'IsCustomizable'),
     menu.labels ? labelRows('CustomLabels', menu.labels, 'CustomLabel') : '',
   ].join('');
 }
 
 function optionSetXml(set) {
+  const renderOption = (option) => {
+    let external = '';
+    if (option.externalValue !== undefined) external = ' ExternalValue="' + esc(option.externalValue) + '"';
+    let hidden = '';
+    if (option.isHidden !== undefined) hidden = ' IsHidden="' + (option.isHidden ? 1 : 0) + '"';
+    return (
+      '<option value="' +
+      Number(option.value) +
+      '"' +
+      external +
+      hidden +
+      '>' +
+      labelRows('labels', option.labels, 'label') +
+      '</option>'
+    );
+  };
   return `<optionset Name="${esc(set.name)}">${[
     el('OptionSetType', 'picklist'),
     el('IsGlobal', 1),
@@ -444,11 +474,50 @@ function optionSetXml(set) {
     el('IntroducedVersion', set.introducedVersion),
     labelRows('displaynames', set.displayLabels, 'displayname'),
     labelRows('Descriptions', set.descriptionLabels, 'Description'),
-    `<options>${(set.options ?? []).map((o) => `<option value="${Number(o.value)}"${o.externalValue === undefined ? '' : ` ExternalValue="${esc(o.externalValue)}"`}${o.isHidden === undefined ? '' : ` IsHidden="${o.isHidden ? 1 : 0}"`}>${labelRows('labels', o.labels, 'label')}</option>`).join('')}</options>`,
+    `<options>${(set.options ?? []).map(renderOption).join('')}</options>`,
   ].join('')}</optionset>`;
 }
 
 const XML_HEAD = '<?xml version="1.0" encoding="utf-8"?>';
+
+function addSolutionArchiveComponent(
+  state,
+  entry,
+  intersect,
+  attributes,
+  { roots, entities, relationships, optionSets },
+) {
+  const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? '')}`;
+  if (intersect.seen.has(key)) return;
+  intersect.seen.add(key);
+  if (entry.kind === 'entity') {
+    const mapping = state.mappings?.[entry.logical];
+    if (!mapping || intersect.tables.has(entry.logical)) return;
+    const members = attributes.get(lower(entry.logical)) ?? [];
+    const primary = lower(mapping.nameColumn ?? '');
+    entities.push(
+      entityXml(mapping, entry.logical, primary && !members.includes(primary) ? [primary, ...members] : members),
+    );
+    roots.push(`<RootComponent type="1" schemaName="${esc(entry.logical)}" behavior="0" />`);
+  } else if (entry.kind === 'relationship') {
+    const sides = relationshipSides(state, entry.name);
+    if (!sides.length) return;
+    relationships.push(relationshipXml(state, entry.name, sides));
+    roots.push(`<RootComponent type="10" schemaName="${esc(entry.name)}" behavior="0" />`);
+  } else if (entry.kind === 'optionset') {
+    const set = state.dataverse?.globalOptionSets?.[entry.logical];
+    if (!set) return;
+    optionSets.push(optionSetXml(set));
+    roots.push(`<RootComponent type="9" schemaName="${esc(set.name)}" behavior="0" />`);
+  }
+}
+
+function addSolutionMemberRoots(state, solutionId, roots) {
+  for (const member of state.tables.solutioncomponent ?? []) {
+    if (!sameGuid(member.solutionid, solutionId) || ![26, 29, 60, 61, 62, 80].includes(member.componenttype)) continue;
+    roots.push(`<RootComponent type="${member.componenttype}" id="{${esc(member.objectid)}}" behavior="0" />`);
+  }
+}
 
 // The archive for one solution: its components as recorded by the metadata writes that named it.
 function buildSolutionArchive(state, row, { managed = false } = {}) {
@@ -470,44 +539,22 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
     relationships = [],
     optionSets = [];
   const seen = new Set();
-  for (const entry of entries) {
-    const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? '')}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (entry.kind === 'entity') {
-      const mapping = state.mappings?.[entry.logical];
-      if (!mapping || intersect.has(entry.logical)) continue; // an intersect table is written by its relationship
-      // The primary name column always travels with its table: the import reads the table's primary name from the archive.
-      const members = attributes.get(lower(entry.logical)) ?? [];
-      const primary = lower(mapping.nameColumn ?? '');
-      entities.push(
-        entityXml(mapping, entry.logical, primary && !members.includes(primary) ? [primary, ...members] : members),
-      );
-      roots.push(`<RootComponent type="1" schemaName="${esc(entry.logical)}" behavior="0" />`);
-    } else if (entry.kind === 'relationship') {
-      const sides = relationshipSides(state, entry.name);
-      if (!sides.length) continue;
-      relationships.push(relationshipXml(state, entry.name, sides));
-      roots.push(`<RootComponent type="10" schemaName="${esc(entry.name)}" behavior="0" />`);
-    } else if (entry.kind === 'optionset') {
-      const set = state.dataverse?.globalOptionSets?.[entry.logical];
-      if (!set) continue;
-      optionSets.push(optionSetXml(set));
-      roots.push(`<RootComponent type="9" schemaName="${esc(set.name)}" behavior="0" />`);
-    }
-  }
-  for (const member of state.tables.solutioncomponent ?? []) {
-    if (!sameGuid(member.solutionid, row.solutionid) || ![26, 29, 60, 61, 62, 80].includes(member.componenttype))
-      continue;
-    roots.push(`<RootComponent type="${member.componenttype}" id="{${esc(member.objectid)}}" behavior="0" />`);
-  }
+  const uniqueEntries = { seen, tables: intersect };
+  for (const entry of entries)
+    addSolutionArchiveComponent(state, entry, uniqueEntries, attributes, {
+      roots,
+      entities,
+      relationships,
+      optionSets,
+    });
+  addSolutionMemberRoots(state, row.solutionid, roots);
   // The root attributes, the SolutionManifest members (Publisher members too) and MissingDependencies are as a Dataverse export
   // writes them. MissingDependencies stays empty: no dependency is computed at export (RetrieveMissingDependencies does that).
   const manifest = `${XML_HEAD}<ImportExportXml version="9.2.0.0" SolutionPackageVersion="9.2" languagecode="${DEFAULT_LCID}" generatedBy="Mirage" xmlns:xsi="${XSI}" OrganizationVersion="${ORG_VERSION}" OrganizationSchemaType="Standard" CRMServerServiceabilityVersion="${ORG_VERSION}"><SolutionManifest>${[
     el('UniqueName', row.uniquename),
     labelRows('LocalizedNames', { [DEFAULT_LCID]: row.friendlyname ?? row.uniquename }, 'LocalizedName'),
     labelRows('Descriptions', row.description ? { [DEFAULT_LCID]: row.description } : {}, 'Description'),
-    el('Version', row.version ?? '1.0.0.0'),
+    el('Version', row.version ?? '1.0.0.0'), // NOSONAR: version string or loopback address, not a network target
     el('Managed', managed ? 1 : 0),
     `<Publisher>${[
       el('UniqueName', publisher?.uniquename ?? 'mirage'),
@@ -572,7 +619,8 @@ function readArchive(base64) {
     const bytes = Buffer.from(base64, 'base64');
     assetEntries = readSolutionAssetEntries(bytes);
     docs = readSolutionZip(bytes);
-  } catch (_error) {
+  } catch (_error) /* NOSONAR: error intentionally ignored */ {
+    // Invalid archive details are intentionally hidden behind the stable bad-zip response.
     throw new DataError(
       'The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.',
       400,
@@ -617,7 +665,7 @@ function readArchive(base64) {
   archive.solution = {
     uniqueName: archive.manifest.solution.uniqueName,
     friendlyName: pickLabel(labelsOf(child(manifest, 'LocalizedNames')), DEFAULT_LCID),
-    version: archive.manifest.solution.version ?? '1.0.0.0',
+    version: archive.manifest.solution.version ?? '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
     managed: archive.manifest.solution.managed === '1',
     description: pickLabel(labelsOf(child(manifest, 'Descriptions')), DEFAULT_LCID),
     publisher: {
@@ -680,7 +728,7 @@ function entityBody(entity, attributes) {
   const primaryFact =
     entity.attributes.find((a) => a.name === entity.primaryNameAttribute) ??
     entity.attributes.find((a) => a.isPrimaryName);
-  if (!primaryFact || primaryFact.type !== 'nvarchar')
+  if (primaryFact?.type !== 'nvarchar')
     throw invalid(`The table ${entity.logicalName} has no text primary name column.`);
   const primary = attributeBody(primaryFact, true);
   const others = attributes.filter((a) => a.name !== primaryFact.name).map((a) => attributeBody(a, false));
@@ -760,33 +808,17 @@ const entityLayerBody = (entity) => ({
 // columns with their definition, keys and relationships for ownership. The
 // incoming definition becomes active when this solution's layer is the top managed layer and no unmanaged customization sits on
 // top; OverwriteUnmanagedCustomizations governs only that unmanaged customization (replaced with it, kept on top without it).
-function apply(api, archive, { overwrite, origin, version, caller }, log) {
-  const { store } = api;
-  const state = store.state;
-  const c = { api, origin, version, headers: {}, caller };
-  const members = [];
-  const layers = [];
-  const managed = archive.solution.managed === true;
-  // The solution's own id when it is already installed (an update replaces its layer in place); a new solution's entries get
-  // their id in recordSolution.
-  const ownId =
-    (state.tables.solution ?? []).find((s) => lower(s.uniquename) === lower(archive.solution.uniqueName))?.solutionid ??
-    null;
-  // An existing component without a managed stack is an unmanaged definition; with one, the customization above the stack counts.
-  const unmanagedOnTop = (kind, logical, name = null) => {
-    const layer = managedLayerOf(api, kind, logical, name);
-    return layerStack(layer).length ? activeOnTop(api, layer) : true;
-  };
-  // This import's layer is the top managed layer: pushed on top, or its own entry already the top one.
-  const becomesTop = (kind, logical, name = null) => {
-    const stack = layerStack(managedLayerOf(api, kind, logical, name));
-    const at = ownId ? stack.findIndex((entry) => lower(entry.solutionid) === lower(ownId)) : -1;
-    return at === -1 || at === stack.length - 1;
-  };
-  // Whether an existing definition is replaced by the incoming one.
-  const replaces = (kind, logical, name = null) =>
-    managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite;
-  for (const set of archive.optionSets) {
+function copyOptionSetFacts(set, stored) {
+  for (const key of ['introducedVersion', 'isCustomizable', 'externalTypeName', 'parentOptionSetName'])
+    if (set[key] !== undefined) stored[key] = structuredClone(set[key]);
+  for (const option of stored.options) {
+    const source = set.options.find((item) => item.value === option.value);
+    for (const key of ['externalValue', 'isHidden']) if (source?.[key] !== undefined) option[key] = source[key];
+  }
+}
+
+function applyOptionSets(api, state, optionSets, log, members) {
+  for (const set of optionSets) {
     const existing = Object.keys(state.dataverse?.globalOptionSets ?? {}).some(
       (name) => lower(name) === lower(set.name),
     );
@@ -796,146 +828,204 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       // The metadata writer validates the supported writable contract; exported source facts
       // also survive transport without treating read-only metadata as API create parameters.
       const stored = state.dataverse.globalOptionSets[set.name];
-      for (const key of ['introducedVersion', 'isCustomizable', 'externalTypeName', 'parentOptionSetName'])
-        if (set[key] !== undefined) stored[key] = structuredClone(set[key]);
-      for (const option of stored.options) {
-        const source = set.options.find((item) => item.value === option.value);
-        for (const key of ['externalValue', 'isHidden']) if (source?.[key] !== undefined) option[key] = source[key];
-      }
+      copyOptionSetFacts(set, stored);
       log.push({ kind: 'optionset', name: set.name, action: 'created' });
     }
     members.push({ kind: 'optionset', logical: set.name, name: null, created: !existing });
   }
-  const intersects = new Set(
-    archive.relationships.filter((r) => r.type === 'many-to-many').map((r) => r.intersectEntity),
-  );
-  for (const entity of archive.entities) {
-    if (entity.isIntersect || intersects.has(entity.logicalName)) continue;
-    const logical = entity.logicalName;
-    const attributes = importableAttributes(entity);
-    const key = `LogicalName='${logical}'`;
-    const existed = state.mappings[logical] !== undefined;
-    const outcome = new Map(attributes.map((a) => [a.name, 'created'])); // a new table's columns are created with it
-    const tableReplaced =
-      existed &&
-      managed &&
-      replaces('entity', logical) &&
-      state.mappings[logical].dataverseMetadata?.createdByMetadataApi === true;
-    if (!existed) {
-      createTable(c, entityBody(entity, attributes)); // grants the table's privileges too
-      log.push({ kind: 'entity', name: logical, action: 'created' });
-    } else {
-      if (tableReplaced) updateTable(c, key, entityLayerBody(entity));
-      log.push({ kind: 'entity', name: logical, action: tableReplaced ? 'overwritten' : 'kept' });
-      const mapping = state.mappings[logical];
-      for (const a of attributes) {
-        const exists = Object.hasOwn(mapping.fields ?? {}, a.name);
-        if (exists && !replaces('attribute', logical, a.name)) {
-          outcome.set(a.name, 'kept');
-          log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: 'kept' });
-          continue;
-        }
-        if (exists) delete mapping.fields[a.name]; // overwrite: the solution's definition replaces the unmanaged one; row values stay
-        createColumn(c, key, attributeBody(a, false));
-        outcome.set(a.name, exists ? 'overwritten' : 'created');
-        log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: exists ? 'overwritten' : 'created' });
-      }
-    }
-    members.push({ kind: 'entity', logical, name: null, created: !existed });
-    const mapping = state.mappings[logical];
-    if (!existed || overwrite) {
-      if (entity.tableType !== undefined) mapping.tableType = entity.tableType;
-      if (entity.isVirtual !== undefined) mapping.isVirtual = entity.isVirtual;
-      for (const [source, property] of Object.entries({
-        dataSourceId: 'DataSourceId',
-        dataProviderId: 'DataProviderId',
-        changeTrackingEnabled: 'ChangeTrackingEnabled',
-        isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
-      }))
-        if (entity[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = entity[source];
-    }
-    if (!existed) {
-      if (entity.entitySetName) {
-        if (
-          Object.entries(state.mappings).some(
-            ([name, other]) => name !== logical && lower(other.entitySet) === lower(entity.entitySetName),
-          )
-        )
-          throw invalid(`The entity set ${entity.entitySetName} already exists.`);
-        mapping.entitySet = entity.entitySetName;
-      }
-      if (entity.primaryIdAttribute) mapping.idColumn = entity.primaryIdAttribute;
-    }
-    for (const source of attributes) {
-      if (outcome.get(source.name) === 'kept') continue;
-      const field = mapping.fields[source.name];
-      field.columnMetadata = { ...field.columnMetadata, ...structuredClone(source) };
-      const bucket = (((state.dataverse ??= {}).customColumns ??= {})[logical] ??= {});
-      bucket[source.name] = structuredClone(field);
-    }
-    for (const sourceKey of entity.keys ?? []) {
-      const exists = (mapping.alternateKeys ?? []).some((key) => lower(key.name) === lower(sourceKey.name));
-      if (!exists)
-        createKey(c, key, {
-          SchemaName: sourceKey.schemaName ?? sourceKey.name,
-          KeyAttributes: sourceKey.attributes,
-          DisplayName: blockOf(sourceKey.labels),
-        });
-      members.push({ kind: 'key', logical, name: sourceKey.name, created: !exists });
-    }
-    for (const a of attributes)
-      members.push({ kind: 'attribute', logical, name: a.name, created: outcome.get(a.name) === 'created' });
-    if (managed) {
-      const primary = (a) => a.name === entity.primaryNameAttribute || a.isPrimaryName === true; // the primary name column is never removed
-      const entityKept = existed && !tableReplaced && unmanagedOnTop('entity', logical);
-      layers.push({
-        kind: 'entity',
-        logical,
-        name: null,
-        body: entityLayerBody(entity),
-        customizable: entity.isCustomizable !== false,
-        applied: !existed || tableReplaced,
-        kept: entityKept,
-      });
-      for (const a of attributes.filter((x) => !primary(x))) {
-        const kept = outcome.get(a.name) === 'kept';
-        layers.push({
-          kind: 'attribute',
-          logical,
-          name: a.name,
-          body: attributeBody(a, false),
-          customizable: a.isCustomizable !== false,
-          applied: !kept,
-          kept: kept && unmanagedOnTop('attribute', logical, a.name),
-        });
-      }
-      for (const sourceKey of entity.keys ?? [])
-        layers.push({ kind: 'key', logical, name: lower(sourceKey.name), body: null, applied: true, kept: false });
-    }
+}
+
+function applyEntityTable({ c, state, entity, attributes, replaces, managed, log }) {
+  const logical = entity.logicalName;
+  const key = `LogicalName='${logical}'`;
+  const existed = state.mappings[logical] !== undefined;
+  const outcome = new Map(attributes.map((a) => [a.name, 'created']));
+  const tableReplaced =
+    existed &&
+    managed &&
+    replaces('entity', logical) &&
+    state.mappings[logical].dataverseMetadata?.createdByMetadataApi === true;
+  if (!existed) {
+    createTable(c, entityBody(entity, attributes));
+    log.push({ kind: 'entity', name: logical, action: 'created' });
+    return { existed, outcome, tableReplaced, key };
   }
-  for (const rel of archive.relationships) {
+  if (tableReplaced) updateTable(c, key, entityLayerBody(entity));
+  log.push({ kind: 'entity', name: logical, action: tableReplaced ? 'overwritten' : 'kept' });
+  const mapping = state.mappings[logical];
+  for (const a of attributes) {
+    const exists = Object.hasOwn(mapping.fields ?? {}, a.name);
+    if (exists && !replaces('attribute', logical, a.name)) {
+      outcome.set(a.name, 'kept');
+      log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: 'kept' });
+      continue;
+    }
+    if (exists) delete mapping.fields[a.name];
+    createColumn(c, key, attributeBody(a, false));
+    outcome.set(a.name, exists ? 'overwritten' : 'created');
+    log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: exists ? 'overwritten' : 'created' });
+  }
+  return { existed, outcome, tableReplaced, key };
+}
+
+function applyEntityProperties(mapping, entity) {
+  if (entity.tableType !== undefined) mapping.tableType = entity.tableType;
+  if (entity.isVirtual !== undefined) mapping.isVirtual = entity.isVirtual;
+  for (const [source, property] of Object.entries({
+    dataSourceId: 'DataSourceId',
+    dataProviderId: 'DataProviderId',
+    changeTrackingEnabled: 'ChangeTrackingEnabled',
+    isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
+  }))
+    if (entity[source] !== undefined) {
+      mapping.dataverseMetadata ??= {};
+      mapping.dataverseMetadata[property] = entity[source];
+    }
+}
+
+const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
+function assignNewEntityIdentifiers(state, mapping, entity, logical) {
+  if (entity.entitySetName) {
+    if (
+      Object.entries(state.mappings).some(
+        ([name, other]) => name !== logical && lower(other.entitySet) === lower(entity.entitySetName),
+      )
+    )
+      throw invalid(`The entity set ${entity.entitySetName} already exists.`);
+    mapping.entitySet = entity.entitySetName;
+  }
+  // The archive's primary attributes are refused here, inside the import transaction, so a rejected
+  // one leaves no table behind.
+  for (const attribute of [entity.primaryIdAttribute, entity.primaryNameAttribute])
+    if (attribute && !IDENTIFIER.test(attribute))
+      throw invalid(`The table ${logical} has an invalid primary attribute.`);
+  if (entity.primaryIdAttribute) mapping.idColumn = entity.primaryIdAttribute;
+}
+
+function copyEntityAttributeMetadata(state, mapping, logical, attributes, outcome) {
+  for (const source of attributes) {
+    if (outcome.get(source.name) === 'kept') continue;
+    const field = mapping.fields[source.name];
+    field.columnMetadata = { ...field.columnMetadata, ...structuredClone(source) };
+    state.dataverse ??= {};
+    state.dataverse.customColumns ??= {};
+    state.dataverse.customColumns[logical] ??= {};
+    state.dataverse.customColumns[logical][source.name] = structuredClone(field);
+  }
+}
+
+function applyEntityMetadata(state, entity, attributes, outcome, existed, overwrite) {
+  const logical = entity.logicalName;
+  const mapping = state.mappings[logical];
+  if (!existed || overwrite) applyEntityProperties(mapping, entity);
+  if (!existed) {
+    assignNewEntityIdentifiers(state, mapping, entity, logical);
+  }
+  copyEntityAttributeMetadata(state, mapping, logical, attributes, outcome);
+}
+
+function applyEntityKeys(c, key, mapping, entity, logical, members) {
+  for (const sourceKey of entity.keys ?? []) {
+    const exists = (mapping.alternateKeys ?? []).some((item) => lower(item.name) === lower(sourceKey.name));
+    if (!exists)
+      createKey(c, key, {
+        SchemaName: sourceKey.schemaName ?? sourceKey.name,
+        KeyAttributes: sourceKey.attributes,
+        DisplayName: blockOf(sourceKey.labels),
+      });
+    members.push({ kind: 'key', logical, name: sourceKey.name, created: !exists });
+  }
+}
+
+function applyEntityLayers({ entity, logical, attributes, outcome, existed, tableReplaced, unmanagedOnTop, layers }) {
+  const primary = (attribute) => attribute.name === entity.primaryNameAttribute || attribute.isPrimaryName === true;
+  const entityKept = existed && !tableReplaced && unmanagedOnTop('entity', logical);
+  layers.push({
+    kind: 'entity',
+    logical,
+    name: null,
+    body: entityLayerBody(entity),
+    customizable: entity.isCustomizable !== false,
+    applied: !existed || tableReplaced,
+    kept: entityKept,
+  });
+  for (const attribute of attributes.filter((item) => !primary(item))) {
+    const kept = outcome.get(attribute.name) === 'kept';
+    layers.push({
+      kind: 'attribute',
+      logical,
+      name: attribute.name,
+      body: attributeBody(attribute, false),
+      customizable: attribute.isCustomizable !== false,
+      applied: !kept,
+      kept: kept && unmanagedOnTop('attribute', logical, attribute.name),
+    });
+  }
+  for (const sourceKey of entity.keys ?? [])
+    layers.push({ kind: 'key', logical, name: lower(sourceKey.name), body: null, applied: true, kept: false });
+}
+
+function applyEntity({ c, state, entity, managed, overwrite, replaces, unmanagedOnTop, log, members, layers }) {
+  const logical = entity.logicalName;
+  const attributes = importableAttributes(entity);
+  const table = applyEntityTable({ c, state, entity, attributes, replaces, managed, log });
+  members.push({ kind: 'entity', logical, name: null, created: !table.existed });
+  const mapping = state.mappings[logical];
+  applyEntityMetadata(state, entity, attributes, table.outcome, table.existed, overwrite);
+  applyEntityKeys(c, table.key, mapping, entity, logical, members);
+  for (const attribute of attributes)
+    members.push({
+      kind: 'attribute',
+      logical,
+      name: attribute.name,
+      created: table.outcome.get(attribute.name) === 'created',
+    });
+  if (managed)
+    applyEntityLayers({
+      entity,
+      logical,
+      attributes,
+      outcome: table.outcome,
+      existed: table.existed,
+      tableReplaced: table.tableReplaced,
+      unmanagedOnTop,
+      layers,
+    });
+}
+
+function applyEntities({
+  c,
+  state,
+  entities,
+  relationships,
+  managed,
+  overwrite,
+  replaces,
+  unmanagedOnTop,
+  log,
+  members,
+  layers,
+}) {
+  const intersects = new Set(
+    relationships
+      .filter((relationship) => relationship.type === 'many-to-many')
+      .map((relationship) => relationship.intersectEntity),
+  );
+  for (const entity of entities) {
+    if (entity.isIntersect || intersects.has(entity.logicalName)) continue;
+    applyEntity({ c, state, entity, managed, overwrite, replaces, unmanagedOnTop, log, members, layers });
+  }
+}
+
+function applyRelationships(api, state, relationships, managed, log, members, layers) {
+  for (const rel of relationships) {
     const { kind, body, entity } = relationshipBodies(rel);
     const existed = relationshipSides(state, rel.schemaName).length > 0;
-    if (existed) {
-      log.push({ kind: 'relationship', name: rel.schemaName, action: 'kept' });
-    } else {
+    if (existed) log.push({ kind: 'relationship', name: rel.schemaName, action: 'kept' });
+    else {
       if (kind === 'one-to-many') createOneToMany(api, body);
       else createManyToMany(api, body);
-      for (const side of relationshipSides(state, rel.schemaName))
-        for (const key of [
-          'introducedVersion',
-          'isCustomizable',
-          'isManaged',
-          'isCustomRelationship',
-          'isValidForAdvancedFind',
-          'relationshipBehavior',
-          'securityTypes',
-          'associatedMenu',
-          'menu1',
-          'menu2',
-          'cascade',
-        ])
-          if (rel[key] !== undefined) side.rel[key] = structuredClone(rel[key]);
+      copyRelationshipFacts(relationshipSides(state, rel.schemaName), rel);
       log.push({ kind: 'relationship', name: rel.schemaName, action: 'created' });
     }
     members.push({ kind: 'relationship', logical: entity, name: rel.schemaName, created: !existed });
@@ -949,30 +1039,87 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
         kept: false,
       });
   }
-  if (managed) {
-    const stacks = ((state.dataverse ??= {}).managedLayers ??= {});
-    const seq = lastMetadataSeq(api); // the change log after the import: a later change is an active customization
-    for (const { kind, logical, name, body, customizable, applied, kept } of layers) {
-      const id = managedLayerId(api, kind, logical, name);
-      const record = (stacks[id] ??= { kind, logical, name, stack: [], activeOnTop: false, seq });
-      const stack = layerStack(record);
-      const entry = { solutionid: ownId, version: archive.solution.version ?? null, body, customizable, seq };
-      const at = ownId ? stack.findIndex((item) => lower(item.solutionid) === lower(ownId)) : -1;
-      if (at >= 0) stack[at] = entry;
-      else stack.push(entry);
-      // The incoming definition is live: nothing customizes it yet. A kept unmanaged definition stays the active layer.
-      if (applied) Object.assign(record, { activeOnTop: false, seq });
-      else if (kept) record.activeOnTop = true;
-    }
-    projectManagedFlags(api);
+}
+
+function copyRelationshipFacts(sides, rel) {
+  for (const side of sides)
+    for (const key of [
+      'introducedVersion',
+      'isCustomizable',
+      'isManaged',
+      'isCustomRelationship',
+      'isValidForAdvancedFind',
+      'relationshipBehavior',
+      'securityTypes',
+      'associatedMenu',
+      'menu1',
+      'menu2',
+      'cascade',
+    ])
+      if (rel[key] !== undefined) side.rel[key] = structuredClone(rel[key]);
+}
+
+function applyManagedLayers(api, state, archive, ownId, layers) {
+  state.dataverse ??= {};
+  state.dataverse.managedLayers ??= {};
+  const stacks = state.dataverse.managedLayers;
+  const seq = lastMetadataSeq(api);
+  for (const { kind, logical, name, body, customizable, applied, kept } of layers) {
+    const id = managedLayerId(api, kind, logical, name);
+    const record = (stacks[id] ??= { kind, logical, name, stack: [], activeOnTop: false, seq });
+    const stack = layerStack(record);
+    const entry = { solutionid: ownId, version: archive.solution.version ?? null, body, customizable, seq };
+    const at = ownId ? stack.findIndex((item) => lower(item.solutionid) === lower(ownId)) : -1;
+    if (at >= 0) stack[at] = entry;
+    else stack.push(entry);
+    if (applied) Object.assign(record, { activeOnTop: false, seq });
+    else if (kept) record.activeOnTop = true;
   }
+  projectManagedFlags(api);
+}
+
+function apply(api, archive, { overwrite, origin, version, caller }, log) {
+  const state = api.store.state;
+  const c = { api, origin, version, headers: {}, caller };
+  const members = [];
+  const layers = [];
+  const managed = archive.solution.managed === true;
+  const ownId =
+    (state.tables.solution ?? []).find((s) => lower(s.uniquename) === lower(archive.solution.uniqueName))?.solutionid ??
+    null;
+  const unmanagedOnTop = (kind, logical, name = null) => {
+    const layer = managedLayerOf(api, kind, logical, name);
+    return layerStack(layer).length ? activeOnTop(api, layer) : true;
+  };
+  const becomesTop = (kind, logical, name = null) => {
+    const stack = layerStack(managedLayerOf(api, kind, logical, name));
+    const at = ownId ? stack.findIndex((entry) => lower(entry.solutionid) === lower(ownId)) : -1;
+    return at === -1 || at === stack.length - 1;
+  };
+  const replaces = (kind, logical, name = null) =>
+    managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite;
+  applyOptionSets(api, state, archive.optionSets, log, members);
+  applyEntities({
+    c,
+    state,
+    entities: archive.entities,
+    relationships: archive.relationships,
+    managed,
+    overwrite,
+    replaces,
+    unmanagedOnTop,
+    log,
+    members,
+    layers,
+  });
+  applyRelationships(api, state, archive.relationships, managed, log, members, layers);
+  if (managed) applyManagedLayers(api, state, archive, ownId, layers);
   return members;
 }
 
-// The solution and publisher rows, created or updated, and the membership of the imported components.
-function recordSolution(api, archive, members) {
-  const { store } = api;
-  const info = archive.solution;
+// The publisher row of an imported solution: found by unique name or created, then refreshed from the archive.
+// Undefined when the archive names no publisher and none is recorded.
+function upsertPublisher(store, info) {
   const publisherRows = store.state.tables.publisher;
   let publisher = publisherRows.find((p) => lower(p.uniquename) === lower(info.publisher.uniqueName));
   if (!publisher && info.publisher.uniqueName) {
@@ -986,6 +1133,21 @@ function recordSolution(api, archive, members) {
       customizationoptionvalueprefix: info.publisher.optionValuePrefix ?? publisher.customizationoptionvalueprefix,
     });
   }
+  return publisher;
+}
+// Records a holding solution of a staged upgrade against its base (the marker holdingOf reads).
+function recordHoldingBase(dv, solutions, holdingFor, solutionId) {
+  const base = solutions.find((s) => lower(s.uniquename) === lower(holdingFor) && s.parentsolutionid == null);
+  if (!base) throw baseMissingError(holdingFor);
+  dv.holdingSolutions ??= {};
+  dv.holdingSolutions[solutionId] = base.solutionid;
+}
+
+// The solution and publisher rows, created or updated, and the membership of the imported components.
+function recordSolution(api, archive, members) {
+  const { store } = api;
+  const info = archive.solution;
+  const publisher = upsertPublisher(store, info);
   const solutions = store.state.tables.solution;
   let row = solutions.find((s) => lower(s.uniquename) === lower(info.uniqueName));
   if (!row) {
@@ -1018,6 +1180,7 @@ function recordSolution(api, archive, members) {
   const origin = (dv.componentOrigin ??= {});
   for (const member of members)
     if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
+  if (archive.holdingFor) recordHoldingBase(dv, solutions, archive.holdingFor, row.solutionid);
   for (const layer of Object.values(dv.managedLayers ?? {}))
     for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
   return row;
@@ -1027,7 +1190,8 @@ function importLogXml(solution, log, error) {
   const rows = log
     .map((item) => `<Item kind="${esc(item.kind)}" name="${esc(item.name)}" action="${esc(item.action)}" />`)
     .join('');
-  return `${XML_HEAD}<ImportLog solution="${esc(solution)}"${error ? ' result="failed"' : ' result="succeeded"'}>${rows}${error ? `<Error>${esc(error)}</Error>` : ''}</ImportLog>`;
+  const errorXml = (value) => (value ? '<Error>' + esc(value) + '</Error>' : '');
+  return `${XML_HEAD}<ImportLog solution="${esc(solution)}"${error ? ' result="failed"' : ' result="succeeded"'}>${rows}${errorXml(error)}</ImportLog>`;
 }
 
 // The importjob row: created when the import starts (startedon), completed with its log and progress.
@@ -1051,6 +1215,26 @@ function writeJob(api, { jobId, archive, log, error, progress }) {
   return row;
 }
 
+// An imported row is stamped the way a platform import stamps it. A new row keeps the createdon and modifiedon the payload
+// supplies (each takes the import time only when the payload leaves it out), and a user-owned row is owned by the importing
+// user. An existing row takes the import time as its modifiedon, whatever the payload says. Every row takes the store's next
+// row version, so a versionnumber in the payload is never kept.
+export function stampImportedRow(store, caller, row, mapping, { existing }) {
+  const now = isoUtc(store.clock.now());
+  if (existing) {
+    row.modifiedon = now;
+  } else {
+    row.createdon ??= now;
+    row.modifiedon ??= now;
+    if (mapping.ownership === 'UserOwned' && caller?.systemuserid) {
+      const owner = ownerColumns(store, { id: caller.systemuserid, logical_name: 'systemuser' });
+      for (const [name, value] of Object.entries(owner)) row[name] ??= value;
+    }
+  }
+  row.versionnumber = nextRowVersion(store);
+  return row;
+}
+
 // Runs one import in one isolated transaction. A throw discards the components and rewinds the change log; the import job
 // row records the failure in its own transaction, so the log of a failed run stays readable.
 async function importArchive(api, archive, { overwrite, jobId, origin, version, caller }) {
@@ -1071,17 +1255,20 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
             mergeInventory((archive.inventory ?? []).map((record) => ({ ...record, solution: name }))),
             { managed: archive.solution.managed === true ? new Set([lower(name)]) : new Set() },
           );
-          if (security.securityRoles.length || security.fieldSecurityProfiles.length)
-            (api.store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(
+          if (security.securityRoles.length || security.fieldSecurityProfiles.length) {
+            api.store.state.dataverse ??= {};
+            api.store.state.dataverse.securityDiagnostics = importSolutionSecurity(
               api.store,
               api.settings.organizationId,
               security,
               { solutionId: solution.solutionid },
             );
+          }
           applySolutionPayloads(api.store.state, solution.solutionid, archive.payloadComponents ?? [], {
             overwrite,
             definitionOf: standardTableDef,
             entityId: (logical) => metadataIdOf(api, 'entity', logical),
+            stamp: (row, mapping, options) => stampImportedRow(api.store, caller, row, mapping, options),
           });
           writeJob(api, { jobId, archive, log, progress: 100 });
         },
@@ -1103,27 +1290,51 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
 
 // ---- The module
 
-// Resolves with the asyncoperation row once it is Completed (statecode 3), for tests and tools that wait on an ImportSolutionAsync run.
-export async function solutionImportJob(api, asyncId, { timeoutMs = 10000 } = {}) {
-  const until = Date.now() + timeoutMs;
-  for (;;) {
-    const row = rowsOf(api.store, 'asyncoperation').find((r) => sameGuid(r.asyncoperationid, asyncId));
-    if (row?.statecode === 3) return row;
-    if (Date.now() > until) throw new Error(`Import ${asyncId} did not complete within ${timeoutMs} ms.`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+// Resolves with the asyncoperation row once the job is Completed (statecode 3) with any status, for tests and tools that wait
+// on an ImportSolutionAsync run. There is no deadline: the completion signal comes from the job's own writes.
+export function solutionImportJob(api, asyncId) {
+  return whenJobSettled(api.store, asyncId);
 }
 
-// The archive an import writes: a HoldingSolution import stages the upgrade (holdingArchive) after its checks pass (assertStageable).
+// An import updates an installed solution of the same unique name only when both are managed or both are
+// unmanaged. The Default solution is exempt. The 0x80048041 code and message are documented; the 400 status is a guess.
+function assertModesMatch(store, archive) {
+  const name = archive.solution.uniqueName;
+  if (lower(name) === lower(DEFAULT_SOLUTION)) return;
+  const installed = rowsOf(store, 'solution').find(
+    (s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null,
+  );
+  if (installed && (installed.ismanaged === true) !== archive.solution.managed)
+    throw new DataError(
+      'Import can only update solutions when the modes match. Uninstall the current solution and try again.',
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80048041' },
+    );
+}
+// The archive an import writes. A HoldingSolution import stages the upgrade (holdingArchive) after its checks pass
+// (assertStageable). Any other import first checks its mode against the installed solution (assertModesMatch).
 function stagedArchive(api, archive, body) {
-  if (body.HoldingSolution !== true) return archive;
+  if (body.HoldingSolution !== true) {
+    assertModesMatch(api.store, archive);
+    return archive;
+  }
   assertStageable(api.store, archive);
   return holdingArchive(archive);
 }
 
 export function install(api) {
   seedMappings(api.store);
+  markStagedUpgrades(api.store.state);
   const { store } = api;
+  // A solution row deleted through the record pipeline (a Web API delete or a bulk delete) takes the holding markers that name
+  // it. Inside a transaction the drop waits for the commit, so a rolled-back delete keeps its markers.
+  api.recordHooks.add('afterWrite', (_c, mapping, { operation, id }) => {
+    if (mapping.logicalName !== 'solution' || operation !== 'delete') return;
+    const removed = new Set([lower(id)]);
+    if (store.inTransaction()) store.onCommit(() => dropHoldingMarkers(store, removed));
+    else dropHoldingMarkers(store, removed);
+  });
   installSolutionMessages(api, {
     readArchive,
     importArchive: (archive, options) => importArchive(api, archive, options),
@@ -1184,14 +1395,18 @@ export function install(api) {
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-      await importArchive(api, target, {
-        overwrite: body.OverwriteUnmanagedCustomizations === true,
-        jobId,
-        origin: ctx.origin,
-        version: ctx.version,
-        caller: ctx.caller,
-      });
+      const jobId = reserveImportJobId(store, body.ImportJobId);
+      try {
+        await importArchive(api, target, {
+          overwrite: body.OverwriteUnmanagedCustomizations === true,
+          jobId,
+          origin: ctx.origin,
+          version: ctx.version,
+          caller: ctx.caller,
+        });
+      } finally {
+        releaseImportJobId(store, jobId);
+      }
       return undefined; // 204 No Content
     },
   };
@@ -1217,28 +1432,33 @@ export function install(api) {
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
+      const jobId = reserveImportJobId(store, body.ImportJobId);
       const overwrite = body.OverwriteUnmanagedCustomizations === true;
-      await api.change(() =>
-        api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }),
-      );
-      // The import runs as an asyncoperation job on the shared queue (dataverse-async systemJob): Ready, then Locked, then
-      // Completed with Succeeded (30) or Failed (31). The job's own error, when it fails, is the operation's message.
-      const asyncId = await api.systemJob(
-        {
-          name: `Import ${target.solution.uniqueName}`,
-          operationtype: IMPORT_SOLUTION_TYPE,
-          callerId: ctx.caller.systemuserid,
-        },
-        () =>
-          importArchive(api, target, {
-            overwrite,
-            jobId,
-            origin: ctx.origin,
-            version: ctx.version,
-            caller: ctx.caller,
-          }),
-      );
+      let asyncId;
+      try {
+        await api.change(() =>
+          api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }),
+        );
+        // The import runs as an asyncoperation job on the shared queue (dataverse-async systemJob): Ready, then Locked, then
+        // Completed with Succeeded (30) or Failed (31). The job's own error, when it fails, is the operation's message.
+        asyncId = await api.systemJob(
+          {
+            name: `Import ${target.solution.uniqueName}`,
+            operationtype: IMPORT_SOLUTION_TYPE,
+            callerId: ctx.caller.systemuserid,
+          },
+          () =>
+            importArchive(api, target, {
+              overwrite,
+              jobId,
+              origin: ctx.origin,
+              version: ctx.version,
+              caller: ctx.caller,
+            }),
+        );
+      } finally {
+        releaseImportJobId(store, jobId);
+      }
       return {
         status: 200,
         body: {
@@ -1296,5 +1516,8 @@ export function install(api) {
 }
 
 export function reset(api) {
-  api.store.transact(() => seedMappings(api.store));
+  api.store.transact(() => {
+    seedMappings(api.store);
+    markStagedUpgrades(api.store.state);
+  });
 }

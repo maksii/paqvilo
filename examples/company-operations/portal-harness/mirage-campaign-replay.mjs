@@ -15,12 +15,12 @@ import {
   validateFinalQueryObserverWitness,
 } from '../plugins/mirage-runtime.mjs';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const stable = (value) =>
+export const stable = (value) =>
   JSON.stringify(value, (_, item) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -45,23 +45,16 @@ export function frozenReplayIdentity(snapshot) {
   const assigned = snapshot.siteMemberships.filter(
     (row) => row.statecode === 0 && row._powerpagesiteid_value === snapshot.siteId,
   );
-  if (assigned.some((row) => !roles.some((role) => role.powerpagecomponentid === row.powerpagecomponentid)))
-    throw new Error('Frozen memberships do not resolve to active roles in this site.');
+  validateFrozenRoleMembership(assigned, roles);
   const defaults = roles.filter((row) => JSON.parse(row.content).authenticatedusersrole === true);
-  const roleIds = [...new Set([...assigned, ...defaults].map((row) => row.powerpagecomponentid))].sort();
+  const roleIds = [...new Set([...assigned, ...defaults].map((row) => row.powerpagecomponentid))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const actor = snapshot.actorBinding?.actor;
   if (actor && actor.contactid !== snapshot.contactId)
     throw new Error('Frozen actor binding identifies a different Contact.');
   const contact = actor ?? contacts[0];
   let account = contact._parentcustomerid_value ?? contact.parentcustomerid?.id;
   const customer = snapshot.actorBinding?.customer;
-  if (
-    customer &&
-    (customer.id !== account ||
-      !guid(customer.id) ||
-      !['account', 'contact'].includes(customer.type) ||
-      customer.row?.[customer.type + 'id'] !== customer.id)
-  )
+  if (customer && !matchesFrozenCustomer(customer, account))
     throw new Error('Frozen typed customer row does not match its actual actor lookup.');
   const annotation =
     customer?.type ??
@@ -70,21 +63,7 @@ export function frozenReplayIdentity(snapshot) {
   if (account != null && (!guid(account) || (annotation && !['account', 'contact'].includes(annotation))))
     throw new Error('Frozen customer lookup requires an Account/Contact-typed source.');
   if (annotation === 'contact') account = null;
-  if (
-    account != null &&
-    !annotation &&
-    ((snapshot.tables.account ?? []).filter((row) => row.accountid === account).length !== 1 ||
-      (snapshot.tables.contact ?? []).some((row) => row.contactid === account))
-  ) {
-    if (
-      snapshot.permissions.some(
-        (row) =>
-          row.powerpagecomponenttype === 18 && row.statecode === 0 && JSON.parse(row.content).scope === 756150002,
-      )
-    )
-      throw new Error('Account-scoped replay requires a source-qualified Account customer lookup.');
-    account = null;
-  }
+  account = qualifyFrozenAccount(snapshot, account, annotation);
   return {
     id: snapshot.contactId,
     contactId: snapshot.contactId,
@@ -93,6 +72,42 @@ export function frozenReplayIdentity(snapshot) {
     roleSource: 'memberships',
     ...(account ? { accountId: account } : {}),
   };
+}
+
+function validateFrozenRoleMembership(assigned, roles) {
+  if (assigned.some((row) => !roles.some((role) => role.powerpagecomponentid === row.powerpagecomponentid)))
+    throw new Error('Frozen memberships do not resolve to active roles in this site.');
+}
+
+function matchesFrozenCustomer(customer, account) {
+  return (
+    customer.id === account &&
+    guid(customer.id) &&
+    ['account', 'contact'].includes(customer.type) &&
+    customer.row?.[customer.type + 'id'] === customer.id
+  );
+}
+
+function hasUnqualifiedCustomerLookup(snapshot, account) {
+  return (
+    (snapshot.tables.account ?? []).filter((row) => row.accountid === account).length !== 1 ||
+    (snapshot.tables.contact ?? []).some((row) => row.contactid === account)
+  );
+}
+
+function hasActiveAccountScope(snapshot) {
+  return snapshot.permissions.some(
+    (row) => row.powerpagecomponenttype === 18 && row.statecode === 0 && JSON.parse(row.content).scope === 756150002,
+  );
+}
+
+function qualifyFrozenAccount(snapshot, account, annotation) {
+  if (account != null && !annotation && hasUnqualifiedCustomerLookup(snapshot, account)) {
+    if (hasActiveAccountScope(snapshot))
+      throw new Error('Account-scoped replay requires a source-qualified Account customer lookup.');
+    return null;
+  }
+  return account;
 }
 
 async function jsonReceipt(file, { sha256, limit = 64 * 1024 * 1024 } = {}) {
@@ -131,6 +146,24 @@ async function archiveBytes(directory, bytes) {
   const digest = sha(bytes),
     file = path.join(directory, digest + '.bin'),
     temporary = path.join(directory, digest + '.' + randomUUID() + '.tmp');
+  const verifyExisting = async (cause) => {
+    let existing;
+    try {
+      existing = await boundedBytes(file, bytes.length);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw error;
+      // A grown, replaced or unreadable archive is a changed archive, not a bounds problem of the input.
+      throw new Error('An immutable replay input archive changed.', { cause: error });
+    }
+    if (sha(existing) !== digest) throw new Error('An immutable replay input archive changed.', { cause });
+  };
+  // A resumed campaign finds most archives in place: verify them without a durable temporary copy each.
+  try {
+    await verifyExisting();
+    return { file, sha256: digest };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   await fs.mkdir(directory, { recursive: true });
   let handle;
   try {
@@ -143,8 +176,7 @@ async function archiveBytes(directory, bytes) {
       await fs.link(temporary, file);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      if (sha(await boundedBytes(file, bytes.length)) !== digest)
-        throw new Error('An immutable replay input archive changed.', { cause: error });
+      await verifyExisting(error);
     }
   } finally {
     await handle?.close();
@@ -209,7 +241,7 @@ export async function replayCells(job) {
 export function replayCellShard(id, count) {
   if (typeof id !== 'string' || !Number.isInteger(count) || count < 1 || count > 10)
     throw new Error('Replay shards require a cell ID and one to ten processes.');
-  return parseInt(sha(Buffer.from(id)).slice(0, 8), 16) % count;
+  return Number.parseInt(sha(Buffer.from(id)).slice(0, 8), 16) % count;
 }
 export async function replayRuntimeFingerprint({ archiveRoot, onArchive } = {}) {
   const toolkit = path.dirname(await fs.realpath(fileURLToPath(import.meta.resolve('paqvilo/mirage/lib/data.mjs')))),
@@ -239,14 +271,14 @@ export async function replayRuntimeFingerprint({ archiveRoot, onArchive } = {}) 
     'parity.mjs',
   ])
     files.push({ file: path.resolve(project, relative), name: 'project/' + relative.replaceAll('../', '') });
+  // Code-unit order: the digest must not depend on the host's collation locale or ICU version.
+  files.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
   const receipts = await Promise.all(
-    files
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map(async (item) => {
-        const bytes = await boundedBytes(item.file, 32 * 1024 * 1024);
-        if (archiveRoot) await archiveBytes(archiveRoot, bytes);
-        return { file: item.name, sha256: sha(bytes) };
-      }),
+    files.map(async (item) => {
+      const bytes = await boundedBytes(item.file, 32 * 1024 * 1024);
+      if (archiveRoot) await archiveBytes(archiveRoot, bytes);
+      return { file: item.name, sha256: sha(bytes) };
+    }),
   );
   const digest = sha(Buffer.from(stable(receipts)));
   if (archiveRoot) {
@@ -256,36 +288,8 @@ export async function replayRuntimeFingerprint({ archiveRoot, onArchive } = {}) 
   return digest;
 }
 async function replayCell({ job, cell, inputs, cacheRoot }) {
-  if (inputs.nativePages) {
-    if (!Array.isArray(inputs.nativePages) || !inputs.nativePages.length || inputs.nativePages.length > 20)
-      throw new Error('Replay page set must be nonempty and bounded.');
-    const roleWitness = replayRoleWitness(job, cell, inputs),
-      parts = [];
-    for (const [index, page] of inputs.nativePages.entries())
-      parts.push(
-        await replayCell({
-          job: { ...job, roleCampaign: undefined },
-          cell,
-          inputs: { ...inputs, nativePages: undefined, ...page },
-          cacheRoot: path.join(cacheRoot, 'page-' + index),
-        }),
-      );
-    return {
-      parts,
-      pages: parts.flatMap((part) => part.pages),
-      physicalReads: parts.reduce((sum, part) => sum + part.physicalReads, 0),
-      qualifiedReads: parts.reduce((sum, part) => sum + part.qualifiedReads, 0),
-      qualificationScope: parts[0]?.qualificationScope,
-      roleWitness,
-      sourceWitness: { verified: parts.every((part) => part.sourceWitness.verified) },
-      wireSourceWitness: { verified: parts.every((part) => part.wireSourceWitness.verified) },
-      allQualified: parts.every((part) => part.allQualified) && (!roleWitness || roleWitness.complete),
-      fullSdkCollectionQualified: parts.every((part) => part.fullSdkCollectionQualified),
-      allRuntimeFaultCodesQualified: parts.every((part) => part.allRuntimeFaultCodesQualified),
-    };
-  }
-  if (!Array.isArray(job.selectedStepIds) || !job.selectedStepIds.length || job.selectedStepIds.some((id) => !guid(id)))
-    throw new Error('Original DLL replay requires explicit nonempty native step identities.');
+  if (inputs.nativePages) return replayNativePages(job, cell, inputs, cacheRoot);
+  validateSelectedNativeSteps(job);
   const {
     schema,
     catalogue,
@@ -301,40 +305,15 @@ async function replayCell({ job, cell, inputs, cacheRoot }) {
     siteBefore: site,
     siteAfter,
   } = inputs;
-  if (
-    !Array.isArray(assemblyReceipt) ||
-    !assemblyReceipt.length ||
-    assemblyReceipt.some(
-      (row) =>
-        row.allMatch !== true ||
-        row.installedHash !== row.exportedHash ||
-        row.installedHash !== job.expectedAssemblyHashes?.[row.identity?.name],
-    )
-  )
-    throw new Error('Actual installed/exported native assembly receipts do not match this cohort.');
-  const identity = frozenReplayIdentity(snapshot),
-    afterIdentity = frozenReplayIdentity(after);
-  if (stable(identity) !== stable(afterIdentity))
-    throw new Error('Native actor, account or site memberships changed during capture.');
-  const registrationSha256 = nativeRegistrationFingerprint(registration);
-  if (registrationSha256 !== nativeRegistrationFingerprint(registrationAfter))
-    throw new Error('Native registration changed during capture.');
-  const payloads = recordedPluginPayloads(capture.backendEvents),
-    portal = payloads.find(
-      (payload) =>
-        payload.context?.extensions?.context2?.values?.IsPortalsClientCall === true ||
-        payload.context?.IsPortalsClientCall === true,
-    );
-  const context = portal ? contextFromNativeCapture(portal.context) : job.context;
-  if (!context)
-    throw new Error(
-      'Backendless capture requires an explicit frozen caller profile; expected absence cannot supply one.',
-    );
-  for (const payload of payloads) {
-    const values = payload.context?.extensions?.context2?.values;
-    const actor = values?.PortalsContactId ?? payload.context?.PortalsContactId;
-    if (actor !== identity.contactId) throw new Error('Native backend actor does not match frozen contact evidence.');
-  }
+  const { identity, registrationSha256 } = validateReplayCapture(
+    job,
+    assemblyReceipt,
+    snapshot,
+    after,
+    registration,
+    registrationAfter,
+  );
+  const { context } = capturedReplayContext(job, capture, identity);
   const reconstructed = replayStore({
     schema,
     catalogue,
@@ -361,74 +340,163 @@ async function replayCell({ job, cell, inputs, cacheRoot }) {
     expectedRegistrationHash: registrationSha256,
   });
   try {
-    binding.bind(store);
-    const settings = Object.fromEntries(
-      site
-        .filter((row) => row.powerpagecomponenttype === 9 && row.statecode === 0 && /^Webapi\//i.test(row.name))
-        .map((row) => [row.name, JSON.parse(row.content).value]),
-    );
-    const templates = site
-      .filter((row) => row.powerpagecomponenttype === 8 && row.statecode === 0 && row.name.startsWith('CO Query '))
-      .map((row) => ({ name: row.name, source: JSON.parse(row.content).source }));
-    const dispatchers = site.filter(
-      (row) =>
-        row.powerpagecomponenttype === 8 && row.statecode === 0 && row.name === 'CO Permission Lab Liquid Dispatcher',
-    );
-    const datasetVersion =
-      dispatchers.length === 1
-        ? /assign dataset_version = '([^']+)'/.exec(JSON.parse(dispatchers[0].content).source)?.[1]
-        : null;
-    if (!datasetVersion) throw new Error('Frozen dispatcher dataset input is missing or ambiguous.');
-    const finalObserverWitness = inputs.observerCalibration
-      ? validateFinalQueryObserverWitness(inputs.observerCalibration)
-      : undefined;
-    const roleWitness = replayRoleWitness(job, cell, inputs);
-    const result = await replayNativeReadBatch({
+    return await replayBoundNativeBatch({
       binding,
       store,
       identity,
+      job,
+      cell,
+      inputs,
       capture,
-      webApiPortal: { settings, observed },
-      liquidReplay: { portal: { settings, observed }, templates, datasetVersion },
-      finalObserverWitness,
-      sourceWitness: {
-        before: snapshot,
-        after,
-        registrationSha256,
-        siteComponents: { before: site, after: siteAfter },
-      },
+      observed,
+      site,
+      siteAfter,
+      snapshot,
+      after,
+      registrationSha256,
     });
-    return { ...result, roleWitness, allQualified: result.allQualified && (!roleWitness || roleWitness.complete) };
   } finally {
-    await binding.close();
+    await binding.close(); // NOSONAR: await kept: the value may be a thenable and timing matters
   }
+}
+
+function validateSelectedNativeSteps(job) {
+  if (!Array.isArray(job.selectedStepIds) || !job.selectedStepIds.length || job.selectedStepIds.some((id) => !guid(id)))
+    throw new Error('Original DLL replay requires explicit nonempty native step identities.');
+}
+
+function validateReplayCapture(job, assemblyReceipt, snapshot, after, registration, registrationAfter) {
+  if (
+    !Array.isArray(assemblyReceipt) ||
+    !assemblyReceipt.length ||
+    assemblyReceipt.some(
+      (row) =>
+        row.allMatch !== true ||
+        row.installedHash !== row.exportedHash ||
+        row.installedHash !== job.expectedAssemblyHashes?.[row.identity?.name],
+    )
+  )
+    throw new Error('Actual installed/exported native assembly receipts do not match this cohort.');
+  const identity = frozenReplayIdentity(snapshot),
+    afterIdentity = frozenReplayIdentity(after);
+  if (stable(identity) !== stable(afterIdentity))
+    throw new Error('Native actor, account or site memberships changed during capture.');
+  const registrationSha256 = nativeRegistrationFingerprint(registration);
+  if (registrationSha256 !== nativeRegistrationFingerprint(registrationAfter))
+    throw new Error('Native registration changed during capture.');
+  return { identity, registrationSha256 };
+}
+
+function capturedReplayContext(job, capture, identity) {
+  const payloads = recordedPluginPayloads(capture.backendEvents),
+    portal = payloads.find(
+      (payload) =>
+        payload.context?.extensions?.context2?.values?.IsPortalsClientCall === true ||
+        payload.context?.IsPortalsClientCall === true,
+    ),
+    context = portal ? contextFromNativeCapture(portal.context) : job.context;
+  if (!context)
+    throw new Error(
+      'Backendless capture requires an explicit frozen caller profile; expected absence cannot supply one.',
+    );
+  for (const payload of payloads) {
+    const values = payload.context?.extensions?.context2?.values;
+    const actor = values?.PortalsContactId ?? payload.context?.PortalsContactId;
+    if (actor !== identity.contactId) throw new Error('Native backend actor does not match frozen contact evidence.');
+  }
+  return { context, payloads };
+}
+
+async function replayBoundNativeBatch({
+  binding,
+  store,
+  identity,
+  job,
+  cell,
+  inputs,
+  capture,
+  observed,
+  site,
+  siteAfter,
+  snapshot,
+  after,
+  registrationSha256,
+}) {
+  binding.bind(store);
+  const settings = Object.fromEntries(
+    site
+      .filter((row) => row.powerpagecomponenttype === 9 && row.statecode === 0 && /^Webapi\//i.test(row.name))
+      .map((row) => [row.name, JSON.parse(row.content).value]),
+  );
+  const templates = site
+    .filter((row) => row.powerpagecomponenttype === 8 && row.statecode === 0 && row.name.startsWith('CO Query '))
+    .map((row) => ({ name: row.name, source: JSON.parse(row.content).source }));
+  const dispatchers = site.filter(
+    (row) =>
+      row.powerpagecomponenttype === 8 && row.statecode === 0 && row.name === 'CO Permission Lab Liquid Dispatcher',
+  );
+  const datasetVersion =
+    dispatchers.length === 1
+      ? /assign dataset_version = '([^']+)'/.exec(JSON.parse(dispatchers[0].content).source)?.[1]
+      : null;
+  if (!datasetVersion) throw new Error('Frozen dispatcher dataset input is missing or ambiguous.');
+  const finalObserverWitness = inputs.observerCalibration
+    ? validateFinalQueryObserverWitness(inputs.observerCalibration)
+    : undefined;
+  const roleWitness = replayRoleWitness(job, cell, inputs);
+  const result = await replayNativeReadBatch({
+    binding,
+    store,
+    identity,
+    capture,
+    webApiPortal: { settings, observed },
+    liquidReplay: { portal: { settings, observed }, templates, datasetVersion },
+    finalObserverWitness,
+    sourceWitness: {
+      before: snapshot,
+      after,
+      registrationSha256,
+      siteComponents: { before: site, after: siteAfter },
+    },
+  });
+  return { ...result, roleWitness, allQualified: result.allQualified && (!roleWitness || roleWitness.complete) };
+}
+
+async function replayNativePages(job, cell, inputs, cacheRoot) {
+  if (!Array.isArray(inputs.nativePages) || !inputs.nativePages.length || inputs.nativePages.length > 20)
+    throw new Error('Replay page set must be nonempty and bounded.');
+  const roleWitness = replayRoleWitness(job, cell, inputs),
+    parts = [];
+  for (const [index, page] of inputs.nativePages.entries())
+    parts.push(
+      await replayCell({
+        job: { ...job, roleCampaign: undefined },
+        cell,
+        inputs: { ...inputs, nativePages: undefined, ...page },
+        cacheRoot: path.join(cacheRoot, 'page-' + index),
+      }),
+    );
+  return {
+    parts,
+    pages: parts.flatMap((part) => part.pages),
+    physicalReads: parts.reduce((sum, part) => sum + part.physicalReads, 0),
+    qualifiedReads: parts.reduce((sum, part) => sum + part.qualifiedReads, 0),
+    qualificationScope: parts[0]?.qualificationScope,
+    roleWitness,
+    sourceWitness: { verified: parts.every((part) => part.sourceWitness.verified) },
+    wireSourceWitness: { verified: parts.every((part) => part.wireSourceWitness.verified) },
+    allQualified: parts.every((part) => part.allQualified) && (!roleWitness || roleWitness.complete),
+    fullSdkCollectionQualified: parts.every((part) => part.fullSdkCollectionQualified),
+    allRuntimeFaultCodesQualified: parts.every((part) => part.allRuntimeFaultCodesQualified),
+  };
 }
 
 /** Offline only: no connector/client/browser/PAC dependency or live mutation.
  * Each cell has immutable native file receipts and an isolated local state. A
  * killed attempt is replayed; completed receipts survive in append-only files. */
 export async function runMirageReplayCampaign(job, { replay = replayCell } = {}) {
-  if (job?.schemaVersion !== 1 || !path.isAbsolute(job.outputRoot ?? '') || !path.isAbsolute(job.cacheRoot ?? ''))
-    throw new Error('An explicit bounded replay job and absolute owned output/cache directories are required.');
-  let cells = await replayCells(job);
-  if (
-    !Array.isArray(cells) ||
-    (!cells.length && !job.cellsDirectory) ||
-    cells.length > 4096 ||
-    (job.expectedCells !== undefined && cells.length > job.expectedCells)
-  )
-    throw new Error('Replay requires a bounded physical cell set.');
-  if (job.shard !== undefined) {
-    const { index, count } = job.shard;
-    if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1 || count > 10 || index < 0 || index >= count)
-      throw new Error('Invalid process shard declaration.');
-    cells = cells.filter((cell) => replayCellShard(cell.id, count) === index);
-  }
-  if (
-    new Set(cells.map((cell) => cell.id)).size !== cells.length ||
-    cells.some((cell) => !/^[a-z\d][a-z\d_.-]{0,80}$/i.test(cell.id))
-  )
-    throw new Error('Replay cell identities must be unique bounded file-safe names.');
+  validateCampaignJob(job);
+  const cells = await validatedCampaignCells(job);
   const output = path.resolve(job.outputRoot),
     runtimeSha256 = await replayRuntimeFingerprint(),
     jobSha256 = sha(Buffer.from(stable(job))),
@@ -437,136 +505,27 @@ export async function runMirageReplayCampaign(job, { replay = replayCell } = {})
   const owner = randomUUID();
   await savePrivateJson(lease, { owner, pid: process.pid, startedAt: new Date().toISOString() }, { exclusive: true });
   const ledgerFile = path.join(output, 'replay.json');
-  let ledger;
   const roleMasks = new Set(),
     runOwners = new Map(),
     operationOwners = new Map();
   try {
-    try {
-      ledger = JSON.parse(await boundedBytes(ledgerFile, 64 * 1024 * 1024));
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      ledger = {
-        schemaVersion: 1,
-        kind: 'OfflineOriginalDllWireReplay',
-        jobSha256,
-        runtimeSha256,
-        cells: [],
-        startedAt: new Date().toISOString(),
-      };
-    }
-    if (ledger.jobSha256 !== jobSha256 || ledger.runtimeSha256 !== runtimeSha256)
-      throw new Error('Replay job or local runtime changed; use a new output directory to retain old evidence.');
+    const ledger = await prepareCampaignLedger({ jobSha256, runtimeSha256, ledgerFile, output, cells });
     const archives = path.join(output, 'inputs');
-    if (
-      (await replayRuntimeFingerprint({
-        archiveRoot: path.join(output, 'runtime-sources'),
-        onArchive: (receipt) => {
-          ledger.runtimeSourceArchive = receipt;
-        },
-      })) !== runtimeSha256
-    )
-      throw new Error('Runtime changed while archiving source inputs.');
-    await savePrivateJson(ledgerFile, ledger);
-    if (ledger.cells.some((entry) => !cells.some((cell) => cell.id === entry.id)))
-      throw new Error('A previously recorded replay cell was removed from the append-only source.');
-    for (const cell of cells) {
-      const inputSha256 = sha(Buffer.from(stable(cell))),
-        previous = ledger.cells.filter((entry) => entry.id === cell.id).at(-1);
-      if (previous && previous.inputSha256 !== inputSha256)
-        throw new Error('An existing replay cell specification changed; use a new output directory.');
-      // Recheck every pinned source input even when resuming an already completed
-      // result. A stale file path/hash label cannot preserve qualification.
-      const { inputs, inputArchives } = await loadReplayCellInputs(job, cell, { archiveRoot: archives }),
-        roleWitness = replayRoleWitness(job, cell, inputs);
-      if (roleWitness) {
-        if (roleMasks.has(roleWitness.mask)) throw new Error('A role mask was declared more than once.');
-        roleMasks.add(roleWitness.mask);
-        for (const [id, owners] of [
-          [roleWitness.runIds, runOwners],
-          [roleWitness.operationIds, operationOwners],
-        ])
-          for (const value of id) {
-            if (owners.has(value) && owners.get(value) !== cell.id)
-              throw new Error('Native Run/operation identities were reused across role masks.');
-            owners.set(value, cell.id);
-          }
-      }
-      if (previous?.state === 'complete' && (!job.retryUnqualified || previous.allQualified)) {
-        if (path.dirname(previous.resultFile) !== output) throw new Error('Completed result escaped its owned output.');
-        const bytes = await boundedBytes(previous.resultFile, 64 * 1024 * 1024);
-        if (sha(bytes) !== previous.resultSha256)
-          throw new Error('Completed replay result no longer matches its immutable receipt.');
-        const result = JSON.parse(bytes);
-        if (
-          stable(result.roleWitness ?? null) !== stable(roleWitness) ||
-          (roleWitness && result.pages?.length !== roleWitness.physicalReads)
-        )
-          throw new Error('Resumed role proof does not match actual current pinned memberships/page inputs.');
-        continue;
-      }
-      const attempt = randomUUID(),
-        entry = { id: cell.id, attempt, state: 'running', startedAt: new Date().toISOString(), inputSha256 };
-      ledger.cells.push(entry);
-      await savePrivateJson(ledgerFile, ledger);
-      try {
-        entry.inputArchives = inputArchives;
-        await savePrivateJson(ledgerFile, ledger);
-        for (const part of inputs.nativePages ?? [inputs])
-          for (const key of [
-            'schema',
-            'catalogue',
-            'observed',
-            'serviceProfiles',
-            'assemblyReceipt',
-            'snapshotBefore',
-            'snapshotAfter',
-            'capture',
-            'registrationBefore',
-            'registrationAfter',
-            'siteBefore',
-            'siteAfter',
-          ])
-            if ((part[key] ?? inputs[key]) === undefined)
-              throw new Error('Required frozen replay input is missing: ' + key);
-        if ((await replayRuntimeFingerprint()) !== runtimeSha256)
-          throw new Error('Local replay runtime changed before this cell; use a new output directory.');
-        const result = await replay({ job, cell, inputs, cacheRoot: path.resolve(job.cacheRoot, cell.id) }),
-          file = path.join(output, `${cell.id}.${attempt}.json`);
-        if (
-          roleWitness &&
-          (stable(result.roleWitness) !== stable(roleWitness) ||
-            result.pages?.length !== roleWitness.physicalReads ||
-            (result.allQualified && (!roleWitness.complete || result.pages.some((page) => page.qualified !== true))))
-        )
-          throw new Error('Role replay result does not cover its exact native physical page set.');
-        if ((await replayRuntimeFingerprint()) !== runtimeSha256)
-          throw new Error('Local replay runtime changed during this cell; no result can be qualified.');
-        const bytes = Buffer.from(JSON.stringify(result, null, 2) + '\n');
-        await savePrivateJson(file, result, { exclusive: true });
-        Object.assign(entry, {
-          state: 'complete',
-          resultFile: file,
-          resultSha256: sha(bytes),
-          physicalReads: result.physicalReads,
-          qualifiedReads: result.qualifiedReads,
-          allQualified: result.allQualified === true,
-          roleWitness,
-          allRuntimeFaultCodesQualified: result.allRuntimeFaultCodesQualified === true,
-          finishedAt: new Date().toISOString(),
-        });
-      } catch (error) {
-        Object.assign(entry, {
-          state: 'failed',
-          errorCode: error.code ?? error.name,
-          finishedAt: new Date().toISOString(),
-        });
-        await savePrivateJson(ledgerFile, ledger);
-        throw error;
-      }
-      await savePrivateJson(ledgerFile, ledger);
-    }
-    const latest = cells.map((cell) => ledger.cells.filter((entry) => entry.id === cell.id).at(-1)),
+    for (const cell of cells)
+      await processCampaignCell({
+        job,
+        cell,
+        ledger,
+        ledgerFile,
+        archives,
+        output,
+        runtimeSha256,
+        replay,
+        roleMasks,
+        runOwners,
+        operationOwners,
+      });
+    const latest = cells.map((cell) => ledger.cells.findLast((entry) => entry.id === cell.id)),
       qualified = latest.filter((entry) => entry.allQualified).length,
       expectedCells = job.expectedCells ?? cells.length;
     return {
@@ -601,6 +560,222 @@ export async function runMirageReplayCampaign(job, { replay = replayCell } = {})
     if (actual?.owner === owner) await fs.unlink(lease);
   }
 }
+
+function validateCampaignJob(job) {
+  if (job?.schemaVersion !== 1 || !path.isAbsolute(job.outputRoot ?? '') || !path.isAbsolute(job.cacheRoot ?? ''))
+    throw new Error('An explicit bounded replay job and absolute owned output/cache directories are required.');
+}
+
+async function validatedCampaignCells(job) {
+  let cells = await replayCells(job);
+  if (
+    !Array.isArray(cells) ||
+    (!cells.length && !job.cellsDirectory) ||
+    cells.length > 4096 ||
+    (job.expectedCells !== undefined && cells.length > job.expectedCells)
+  )
+    throw new Error('Replay requires a bounded physical cell set.');
+  if (job.shard !== undefined) {
+    const { index, count } = job.shard;
+    if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1 || count > 10 || index < 0 || index >= count)
+      throw new Error('Invalid process shard declaration.');
+    cells = cells.filter((cell) => replayCellShard(cell.id, count) === index);
+  }
+  if (
+    new Set(cells.map((cell) => cell.id)).size !== cells.length ||
+    cells.some((cell) => !/^[a-z\d][a-z\d_.-]{0,80}$/i.test(cell.id))
+  )
+    throw new Error('Replay cell identities must be unique bounded file-safe names.');
+  return cells;
+}
+
+async function prepareCampaignLedger({ jobSha256, runtimeSha256, ledgerFile, output, cells }) {
+  let ledger;
+  try {
+    ledger = JSON.parse(await boundedBytes(ledgerFile, 64 * 1024 * 1024));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    ledger = {
+      schemaVersion: 1,
+      kind: 'OfflineOriginalDllWireReplay',
+      jobSha256,
+      runtimeSha256,
+      cells: [],
+      startedAt: new Date().toISOString(),
+    };
+  }
+  if (ledger.jobSha256 !== jobSha256 || ledger.runtimeSha256 !== runtimeSha256)
+    throw new Error('Replay job or local runtime changed; use a new output directory to retain old evidence.');
+  await archiveCampaignRuntime(ledger, output, runtimeSha256, ledgerFile);
+  if (ledger.cells.some((entry) => !cells.some((cell) => cell.id === entry.id)))
+    throw new Error('A previously recorded replay cell was removed from the append-only source.');
+  return ledger;
+}
+
+async function archiveCampaignRuntime(ledger, output, runtimeSha256, ledgerFile) {
+  if (
+    (await replayRuntimeFingerprint({
+      archiveRoot: path.join(output, 'runtime-sources'),
+      onArchive: (receipt) => {
+        ledger.runtimeSourceArchive = receipt;
+      },
+    })) !== runtimeSha256
+  )
+    throw new Error('Runtime changed while archiving source inputs.');
+  await savePrivateJson(ledgerFile, ledger);
+}
+
+async function processCampaignCell(options) {
+  const {
+    job,
+    cell,
+    ledger,
+    ledgerFile,
+    archives,
+    output,
+    runtimeSha256,
+    replay,
+    roleMasks,
+    runOwners,
+    operationOwners,
+  } = options;
+  const inputSha256 = sha(Buffer.from(stable(cell))),
+    previous = ledger.cells.findLast((entry) => entry.id === cell.id);
+  if (previous && previous.inputSha256 !== inputSha256)
+    throw new Error('An existing replay cell specification changed; use a new output directory.');
+  // Recheck every pinned source input even when resuming an already completed result.
+  const { inputs, inputArchives } = await loadReplayCellInputs(job, cell, { archiveRoot: archives }),
+    roleWitness = replayRoleWitness(job, cell, inputs);
+  if (roleWitness) recordRoleWitness(cell, roleWitness, roleMasks, runOwners, operationOwners);
+  if (previous?.state === 'complete' && (!job.retryUnqualified || previous.allQualified)) {
+    await verifyCompletedCell(previous, roleWitness, output);
+    return;
+  }
+  await runCampaignCellAttempt({
+    job,
+    cell,
+    inputs,
+    inputArchives,
+    inputSha256,
+    roleWitness,
+    ledger,
+    ledgerFile,
+    output,
+    runtimeSha256,
+    replay,
+  });
+}
+
+function recordRoleWitness(cell, roleWitness, roleMasks, runOwners, operationOwners) {
+  if (roleMasks.has(roleWitness.mask)) throw new Error('A role mask was declared more than once.');
+  roleMasks.add(roleWitness.mask);
+  for (const [ids, owners] of [
+    [roleWitness.runIds, runOwners],
+    [roleWitness.operationIds, operationOwners],
+  ])
+    for (const value of ids) {
+      if (owners.has(value) && owners.get(value) !== cell.id)
+        throw new Error('Native Run/operation identities were reused across role masks.');
+      owners.set(value, cell.id);
+    }
+}
+
+async function verifyCompletedCell(previous, roleWitness, output) {
+  if (path.dirname(previous.resultFile) !== output) throw new Error('Completed result escaped its owned output.');
+  const bytes = await boundedBytes(previous.resultFile, 64 * 1024 * 1024);
+  if (sha(bytes) !== previous.resultSha256)
+    throw new Error('Completed replay result no longer matches its immutable receipt.');
+  const result = JSON.parse(bytes);
+  if (
+    stable(result.roleWitness ?? null) !== stable(roleWitness) ||
+    (roleWitness && result.pages?.length !== roleWitness.physicalReads)
+  )
+    throw new Error('Resumed role proof does not match actual current pinned memberships/page inputs.');
+}
+
+async function runCampaignCellAttempt(options) {
+  const {
+    job,
+    cell,
+    inputs,
+    inputArchives,
+    inputSha256,
+    roleWitness,
+    ledger,
+    ledgerFile,
+    output,
+    runtimeSha256,
+    replay,
+  } = options;
+  const attempt = randomUUID(),
+    entry = { id: cell.id, attempt, state: 'running', startedAt: new Date().toISOString(), inputSha256 };
+  ledger.cells.push(entry);
+  await savePrivateJson(ledgerFile, ledger);
+  try {
+    entry.inputArchives = inputArchives;
+    await savePrivateJson(ledgerFile, ledger);
+    assertCampaignInputs(inputs);
+    if ((await replayRuntimeFingerprint()) !== runtimeSha256)
+      throw new Error('Local replay runtime changed before this cell; use a new output directory.');
+    const result = await replay({ job, cell, inputs, cacheRoot: path.resolve(job.cacheRoot, cell.id) }),
+      file = path.join(output, `${cell.id}.${attempt}.json`);
+    validateCampaignResult(result, roleWitness);
+    if ((await replayRuntimeFingerprint()) !== runtimeSha256)
+      throw new Error('Local replay runtime changed during this cell; no result can be qualified.');
+    const bytes = Buffer.from(JSON.stringify(result, null, 2) + '\n');
+    await savePrivateJson(file, result, { exclusive: true });
+    Object.assign(entry, {
+      state: 'complete',
+      resultFile: file,
+      resultSha256: sha(bytes),
+      physicalReads: result.physicalReads,
+      qualifiedReads: result.qualifiedReads,
+      allQualified: result.allQualified === true,
+      roleWitness,
+      allRuntimeFaultCodesQualified: result.allRuntimeFaultCodesQualified === true,
+      finishedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    Object.assign(entry, {
+      state: 'failed',
+      errorCode: error.code ?? error.name,
+      finishedAt: new Date().toISOString(),
+    });
+    await savePrivateJson(ledgerFile, ledger);
+    throw error;
+  }
+  await savePrivateJson(ledgerFile, ledger);
+}
+
+function assertCampaignInputs(inputs) {
+  for (const part of inputs.nativePages ?? [inputs])
+    for (const key of [
+      'schema',
+      'catalogue',
+      'observed',
+      'serviceProfiles',
+      'assemblyReceipt',
+      'snapshotBefore',
+      'snapshotAfter',
+      'capture',
+      'registrationBefore',
+      'registrationAfter',
+      'siteBefore',
+      'siteAfter',
+    ])
+      if ((part[key] ?? inputs[key]) === undefined) throw new Error('Required frozen replay input is missing: ' + key);
+}
+
+function validateCampaignResult(result, roleWitness) {
+  if (
+    roleWitness &&
+    (stable(result.roleWitness) !== stable(roleWitness) ||
+      result.pages?.length !== roleWitness.physicalReads ||
+      (result.allQualified && (!roleWitness.complete || result.pages.some((page) => page.qualified !== true))))
+  )
+    throw new Error('Role replay result does not cover its exact native physical page set.');
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args.length !== 2 || args[0] !== '--job')

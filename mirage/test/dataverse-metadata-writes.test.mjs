@@ -1,4 +1,6 @@
+// @test-kind contract: Paqvilo's own metadata write behaviour through the Web API, exercised on loopback with an invented schema
 // Metadata ids of solution components, upsert locations, secured primary names and $batch metadata writes.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -36,7 +38,7 @@ async function start(t, state, users = []) {
       users,
     }),
   });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const token = (
     await (
       await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
@@ -238,4 +240,33 @@ test('a metadata write in a $batch changeset commits with it and rolls back with
   ]);
   assert.match(denied.text, /0x80040220/);
   assert.equal(store.state.mappings.new_denied, undefined);
+});
+
+test('a Boolean column created through the Web API with OptionSetType Boolean reads back with TrueOption and FalseOption', async (t) => {
+  const { call } = await start(t, emptyState());
+  assert.ok((await call('POST', '/EntityDefinitions', table('new_flagged'))).status < 300);
+  const flag = {
+    '@odata.type': '#Microsoft.Dynamics.CRM.BooleanAttributeMetadata',
+    SchemaName: 'new_Flag',
+    DisplayName: L('Flag'),
+    Description: L(''),
+    DefaultValue: false,
+    OptionSet: {
+      '@odata.type': '#Microsoft.Dynamics.CRM.BooleanOptionSetMetadata',
+      OptionSetType: 'Boolean',
+      TrueOption: { Value: 1, Label: L('Yes') },
+      FalseOption: { Value: 0, Label: L('No') },
+    },
+  };
+  const created = await call('POST', "/EntityDefinitions(LogicalName='new_flagged')/Attributes", flag);
+  assert.ok(created.status < 300, created.text);
+  const read = await call(
+    'GET',
+    "/EntityDefinitions(LogicalName='new_flagged')/Attributes?$filter=LogicalName eq 'new_flag'",
+  );
+  assert.equal(read.status, 200, read.text);
+  const [metadata] = read.json.value;
+  assert.equal(metadata['@odata.type'], '#Microsoft.Dynamics.CRM.BooleanAttributeMetadata');
+  assert.equal(metadata.OptionSet.TrueOption?.Value, 1);
+  assert.equal(metadata.OptionSet.FalseOption?.Value, 0);
 });

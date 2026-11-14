@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildPreflightReport, preflightExitCode, preflight } from '../lib/capability-report.mjs';
 import { createCapabilityRegistry } from '../lib/capability-registry.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A fake source graph with one requirement of every graph status and one satisfied component node.
 function fakeGraph() {
@@ -111,6 +112,25 @@ function report(options = {}) {
 }
 const row = (result, id) => result.requirements.find((item) => item.id === id);
 
+test('a provider row carries its reason code into the report, and a row without one has reason null', () => {
+  const result = report({
+    providers: [
+      {
+        id: 'provider:messaging/relay',
+        reachable: false,
+        status: 'unknown',
+        reason: 'PROVIDER_PREFLIGHT_TIMEOUT',
+        message: "Messaging provider 'relay' did not answer its readiness probe.",
+      },
+      { id: 'provider:storage/blob', reachable: true, message: 'Azurite answered 200.' },
+    ],
+  });
+  assert.equal(row(result, 'provider:messaging/relay').status, 'unknown');
+  assert.equal(row(result, 'provider:messaging/relay').reason, 'PROVIDER_PREFLIGHT_TIMEOUT');
+  assert.equal(row(result, 'provider:storage/blob').status, 'satisfied');
+  assert.equal(row(result, 'provider:storage/blob').reason, null);
+});
+
 test('requirement statuses come from the graph, operations, local services and providers', () => {
   const result = report();
   assert.equal(result.schemaVersion, 1);
@@ -203,7 +223,7 @@ test('exit code 2 when no report was produced', () => {
 });
 
 test('configured values never appear in the report', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capability-report-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'capability-report-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const secret = 'INVENTED-SECRET-7f3a9c';
   await fs.mkdir(path.join(root, 'Other'), { recursive: true });

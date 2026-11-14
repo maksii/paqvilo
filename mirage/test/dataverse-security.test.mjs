@@ -1,9 +1,13 @@
 // Simulated Dataverse security model: seeding, principal resolution, depth-based
 // authorization, role-privilege introspection.
+// @test-kind contract: security model seeding, privilege depth and access checks designed by Paqvilo's Dataverse runtime
 import test from 'node:test';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { DataError } from '../lib/data-error.mjs';
+import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
+import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 import {
   ACCESS_RIGHTS,
   DEPTH,
@@ -196,11 +200,11 @@ test('ensureSecurityModel seeds organization, root unit, roles, SYSTEM user and 
   assert.deepEqual(t.role.map((r) => r.name).sort(), ['Basic User', 'System Administrator', 'System Customizer']);
   assert.ok(t.systemuser.some((u) => u.fullname === 'SYSTEM' && u.systemuserid === uuidV5(ORG, 'systemuser:SYSTEM')));
   // widget: 8 user-owned rights; region: 6 org-owned rights; six org-owned security tables: 6 each. privilege and principalobjectaccess are
-  // OwnershipType None (standard file), so they get none; the four intersect tables own none; 19 miscellaneous privileges (17, plus prvExportCustomization and prvImportCustomization).
-  assert.equal(t.privilege.length, 8 + 6 + 36 + 19);
-  // Admins: every privilege at Global (69), less the three System Administrator only privileges (two bypasses, prvBulkDelete) that System Customizer does not hold (66).
+  // OwnershipType None (standard file), so they get none; the four intersect tables own none; 20 miscellaneous privileges (17, plus prvExportCustomization, prvImportCustomization and prvSendAppNotification).
+  assert.equal(t.privilege.length, 8 + 6 + 36 + 20);
+  // Admins: every privilege at Global (70), less the three System Administrator only privileges (two bypasses, prvBulkDelete) that System Customizer does not hold (67).
   // Basic User: 8 widget rights + Global Read on 7 org-owned tables (region and the six security tables). Miscellaneous privileges reach no Basic User.
-  assert.equal(t.roleprivileges.length, 69 + 66 + 8 + 7);
+  assert.equal(t.roleprivileges.length, 70 + 67 + 8 + 7);
   assert.ok(
     !t.roleprivileges.some(
       (rp) =>
@@ -301,6 +305,38 @@ test('Basic User has Global read on organization-owned tables and no create ther
   );
 });
 
+test('missing-privilege diagnostics retain exact counts without copying every grant per refusal', async () => {
+  const store = await seeded();
+  const principals = createPrincipals(store, SETTINGS);
+  const basic = principals.resolve({ oid: BASIC_OID }).user;
+  const expected = principals.privileges(basic).size;
+  assert.ok(expected > 0);
+  const iterate = Map.prototype[Symbol.iterator];
+  let copied = 0;
+  try {
+    Map.prototype[Symbol.iterator] = function () {
+      const first = this.entries().next();
+      if (
+        !first.done &&
+        typeof first.value[0] === 'string' &&
+        first.value[0].startsWith('prv') &&
+        typeof first.value[1] === 'number'
+      )
+        copied++;
+      return iterate.call(this);
+    };
+    for (let i = 0; i < 20; i++)
+      assert.throws(
+        () => principals.authorize({ user: basic, entity: 'region', operation: 'create' }),
+        (error) => error.code === 'PrivilegeDenied' && error.message.includes(`privilegeCount=${expected},`),
+      );
+  } finally {
+    Map.prototype[Symbol.iterator] = iterate;
+  }
+  assert.equal(copied, 0, 'A boolean capability refusal does not need a new complete privilege map.');
+});
+
+// @test-kind security: a role without the privilege is denied
 test('a role without the privilege denies with 0x80040220', async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
@@ -885,6 +921,7 @@ test('isInteractiveUser excludes SYSTEM, application users, disabled users and r
   assert.equal(isInteractiveUser({ ...basic, accessmode: 4 }), false); // NonInteractive
 });
 
+// @test-kind security: bypass privileges belong to System Administrator only
 test('the bypass privileges are seeded for System Administrator only, not System Customizer', async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
@@ -976,6 +1013,7 @@ test('access teams cannot own records or hold roles; a disabled user cannot join
   assert.throws(() => assertCanJoinTeam(store, basic.systemuserid), inner('0x80048d36'));
 });
 
+// @test-kind security: a non-inherited team role grants access only on team-owned rows
 test("a role with isinherited 0 gives its team privileges on team-owned rows only, never on the member's own rows", async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
@@ -996,6 +1034,7 @@ test("a role with isinherited 0 gives its team privileges on team-owned rows onl
   );
 });
 
+// @test-kind security: an effective principal never holds more than both users hold
 test('an effective principal holds only the privileges both users have, at the lower depth and on rows both admit', async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
@@ -1310,6 +1349,7 @@ test('a manager reads and writes a direct report, reads nondirect reports down t
   denied(() => p.authorize({ user: basic, entity: 'widget', operation: 'update', row: rows.w1 }));
 });
 
+// @test-kind security: manager access requires Read and stays inside the manager's business unit
 test("a manager needs the Read privilege, and a report must be in the manager's business unit or below it", async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
@@ -1414,6 +1454,301 @@ test("setBusinessUnit removes role assignments, moves the user's owned records, 
     false,
   );
   assert.equal(ref(store.tableRows('widget').find((w) => w.widgetid === 'w-bu').owningbusinessunit), sales);
+});
+
+test('setBusinessUnit writes each moved owned row through the store, advancing its version', async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  const sales = await addBusinessUnit(store, 'Sales');
+  await store.transact(() =>
+    store.state.tables.widget.push({ widgetid: 'w-ver', name: 'version', versionnumber: 3, ownerid: lookupOf(basic) }),
+  );
+  await setBusinessUnit(store, { userId: basic.systemuserid, businessUnitId: sales });
+  const moved = store.tableRows('widget').find((w) => w.widgetid === 'w-ver');
+  assert.equal(Number(moved.versionnumber), 4);
+  assert.equal(ref(moved.owningbusinessunit), sales);
+});
+
+const WEB_ORIGIN = 'https://org.example.test';
+
+// Web API requests over the records layer, as the request path runs them: the request names its caller.
+function webApi(store) {
+  const principals = createPrincipals(store, SETTINGS);
+  const handlers = createRecordHandlers({
+    store,
+    change: (fn) => fn(),
+    principals,
+    metadataFields: () => undefined,
+    hooks: createRecordHooks(),
+    fieldSecurity: () => undefined,
+  });
+  return async (method, path, user, body) => {
+    const url = new URL(`/api/data/v9.2${path}`, WEB_ORIGIN);
+    try {
+      return await handlers.handle({
+        method,
+        route: parseDataverseRoute(url.pathname),
+        url,
+        origin: WEB_ORIGIN,
+        version: 'v9.2',
+        prefer: parsePrefer(undefined),
+        headers: {},
+        body,
+        user,
+        caller: user,
+        identity: { admin: true, id: user.systemuserid, systemUserId: user.systemuserid },
+        requestId: 'test',
+      });
+    } catch (error) {
+      if (error instanceof DataError) return { status: error.status, details: error.details };
+      throw error;
+    }
+  };
+}
+
+// Business unit A with a child unit, and unit B beside A (not under it).
+async function teamUnits(store) {
+  const a = await addBusinessUnit(store, 'Team A');
+  return {
+    a,
+    b: await addBusinessUnit(store, 'Team B'),
+    aChild: await addBusinessUnit(store, 'Team A child', a),
+  };
+}
+
+// A user in `bu` holding one role with the grants (privilege name, depth) pairs.
+async function writerIn(store, name, bu, grants) {
+  const role = await makeRole(store, `Writer ${name}`, grants);
+  const id = await addStaff(store, name, { bu, roles: [role] });
+  return store.tableRows('systemuser').find((u) => u.systemuserid === id);
+}
+
+// A widget owned by a user of unit B: the user-owned row a refused request is compared with.
+async function foreignWidget(store, units, name) {
+  const owner = await addStaff(store, `${name} owner`, { bu: units.b });
+  const widgetid = uuidV5(ORG, `widget:${name}`);
+  await store.transact(() =>
+    store.state.tables.widget.push({ widgetid, name, ownerid: { id: owner, logical_name: 'systemuser' } }),
+  );
+  return widgetid;
+}
+
+const teamNamed = (store, id) => store.tableRows('team').find((t) => t.teamid === id);
+
+// @test-kind security: team is business-owned, so a Local team grant reaches only its business unit, as a user row does.
+test('a Local team writer is refused a team of another business unit with the refusal a user row outside its depth gets', async () => {
+  const store = await seeded();
+  const units = await teamUnits(store);
+  const writer = await writerIn(store, 'Local Team Writer', units.a, [
+    ['prvReadTeam', DEPTH.Local],
+    ['prvWriteTeam', DEPTH.Local],
+    ['prvReadWidget', DEPTH.Local],
+    ['prvWriteWidget', DEPTH.Local],
+  ]);
+  const teamB = await makeTeam(store, 'Local Team B', { bu: units.b });
+  const widgetB = await foreignWidget(store, units, 'local');
+  const send = webApi(store);
+
+  const userRefusal = await send('PATCH', `/widgets(${widgetB})`, writer, { name: 'taken' });
+  assert.equal(userRefusal.status, 403);
+  const teamRefusal = await send('PATCH', `/teams(${teamB})`, writer, { name: 'taken' });
+  assert.equal(teamRefusal.status, userRefusal.status);
+  assert.equal(teamRefusal.details?.innerCode, userRefusal.details?.innerCode);
+  assert.equal(teamNamed(store, teamB).name, 'Local Team B');
+  // Reads follow the same unit geometry: the team of unit B is refused as the user row of unit B is.
+  const userRead = await send('GET', `/widgets(${widgetB})`, writer);
+  const teamRead = await send('GET', `/teams(${teamB})`, writer);
+  assert.equal(teamRead.status, userRead.status);
+  assert.equal(teamRead.details?.innerCode, userRead.details?.innerCode);
+});
+
+// @test-kind security: team is business-owned, so a Local team grant writes a team of its own business unit.
+test('a Local team writer writes a team of its own business unit and no other', async () => {
+  const store = await seeded();
+  const units = await teamUnits(store);
+  const writer = await writerIn(store, 'Local Own Writer', units.a, [
+    ['prvReadTeam', DEPTH.Local],
+    ['prvWriteTeam', DEPTH.Local],
+  ]);
+  const teamA = await makeTeam(store, 'Local Team A', { bu: units.a });
+  const teamB = await makeTeam(store, 'Own Team B', { bu: units.b });
+  const send = webApi(store);
+
+  assert.equal((await send('PATCH', `/teams(${teamA})`, writer, { name: 'mine' })).status, 204);
+  assert.equal(teamNamed(store, teamA).name, 'mine');
+  assert.equal((await send('PATCH', `/teams(${teamB})`, writer, { name: 'taken' })).status, 403);
+  assert.equal(teamNamed(store, teamB).name, 'Own Team B');
+});
+
+// @test-kind security: a Deep team grant reaches teams of the caller's unit and its child units, never a sibling unit.
+test('a Deep team writer writes a team of a child unit of its business unit and refuses a sibling unit', async () => {
+  const store = await seeded();
+  const units = await teamUnits(store);
+  const writer = await writerIn(store, 'Deep Team Writer', units.a, [
+    ['prvReadTeam', DEPTH.Deep],
+    ['prvWriteTeam', DEPTH.Deep],
+  ]);
+  const teamChild = await makeTeam(store, 'Deep Child Team', { bu: units.aChild });
+  const teamB = await makeTeam(store, 'Deep Sibling Team', { bu: units.b });
+  const send = webApi(store);
+
+  assert.equal((await send('PATCH', `/teams(${teamChild})`, writer, { name: 'child' })).status, 204);
+  assert.equal(teamNamed(store, teamChild).name, 'child');
+  assert.equal((await send('PATCH', `/teams(${teamB})`, writer, { name: 'taken' })).status, 403);
+});
+
+// @test-kind security: a Global team grant reaches every business unit; the administrator is unaffected by the scoping.
+test('a Global team writer writes teams of every business unit, and so does the administrator', async () => {
+  const store = await seeded();
+  const units = await teamUnits(store);
+  const writer = await writerIn(store, 'Global Team Writer', units.a, [
+    ['prvReadTeam', DEPTH.Global],
+    ['prvWriteTeam', DEPTH.Global],
+  ]);
+  const teamA = await makeTeam(store, 'Global Team A', { bu: units.a });
+  const teamB = await makeTeam(store, 'Global Team B', { bu: units.b });
+  const send = webApi(store);
+  const admin = store.tableRows('systemuser').find((u) => u.azureactivedirectoryobjectid === ADMIN_OID);
+
+  assert.equal((await send('PATCH', `/teams(${teamA})`, writer, { name: 'a' })).status, 204);
+  assert.equal((await send('PATCH', `/teams(${teamB})`, writer, { name: 'b' })).status, 204);
+  assert.equal(teamNamed(store, teamB).name, 'b');
+  assert.equal((await send('PATCH', `/teams(${teamB})`, admin, { name: 'admin' })).status, 204);
+});
+
+// The seeded privilege rows whose name equals a derived name case-insensitively: the seeding and the access check can spell it differently.
+const seededNamed = (store, name) =>
+  store.tableRows('privilege').filter((p) => p.name.toLowerCase() === name.toLowerCase());
+
+// Grants a role the given seeded privilege rows at one depth, as a roleprivileges row names them.
+async function grantSeededRows(store, roleId, rows, mask) {
+  await store.transact(() => {
+    for (const p of rows)
+      store.state.tables.roleprivileges.push({
+        roleprivilegeid: uuidV5(roleId, p.privilegeid),
+        roleid: { id: roleId, logical_name: 'role' },
+        privilegeid: { id: p.privilegeid, logical_name: 'privilege' },
+        privilegedepthmask: mask,
+      });
+  });
+}
+
+// @test-kind security: the seeded background-operation privileges (spelled prvReadbackgroundoperation) grant the names the access check derives.
+test('a role holding the seeded background-operation privileges at Global reads a backgroundoperation row through the Web API', async () => {
+  const store = await seeded();
+  store.state.mappings.backgroundoperation = {
+    logicalName: 'backgroundoperation',
+    entitySet: 'backgroundoperations',
+    idColumn: 'backgroundoperationid',
+    nameColumn: 'name',
+    fields: { name: { dataverseType: 'nvarchar' }, ownerid: { dataverseType: 'lookup' } },
+  };
+  store.state.tables.backgroundoperation = [];
+  const rows = ['prvReadBackgroundOperation', 'prvWriteBackgroundOperation'].map((name) => {
+    const found = seededNamed(store, name);
+    assert.equal(found.length, 1, name);
+    return found[0];
+  });
+  const roleId = await makeRole(store, 'Background Reader', []);
+  await grantSeededRows(store, roleId, rows, DEPTH.Global);
+  const userId = await addStaff(store, 'Background Reader User', { roles: [roleId] });
+  const admin = store.tableRows('systemuser').find((u) => u.azureactivedirectoryobjectid === ADMIN_OID);
+  const operationId = uuidV5(ORG, 'backgroundoperation:seeded');
+  await store.transact(() =>
+    store.state.tables.backgroundoperation.push({
+      backgroundoperationid: operationId,
+      name: 'seeded',
+      ownerid: lookupOf(admin),
+    }),
+  );
+  const reply = await webApi(store)('GET', `/backgroundoperations(${operationId})`, staffRow(store, userId));
+  assert.equal(reply.status, 200);
+});
+
+// @test-kind security: the privilege collection every caller reads answers a derived name whichever seeded spelling the role holds.
+test('privileges(user) answers a derived privilege name the same whichever spelling the role was granted', async () => {
+  // The standard seeding writes the table list too, so both spellings exist.
+  const store = await standardSeeded();
+  const derived = ['prvReadBackgroundOperation', 'prvWriteBackgroundOperation'];
+  const otherSpelling = (name) => seededNamed(store, name).find((p) => p.name !== name);
+  const sameSpelling = (name) => seededNamed(store, name).find((p) => p.name === name);
+  const lowerRole = await makeRole(store, 'Lower Spelling Role', []);
+  const camelRole = await makeRole(store, 'Camel Spelling Role', []);
+  await grantSeededRows(store, lowerRole, derived.map(otherSpelling), DEPTH.Global);
+  await grantSeededRows(store, camelRole, derived.map(sameSpelling), DEPTH.Global);
+  const lowerUser = staffRow(store, await addStaff(store, 'Lower Spelling User', { roles: [lowerRole] }));
+  const camelUser = staffRow(store, await addStaff(store, 'Camel Spelling User', { roles: [camelRole] }));
+  const admin = store.tableRows('systemuser').find((u) => u.azureactivedirectoryobjectid === ADMIN_OID);
+  const p = createPrincipals(store, SETTINGS);
+  // The answers the callers take: get(name) > 0 (the grant checks) and has(name) (the bypass and impersonation checks).
+  const answers = (user) => derived.map((name) => [p.privileges(user).get(name) > 0, p.privileges(user).has(name)]);
+  assert.deepEqual(
+    answers(lowerUser),
+    derived.map(() => [true, true]),
+  );
+  assert.deepEqual(answers(lowerUser), answers(camelUser));
+  // Enumeration keeps each seeded spelling as it was seeded.
+  assert.ok([...p.privileges(lowerUser).keys()].includes(otherSpelling(derived[0]).name));
+  assert.equal(p.privileges(lowerUser).has(sameSpelling(derived[0]).name), true);
+  // Effective principal: the lower-spelled grant still counts when the caller holds the privilege too.
+  const asLower = p.effectivePrincipal(admin, lowerUser);
+  assert.deepEqual(
+    answers(asLower),
+    derived.map(() => [true, true]),
+  );
+});
+
+// The background-operation privileges the seeding writes under two spellings: the miscellaneous list (lower-case table part)
+// and the table list. Both rows are kept; a case-insensitive match resolves the derived name to both.
+const SEEDED_IN_TWO_SPELLINGS = {
+  prvReadBackgroundOperation: ['prvReadbackgroundoperation', 'prvReadBackgroundOperation'],
+  prvWriteBackgroundOperation: ['prvWritebackgroundoperation', 'prvWriteBackgroundOperation'],
+};
+
+// @test-kind security: every privilege name the gate derives for a table matches at most one seeded privilege, compared case-insensitively.
+test('every privilege name the gate derives matches at most one seeded privilege, compared case-insensitively', async () => {
+  const store = await standardSeeded();
+  const schemaTables = Object.values(standardSchema().tables ?? {});
+  const logicals = new Set([...Object.keys(store.state.mappings), ...schemaTables.map((t) => t.logicalName)]);
+  const byLowerName = new Map();
+  for (const p of store.tableRows('privilege')) {
+    const lower = p.name.toLowerCase();
+    byLowerName.set(lower, [...(byLowerName.get(lower) ?? []), p.name]);
+  }
+  for (const logical of logicals) {
+    const table = schemaTables.find((t) => t.logicalName === logical),
+      noun = privilegeNounOf(logical, table, store.state.mappings[logical]);
+    for (const right of Object.keys(ACCESS_RIGHTS)) {
+      const derived = privilegeName(right, noun);
+      const matches = byLowerName.get(derived.toLowerCase()) ?? [];
+      const expected = SEEDED_IN_TWO_SPELLINGS[derived];
+      if (expected) assert.deepEqual(matches, expected, derived);
+      else assert.ok(matches.length <= 1, `${derived} matches ${matches.join(', ')}`);
+    }
+  }
+});
+
+// @test-kind security: a team is business-owned, so the access report gives a Local writer the write right on its own business unit's teams only.
+test('RetrievePrincipalAccess on a team reports the write right for a team of the writer business unit and not another, and Global on both', async () => {
+  const store = await seeded();
+  const units = await teamUnits(store);
+  const teamA = await makeTeam(store, 'Report Team A', { bu: units.a });
+  const teamB = await makeTeam(store, 'Report Team B', { bu: units.b });
+  const local = await writerIn(store, 'Local Report Writer', units.a, [
+    ['prvReadTeam', DEPTH.Local],
+    ['prvWriteTeam', DEPTH.Local],
+  ]);
+  const global = await writerIn(store, 'Global Report Writer', units.a, [
+    ['prvReadTeam', DEPTH.Global],
+    ['prvWriteTeam', DEPTH.Global],
+  ]);
+  const p = createPrincipals(store, SETTINGS);
+  const access = (user, id) => p.principalAccess({ user, entity: 'team', row: teamNamed(store, id) });
+  assert.match(access(local, teamA), /WriteAccess/);
+  assert.doesNotMatch(access(local, teamB), /WriteAccess/);
+  assert.match(access(global, teamA), /WriteAccess/);
+  assert.match(access(global, teamB), /WriteAccess/);
 });
 
 test('platform tables: Basic User reads only its own system jobs, cannot write background operations, and creates its own saved views', async () => {
@@ -1628,6 +1963,7 @@ test('activity parties follow their activity: a Basic User reads a party only wh
   assert.equal(readable(party('act-theirs')), false);
 });
 
+// @test-kind security: a Basic User without access to the parent account cannot access its address
 test("customer addresses follow their parent account: the row test is the parent's, and a Basic User without the parent is denied", async () => {
   const store = await standardSeeded();
   const p = createPrincipals(store, SETTINGS);
@@ -1675,6 +2011,7 @@ test('queue items and environment variable values: Basic User has no grant, admi
 });
 
 // A Solution table keeps its mixed-case SchemaName on its mapping (dataverseMetadata.schemaName), so every privilege noun uses it.
+// @test-kind security: a Basic User is denied on a Solution table with a mixed-case name
 test("a Solution table's mixed-case SchemaName names its privileges, its access check and the Basic User denial", async () => {
   const state = fixtureState();
   state.mappings.new_bankaccount = {
@@ -1804,4 +2141,38 @@ test('a Solution table seeded at startup: the create check with no schema argume
   assert.equal(p.privileges(admin).get('prvCreatenew_BankAccount'), DEPTH.Global);
   assert.equal(p.authorize({ user: admin, entity: 'new_bankaccount', operation: 'create' }), DEPTH.Global);
   assert.equal(p.privilegeNoun('new_bankaccount'), 'new_BankAccount');
+});
+
+// @test-kind security: a principal gate called without a user refuses as an unauthenticated call, never with a TypeError; the SYSTEM user still passes.
+test('every principal gate refuses a call without a user as unauthenticated, and the SYSTEM user still passes', async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const mapping = store.state.mappings.widget;
+  const gates = {
+    authorize: () => p.authorize({ entity: 'widget', operation: 'read' }),
+    roles: () => p.roles(undefined),
+    privileges: () => p.privileges(null),
+    effectivePrincipal: () => p.effectivePrincipal(undefined, undefined),
+    readFilter: () => p.readFilter({ entity: 'widget' }),
+    systemColumns: () => p.systemColumns({ mapping }),
+    ownershipDefaults: () => p.ownershipDefaults({ mapping }),
+    modifiedBy: () => p.modifiedBy({}),
+    canImpersonate: () => p.canImpersonate(null),
+    retrieveUserPrivileges: () => p.retrieveUserPrivileges(undefined),
+    principalAccess: () => p.principalAccess({ entity: 'widget' }),
+    teamAccess: () => p.teamAccess({ entity: 'widget' }),
+  };
+  for (const [name, gate] of Object.entries(gates))
+    assert.throws(
+      gate,
+      (error) => {
+        assert.ok(!(error instanceof TypeError), `${name} threw a TypeError`);
+        assert.equal(error.status, 401, name);
+        assert.equal(error.code, 'Unauthorized', name);
+        return true;
+      },
+      name,
+    );
+  const system = store.tableRows('systemuser').find((u) => u.fullname === 'SYSTEM');
+  assert.equal(p.authorize({ user: system, entity: 'widget', operation: 'read' }), DEPTH.Global);
 });

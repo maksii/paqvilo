@@ -1,3 +1,4 @@
+// @test-kind contract: the activitypointer view is Paqvilo's designed projection; no native capture is cited
 // The activitypointer view through the Dataverse Web API: rows from the activity tables with activitytypecode, $filter,
 // a by-id read, refused writes, and a Basic User who does not see another user's task.
 import { after, before, describe, it } from 'node:test';
@@ -108,7 +109,10 @@ describe('activitypointer view', () => {
     assert.equal(bySubject.status, 200);
     assert.equal(subjectBody.value.length, 1);
     assert.equal(subjectBody.value[0].activitytypecode, 'email');
-    assert.deepEqual(Object.keys(subjectBody.value[0]).sort(), ['activitytypecode', 'activityid', 'subject'].sort());
+    assert.deepEqual(
+      Object.keys(subjectBody.value[0]).sort(),
+      ['@odata.etag', 'activitytypecode', 'activityid', 'subject'].sort(),
+    );
 
     const byType = await dv.admin(
       `activitypointers?${new URLSearchParams({ $filter: "activitytypecode eq 'task'", $count: 'true' })}`,
@@ -170,6 +174,7 @@ describe('activitypointer by-id reads and privilege', () => {
 
   after(() => dv?.close());
 
+  // @test-kind security: a caller without the Activity read privilege cannot read the collection or a row
   it('refuses a caller without the Activity read privilege with the standard privilege error, for the collection and a row', async () => {
     const collection = await dv.noRole('activitypointers');
     assert.equal(collection.status, 403);
@@ -249,6 +254,49 @@ describe('activitypointer union past one page', () => {
       assert.equal((await read()).exa_projectionprobe, null);
       extra = false;
       assert.equal(Object.hasOwn(await read(), 'exa_projectionprobe'), false);
+    } finally {
+      await dv.close();
+    }
+  });
+
+  it('answers @odata.etag on every row as the table does, equal to the table row etag, and adds annotations only when asked', async () => {
+    const dv = await start();
+    try {
+      const id = guid(2);
+      (dv.store.state.tables.task ??= []).push({
+        activityid: id,
+        taskid: id,
+        subject: 'Annotated',
+        scheduledend: '2026-03-01T10:00:00Z',
+      });
+      const query = '$select=subject,scheduledend';
+      const plain = await dv.admin(`activitypointers?${query}`);
+      assert.equal(plain.headers.get('Preference-Applied'), null);
+      const plainRows = (await plain.json()).value;
+      const tableRows = (await (await dv.admin(`tasks?${query}`)).json()).value;
+      const tableEtags = new Map(tableRows.map((row) => [row.activityid.toLowerCase(), row['@odata.etag']]));
+      assert.ok(plainRows.length > 0);
+      for (const row of plainRows) {
+        assert.match(row['@odata.etag'], /^W\/"\d+"$/);
+        assert.equal(row['@odata.etag'], tableEtags.get(row.activityid.toLowerCase()));
+        assert.deepEqual(
+          Object.keys(row).filter((key) => key.includes('@') && key !== '@odata.etag'),
+          [],
+        );
+      }
+      const headers = { prefer: 'odata.include-annotations="*"' };
+      const view = await dv.admin(`activitypointers?${query}`, { headers });
+      const table = await dv.admin(`tasks?${query}`, { headers });
+      assert.equal(view.headers.get('Preference-Applied'), 'odata.include-annotations="*"');
+      const viewRow = (await view.json()).value[0];
+      const tableRow = (await table.json()).value[0];
+      assert.equal(viewRow['@odata.etag'], tableRow['@odata.etag']);
+      assert.ok(viewRow['scheduledend@OData.Community.Display.V1.FormattedValue']);
+      const annotationsOf = (row) =>
+        Object.keys(row)
+          .filter((key) => key.includes('@'))
+          .sort();
+      assert.deepEqual(annotationsOf(viewRow), annotationsOf(tableRow));
     } finally {
       await dv.close();
     }

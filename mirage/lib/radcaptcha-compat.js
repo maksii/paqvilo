@@ -10,23 +10,23 @@
  */
 (() => {
   'use strict';
-  if (window.radcaptcha?.__ppSimCompat) return;
+  if (globalThis.radcaptcha?.__ppSimCompat) return;
   const REFRESH = /^(.+\$captcha)\$CaptchaLinkButton$/;
-  window.radcaptcha = {
+  globalThis.radcaptcha = {
     __ppSimCompat: true,
     onClientLoad(control) {
       const refresh = control?._element?.getElementsByTagName?.('a');
       if (!refresh || refresh.length === 0) return;
       // A javascript: postback link runs as the platform's navigation does, without a javascript: URL.
       const postback = /^javascript:__doPostBack\('([^']*)','([^']*)'\)$/.exec(refresh[0].getAttribute('href') ?? '');
-      if (postback) window.__doPostBack(postback[1], postback[2]);
+      if (postback) globalThis.__doPostBack(postback[1], postback[2]);
       else document.location = refresh[0].href;
     },
   };
-  window.initCaptchaTooltips = function () {
+  globalThis.initCaptchaTooltips = function () {
     // Bootstrap 5 by its tooltip plugin, or locally by the page bundle (Mirage ships no bootstrap global).
     const bootstrap5 =
-      typeof window.bootstrap?.Tooltip !== 'undefined' ||
+      globalThis.bootstrap?.Tooltip !== undefined ||
       Boolean(document.querySelector("script[src*='bootstrap.BootstrapV5.bundle']"));
     const toggle = bootstrap5 ? 'data-bs-toggle' : 'data-toggle';
     const placement = bootstrap5 ? 'data-bs-placement' : 'data-placement';
@@ -124,28 +124,28 @@
     if (!captchas.length) return;
     const browser = /Chrome\/(\d+)/.exec(navigator.userAgent);
     if (browser) document.documentElement.classList.add('t-chrome', `t-chrome${browser[1]}`);
-    const postBack = window.__doPostBack;
-    window.__doPostBack = function (eventTarget, _eventArgument) {
+    const postBack = globalThis.__doPostBack;
+    globalThis.__doPostBack = function (eventTarget, _eventArgument) {
       const captcha = REFRESH.exec(String(eventTarget));
-      const form = captcha && document.getElementById(`${captcha[1].replace(/\$/g, '_')}_ctl01`)?.closest('form');
-      if (form) return void refreshCaptcha(form, eventTarget, `${captcha[1]}$ctl01`);
+      const form = captcha && document.getElementById(`${captcha[1].replaceAll('$', '_')}_ctl01`)?.closest('form');
+      if (form) return void refreshCaptcha(form, eventTarget, `${captcha[1]}$ctl01`); // NOSONAR: void is intentional here
       return postBack?.apply(this, arguments);
     };
     for (const element of captchas) initAudio(element);
     const load = () => {
-      for (const element of captchas) window.radcaptcha.onClientLoad({ _element: element });
-      if (!window.Sys?.Application?.add_load) setTimeout(window.initCaptchaTooltips, 1000);
+      for (const element of captchas) globalThis.radcaptcha.onClientLoad({ _element: element });
+      if (!globalThis.Sys?.Application?.add_load) setTimeout(globalThis.initCaptchaTooltips, 1000);
     };
     if (document.readyState === 'complete') load();
     else window.addEventListener('load', load, { once: true });
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
   else boot();
-  const Sys = window.Sys;
-  if (Sys?.Application?.add_load) Sys.Application.add_load(() => setTimeout(window.initCaptchaTooltips, 1000));
+  const Sys = globalThis.Sys;
+  if (Sys?.Application?.add_load) Sys.Application.add_load(() => setTimeout(globalThis.initCaptchaTooltips, 1000));
   if (Sys?.WebForms?.PageRequestManager?.getInstance)
     Sys.WebForms.PageRequestManager.getInstance().add_beginRequest(() => {
-      const $ = window.jQuery;
+      const $ = globalThis.jQuery;
       for (const selector of ['.rcRefreshImage', '.rcCaptchaAudioLink'])
         try {
           $?.(selector).first().tooltip('hide');

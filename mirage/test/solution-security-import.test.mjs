@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise solution security import with local fixtures; no native capture establishes the behaviour they assert.
 // Solution security roles and field security profiles become rows of the security tables; a managed import replaces a
 // custom role's privileges.
 import test from 'node:test';
@@ -12,6 +13,7 @@ import { ensureSecurityModel, createPrincipals } from '../lib/dataverse-security
 import { scanSolutionSources, buildSolutionSchema, readSolutionZip } from '../lib/solution-schema.mjs';
 import { securityDefinitions, inventoryEntry } from '../lib/solution-inventory.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ROLE = '77777777-7777-4777-8777-777777777781';
 const FSP = '77777777-7777-4777-8777-777777777782';
@@ -38,7 +40,7 @@ async function layer(root, name, files) {
 
 // The schema the organization seeds from: the Solution tables plus the security definitions of the inventory.
 async function sourceSchema(t, layers) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-security-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-security-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dirs = [];
   for (const [name, files] of layers) dirs.push(await layer(root, name, files));
@@ -202,7 +204,7 @@ test('ImportSolution imports a managed role and profile; a role changed after im
       ],
     });
     const api = await startDataverseApi({ store, settings, log: () => {} });
-    t.after(() => api.close());
+    ownedFixture(t).add(() => api.close());
     const token = (
       await (
         await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
@@ -306,9 +308,10 @@ test('ImportSolution imports a managed role and profile; a role changed after im
     ]);
   assert.deepEqual(await privilegesOf(), [['prvReadfx_item', 'Global']]);
   // A re-import replaces the managed privilege set.
-  await dst.request('POST', '/ImportSolution', {
+  const reimported = await dst.request('POST', '/ImportSolution', {
     CustomizationFile: withSecurity([['prvReadfx_Item', 'Basic']]).toString('base64'),
   });
+  assert.equal(reimported.status, 204, JSON.stringify(reimported.json));
   assert.deepEqual(await privilegesOf(), [['prvReadfx_item', 'Basic']]);
   // A customization on top (AddPrivilegesRole) survives the next managed import.
   const write = dst.store.state.tables.privilege.find(
@@ -322,9 +325,11 @@ test('ImportSolution imports a managed role and profile; a role changed after im
     ).status,
     204,
   );
-  await dst.request('POST', '/ImportSolution', {
+  // The import itself succeeds; an unchanged result must come from the layering, not from a refused import.
+  const layered = await dst.request('POST', '/ImportSolution', {
     CustomizationFile: withSecurity([['prvReadfx_Item', 'Local']]).toString('base64'),
   });
+  assert.equal(layered.status, 204, JSON.stringify(layered.json));
   assert.deepEqual((await privilegesOf()).sort(), [
     ['prvReadfx_item', 'Basic'],
     ['prvWritefx_item', 'Global'],

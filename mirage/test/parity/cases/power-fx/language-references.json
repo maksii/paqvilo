@@ -1,0 +1,344 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "language-references",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerApps.CLI (PAC) Power Fx evaluator",
+    "version": "2.13.1",
+    "scope": "Unqualified rows of the language matrix that carry a recorded official reference: a runtime error message, a compile-error message list, or a value. Establishes these references only; they are not scalar parity."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "bbf069dcfbafa465ae93c8d0210f369d9bd4fa1add4fc1d92eb062a939abae78",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "bbf069dcfbafa465ae93c8d0210f369d9bd4fa1add4fc1d92eb062a939abae78",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "existing-language-54",
+      "input": {
+        "expression": "Value(\"$ 12.34\")",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "error",
+        "message": "The value '$ 12.34' cannot be converted to a number."
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-71",
+      "input": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 70: Error 8-13: Numeric value is too large.",
+          "Line 70: Error 16-21: Numeric value is too large.",
+          "Line 70: Error 8-13: Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+          "Line 70: Error 16-21: Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-73",
+      "input": {
+        "expression": "IfError(1e400, 2)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 72: Error 8-13: Numeric value is too large.",
+          "Line 72: Error 8-13: Incompatible type. We can't evaluate your formula because of a type error.",
+          "Line 72: Error 0-7: The function 'IfError' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-109",
+      "input": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 108: Error 21-24: Invalid regular expression: Unclosed groups, too few closing parenthesis.",
+          "Line 108: Error 8-15: The function 'IsMatch' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-166",
+      "input": {
+        "expression": "ISOWeekNum(Date(2021, 1, 1))",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": ["Line 146: Error 0-28: 'ISOWeekNum' is an unknown or unsupported function."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-171",
+      "input": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "value",
+        "value": "2:05 pm"
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-172",
+      "input": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "value",
+        "value": "Tuesday, 5 March 2024"
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-174",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 28-29: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 20-27: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 31-37: The specified column 'a' does not exist.",
+          "Line 1: Error 50-51: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 40-49: The function 'CountRows' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-175",
+      "input": {
+        "expression": "ClearCollect(c, {a: 9}); First(c).a",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 13-14: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-12: The function 'ClearCollect' has some invalid arguments.",
+          "Line 1: Error 16-22: The specified column 'a' does not exist.",
+          "Line 1: Error 31-32: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 25-30: The function 'First' has some invalid arguments.",
+          "Line 1: Error 33-35: The '.' operator cannot be used on Error values."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-176",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 26-27: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 20-25: The function 'Clear' has some invalid arguments.",
+          "Line 1: Error 40-41: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 30-39: The function 'CountRows' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-178",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 26-27: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 35-36: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 29-34: The function 'First' has some invalid arguments.",
+          "Line 1: Error 20-25: The function 'Patch' has some invalid arguments.",
+          "Line 1: Error 29-37: Invalid argument type (Error). Expecting a Record value instead.",
+          "Line 1: Error 54-55: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 48-53: The function 'First' has some invalid arguments.",
+          "Line 1: Error 56-58: The '.' operator cannot be used on Error values."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-179",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 19-25: The specified column 'a' does not exist.",
+          "Line 1: Error 35-36: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 38-44: The specified column 'a' does not exist.",
+          "Line 1: Error 28-34: The function 'Remove' has some invalid arguments.",
+          "Line 1: Error 54-55: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 47-53: The function 'Concat' has some invalid arguments.",
+          "Line 1: Error 57-58: Name isn't valid. 'a' isn't recognized."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-180",
+      "input": {
+        "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-20: The specified column 'Value' does not exist.",
+          "Line 1: Error 23-45: 'RemoveIf' is a recognized but not supported function.",
+          "Line 1: Error 32-33: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 35-40: Name isn't valid. 'Value' isn't recognized.",
+          "Line 1: Error 57-58: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 47-56: The function 'CountRows' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-181",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+        "result": {
+          "fields": ["kind", "value", "message", "messages"],
+          "check": "compile-error",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 19-25: The specified column 'a' does not exist.",
+          "Line 1: Error 28-58: 'UpdateIf' is a recognized but not supported function.",
+          "Line 1: Error 37-38: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 40-41: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 51-52: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 64-65: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 67-68: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 60-63: The function 'Sum' has some invalid arguments."
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

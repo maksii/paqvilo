@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simulatorFixture, parentId, pendingId } from '../test/fixtures/subgrid.mjs';
@@ -9,7 +10,7 @@ const chrome = sharedBrowser();
 test('native row actions fit the viewport, open Edit naturally, and remain keyboard accessible in a small RTL viewport', async (t) => {
   const app = await simulatorFixture(t);
   const context = await chrome.browser.newContext({ viewport: { width: 500, height: 360 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage();
   const errors = [];
@@ -92,7 +93,7 @@ test('native row actions fit the viewport, open Edit naturally, and remain keybo
 test('a deep authored grid menu survives queued scroll and one-pixel completion drift, then closes on cumulative movement', async (t) => {
   const app = await simulatorFixture(t);
   const context = await chrome.browser.newContext({ viewport: { width: 700, height: 360 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage();
   await page.goto(`${app.url}/?id=${parentId}`);
@@ -150,7 +151,7 @@ test('a deep authored grid menu survives queued scroll and one-pixel completion 
 test('fallback grids scroll wide columns without losing labels, action menus or modal edits', async (t) => {
   const app = await simulatorFixture(t);
   const context = await chrome.browser.newContext({ viewport: { width: 390, height: 844 } });
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage();
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));

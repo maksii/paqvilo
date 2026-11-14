@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDirSync } from './fixture.mjs';
 
 export function inspectionFixture() {
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-inspect-')));
+  const work = tempDirSync('paqvilo-inspect-');
   const portal = path.join(work, 'portal'),
     solution = path.join(work, 'solution');
   const write = (root, files) => {

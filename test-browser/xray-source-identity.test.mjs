@@ -1,3 +1,5 @@
+// @test-kind contract: X-ray source identity reports uncertain candidates with their complete authored provenance
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -15,8 +17,7 @@ after(() => browser?.close());
 // Each test gets its own context on the shared browser; the root path serves the fixture and any other path a plain frame.
 async function fixture(t, html, report = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  context.setDefaultTimeout(5000);
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   await page.route('**/*', (route) =>
     route.fulfill({
@@ -55,6 +56,27 @@ async function fixture(t, html, report = {}) {
   return { page, identify, data };
 }
 
+// @test-kind contract: X-ray action feedback survives source refresh and clears when selecting another element
+test('X-ray action feedback survives source refresh and clears when selecting another element', async (t) => {
+  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
+  const feedback = 'Opened <invented>.xml in the editor';
+  const observed = await page.evaluate((feedback) => {
+    const host = document.getElementById('paqvilo-xray'),
+      api = host.__px;
+    const status = () => host.shadowRoot.querySelector('.status');
+    api.select(document.getElementById('first'));
+    api.status(feedback);
+    api.refreshSelection('controlled-source-refresh');
+    const afterRefresh = status().textContent,
+      markup = status().innerHTML;
+    api.select(document.getElementById('second'));
+    return { afterRefresh, markup, afterNewSelection: status().textContent };
+  }, feedback);
+  assert.equal(observed.afterRefresh, feedback);
+  assert.equal(observed.markup.includes('<invented>'), false, 'feedback stays text after the redraw');
+  assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
+});
+
 const assertNoExact = (row, message) => {
   assert.notEqual(row.evidence.owner.status, 'exact', message);
   assert.notEqual(row.evidence.source.status, 'exact', message);
@@ -89,6 +111,7 @@ const assertFieldContext = (row, qualified) =>
 const hints = (body, name, extra = {}) =>
   elementSourceHints(body, { name, kind: 'template', sourceFile: `/${name}.html`, ref: `${name}.html`, ...extra });
 
+// @test-kind contract: framework classes stay possible matches while distinctive classes, tag-qualified ids and occurrence ancestry rank correctly
 test('framework classes stay possible matches while distinctive classes, tag-qualified ids and occurrence ancestry rank correctly', async (t) => {
   const elementSources = [
     ...hints('<input class="form-control"><button class="close">x</button><input id="a">', 'one'),
@@ -151,6 +174,7 @@ test('two forms with duplicate ids, composite controls and quick views retain th
   assert.deepEqual((await identify('#foo_name')).fields, []);
 });
 
+// @test-kind contract: selected duplicate labels refresh when their locally associated control binding changes
 test('selected duplicate labels refresh when their locally associated control binding changes', async (t) => {
   const report = {
     forms: [
@@ -247,6 +271,7 @@ test('classic lists, fallback basic forms and modal iframe URLs resolve with a v
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Frame boundary/);
 });
 
+// @test-kind contract: descent remembers the selected child, native controls are picked without focus or page actions, and idle X-ray does not poll
 test('descent remembers the selected child, native controls are picked without focus or page actions, and idle X-ray does not poll', async (t) => {
   const { page } = await fixture(
     t,
@@ -270,26 +295,49 @@ test('descent remembers the selected child, native controls are picked without f
       window.geometryReads++;
       return get.call(this);
     };
+    // Track the frame and timer callbacks the page schedules from now on until they run or are cancelled.
+    window.nativeFrame = window.requestAnimationFrame;
+    window.scheduled = new Set();
+    for (const [schedule, cancel] of [
+      ['requestAnimationFrame', 'cancelAnimationFrame'],
+      ['setTimeout', 'clearTimeout'],
+    ]) {
+      const nativeSchedule = window[schedule],
+        nativeCancel = window[cancel];
+      window[schedule] = function (callback, ...rest) {
+        const entry = {};
+        entry.id = Reflect.apply(nativeSchedule, this, [
+          function (...args) {
+            window.scheduled.delete(entry);
+            return typeof callback === 'function' ? Reflect.apply(callback, this, args) : undefined;
+          },
+          ...rest,
+        ]);
+        entry.cancel = nativeCancel;
+        window.scheduled.add(entry);
+        return entry.id;
+      };
+      window[cancel] = function (id) {
+        for (const entry of window.scheduled)
+          if (entry.id === id && entry.cancel === nativeCancel) window.scheduled.delete(entry);
+        return Reflect.apply(nativeCancel, this, [id]);
+      };
+    }
   });
-  // Wait for pending pointer/layout events to settle even when the full suite is busy.
-  // A recurring geometry poll cannot pass this quiet window.
-  await page.waitForFunction(
-    () => {
-      const now = performance.now();
-      if (window.lastGeometryReads !== window.geometryReads) {
-        window.lastGeometryReads = window.geometryReads;
-        window.geometryQuietSince = now;
-      }
-      return now - window.geometryQuietSince > 450;
-    },
-    null,
-    { timeout: 5000 },
-  );
+  // The pointer and layout work the click started has ended once a whole rendering frame (its resize observations
+  // included) passes with no frame or timer callback left to run. A recurring poll through either never lets this
+  // end, and the test's timeout reports it.
+  await page.evaluate(async () => {
+    do await new Promise((resolve) => window.nativeFrame.call(window, () => window.nativeFrame.call(window, resolve)));
+    while (window.scheduled.size);
+  });
   await page.evaluate(() => (window.geometryReads = 0));
+  // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.
   await page.waitForTimeout(1100);
   assert.equal(await page.evaluate(() => window.geometryReads), 0);
 });
 
+// @test-kind contract: literal jQuery selectors contribute evidence while pseudo-only and bare tags do not
 test('literal jQuery selectors contribute evidence while pseudo-only and bare tags do not', () => {
   const rows = scriptSourceHints(
     "$('#x');jQuery('.owned');document.querySelector(':enabled');document.querySelectorAll('input');",
@@ -347,6 +395,7 @@ test('grid table boundaries retain the native control owner and lookup modal met
   assert.equal((await identify('#layout-form h2')).native[0].formId, 'B');
 });
 
+// @test-kind contract: strong ancestor IDs beat shallow class guesses and duplicate IDs retain matching tag occurrences
 test('strong ancestor IDs beat shallow class guesses and duplicate IDs retain matching tag occurrences', async (t) => {
   const elementSources = [
     ...hints('<section id="owned"><span></span></section>', 'owner'),
@@ -368,6 +417,7 @@ test('strong ancestor IDs beat shallow class guesses and duplicate IDs retain ma
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /owner/);
 });
 
+// @test-kind contract: details retain deeper unique evidence even when the same source has a nearer class match
 test('details retain deeper unique evidence even when the same source has a nearer class match', async (t) => {
   const source = '<section id="region"><div><div><button class="distinctive">Go</button></div></div></section>';
   const { page } = await fixture(t, source, { elementSources: hints(source, 'Owner') });
@@ -396,6 +446,7 @@ test('classic compact and idless list wrappers resolve only exported page or rec
   assert.ok((await page.evaluate(inspectRenderedPage)).controls.some((row) => row.listId === id.replaceAll('-', '')));
 });
 
+// @test-kind contract: a thousand indexed sources retain late snippets, expose truncation and identify selected web files
 test('a thousand indexed sources retain late snippets, expose truncation and identify selected web files', async (t) => {
   const elementSources = Array.from({ length: 1000 }, (_, index) =>
     hints(`<div id="snippet-${index}"></div>`, 'snippet-' + index),
@@ -418,6 +469,7 @@ test('a thousand indexed sources retain late snippets, expose truncation and ide
   assert.doesNotMatch(content, /ignored=value/);
 });
 
+// @test-kind contract: Web Animations started after enabling X-ray and element resizes move the selection outline, and disabling releases the animate hook
 test('Web Animations started after enabling X-ray and element resizes move the selection outline, and disabling releases the animate hook', async (t) => {
   const { page } = await fixture(
     t,
@@ -429,15 +481,11 @@ test('Web Animations started after enabling X-ray and element resizes move the s
   });
   // Outline geometry is compared inside the page so a missed repaint fails at the bounded wait instead of being slept past.
   const outlineMatches = (key) =>
-    page.waitForFunction(
-      (key) => {
-        const a = document.getElementById('moving').getBoundingClientRect(),
-          m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
-        return m && Math.abs(a[key] - m[key]) < 2;
-      },
-      key,
-      { timeout: 3000 },
-    );
+    page.waitForFunction((key) => {
+      const a = document.getElementById('moving').getBoundingClientRect(),
+        m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
+      return m && Math.abs(a[key] - m[key]) < 2;
+    }, key);
   await page.evaluate(
     () =>
       document
@@ -459,6 +507,7 @@ test('Web Animations started after enabling X-ray and element resizes move the s
   );
 });
 
+// @test-kind contract: background outlines exclude descendants of clipped ancestors while manual selection remains available
 test('background outlines exclude descendants of clipped ancestors while manual selection remains available', async (t) => {
   const { page } = await fixture(
     t,
@@ -475,6 +524,7 @@ test('background outlines exclude descendants of clipped ancestors while manual 
   await page.locator('#paqvilo-xray .selected').waitFor();
 });
 
+// @test-kind contract: source candidate display caps expose omitted matches instead of silently losing evidence
 test('source candidate display caps expose omitted matches instead of silently losing evidence', async (t) => {
   const elementSources = Array.from({ length: 75 }, (_, index) =>
     hints('<button id="same">Go</button>', 'source-' + index),
@@ -626,6 +676,7 @@ test('native PCF selection requires a rendered host rather than a configured col
   assert.ok((await identify('#title')).evidence.candidates.some((item) => item.component?.name === 'fx.Editor'));
 });
 
+// @test-kind contract: shared template coverage stays uncertain and contradictory IDs cannot hide a unique class match
 test('shared template coverage stays uncertain and contradictory IDs cannot hide a unique class match', async (t) => {
   const elementSources = [
     ...hints('<div class="state">x</div>', 'subset'),
@@ -660,6 +711,7 @@ test('shared template coverage stays uncertain and contradictory IDs cannot hide
   assertSourceCandidate(await identify('button'), 'correct-classes');
 });
 
+// @test-kind contract: a runtime notification class cannot promote an inactive template over a shared shell
 test('a runtime notification class cannot promote an inactive template over a shared shell', async (t) => {
   const shell = '<div class="alert alert-info">Notice</div>';
   const inactive = '<div class="alert alert-info notification">Notice</div>';
@@ -686,6 +738,9 @@ test('a runtime notification class cannot promote an inactive template over a sh
   await page.locator('.alert').evaluate((node) => node.classList.add('notification'));
   const found = await identify('.notification');
   assertNoExact(found);
+  const depthZeroNames = found.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(depthZeroNames.includes('Global shell'));
+  assert.ok(depthZeroNames.includes('Unrelated application wizard'));
   assert.ok(found.matches.filter((item) => item.depth === 0).every((item) => !item.strong));
   assertSourceCandidate(await identify('#active-next'), 'Active wizard');
   const rect = await page.locator('.notification').boundingBox();
@@ -700,6 +755,7 @@ test('a runtime notification class cannot promote an inactive template over a sh
   assert.equal(await page.evaluate(() => window.activated), undefined);
 });
 
+// @test-kind contract: source evidence and owned selection stay bounded for every authored case
 for (const kind of ['template', 'snippet'])
   test(`current page markup keeps overlapping ${kind} selectors uncertain after runtime changes`, async (t) => {
     const shell = '<div class="alert alert-info">Notice</div>';
@@ -761,6 +817,7 @@ for (const kind of ['template', 'snippet'])
     assert.equal(await page.evaluate(() => window.activated), undefined);
   });
 
+// @test-kind contract: selection outlines exist before notification and retain their node across observer and animation paints
 test('selection outlines exist before notification and retain their node across observer and animation paints', async (t) => {
   const { page } = await fixture(
     t,
@@ -805,6 +862,7 @@ test('selection outlines exist before notification and retain their node across 
   assert.equal(await page.evaluate(() => window.activated), undefined);
 });
 
+// @test-kind contract: repeated ID branches score the classes and source line of their matching occurrence
 test('repeated ID branches score the classes and source line of their matching occurrence', async (t) => {
   const elementSources = hints(
     '<button id="branch" class="btn exit">One</button>\n<button id="branch" class="ui-btn custom">Two</button>',
@@ -817,6 +875,7 @@ test('repeated ID branches score the classes and source line of their matching o
   assert.equal(row.matches[0].strong, false, 'ranked static occurrence remains a candidate');
 });
 
+// @test-kind contract: shared selectors in separate records of one enhanced source retain both uncertain identities
 test('shared selectors in separate records of one enhanced source retain both uncertain identities', async (t) => {
   const sources = ['one', 'two'].flatMap((recordId) =>
     hints('<div class="shared-notice">Notice</div>', recordId, {
@@ -837,6 +896,7 @@ test('shared selectors in separate records of one enhanced source retain both un
   assert.match(text, /Search export markup · 2 candidates/);
 });
 
+// @test-kind contract: framework-only evidence remains uncertain despite unique static include reachability
 test('framework-only evidence remains uncertain despite unique static include reachability', async (t) => {
   const own = hints('<a class="btn btn-link">Go</a>', 'Page', { includedBy: ['page'] }),
     header = hints('<div class="container">Header</div>', 'Header');
@@ -844,7 +904,9 @@ test('framework-only evidence remains uncertain despite unique static include re
     elementSources: [...header, ...own],
   });
   assertNoExact(await identify('a'));
-  assert.ok((await identify('a')).matches.every((item) => !item.strong));
+  const pageCandidates = await identify('a');
+  assert.ok(pageCandidates.matches.some((item) => item.name === 'Page'));
+  assert.ok(pageCandidates.matches.every((item) => !item.strong));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { elementSources: [...own, ...hints('<a class="btn btn-link">Go</a>', 'Other', { includedBy: ['page'] })] },
@@ -852,7 +914,8 @@ test('framework-only evidence remains uncertain despite unique static include re
   assertNoExact(await identify('a'));
 });
 
-test('framework-only matches count sibling sources, reject class subsets and do not headline enclosing regions', async (t) => {
+// @test-kind contract: framework-only matches count sibling sources and do not claim exact attribution
+test('framework-only matches count sibling sources and do not claim exact attribution', async (t) => {
   const sources = Array.from({ length: 5 }, (_, i) =>
     hints('<button class="close">Close</button>', 'Close' + i, { includedBy: ['page'] }),
   ).flat();
@@ -861,7 +924,15 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     '<button class="close">Close</button><button class="btn btn-default">Generated</button><div class="title"><span>Generated</span></div>',
     { elementSources: sources },
   );
-  assertNoExact(await identify('button.close'));
+  const closeCandidates = await identify('button.close');
+  assertNoExact(closeCandidates);
+  assert.deepEqual(
+    closeCandidates.matches
+      .filter((item) => item.depth === 0)
+      .map((item) => item.name)
+      .sort(),
+    ['Close0', 'Close1', 'Close2', 'Close3', 'Close4'],
+  );
   const elementSources = [
     ...hints('<button class="btn">A</button><button class="btn">B</button>', 'Subset', { includedBy: ['page'] }),
     ...['Full1', 'Full2'].flatMap((name) =>
@@ -875,10 +946,16 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     data,
     report: { elementSources },
   });
+  const buttonCandidates = await identify('.btn.btn-default');
+  const buttonNames = buttonCandidates.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(buttonNames.includes('Full1'));
+  assert.ok(buttonNames.includes('Full2'));
+  assert.ok(buttonCandidates.matches.every((item) => !item.strong));
   assertNoExact(await identify('.btn'));
   assertNoExact(await identify('span'));
 });
 
+// @test-kind contract: snippet modifier classes on the nearest container resolve shared descendants independently of page chains
 test('snippet modifier classes on the nearest container resolve shared descendants independently of page chains', async (t) => {
   const source = (modifier) =>
     `<div class="alert ${modifier} notice-${modifier}"><div class="message">Notice</div><button class="close">Close</button></div>`;
@@ -1023,6 +1100,7 @@ test('explicit advanced-form and list IDs use export inventory without adding pa
   assert.deepEqual((await identify('p')).lists, []);
 });
 
+// @test-kind contract: viewport candidates survive early offscreen matches and limit notes appear only when reached
 test('viewport candidates survive early offscreen matches and limit notes appear only when reached', async (t) => {
   const html =
     '<style>.off{position:absolute;top:2000px;width:10px;height:10px}.visible{display:inline-block;width:20px;height:20px;margin:3px}</style>' +
@@ -1049,15 +1127,16 @@ test('viewport candidates survive early offscreen matches and limit notes appear
   assert.equal(await page.locator('#paqvilo-xray .mark').count(), 20);
 });
 
+// @test-kind contract: selected sources precede bounded secondary context and disclosure choices survive picks
 test('selected sources precede bounded secondary context and disclosure choices survive picks', async (t) => {
   const { page } = await fixture(t, '<button id="one">One</button><button id="two">Two</button>', {
     elementSources: hints('<button id="one">One</button><button id="two">Two</button>', 'Selected source'),
-    apiReferences: Array.from({ length: 100 }, (_, index) => ({
+    apiReferences: Array.from({ length: 1000 }, (_, index) => ({
       name: 'fx_table' + index,
       entity: 'table' + index,
       ref: 'api' + index + '.js',
     })),
-    permissionRules: Array.from({ length: 100 }, (_, index) => ({
+    permissionRules: Array.from({ length: 1000 }, (_, index) => ({
       name: 'Rule' + index,
       entity: 'table0',
       ref: 'rule' + index + '.yml',
@@ -1085,6 +1164,8 @@ test('selected sources precede bounded secondary context and disclosure choices 
   assert.match(await context.innerText(), /fx_table8/);
   assert.doesNotMatch(await context.innerText(), /\/_api\/fx_table0\b/);
   await pick('two');
+  assert.match(await context.innerText(), /fx_table8/, 'Paging survives an ordinary new selection');
+  assert.equal(await context.locator('.binding').count(), 8, 'A thousand contexts do not expand the card DOM');
   assert.equal(await page.locator('#paqvilo-xray .content').evaluate((node) => node.scrollTop), 0);
 });
 
@@ -1128,6 +1209,7 @@ test('declared custom-grid columns keep exact grid contexts without invoking dat
   assert.deepEqual((await identify('#second-cell')).fields, []);
 });
 
+// @test-kind contract: same-origin frame shortcuts activate while off, survive navigation and stop after disposal
 test('same-origin frame shortcuts activate while off, survive navigation and stop after disposal', async (t) => {
   const { page } = await fixture(t, '<input id="main"><iframe src="/first"></iframe>', {});
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.toggle(false));
@@ -1303,6 +1385,7 @@ test('grid clones require explicit binding and redraws, reordering and nested gr
   assertFieldContext(await identify('#inner'), 'other.demo_name');
 });
 
+// @test-kind contract: current frame navigation supersedes stale src declarations while explicit DOM ownership stays independent
 test('current frame navigation supersedes stale src declarations while explicit DOM ownership stays independent', async (t) => {
   const { page, identify } = await fixture(t, '<iframe id="frame" src="/form?entityformid=F"></iframe>', {
     componentIndex: {
@@ -1370,6 +1453,7 @@ test('rich-text editor internal column-like IDs cannot replace host attribution 
   assert.equal(result.conflict, true);
 });
 
+// @test-kind contract: frame shortcuts discover late open-shadow frames while off and restore realm hooks on disposal
 test('frame shortcuts discover late open-shadow frames while off and restore realm hooks on disposal', async (t) => {
   const { page } = await fixture(t, '<div id="root-host"></div><iframe id="outer" src="/outer"></iframe>', {});
   const result = await page.evaluate(async () => {
@@ -1414,6 +1498,7 @@ test('frame shortcuts discover late open-shadow frames while off and restore rea
   });
 });
 
+// @test-kind contract: contradictory frame URL declarations remain context disagreement without ownership or other query collection
 test('contradictory frame URL declarations remain context disagreement without ownership or other query collection', async (t) => {
   const { page, identify } = await fixture(
     t,

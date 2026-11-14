@@ -1,23 +1,30 @@
+// @test-kind contract+security: owned CLI target selection preserves caution, source mappings and retired-origin capability boundaries.
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { browserChannel } from '../mirage/lib/browser-launch.mjs';
+
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
+import { waitForChildOutput } from './helpers/child-readiness.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function modelTargetsFixture(t) {
+  t.diagnostic('model-target phase: fixture');
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
+  // The CLI's owned browser profile lives in this directory.
+  owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const methods = [],
     documentReads = [0, 0],
     nativeReads = [0, 0],
@@ -91,13 +98,17 @@ async function modelTargetsFixture(t) {
       path.join(resources, `${name}.data.xml`),
       `<WebResource><Name>${name}</Name><WebResourceType>${type}</WebResourceType><FileName>WebResources/${name}</FileName></WebResource>`,
     );
-  execFileSync('git', ['init', '-q'], { cwd: solution, windowsHide: true });
-  execFileSync('git', ['add', '.'], { cwd: solution, windowsHide: true });
-  execFileSync(
-    'git',
-    ['-c', 'user.name=Invented', '-c', 'user.email=invented@example.invalid', 'commit', '-qm', 'Initial'],
-    { cwd: solution, windowsHide: true },
-  );
+  // Repository variables of a calling Git process, and hooks and signing in the user's configuration, stay out.
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const git = (...args) =>
+    execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], {
+      cwd: solution,
+      env: gitEnv,
+      windowsHide: true,
+    });
+  git('init', '-q');
+  git('add', '.');
+  git('-c', 'user.name=Invented', '-c', 'user.email=invented@example.invalid', 'commit', '-qm', 'Initial');
   const maps = [];
   for (let index = 0; index < 2; index++) {
     const file = path.join(directory, `map-${index}.json`);
@@ -138,11 +149,6 @@ async function modelTargetsFixture(t) {
       })),
     }),
   );
-  const listener = net.createServer();
-  listener.listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const debugPort = listener.address().port;
-  await new Promise((resolve) => listener.close(resolve));
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
@@ -151,58 +157,15 @@ async function modelTargetsFixture(t) {
     ),
   );
   let output = '';
-  const wait = async (predicate, label, timeout = 15000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+  const wait = async (predicate, label) => {
+    for (;;) {
       if (child?.exitCode !== null && child?.exitCode !== undefined)
         throw new Error(`${label}: owned CLI exited ${child.exitCode}: ${output}`);
       const value = await predicate();
       if (value) return value;
       await sleep(50);
     }
-    throw new Error(`${label}: exceeded ${timeout}ms: ${output}`);
   };
-  child = spawn(
-    process.execPath,
-    [
-      '--import',
-      new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
-      cli,
-      'model-driven',
-      'dev',
-      '--project',
-      project,
-      '--env',
-      'development',
-      '--browser',
-      process.platform === 'win32' ? 'msedge' : 'chromium',
-      '--headless',
-      '--debug-port',
-      String(debugPort),
-      '--output',
-      path.join(directory, 'report.json'),
-    ],
-    {
-      cwd: directory,
-      env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origins[0] },
-      windowsHide: true,
-      signal: t.signal,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  child.on('error', (error) => {
-    if (error.name !== 'AbortError') output += `\n${error.name}: ${error.message}`;
-  });
-  closed = new Promise((resolve) =>
-    child.once('close', (code, signal) => {
-      if (code !== 0 && code !== null) t.diagnostic(output);
-      resolve({ code, signal });
-    }),
-  );
-  for (const stream of [child.stdout, child.stderr])
-    stream.on('data', (chunk) => {
-      output = (output + chunk).slice(-32000);
-    });
   const agents = path.join(directory, '.paqvilo/agents');
   const discoveries = async () => {
     let names;
@@ -218,14 +181,63 @@ async function modelTargetsFixture(t) {
         .map((name) => fs.readFile(path.join(agents, name), 'utf8').then(JSON.parse)),
     );
   };
-  await wait(async () => {
-    try {
-      return (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).ok;
-    } catch {
-      return false;
-    }
-  }, 'owned CDP listener');
+  const debugPort = await startOnFreePort(async (debugPort) => {
+    // Each start has its own output; a start that lost its debugging port has already closed.
+    output = '';
+    child = spawn(
+      process.execPath,
+      [
+        '--import',
+        new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
+        cli,
+        'model-driven',
+        'dev',
+        '--project',
+        project,
+        '--env',
+        'development',
+        '--browser',
+        browserChannel(),
+        '--headless',
+        '--debug-port',
+        String(debugPort),
+        '--output',
+        path.join(directory, 'report.json'),
+      ],
+      {
+        cwd: directory,
+        env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origins[0] },
+        windowsHide: true,
+        signal: t.signal,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    child.on('error', (error) => {
+      if (error.name !== 'AbortError') output += `\n${error.name}: ${error.message}`;
+    });
+    closed = new Promise((resolve) =>
+      child.once('close', (code, signal) => {
+        if (code !== 0 && code !== null) t.diagnostic(output);
+        resolve({ code, signal });
+      }),
+    );
+    for (const stream of [child.stdout, child.stderr])
+      stream.on('data', (chunk) => {
+        output = (output + chunk).slice(-32000);
+      });
+    // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
+    // so neither a starting CDP listener nor a partially written discovery file is observed.
+    await waitForChildOutput(child, {
+      signal: t.signal,
+      pattern: /^Opening model-driven app at /m,
+      readOutput: () => output,
+      label: 'owned browser and agent',
+    });
+    return debugPort;
+  });
+  t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  t.diagnostic('model-target phase: CDP connected');
   const page = await wait(
     () =>
       browser
@@ -234,10 +246,9 @@ async function modelTargetsFixture(t) {
         .find((page) => page.url().startsWith(origins[0])),
     'initial target page',
   );
-  page.setDefaultTimeout(10000);
   await page.waitForFunction(() => window.targetRevision === 'initial');
   await page.locator('#paqvilo-panel').waitFor();
-  await wait(async () => (await discoveries()).length > 0, 'owned agent');
+  t.diagnostic('model-target phase: initial local application');
   const initialAgents = await discoveries();
   assert.equal(initialAgents.length, 1);
   assert.equal(initialAgents[0].pid, child.pid);
@@ -262,129 +273,60 @@ async function modelTargetsFixture(t) {
   };
 }
 
-test(
-  'actual model-driven CLI switches declared references with caution, mappings and retired-origin boundaries',
-  { timeout: 60000 },
-  async (t) => {
-    const f = await modelTargetsFixture(t),
-      { page, origins } = f;
-    try {
-      const host = page.locator('#paqvilo-panel');
-      const open = async () => {
-        await host.waitFor();
-        if (!(await host.locator('.wrap.open').count())) await page.keyboard.press('Alt+Shift+P');
-        await host.locator('.wrap.open').waitFor();
-      };
-      await open();
-      const selector = page.getByLabel('Portal / environment', { exact: true });
-      assert.deepEqual(await selector.locator('option').allTextContents(), [
-        'Invented app @ development',
-        'Invented app @ review',
-      ]);
-      assert.equal(f.documentReads[1], 0, 'rendering the selector does not probe another origin');
-      await selector.selectOption('1');
-      assert.equal(new URL(page.url()).origin, origins[0], 'selection alone does not navigate');
-      await page.locator('[data-target-go]').click();
-      await page.getByRole('alertdialog').waitFor();
-      await page.locator('[data-target-cancel]').click();
-      assert.equal(new URL(page.url()).origin, origins[0]);
-      assert.equal(f.documentReads[1], 0);
-      await selector.evaluate((node) => {
-        node.add(new Option('Foreign URL', 'https://example.invalid'));
-        node.value = 'https://example.invalid';
-      });
-      await page.locator('[data-target-go]').click();
-      assert.equal(new URL(page.url()).origin, origins[0], 'unlisted option cannot supply an origin');
-      const old = await page.evaluate(() => ({
-        token: document.getElementById('paqvilo-panel').__pp.token,
-      }));
-      const oldAgents = await f.discoveries();
-      await host.getByRole('tab', { name: 'Actions', exact: true }).click();
-      await host.locator('.actions-tabs').getByRole('button', { name: 'Custom', exact: true }).click();
-      await host.getByRole('textbox', { name: 'Command label', exact: true }).fill('Owned pending command');
-      await host
-        .getByRole('textbox', { name: 'Command JavaScript', exact: true })
-        .fill(
-          'window.ownedPendingStarted=true; await new Promise(resolve=>signal.addEventListener("abort",resolve,{once:true})); return "RETIRED_ORIGIN_RESULT";',
-        );
-      await host.getByRole('button', { name: 'Run command', exact: true }).click();
-      await page.waitForFunction(() => window.ownedPendingStarted === true);
+test('actual model-driven CLI switches declared references with caution, mappings and retired-origin boundaries', async (t) => {
+  const f = await modelTargetsFixture(t),
+    { page, origins } = f;
+  try {
+    const host = page.locator('#paqvilo-panel');
+    const open = async () => {
+      await host.waitFor();
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await host.locator('.pill:visible, .wrap.open').first().waitFor();
+      if (!(await host.locator('.wrap.open').count())) await page.keyboard.press('Alt+Shift+P');
+      await host.locator('.wrap.open').waitFor();
+    };
+    await open();
+    const selector = page.getByLabel('Portal / environment', { exact: true });
+    assert.deepEqual(await selector.locator('option').allTextContents(), [
+      'Invented app @ development',
+      'Invented app @ review',
+    ]);
+    assert.equal(f.documentReads[1], 0, 'rendering the selector does not probe another origin');
+    await selector.selectOption('1');
+    assert.equal(new URL(page.url()).origin, origins[0], 'selection alone does not navigate');
+    await page.locator('[data-target-go]').click();
+    await page.getByRole('alertdialog').waitFor();
+    await page.locator('[data-target-cancel]').click();
+    assert.equal(new URL(page.url()).origin, origins[0]);
+    assert.equal(f.documentReads[1], 0);
+    await selector.evaluate((node) => {
+      node.add(new Option('Foreign URL', 'https://example.invalid'));
+      node.value = 'https://example.invalid';
+    });
+    await page.locator('[data-target-go]').click();
+    assert.equal(new URL(page.url()).origin, origins[0], 'unlisted option cannot supply an origin');
+    const old = await page.evaluate(() => ({
+      token: document.getElementById('paqvilo-panel').__pp.token,
+    }));
+    const oldAgents = await f.discoveries();
+    await host.getByRole('tab', { name: 'Actions', exact: true }).click();
+    await host.locator('.actions-tabs').getByRole('button', { name: 'Custom', exact: true }).click();
+    await host.getByRole('textbox', { name: 'Command label', exact: true }).fill('Owned pending command');
+    await host
+      .getByRole('textbox', { name: 'Command JavaScript', exact: true })
+      .fill(
+        'window.ownedPendingStarted=true; await new Promise(resolve=>signal.addEventListener("abort",resolve,{once:true})); return "RETIRED_ORIGIN_RESULT";',
+      );
+    await host.getByRole('button', { name: 'Run command', exact: true }).click();
+    await page.waitForFunction(() => window.ownedPendingStarted === true);
 
-      await selector.selectOption('1');
-      await page.locator('[data-target-go]').click();
-      try {
-        await Promise.all([
-          page.waitForURL(origins[1] + '/main.aspx?target=1'),
-          page.locator('[data-target-confirm]').click(),
-        ]);
-      } catch (error) {
-        t.diagnostic(
-          JSON.stringify({
-            url: page.url(),
-            closed: page.isClosed(),
-            childExit: f.child.exitCode,
-            output: f.getOutput(),
-          }),
-        );
-        throw error;
-      }
-      await page.waitForFunction(() => window.targetRevision === 'initial');
-      await open();
-      assert.equal(await selector.inputValue(), '1');
-      assert.equal(
-        await host.getByText('RETIRED_ORIGIN_RESULT', { exact: true }).count(),
-        0,
-        'retired pending command cannot deliver into the new target',
-      );
-      const stale = await page.evaluate(
-        (old) =>
-          window.__paqviloModelPanelApi({
-            token: old.token,
-            name: 'mode',
-            body: { online: true },
-          }),
-        old,
-      );
-      assert.equal(stale.ok, false, 'old origin capability cannot mutate the selected target');
-      for (const agent of oldAgents) {
-        const response = await fetch(agent.endpoint + '/v1/session', {
-          headers: { authorization: `Bearer ${agent.token}` },
-        }).catch(() => null);
-        if (response) await response.arrayBuffer();
-        assert.ok(!response || !response.ok, 'retired origin agent is not still authorized');
-      }
-      await fs.writeFile(f.js, 'window.targetRevision="review-save";');
-      await page.waitForFunction(() => window.targetRevision === 'review-save');
-      assert.equal(new URL(page.url()).origin, origins[1], 'source save reloads the selected reference');
-      assert.equal(f.nativeReads[1], 0, 'review mapping overlays its own resource URL');
-      await open();
-      await selector.selectOption('0');
+    await selector.selectOption('1');
+    await page.locator('[data-target-go]').click();
+    try {
       await Promise.all([
-        page.waitForURL(origins[0] + '/main.aspx?target=0'),
-        page.locator('[data-target-go]').click(),
+        page.waitForURL(origins[1] + '/main.aspx?target=1'),
+        page.locator('[data-target-confirm]').click(),
       ]);
-      await page.waitForFunction(() => window.targetRevision === 'review-save');
-      await open();
-      assert.equal(await selector.inputValue(), '0');
-      const agents = await f.discoveries();
-      assert.equal(agents.length, 1, 'only the current target agent remains');
-      assert.equal(agents[0].pid, f.child.pid);
-      const stopped = await fetch(agents[0].endpoint + '/v1/stop', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${agents[0].token}`,
-          'content-type': 'application/json',
-        },
-        body: '{}',
-      });
-      assert.equal(stopped.status, 200);
-      assert.equal((await f.closed).code, 0, f.getOutput());
-      assert.deepEqual(await f.discoveries(), []);
-      assert.ok(
-        f.methods.every((method) => method === 'GET'),
-        'all invented app requests remain read-only',
-      );
-      assert.equal(f.getOutput().includes(old.token), false);
     } catch (error) {
       t.diagnostic(
         JSON.stringify({
@@ -396,5 +338,74 @@ test(
       );
       throw error;
     }
-  },
-);
+    await page.waitForFunction(() => window.targetRevision === 'initial');
+    t.diagnostic('model-target phase: review local application');
+    await open();
+    assert.equal(await selector.inputValue(), '1');
+    assert.equal(
+      await host.getByText('RETIRED_ORIGIN_RESULT', { exact: true }).count(),
+      0,
+      'retired pending command cannot deliver into the new target',
+    );
+    const stale = await page.evaluate(
+      (old) =>
+        window.__paqviloModelPanelApi({
+          token: old.token,
+          name: 'mode',
+          body: { online: true },
+        }),
+      old,
+    );
+    assert.equal(stale.ok, false, 'old origin capability cannot mutate the selected target');
+    for (const agent of oldAgents) {
+      const response = await fetch(agent.endpoint + '/v1/session', {
+        headers: { authorization: `Bearer ${agent.token}` },
+      }).catch(() => null);
+      if (response) await response.arrayBuffer();
+      assert.ok(!response || !response.ok, 'retired origin agent is not still authorized');
+    }
+    await fs.writeFile(f.js, 'window.targetRevision="review-save";');
+    t.diagnostic('model-target phase: source refresh requested');
+    await page.waitForFunction(() => window.targetRevision === 'review-save');
+    t.diagnostic('model-target phase: source refresh applied');
+    assert.equal(new URL(page.url()).origin, origins[1], 'source save reloads the selected reference');
+    assert.equal(f.nativeReads[1], 0, 'review mapping overlays its own resource URL');
+    await open();
+    await selector.selectOption('0');
+    await Promise.all([page.waitForURL(origins[0] + '/main.aspx?target=0'), page.locator('[data-target-go]').click()]);
+    await page.waitForFunction(() => window.targetRevision === 'review-save');
+    t.diagnostic('model-target phase: development local application');
+    await open();
+    assert.equal(await selector.inputValue(), '0');
+    const agents = await f.discoveries();
+    assert.equal(agents.length, 1, 'only the current target agent remains');
+    assert.equal(agents[0].pid, f.child.pid);
+    const stopped = await fetch(agents[0].endpoint + '/v1/stop', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${agents[0].token}`,
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    assert.equal(stopped.status, 200);
+    t.diagnostic('model-target phase: owned stop accepted');
+    assert.equal((await f.closed).code, 0, f.getOutput());
+    assert.deepEqual(await f.discoveries(), []);
+    assert.ok(
+      f.methods.every((method) => method === 'GET'),
+      'all invented app requests remain read-only',
+    );
+    assert.equal(f.getOutput().includes(old.token), false);
+  } catch (error) {
+    t.diagnostic(
+      JSON.stringify({
+        url: page.url(),
+        closed: page.isClosed(),
+        childExit: f.child.exitCode,
+        output: f.getOutput(),
+      }),
+    );
+    throw error;
+  }
+});

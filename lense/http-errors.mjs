@@ -14,6 +14,31 @@ async function deadline(operation, timeoutMs) {
   }
 }
 
+/**
+ * The JSON body of a failed response read through Playwright, for when the DevTools observer below is not available
+ * (it could not attach in time): only a JSON body whose declared size is at most 32 KiB and that is not encoded, read
+ * within `timeoutMs`; null otherwise. A chunked body has no declared size and is not read, so the page's own response
+ * is never materialized beyond the bound.
+ */
+export async function boundedJsonBody(response, { timeoutMs = 5000 } = {}) {
+  try {
+    const headers = await deadline(response.allHeaders(), timeoutMs);
+    const length = Number(headers['content-length']);
+    if (
+      !jsonType(headers['content-type']) ||
+      (headers['content-encoding'] && headers['content-encoding'] !== 'identity') ||
+      !headers['content-length'] ||
+      !Number.isFinite(length) ||
+      length > LIMIT
+    )
+      return null;
+    const bytes = await deadline(response.body(), timeoutMs);
+    return bytes.length <= LIMIT ? JSON.parse(bytes.toString('utf8')) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Read Chromium's bounded response cache, never replay a request or materialize
 // an unbounded Playwright response body. Chunked transfers need no size header.
 export function observeHttpErrors(context, page, { origin, response, timeoutMs = 2000 }) {

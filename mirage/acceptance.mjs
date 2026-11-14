@@ -6,12 +6,15 @@ import { navigationCommitBudget } from './lib/navigation-budget.mjs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
+import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
+import { redactUrl } from './parity-suite.mjs';
 import {
   awaitWritesBeforeDocument,
   DOCUMENT_REQUEST_PATTERN,
@@ -20,6 +23,8 @@ import {
 } from './lib/navigation-settle.mjs';
 import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
 import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
+import { answerRoute } from './lib/closed-route.mjs';
+import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
 
 const safeUrl = (value) => {
   try {
@@ -29,9 +34,11 @@ const safeUrl = (value) => {
     return '<invalid URL>';
   }
 };
-const failureUrl = (value) => {
+const failureUrl = (value, { isLive = false } = {}) => {
   try {
     const url = new URL(value);
+    // Live portal URLs keep the path and parameter names only; the fragment never reaches evidence.
+    if (isLive) return redactUrl(url.origin + url.pathname + url.search);
     const query = new URLSearchParams(auditQuery(url.searchParams));
     return url.origin + url.pathname + (url.search ? '?' + query.toString() : '');
   } catch {
@@ -50,32 +57,169 @@ const loopback = (value) => {
     throw new Error('Local simulator and browser debugging addresses must use loopback without credentials.');
   return url;
 };
-const expand = (value, variables) =>
-  Array.isArray(value)
-    ? value.map((item) => expand(item, variables))
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]))
-      : typeof value === 'string'
-        ? value.replace(/\{\{([\w]+)\}\}/g, (_all, name) => {
-            if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
-            return String(variables[name]);
-          })
-        : value;
-const locate = (page, target) =>
-  target.selector
-    ? page.locator(target.selector)
-    : target.role
-      ? page.getByRole(target.role, {
-          name: target.name,
-          exact: target.exact !== false,
-        })
-      : target.label
-        ? page.getByLabel(target.label, { exact: target.exact !== false })
-        : target.text
-          ? page.getByText(target.text, { exact: target.exact !== false })
-          : (() => {
-              throw new Error('A flow action requires selector, role, label, or text.');
-            })();
+// Each run writes into its own folder under the output root; an existing run folder is never reused.
+const createRunDirectory = async (outputRoot, startedAt) => {
+  await fs.mkdir(outputRoot, { recursive: true });
+  const runDir = path.join(outputRoot, startedAt.toISOString().replaceAll(/[:.]/g, ''));
+  try {
+    await fs.mkdir(runDir);
+  } catch (error) {
+    if (error.code === 'EEXIST')
+      throw new Error(`Evidence folder ${runDir} already exists; choose another --output.`, { cause: error });
+    throw error;
+  }
+  return runDir;
+};
+// Live flows: a browser-session write net (openFlowWriteNet) stops every write of the flow's page, its popups and their
+// frames from the first request; the context route below also records and refuses them once Playwright has attached the
+// popup, which another debugging client of the attached browser can precede. The flow's own page keeps its page route
+// and falls through here. A page opened while the flow runs that the flow did not open (no opener, or opened by such
+// a page) is released once its opener is known; a page whose opener is still unknown stays guarded. A page that was
+// already open when the guard started is guarded too, so its writes are refused and recorded while the flow runs. The
+// returned stop function removes the route and closes the pages the flow opened.
+const pageOfRoute = (route) => {
+  try {
+    return route.request().frame().page();
+  } catch {
+    return null;
+  }
+};
+// The context's own close event ends the answers of its routes, whatever their page reports.
+const watchContextClosed = (context) => {
+  let closed = false;
+  context.once('close', () => {
+    closed = true;
+  });
+  return () => closed;
+};
+// A started promise stays in `set` until it settles; stop waits for every member of the set.
+const track = (set, promise) => {
+  set.add(promise);
+  const remove = () => set.delete(promise);
+  promise.then(remove, remove);
+  return promise;
+};
+const guardOpenedPages = async (context, owner, guard, onOpened) => {
+  const guarded = new Set([owner]);
+  const unrelated = new Set();
+  const pendingPages = new Set();
+  const inflightRoutes = new Set();
+  const contextClosed = watchContextClosed(context);
+  let stopped = false;
+  const guardFlowRequest = (route) => {
+    const page = pageOfRoute(route);
+    const answer = page === owner || unrelated.has(page) ? () => route.fallback() : () => guard(route);
+    return track(inflightRoutes, answerRoute(route, answer, { contextClosed }));
+  };
+  const openPage = async (popup) => {
+    const opener = await popup.opener().catch(() => undefined);
+    // A popup whose opener resolves after stop is closed here and never registered.
+    if (stopped) {
+      await popup.close().catch(() => {});
+      return;
+    }
+    if (opener === null || unrelated.has(opener)) {
+      unrelated.add(popup);
+      return;
+    }
+    if (!guarded.has(opener)) return;
+    guarded.add(popup);
+    onOpened(popup, opener);
+  };
+  const onPage = (popup) => track(pendingPages, openPage(popup));
+  context.on('page', onPage);
+  try {
+    await context.route('**/*', guardFlowRequest);
+  } catch (error) {
+    context.off('page', onPage);
+    throw error;
+  }
+  return async () => {
+    stopped = true;
+    context.off('page', onPage);
+    await Promise.allSettled([...pendingPages, ...inflightRoutes]);
+    await context.unroute('**/*', guardFlowRequest).catch(() => {});
+    await Promise.all([...guarded].filter((page) => page !== owner).map((page) => page.close().catch(() => {})));
+  };
+};
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+// The CDP target id of a Playwright page, read through a page session that is detached again.
+const pageTargetId = async (context, page) => {
+  const session = await context.newCDPSession(page);
+  try {
+    return (await session.send('Target.getTargetInfo')).targetInfo.targetId;
+  } finally {
+    await session.detach().catch(() => {});
+  }
+};
+// The browser-session write net of a live flow. The flow's page is its root, so the page, its popups and their frames
+// meet it from their first request, whichever debugging client of the attached browser resumes them.
+const openFlowWriteNet = async (cdpUrl, context, page, onBlocked) => {
+  const targetId = await pageTargetId(context, page);
+  const transport = await connectCdpTransport(cdpUrl);
+  try {
+    const net = await openBrowserWriteNet({
+      transport,
+      decide: ({ method }) => (READ_METHODS.has(method) ? { action: 'continue' } : { action: 'block' }),
+      onDecided: ({ request }) => onBlocked(request),
+    });
+    net.addRoot(targetId, page);
+    return {
+      async close() {
+        await net.close();
+        await transport.close();
+      },
+    };
+  } catch (error) {
+    await transport.close();
+    throw error;
+  }
+};
+// A live flow ends its page guard and its page first; its write net is closed whatever either of them throws.
+const endFlowPage = async (page, stopGuardingPages, flowWriteNet) => {
+  try {
+    await stopGuardingPages?.();
+    await page.close();
+  } finally {
+    await flowWriteNet?.close();
+  }
+};
+// The popup entry names its opener until the popup first navigates to a page; a popup that closes first keeps that label.
+// Each listener is removed when its popup closes, and the run closes every popup it guarded.
+const recordOpenedPopup = (observation, popup, opener) => {
+  const entry = { url: `opened by ${safeUrl(opener.url())}` };
+  const onNavigated = (frame) => {
+    if (frame !== popup.mainFrame()) return;
+    entry.url = safeUrl(frame.url());
+    popup.off('framenavigated', onNavigated);
+  };
+  popup.on('framenavigated', onNavigated);
+  popup.once('close', () => popup.off('framenavigated', onNavigated));
+  observation.popups ??= [];
+  observation.popups.push(entry);
+};
+const expand = (value, variables) => {
+  if (Array.isArray(value)) return value.map((item) => expand(item, variables));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]));
+  if (typeof value === 'string')
+    return value.replace(/\{\{(\w+)\}\}/g, (_all, name) => {
+      if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
+      return String(variables[name]);
+    });
+  return value;
+};
+const locate = (page, target) => {
+  if (target.selector) return page.locator(target.selector);
+  if (target.role)
+    return page.getByRole(target.role, {
+      name: target.name,
+      exact: target.exact !== false,
+    });
+  if (target.label) return page.getByLabel(target.label, { exact: target.exact !== false });
+  if (target.text) return page.getByText(target.text, { exact: target.exact !== false });
+  throw new Error('A flow action requires selector, role, label, or text.');
+};
 const expectedFields = (record, fields, contains) =>
   Object.entries(fields ?? {}).every(([name, value]) => JSON.stringify(record[name]) === JSON.stringify(value)) &&
   Object.entries(contains ?? {}).every(
@@ -98,7 +242,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
 }
 
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
-export async function runAcceptance({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance({
   localUrl,
   liveOrigin,
   cdpUrl,
@@ -111,6 +255,8 @@ export async function runAcceptance({
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
+  // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
+  onNavigationHold = null,
   // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
   // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
   requires = null,
@@ -133,8 +279,8 @@ export async function runAcceptance({
   )
     throw new Error('Live comparison requires a credential-free HTTPS origin.');
   if (!Array.isArray(flows) || !flows.length) throw new Error('Provide explicit acceptance flows.');
-  outputDir = path.resolve(outputDir);
-  await fs.mkdir(outputDir, { recursive: true });
+  const startedAt = new Date();
+  outputDir = await createRunDirectory(path.resolve(outputDir), startedAt);
   let observedIdentity;
   const readState = async (full = false) => {
     const response = await fetch(new URL('/__sim/api/state' + (full ? '' : '?summary=1'), local.origin), {
@@ -159,7 +305,8 @@ export async function runAcceptance({
   if (!state.status?.sourceFingerprint || !state.status?.implementationFingerprint)
     throw new Error('Acceptance requires the portal source and loaded mirage implementation fingerprints.');
   const result = {
-    time: new Date().toISOString(),
+    time: startedAt.toISOString(),
+    evidenceDirectory: outputDir,
     passed: false,
     sourceFingerprint: state.status?.sourceFingerprint,
     implementationFingerprint: state.status?.implementationFingerprint,
@@ -174,15 +321,18 @@ export async function runAcceptance({
     // synchronous requests (lib/navigation-settle.mjs).
     blockingProxy = net.createServer((socket) => socket.destroy());
     await new Promise((resolve) => blockingProxy.listen(0, '127.0.0.1', resolve));
-    ownedBrowser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
-      proxy: {
-        server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: LOOPBACK_HOSTS.join(','),
-      },
-    });
+    ownedBrowser = await chromium.launch(
+      windowsLaunchOptions({
+        channel: channel === 'chromium' ? undefined : channel,
+        headless: true,
+        timeout: BROWSER_HANG_GUARD_MS,
+        args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+        proxy: {
+          server: `http://127.0.0.1:${blockingProxy.address().port}`,
+          bypass: LOOPBACK_HOSTS.join(','),
+        },
+      }),
+    );
     const localContext = await ownedBrowser.newContext({
       viewport: result.viewport,
       serviceWorkers: 'block',
@@ -192,7 +342,7 @@ export async function runAcceptance({
       if (!live || !cdpUrl)
         throw new Error('Live observations require --origin and the intended existing --cdp browser.');
       loopback(cdpUrl);
-      attachedBrowser = await chromium.connectOverCDP(cdpUrl);
+      attachedBrowser = await chromium.connectOverCDP(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
       if (attachedBrowser.contexts().length !== 1) throw new Error('Use exactly one attached browser identity.');
       const context = attachedBrowser.contexts()[0];
       if (context.serviceWorkers().some((worker) => new URL(worker.url()).origin === live.origin))
@@ -258,7 +408,9 @@ export async function runAcceptance({
         navigationHolds = new Set(),
         navigationBudgets = new Map();
       let settlementDeadline = Infinity,
-        actionDeadline = Infinity;
+        actionDeadline = Infinity,
+        // The current step's own deadline: a step's `timeout` overrides the flow's for that step only.
+        actionTimeout = timeout;
       const navigationTimings = new Map();
       const navigationKey = (method, value) => method + ' ' + new URL(value).href;
       const requestFrame = (request) => {
@@ -271,7 +423,8 @@ export async function runAcceptance({
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
         if (cancelled.length) {
-          (observation.navigationCancelledRequests ??= []).push(...cancelled);
+          observation.navigationCancelledRequests ??= [];
+          observation.navigationCancelledRequests.push(...cancelled);
           lastRequestActivity = Date.now();
         }
       };
@@ -326,7 +479,7 @@ export async function runAcceptance({
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
-          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
+          const remaining = Math.min(actionTimeout, Math.max(0, actionDeadline - now));
           const key = navigationKey(event.request.method, event.request.url);
           const comparableMs = navigationTimings.get(key);
           const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, {
@@ -355,8 +508,9 @@ export async function runAcceptance({
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
-              if (wait)
-                (observation.navigationWaits ??= []).push({
+              if (wait) {
+                observation.navigationWaits ??= [];
+                observation.navigationWaits.push({
                   navigation: safeUrl(event.request.url),
                   ...wait,
                   commitReserveMs: reserve,
@@ -365,14 +519,24 @@ export async function runAcceptance({
                   writeHoldAllowanceMs: Math.max(0, remaining - reserve),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
+              }
             })
             .catch(() => {})
             .finally(() => cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {}));
           navigationHolds.add(hold);
           void hold.finally(() => navigationHolds.delete(hold));
+          onNavigationHold?.({ url: safeUrl(event.request.url) });
         });
         await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
+      // Edge isolates a cross-origin loopback child into its own renderer: this session sees its document
+      // request, then a "swap" detach, and the request's end reaches only the child's own target.
+      cdp.on('Page.frameDetached', ({ frameId, reason }) => {
+        if (reason !== 'swap') return;
+        for (const record of cdpRecords.values())
+          if (record.frameId === frameId && record.type === 'Document' && record.finishedTimestamp === undefined)
+            record.handedOff = true;
+      });
       for (const event of ['frameAttached', 'frameDetached', 'frameNavigated'])
         cdp.on('Page.' + event, (value) =>
           frameEvents.push({
@@ -456,10 +620,11 @@ export async function runAcceptance({
       page.on('console', (message) => {
         if (message.type() === 'error') {
           observation.consoleErrors.push(safeMessage(message.text()));
-          (observation.consoleMessages ??= []).push({
+          observation.consoleMessages ??= [];
+          observation.consoleMessages.push({
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
-            url: message.location().url ? failureUrl(message.location().url) : null,
+            url: message.location().url ? failureUrl(message.location().url, { isLive }) : null,
           });
         }
       });
@@ -496,7 +661,7 @@ export async function runAcceptance({
           kind: 'network',
           requestKey,
           method: request.method(),
-          url: failureUrl(request.url()),
+          url: failureUrl(request.url(), { isLive }),
           status: record?.status,
           error: safeMessage(request.failure()?.errorText),
           errorText: safeMessage(request.failure()?.errorText),
@@ -519,9 +684,10 @@ export async function runAcceptance({
         // requestfinished depending on timing, so it is classified here, once, from its status.
         if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
           noContentRequests.add(response.request());
-          (observation.noContentNavigations ??= []).push({
+          observation.noContentNavigations ??= [];
+          observation.noContentNavigations.push({
             method: response.request().method(),
-            url: failureUrl(response.url()),
+            url: failureUrl(response.url(), { isLive }),
             status: response.status(),
           });
         }
@@ -530,7 +696,7 @@ export async function runAcceptance({
             kind: 'http',
             requestKey: String(record?.order ?? ''),
             method: response.request().method(),
-            url: failureUrl(response.url()),
+            url: failureUrl(response.url(), { isLive }),
             status: response.status(),
           };
           observation.failedResponses.push(failure);
@@ -593,18 +759,33 @@ export async function runAcceptance({
         });
       // Live observations block every non-read request. Local flows are confined to loopback
       // by the owned browser's proxy (blocked requests are recorded when they fail).
-      if (isLive)
-        await page.route('**/*', (route) => {
+      let stopGuardingPages = null;
+      let flowWriteNet = null;
+      if (isLive) {
+        const guardRequest = (route) => {
           const request = route.request();
           if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
             observation.blockedRequests.push({
               method: request.method(),
               url: safeUrl(request.url()),
             });
-            return route.abort('blockedbyclient');
+            return answerRoute(route, () => route.abort('blockedbyclient'));
           }
-          return route.continue();
-        });
+          return answerRoute(route, () => route.continue());
+        };
+        flowWriteNet = await openFlowWriteNet(cdpUrl, context, page, (request) =>
+          observation.blockedRequests.push({ method: request.method, url: safeUrl(request.url) }),
+        );
+        try {
+          await page.route('**/*', guardRequest);
+          stopGuardingPages = await guardOpenedPages(context, page, guardRequest, (popup, opener) =>
+            recordOpenedPopup(observation, popup, opener),
+          );
+        } catch (error) {
+          await flowWriteNet.close();
+          throw error;
+        }
+      }
       const capture = async (label) => {
         const file = path.join(outputDir, `${index + 1}-${flow.name.replace(/[^a-z0-9]/gi, '-')}-${label}.png`);
         await page.screenshot({
@@ -619,21 +800,22 @@ export async function runAcceptance({
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
-          timeout,
+          timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
-        (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
+        observation.loadWaits ??= [];
+        observation.loadWaits.push({ url: safeUrl(page.url()), ...quiet });
       };
       const settle = async () => {
         // Document holds have their own bounded write wait. Start the settle
         // deadline after releasing an existing hold, so it cannot expire while
         // the runner itself prevents the replacement document from committing.
-        await Promise.allSettled([...navigationHolds]);
+        await Promise.allSettled(navigationHolds);
         const active = () =>
           [...pending.values()].filter(
             (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
           );
-        const deadline = Date.now() + timeout;
+        const deadline = Date.now() + actionTimeout;
         settlementDeadline = deadline;
         try {
           let lastProofCheck = 0;
@@ -649,39 +831,28 @@ export async function runAcceptance({
               if (response.ok) {
                 const audit = await response.json();
                 const frameTree = await cdp.send('Page.getFrameTree');
-                const flatten = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(flatten)];
-                const currentFrames = flatten(frameTree.frameTree);
+                const currentFrames = flattenFrameTree(frameTree.frameTree);
                 observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
                   id,
                   parentId,
                   loaderId,
                 }));
-                for (const [request, record] of pending) {
-                  const proof = reconcileSupersededRead(proofInputs.get(request), {
-                    cdpRecords: [...cdpRecords.values()],
-                    audit,
-                    origin: local.origin,
-                    identity: observedIdentity,
-                    frameEvents,
-                    currentFrames,
-                  });
-                  if (proof) {
-                    record.navigationObservation = proof;
-                    (observation.supersededReads ??= []).push(proof);
-                    pending.delete(request);
-                  }
-                }
+                reconcilePendingFrames({
+                  observation,
+                  pending,
+                  proofInputs,
+                  cdpRecords,
+                  audit,
+                  localOrigin: local.origin,
+                  observedIdentity,
+                  frameEvents,
+                  currentFrames,
+                });
               }
             }
           }
           await Promise.allSettled(responseObservations);
-          if (active().length)
-            throw new Error(
-              'Portal requests did not settle: ' +
-                active()
-                  .map((record) => record.method + ' ' + record.url)
-                  .join(', '),
-            );
+          throwIfActiveRequests(active);
         } finally {
           settlementDeadline = Infinity;
         }
@@ -698,19 +869,28 @@ export async function runAcceptance({
             passed: false,
           };
           observation.steps.push(entry);
+          actionTimeout = step.timeout ?? timeout;
+          if (
+            !Number.isFinite(actionTimeout) ||
+            actionTimeout <= 0 ||
+            (navigationCommitReserveMs !== undefined && navigationCommitReserveMs >= actionTimeout)
+          )
+            throw new Error('A step timeout must be a positive finite number larger than navigationCommitReserveMs.');
+          if (step.timeout !== undefined) entry.timeout = actionTimeout;
+          page.setDefaultTimeout(actionTimeout);
+          page.setDefaultNavigationTimeout(actionTimeout);
           if (
             isLive &&
             (step.mutation ||
               ['identity', 'preset', 'record', 'rememberRecord', 'waitRecord', 'richtext'].includes(step.action))
           )
             throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
-          actionDeadline = Date.now() + timeout;
-          const surface = step.frame
-            ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
-                (surface, selector) => surface.frameLocator(selector),
-                page,
-              )
-            : page;
+          actionDeadline = Date.now() + actionTimeout;
+          let surface;
+          if (step.frame) {
+            const selectors = Array.isArray(step.frame) ? step.frame : [step.frame];
+            surface = selectors.reduce((current, selector) => current.frameLocator(selector), page);
+          } else surface = page;
           const target = () => locate(surface, step);
           if (step.action === 'navigate') {
             await settle();
@@ -718,7 +898,7 @@ export async function runAcceptance({
               throw new Error('Navigation must use a portal-relative path.');
             if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
               throw new Error('Navigation readiness must be load or domcontentloaded.');
-            actionDeadline = Date.now() + timeout;
+            actionDeadline = Date.now() + actionTimeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -738,7 +918,7 @@ export async function runAcceptance({
             await control.waitFor({ state: 'attached' });
             entry.alreadyVisible = await control.isVisible();
             if (!entry.alreadyVisible) {
-              actionDeadline = Date.now() + timeout;
+              actionDeadline = Date.now() + actionTimeout;
               await locate(surface, step.trigger).click();
             }
             await control.waitFor({ state: 'visible' });
@@ -766,7 +946,7 @@ export async function runAcceptance({
           } else if (step.action === 'value') {
             // Authored modal scripts can initialize defaults after the control
             // is attached. Assert the resulting value within the action deadline.
-            const deadline = Date.now() + timeout;
+            const deadline = Date.now() + actionTimeout;
             let matched = false;
             let observed = false;
             while (Date.now() < deadline) {
@@ -839,7 +1019,7 @@ export async function runAcceptance({
             await page.locator('#confirm').waitFor({ state: 'hidden' });
           } else if (['record', 'rememberRecord', 'waitRecord'].includes(step.action)) {
             let current, matches;
-            const deadline = Date.now() + (step.action === 'waitRecord' ? timeout : 0);
+            const deadline = Date.now() + (step.action === 'waitRecord' ? actionTimeout : 0);
             for (;;) {
               current = await readState(true);
               requireLocal(current);
@@ -863,6 +1043,9 @@ export async function runAcceptance({
           actionDeadline = Infinity;
           entry.passed = true;
         }
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
         await page.waitForTimeout(300);
         await settle();
         await capture('final');
@@ -931,10 +1114,12 @@ export async function runAcceptance({
                 return false;
               }
             });
-          if (own) (observation.browserRequestConsole ??= []).push({ console: message, path: own.path, status });
-          else observation.unexpectedConsoleErrors.push(message);
+          if (own) {
+            observation.browserRequestConsole ??= [];
+            observation.browserRequestConsole.push({ console: message, path: own.path, status });
+          } else observation.unexpectedConsoleErrors.push(message);
         }
-        const failures = ['pageErrors', 'blockedRequests'].filter((key) => observation[key].length);
+        const failures = ['pageErrors', 'blockedRequests', 'popups'].filter((key) => observation[key]?.length);
         if (observation.unexpectedConsoleErrors.length) failures.push('consoleErrors');
         if (unexpectedRequests.length) failures.push('failedRequests');
         if (unexpectedResponses.some((response) => !(flow.allowedHttpStatuses ?? []).includes(response.status)))
@@ -973,7 +1158,7 @@ export async function runAcceptance({
           } catch (error) {
             observation.auditError = safeMessage(error.message);
           }
-        await page.close();
+        await endFlowPage(page, stopGuardingPages, flowWriteNet);
       }
     }
     const final = await readState();
@@ -994,22 +1179,62 @@ export async function runAcceptance({
   return result;
 }
 
+function reconcilePendingFrames({
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  audit,
+  localOrigin,
+  observedIdentity,
+  frameEvents,
+  currentFrames,
+}) {
+  for (const [request, record] of pending) {
+    const proof = reconcileSupersededRead(proofInputs.get(request), {
+      cdpRecords: [...cdpRecords.values()],
+      audit,
+      origin: localOrigin,
+      identity: observedIdentity,
+      frameEvents,
+      currentFrames,
+    });
+    if (proof) {
+      record.navigationObservation = proof;
+      observation.supersededReads ??= [];
+      observation.supersededReads.push(proof);
+      pending.delete(request);
+    }
+  }
+}
+
+function flattenFrameTree(node) {
+  return [node.frame, ...(node.childFrames ?? []).flatMap(flattenFrameTree)];
+}
+
+function throwIfActiveRequests(active) {
+  if (active().length)
+    throw new Error(
+      'Portal requests did not settle: ' +
+        active()
+          .map((record) => record.method + ' ' + record.url)
+          .join(', '),
+    );
+}
+
+export const __testing = {
+  failureUrl,
+  guardOpenedPages,
+  createRunDirectory,
+  recordOpenedPopup,
+  openFlowWriteNet,
+  endFlowPage,
+};
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        local: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-        requires: { type: 'string', multiple: true },
-        strict: { type: 'boolean', default: false },
-        output: {
-          type: 'string',
-          default: '.paqvilo/simulator/acceptance/evidence',
-        },
-      },
-    });
+    const values = parseToolArgs('acceptance', process.argv.slice(2));
+    assertToolOptions('acceptance', values, ['local', 'origin', 'cdp']);
     const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
     const result = await runAcceptance({
       localUrl: values.local,

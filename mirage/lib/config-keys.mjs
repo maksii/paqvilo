@@ -10,6 +10,7 @@ import { dataverseSettings } from './dataverse-settings.mjs';
 import { modelDrivenSettings } from './model-driven-settings.mjs';
 import { platformConfig } from './platform-config.mjs';
 import { renderSettings } from './render-settings.mjs';
+import { traceSettings } from './trace-settings.mjs';
 import { personaContextSettings } from './persona-context-settings.mjs';
 import { identityProviderSettings } from './identity-provider-settings.mjs';
 import { resolveDeploymentProfiles } from './deployment-profiles.mjs';
@@ -30,6 +31,19 @@ function choice(choices, message) {
     if (value != null && !choices.includes(value)) throw new Error(`${label} ${message}`);
     return value;
   };
+}
+/** mirage.logs.retain when unset: the log lines the runtime keeps for GET /_sim/api/logs. */
+export const LOG_RETAIN_DEFAULT = 2000;
+const LOG_RETAIN_MAX = 50_000;
+/** mirage.logs: { retain } (0..50000, default 2000; 0 keeps no history); unknown members are refused. */
+export function logSettings(value, label = 'logs') {
+  if (value == null) return { retain: LOG_RETAIN_DEFAULT };
+  if (!isPlainObject(value)) throw new Error(`${label} must be an object`);
+  for (const key of Object.keys(value)) if (key !== 'retain') throw new Error(`${label}.${key} is not a setting`);
+  const retain = value.retain ?? LOG_RETAIN_DEFAULT;
+  if (!Number.isInteger(retain) || retain < 0 || retain > LOG_RETAIN_MAX)
+    throw new Error(`${label}.retain must be an integer from 0 to ${LOG_RETAIN_MAX}`);
+  return { retain };
 }
 const policyKey = (key) => (value) => contentPolicyDefaults({ [key]: value })[key];
 const overrideKey = (key) => (value) => validateLocalOverrides({ [key]: value })[key];
@@ -239,7 +253,7 @@ export const MIRAGE_SETTINGS = Object.freeze({
   presetMode: {
     scopes: ['catalogue'],
     option: null,
-    doc: 'bootstrap or always.',
+    doc: 'always (default) or bootstrap.',
     parse: choice(['bootstrap', 'always'], 'must be bootstrap or always'),
     resolve: (value) => value || undefined,
   },
@@ -327,6 +341,20 @@ export const MIRAGE_SETTINGS = Object.freeze({
     identity: true,
     doc: 'Liquid render limits.',
     parse: (value) => renderSettings(value),
+  },
+  // No identity: the level and caps change at run time (`_sim` trace settings), so a running runtime is reused.
+  trace: {
+    scopes: ['catalogue', 'project'],
+    option: 'trace',
+    doc: 'Local request tracing: level (off, summary or full), retained traces, spans per trace, payload bytes, persist.',
+    parse: (value, label) => traceSettings(value, label),
+  },
+  // No identity: the history size never changes what a runtime serves.
+  logs: {
+    scopes: ['catalogue', 'project'],
+    option: 'logs',
+    doc: 'Runtime log stream history: retain (log lines kept for the _sim Activity log stream and GET /_sim/api/logs, default 2000; 0 keeps none).',
+    parse: (value, label) => logSettings(value, label),
   },
   sourceMaps: {
     scopes: ['catalogue', 'project', 'portal'],
@@ -492,12 +520,10 @@ export function resolveCatalogueSettings(value, where) {
   const result = {};
   for (const [key, row] of Object.entries(MIRAGE_SETTINGS)) {
     if (!row.scopes.includes('catalogue') || row.resolve === null) continue;
-    const resolved =
-      value[key] === undefined || (row.resolve && value[key] === null)
-        ? row.fallback
-        : row.resolve
-          ? row.resolve(value[key], where)
-          : row.parse(value[key], `mirage.${key}`, where.configDir);
+    let resolved;
+    if (value[key] === undefined || (row.resolve && value[key] === null)) resolved = row.fallback;
+    else if (row.resolve) resolved = row.resolve(value[key], where);
+    else resolved = row.parse(value[key], `mirage.${key}`, where.configDir);
     if (resolved !== undefined) result[key] = resolved;
   }
   return result;
@@ -549,7 +575,7 @@ export function configuredSettingKeys({ project = null, portal = null, catalogue
         ![JSON.stringify(row.fallback ?? null), '{}', '[]'].includes(JSON.stringify(source[key]));
   return Object.keys(MIRAGE_SETTINGS)
     .filter((key) => MIRAGE_SETTINGS[key].scopes.some((scope) => present(sources[scope], MIRAGE_SETTINGS[key], key)))
-    .sort();
+    .sort(/* NOSONAR: preserve default string coercion */);
 }
 
 /** The registered options found in an options object (for runtimes that forward their settings). */
@@ -566,16 +592,16 @@ export function settingOptions(options = {}, { exclude = [] } = {}) {
   );
 }
 
-const stable = (value) =>
-  Array.isArray(value)
-    ? value.map(stable)
-    : isPlainObject(value)
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, stable(value[key])]),
-        )
-      : value;
+const stable = (value) => {
+  if (Array.isArray(value)) return value.map(stable);
+  if (isPlainObject(value))
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort(/* NOSONAR: preserve default string coercion */)
+        .map((key) => [key, stable(value[key])]),
+    );
+  return value;
+};
 
 /** The options that decide whether a running runtime can be reused; secret-bearing ones are hashed. */
 export function runtimeIdentity(options = {}) {

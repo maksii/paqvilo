@@ -2,13 +2,14 @@
 // history functions and their privileges.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { AUDIT_ACTION, install, recordUserAccess, reset, writeAudit } from '../lib/dataverse-audit.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
 const ORIGIN = 'http://127.0.0.1:5555';
@@ -237,7 +238,7 @@ test('a column whose columnMetadata says not audited is left out of the mask', a
 });
 
 test('audit rows survive a reload from the store file', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'audit-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'audit-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'state.json');
   const store = await new DataStore({ file, state: fixtureState() }).init();

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "scope": "Repeated native default HTTP metadata collection order; ordinary internal and SDK metadata retain source registration order. Source kinds, not native ordinal/case-ID lookups, establish the relationship order.",
+  "captures": [
+    {
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "cases": [
+        {
+          "id": "metadata.attributes",
+          "requestSha256": "bf2291947cfaab8de80b9f5a03bdb4d9e332a6cef4a099d3ae7d23554cc59e3a",
+          "responseSha256": "5dc92ca7e53b1c277d008abfc0de02f4d48ec3511d11dad4d0e2c1f621b2c8db"
+        },
+        {
+          "id": "metadata.typed-string",
+          "requestSha256": "14328b5de854e175933908a2bd8d01b67236dc8f5721d17e1f25297f266e2575",
+          "responseSha256": "ae6c825ea735e1e7e902cf83335baeefa758f28b57c9def21f38f89e49e460eb"
+        },
+        {
+          "id": "metadata.relationships",
+          "requestSha256": "9fb85b56302c971d32c849e638231278257e2d292851ceb03f64efc13b334ab9",
+          "responseSha256": "a02e5952f9bf237f010f969a01e04df521d20fa03ebc1e626564f055d1a3445d"
+        }
+      ]
+    },
+    {
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "cases": [
+        {
+          "id": "metadata.attributes",
+          "requestSha256": "bf2291947cfaab8de80b9f5a03bdb4d9e332a6cef4a099d3ae7d23554cc59e3a",
+          "responseSha256": "5dc92ca7e53b1c277d008abfc0de02f4d48ec3511d11dad4d0e2c1f621b2c8db"
+        },
+        {
+          "id": "metadata.typed-string",
+          "requestSha256": "14328b5de854e175933908a2bd8d01b67236dc8f5721d17e1f25297f266e2575",
+          "responseSha256": "ae6c825ea735e1e7e902cf83335baeefa758f28b57c9def21f38f89e49e460eb"
+        },
+        {
+          "id": "metadata.relationships",
+          "requestSha256": "9fb85b56302c971d32c849e638231278257e2d292851ceb03f64efc13b334ab9",
+          "responseSha256": "a02e5952f9bf237f010f969a01e04df521d20fa03ebc1e626564f055d1a3445d"
+        }
+      ]
+    }
+  ],
+  "sourceOrderProofSha256": "dad8f03e635111f116ace33b1992aca821a2b56afea36ecb5225d1412631d19b",
+  "expected": {
+    "attributes": "ordinal-ascending-LogicalName",
+    "typedStringAttributes": "ordinal-ascending-LogicalName",
+    "relationships": [
+      "platform-initial-references",
+      "inferred-notes",
+      "authored-source",
+      "platform-terminal-file-duplicates"
+    ],
+    "relationshipSourceKindCounts": [
+      7,
+      1,
+      1,
+      3
+    ]
+  }
+}

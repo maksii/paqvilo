@@ -1,3 +1,4 @@
+// @test-kind unproven: broad form, value, validator, file and hosted-component models; finite native control guarantees with their sources are checked separately.
 // $pages forms, tabs, sections and controls over a rendered native basic form, and the file-column methods over the
 // portal Web API.
 import test, { before, after } from 'node:test';
@@ -7,9 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { createSimulator } from '../server.mjs';
-import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { signedInSimulatorPage } from './shared-browser.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -23,7 +23,7 @@ const FORM = '77777777-7777-4777-8777-777777777703';
 const CONTACT = '77777777-7777-4777-8777-777777777704';
 
 test('$pages forms bind to the rendered basic form: tabs, sections, values, visibility, required state and validators', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-forms-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pages-forms-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Example`,
@@ -123,14 +123,7 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
-  ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
-  await signInContext(context, app, CONTACT, { roles: ['Member'] });
-  const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  const { app, page, errors } = await signedInSimulatorPage(t, browser, { dir, initial, contact: CONTACT });
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   await page.goto(`${app.url}/?id=${ROW}`);
 
@@ -189,8 +182,9 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
     ['x_flag', 'MultipleChoice'],
   ]);
   assert.deepEqual(read.tabs, [
-    ['general', [['main', ['x_name', 'x_count', 'x_kind']]]],
-    ['more', [['extra', ['x_note', 'x_flag']]]],
+    // Evidence: repeated2026-11-08 native diagnostics and Microsoft getName method source establish rendered labels rather than logical names; all26 source-label relations replay exactly.
+    ['general', [['main', ['Name', 'Count', 'Kind']]]],
+    ['more', [['extra', ['Note', 'Flag']]]],
   ]);
   assert.deepEqual(read.values, ['Changed', 'Changed', '2', 'Dropdown', true, true]);
   assert.match(read.tooLong, /maximum length 20/);
@@ -324,7 +318,7 @@ test('$pages full name, rich text and code component controls read and write the
   const { html, spec } = await renderedContactForm();
   const { clientPortalObjectRuntime } = await import('../lib/portal-client-object.mjs');
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   // setIsDirty is the native form script the rendered inputs call on change.

@@ -5,21 +5,24 @@ import { spawnSync } from 'node:child_process';
 import { dependencyReadiness } from './ensure-dependencies.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-function git(args, { raw = false } = {}) {
-  const result = spawnSync('git', ['--no-optional-locks', ...args], {
+function git(args, { raw = false, allowFailure = false } = {}) {
+  /* NOSONAR */ const result = spawnSync('git', ['--no-optional-locks', ...args], {
     cwd: root,
     encoding: 'utf8',
     windowsHide: true,
     timeout: 30_000,
   });
-  if (result.status !== 0) throw new Error(result.error?.message ?? result.stderr.trim());
+  if (result.status !== 0) {
+    if (allowFailure) return null;
+    throw new Error(result.error?.message ?? result.stderr.trim());
+  }
   return raw ? result.stdout : result.stdout.trim();
 }
 
 function install() {
   if (path.resolve(git(['rev-parse', '--show-toplevel'])) !== root)
     throw new Error('Install hooks from the toolkit checkout.');
-  const current = spawnSync('git', ['--no-optional-locks', 'config', '--get', 'core.hooksPath'], {
+  /* NOSONAR */ const current = spawnSync('git', ['--no-optional-locks', 'config', '--get', 'core.hooksPath'], {
     cwd: root,
     encoding: 'utf8',
     windowsHide: true,
@@ -28,13 +31,51 @@ function install() {
     throw new Error(
       `Existing core.hooksPath is ${current.stdout.trim()}; reconcile it with .githooks before installing.`,
     );
-  for (const name of ['pre-commit', 'pre-push', 'commit-msg']) fs.chmodSync(path.join(root, '.githooks', name), 0o755);
+  for (const name of ['pre-commit', 'pre-push', 'commit-msg']) fs.chmodSync(path.join(root, '.githooks', name), 0o755); // NOSONAR: executable hook files need the exec bit
   git(['config', '--local', 'core.hooksPath', '.githooks']);
   console.log('Installed local hooks: staged quality checks, scoped pre-push validation and Conventional Commits.');
 }
 
 // A fixture's package self-import must resolve to staged source, never to the original checkout.
 // Independent registry dependencies may reuse their locked installed trees; local source links may not.
+function linkLockedDependencies(directory, project) {
+  const lockFile = path.join(directory, 'package-lock.json');
+  if (!fs.existsSync(lockFile)) return;
+  const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  for (const [name, entry] of Object.entries(lock.packages ?? {})) {
+    if (!/^node_modules\/(?:@[^/]+\/)?[^/]+$/.test(name) || name === 'node_modules/paqvilo') continue;
+    if (entry.link || entry.resolved?.startsWith('file:'))
+      throw new Error('Unregistered local fixture dependency cannot enter staged validation.');
+    const source = path.join(root, project, name);
+    if (!fs.existsSync(source)) continue; // The resolver reports missing imports; optional platform packages may be absent.
+    const installed = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
+    if (installed.version !== entry.version)
+      throw new Error('Fixture dependency differs from its staged lockfile; run ci:prepare.');
+    const destination = path.join(directory, name);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.symlinkSync(source, destination, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+}
+
+function linkFixtureProject(snapshot, project) {
+  const directory = path.join(snapshot, project);
+  const manifestFile = path.join(directory, 'package.json');
+  if (!fs.existsSync(manifestFile)) return;
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
+  const modules = path.join(directory, 'node_modules');
+  fs.mkdirSync(modules, { recursive: true });
+  if (dependencies.paqvilo) {
+    if (
+      !dependencies.paqvilo.startsWith('file:') ||
+      path.resolve(directory, dependencies.paqvilo.slice(5)) !== snapshot
+    )
+      throw new Error('Fixture paqvilo dependency must name the staged toolkit root.');
+    fs.symlinkSync(snapshot, path.join(modules, 'paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  linkLockedDependencies(directory, project);
+}
+
 function linkFixtureDependencies(snapshot) {
   for (const project of [
     'examples/project',
@@ -42,39 +83,48 @@ function linkFixtureDependencies(snapshot) {
     'mirage/test-sdk/tds',
     'mirage/test-sdk/dynamics-web-api',
     'mirage/test-sdk/cert-auth',
-  ]) {
-    const directory = path.join(snapshot, project);
-    const manifestFile = path.join(directory, 'package.json');
-    if (!fs.existsSync(manifestFile)) continue;
-    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-    const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
-    const modules = path.join(directory, 'node_modules');
-    fs.mkdirSync(modules, { recursive: true });
-    if (dependencies.paqvilo) {
-      if (
-        !dependencies.paqvilo.startsWith('file:') ||
-        path.resolve(directory, dependencies.paqvilo.slice(5)) !== snapshot
-      )
-        throw new Error('Fixture paqvilo dependency must name the staged toolkit root.');
-      fs.symlinkSync(snapshot, path.join(modules, 'paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
-    }
-    const lockFile = path.join(directory, 'package-lock.json');
-    if (!fs.existsSync(lockFile)) continue;
-    const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-    for (const [name, entry] of Object.entries(lock.packages ?? {})) {
-      if (!/^node_modules\/(?:@[^/]+\/)?[^/]+$/.test(name) || name === 'node_modules/paqvilo') continue;
-      if (entry.link || entry.resolved?.startsWith('file:'))
-        throw new Error('Unregistered local fixture dependency cannot enter staged validation.');
-      const source = path.join(root, project, name);
-      if (!fs.existsSync(source)) continue; // The resolver reports missing imports; optional platform packages may be absent.
-      const installed = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
-      if (installed.version !== entry.version)
-        throw new Error('Fixture dependency differs from its staged lockfile; run ci:prepare.');
-      const destination = path.join(directory, name);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.symlinkSync(source, destination, process.platform === 'win32' ? 'junction' : 'dir');
-    }
+  ])
+    linkFixtureProject(snapshot, project);
+}
+
+// The checker runs from the staged snapshot, so an unstaged edit to the checker cannot change the staged result.
+function checkStagedTags(snapshot) {
+  const tags = spawnSync(process.execPath, [path.join(snapshot, 'scripts', 'check-test-tags.mjs'), '--staged'], {
+    cwd: snapshot,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (tags.status !== 0) throw new Error('Staged validation failed (test kinds). Commit stopped.');
+}
+
+function prepareQualitySnapshot(snapshot) {
+  for (const directory of ['', 'mirage']) {
+    const source = path.join(root, directory, 'node_modules');
+    if (fs.existsSync(source))
+      fs.symlinkSync(
+        source,
+        path.join(snapshot, directory, 'node_modules'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
   }
+  linkFixtureDependencies(snapshot);
+  const ready = dependencyReadiness(snapshot);
+  if (!ready.ready) throw new Error(`${ready.reason} Stage consistent manifests, then run npm run setup.`);
+}
+
+function clearGitEnvironment(env) {
+  for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
+}
+
+function runStagedScript(snapshot, npmCli, script, env) {
+  const result = spawnSync(process.execPath, [npmCli, 'run', script], {
+    cwd: snapshot,
+    env,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (result.status !== 0)
+    throw new Error(result.error?.message ?? `Staged validation failed (${script}). Commit stopped.`);
 }
 
 // Export the index instead of testing unstaged edits. Never stash or mutate contributor files.
@@ -94,37 +144,17 @@ async function preCommit() {
     );
     const scripts = preCommitScripts(files);
     console.log(`Staged validation: ${scripts.join(', ') || 'no applicable checks'}.`);
-    if (scripts.includes('quality')) {
-      for (const directory of ['', 'mirage']) {
-        const source = path.join(root, directory, 'node_modules');
-        if (fs.existsSync(source))
-          fs.symlinkSync(
-            source,
-            path.join(snapshot, directory, 'node_modules'),
-            process.platform === 'win32' ? 'junction' : 'dir',
-          );
-      }
-      linkFixtureDependencies(snapshot);
-      const ready = dependencyReadiness(snapshot);
-      if (!ready.ready) throw new Error(`${ready.reason} Stage consistent manifests, then run npm run setup.`);
-    }
+    // Changed test files declare their kind; parity assertions change only with recorded proof (docs/test-kinds.md).
+    checkStagedTags(snapshot);
+    if (scripts.includes('quality')) prepareQualitySnapshot(snapshot);
     const npmCli = process.env.npm_execpath;
     if (scripts.length && (!npmCli || !fs.existsSync(npmCli)))
       throw new Error('Run this hook through npm run hooks:check.');
     // Git's hook environment otherwise leaks the original index into synthetic test repositories.
     const env = { ...process.env };
     env.PAQVILO_TOOL_CACHE = path.join(root, '.paqvilo', 'tools');
-    for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
-    for (const script of scripts) {
-      const result = spawnSync(process.execPath, [npmCli, 'run', script], {
-        cwd: snapshot,
-        env,
-        stdio: 'inherit',
-        windowsHide: true,
-      });
-      if (result.status !== 0)
-        throw new Error(result.error?.message ?? `Staged validation failed (${script}). Commit stopped.`);
-    }
+    clearGitEnvironment(env);
+    for (const script of scripts) runStagedScript(snapshot, npmCli, script, env);
     if (git(['write-tree']) !== stagedTree)
       throw new Error('The staged index changed during validation. Review the index and commit again.');
   } finally {
@@ -133,16 +163,32 @@ async function preCommit() {
   }
 }
 
-function prePush() {
-  const head = git(['rev-parse', 'HEAD']);
-  const updates = fs.readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
+// An annotated tag names a tag object, so the commit it qualifies is the one the tag object peels to.
+function pushedCommit(oid) {
+  return git(['rev-parse', '--verify', '--quiet', `${oid}^{commit}`], { allowFailure: true });
+}
+
+// Every pushed ref must peel to the checked-out commit; a deletion (all-zero object id) is skipped.
+function assertPushedCommitsMatchHead(updates, head) {
   for (const line of updates) {
     const [, localOid] = line.split(' ');
-    if (!/^0+$/.test(localOid) && localOid !== head)
+    if (/^0+$/.test(localOid)) continue;
+    const commit = pushedCommit(localOid);
+    if (commit === null)
+      throw new Error(
+        `Pre-push validation can only qualify the checked-out commit. ${localOid} does not peel to a commit.`,
+      );
+    if (commit !== head)
       throw new Error(
         'Pre-push validation can only qualify the checked-out commit. Check out each branch before pushing it.',
       );
   }
+}
+
+function prePush() {
+  const head = git(['rev-parse', 'HEAD']);
+  const updates = fs.readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
+  assertPushedCommitsMatchHead(updates, head);
   if (updates.length && updates.every((line) => /^0+$/.test(line.split(' ')[1]))) return;
   if (git(['status', '--porcelain']))
     throw new Error(

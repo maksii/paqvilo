@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise parity suite with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -5,6 +6,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   assertReadOnlyPath,
   checkPersonaAccess,
@@ -19,6 +22,7 @@ import {
   cookieShapes,
   createHttpDriver,
   createRedactor,
+  DELTA_KINDS,
   etagShape,
   extractProbe,
   formatMask,
@@ -34,6 +38,7 @@ import {
   scenarioPath,
   segmentRoles,
   startIsolatedMirage,
+  summarizeNetwork,
   summaryMarkdown,
   treeText,
   validatePlan,
@@ -43,6 +48,10 @@ import {
   tagShape,
   __testing,
 } from '../parity-suite.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+
+// The hang guard for a synchronous CLI child, which cannot be cancelled once it blocks.
+const CLI_HANG_GUARD_MS = 170_000;
 
 const GUID_A = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const GUID_B = 'c6d9e2d4-1c73-e811-a844-000d3a2a3148';
@@ -56,9 +65,9 @@ const element = (tag, attributes = {}, children = [], extra = {}) => ({
 const text = (value) => ({ t: value });
 
 test('isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline-owned-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-owned-import-'));
   let owned;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await owned?.app.close();
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -89,6 +98,7 @@ test('isolated baseline identity imports stay on the owned loopback runtime rega
   assert.equal(owned.app.store.state.tables.contact[0].fullname, 'Synthetic persona');
 });
 
+// @test-kind tooling: normalisers generalise identifiers, dates, tokens and origins
 test('normalisers generalise identifiers, dates, tokens and origins', () => {
   const value = `Open ${GUID_A} on 2026-10-07T21:30:00Z (07/10/2026 21:30) by ana.local@example.test ref 1234567 at https://reference.example token ${'A'.repeat(48)}`;
   assert.equal(
@@ -99,6 +109,7 @@ test('normalisers generalise identifiers, dates, tokens and origins', () => {
   assert.equal(normalizeText('12 October 2025'), '{date}');
 });
 
+// @test-kind tooling: URL redaction keeps names and shapes but never query values
 test('URL redaction keeps names and shapes but never query values', () => {
   assert.equal(
     redactUrl(`https://reference.example/requests/itemselection-ro/?id=${GUID_A}&orderId=1`, {
@@ -122,6 +133,7 @@ test('URL redaction keeps names and shapes but never query values', () => {
   assert.equal(redactUrl('#tab-1'), '#tab-1');
 });
 
+// @test-kind tooling: live text is revealed only when source-derived, local-equal or trivially short
 test('live text is revealed only when source-derived, local-equal or trivially short', () => {
   const corpus = { has: (value) => value === 'Owned products' };
   const redactor = createRedactor({ corpus, key: Buffer.alloc(32, 1) });
@@ -140,6 +152,7 @@ test('live text is revealed only when source-derived, local-equal or trivially s
   assert.ok(!JSON.stringify(hidden).includes('Maria'));
 });
 
+// @test-kind tooling: read-only checks reject writes, deny-listed routes and unsafe plans.
 test('read-only guards reject writes, deny-listed routes and unsafe plans', () => {
   assert.doesNotThrow(() => assertReadOnlyPath('/workspace/'));
   for (const bad of ['https://evil.example/', '//evil.example/'])
@@ -203,6 +216,7 @@ test('read-only guards reject writes, deny-listed routes and unsafe plans', () =
   );
 });
 
+// @test-kind tooling: request decisions continue reads, fulfil explicit writes locally and block everything else
 test('request decisions continue reads, fulfil explicit writes locally and block everything else', () => {
   const origins = ['https://reference.example'];
   const fulfil = [
@@ -227,6 +241,7 @@ test('request decisions continue reads, fulfil explicit writes locally and block
   );
 });
 
+// @test-kind tooling: semantic trees collapse data rows, redact control values and report structural deltas
 test('semantic trees collapse data rows, redact control values and report structural deltas', () => {
   // A platform asset from the CDN and its local copy compare equal; bundle content hashes are ignored.
   assert.equal(
@@ -356,9 +371,39 @@ test('Web API projections compare shape, annotations, paging and reference value
         { method: 'GET', url: '/_api/x?$select=…', status: 200, projection: live },
         { method: 'GET', url: '/_api/y', status: 404 },
       ],
-    ).map((delta) => delta.kind),
+    ).deltas.map((delta) => delta.kind),
     ['network-extra'],
   );
+});
+
+// @test-kind tooling: network comparison counts every difference and marks a list cut at the limit as truncated
+test('network comparison counts every difference and marks a list cut at the limit as truncated', () => {
+  const live = Array.from({ length: 100 }, (_, index) => ({ method: 'GET', url: `/_api/item-${index}`, status: 200 }));
+  const comparison = compareNetwork(live, []);
+  assert.equal(comparison.deltas.length, 60);
+  assert.equal(comparison.total, 100);
+  assert.equal(comparison.truncated, true);
+});
+
+// @test-kind security: live network error messages pass through the redactor, while the local side keeps its text
+test('live network error messages pass through the redactor and local ones keep their text', () => {
+  const message = 'Jane Doe is not a column of the synthetic table';
+  const failed = (text) => [
+    {
+      method: 'GET',
+      url: '/_api/x?$filter=name',
+      status: 400,
+      projection: {
+        kind: 'error',
+        keys: [],
+        error: { keys: [], code: 'X', codeShape: 'x', innerKeys: [], message: text },
+      },
+    },
+  ];
+  const live = summarizeNetwork(failed(message), createRedactor({ corpus: new Set() }))[0].projection.error.message;
+  assert.equal(live.redacted, true);
+  assert.doesNotMatch(JSON.stringify(live), /Jane Doe/);
+  assert.equal(summarizeNetwork(failed(message))[0].projection.error.message, message);
 });
 
 test('redirect, header, cookie and ETag projections keep shapes without secrets', () => {
@@ -436,6 +481,7 @@ test('Liquid probes classify literals, masks and concatenated roles', () => {
   );
 });
 
+// @test-kind tooling: run-time identifiers fill placeholders without entering the plan; drift and probe shapes carry no values
 test('run-time identifiers fill placeholders without entering the plan; drift and probe shapes carry no values', async () => {
   const scenario = {
     id: 'x',
@@ -491,6 +537,7 @@ test('FetchXML paging rewrites only page and cookie attributes', () => {
   );
 });
 
+// @test-kind tooling: classification rules match scenario, kind, path and field criteria in order
 test('classification rules match scenario, kind, path and field criteria in order', () => {
   const rules = [
     { scenario: '/^anon-/', kind: 'redirect', class: 'runtime-gap', owner: 'D', note: 'redirect shape' },
@@ -501,8 +548,192 @@ test('classification rules match scenario, kind, path and field criteria in orde
   assert.equal(classifyDelta({ kind: 'repeat-count' }, 'home', rules).class, 'data-difference');
 });
 
+// @test-kind tooling: scenario and kind criteria match exactly, a regex criterion still matches, and unknown rule kinds are refused
+test('classification scenario and kind criteria match exactly, and unknown rule kinds are refused', () => {
+  const rules = [{ scenario: 'home', kind: 'count', class: 'data-difference', note: 'row counts follow data' }];
+  assert.equal(classifyDelta({ kind: 'count' }, 'home', rules).class, 'data-difference');
+  assert.equal(classifyDelta({ kind: 'repeat-count' }, 'home', rules).class, 'unclassified');
+  assert.equal(classifyDelta({ kind: 'count' }, 'homepage-legacy', rules).class, 'unclassified');
+  const regexRules = [{ kind: '/missing$/', class: 'source-deployment', note: 'deployment lag' }];
+  assert.equal(classifyDelta({ kind: 'csp-directive-missing' }, 'home', regexRules).class, 'source-deployment');
+  const base = { version: 1, scenarios: [{ id: 'a', kind: 'page-dom', path: '/' }] };
+  assert.throws(
+    () => validatePlan({ ...base, classifications: [{ kind: 'counter', class: 'data-difference', note: 'x' }] }),
+    /known delta kind/,
+  );
+  assert.doesNotThrow(() =>
+    validatePlan({ ...base, classifications: [{ kind: 'count', class: 'data-difference', note: 'x' }] }),
+  );
+});
+
+// @test-kind tooling: a selection that names no known scenario, or leaves none after the tag filters, exits 2 before any run starts
+test('parity-suite refuses a selection that names no known scenario or leaves none, before any run starts', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-selection-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source');
+  await fs.mkdir(source);
+  const script = fileURLToPath(new URL('../parity-suite.mjs', import.meta.url));
+  const refuse = (...args) =>
+    spawnSync(
+      process.execPath,
+      [
+        script,
+        '--source',
+        source,
+        '--out',
+        path.join(root, 'out'),
+        '--origin',
+        'https://reference.example.invalid',
+        ...args,
+      ],
+      { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
+    );
+  const unknown = refuse('--only', 'typo-scenario');
+  assert.equal(unknown.status, 2, unknown.stderr);
+  assert.match(unknown.stderr, /Unknown scenario ids: typo-scenario/);
+  const empty = refuse('--tags', 'no-such-tag');
+  assert.equal(empty.status, 2, empty.stderr);
+  assert.match(empty.stderr, /No scenario selected\./);
+  await assert.rejects(fs.access(path.join(root, 'out')));
+});
+
+// @test-kind tooling: every delta kind the comparers push is listed in DELTA_KINDS, so classification rules can name it
+test('every delta kind the comparers push is listed in DELTA_KINDS', async () => {
+  const source = await fs.readFile(new URL('../parity-suite.mjs', import.meta.url), 'utf8');
+  const pushed = [...source.matchAll(/(?:deltas\.push\(\{|pushTreeDelta\(context, \{)\s*kind: '([^']+)'/g)];
+  assert.ok(pushed.length > 0, 'the scan finds the comparers delta pushes');
+  for (const [, kind] of pushed) assert.ok(DELTA_KINDS.includes(kind), `unlisted delta kind ${kind}`);
+});
+
+const jsonProjection = (overrides = {}) => ({
+  kind: 'object',
+  topKeys: ['value'],
+  count: 1,
+  fields: { id: ['guid'] },
+  annotations: {},
+  ...overrides,
+});
+
+const errorProjection = (keys, error = {}) => ({
+  kind: 'error',
+  keys,
+  error: { keys: ['code'], codeShape: 'hex8', code: '90040120', innerKeys: [], ...error },
+});
+
+/** One [live, local] pair per way compareJson reports a difference. */
+function jsonDifferenceCases() {
+  return [
+    [jsonProjection({ kind: 'collection' }), jsonProjection()],
+    [errorProjection(['error']), errorProjection(['error', 'extra'])],
+    [errorProjection(['error']), errorProjection(['error'], { keys: ['code', 'message'] })],
+    [errorProjection(['error']), errorProjection(['error'], { codeShape: 'word' })],
+    [errorProjection(['error']), errorProjection(['error'], { code: 'TABLE_DENIED' })],
+    [errorProjection(['error']), errorProjection(['error'], { innerKeys: ['type'] })],
+    [jsonProjection({ topKeys: ['value', '@odata.context'] }), jsonProjection()],
+    [jsonProjection(), jsonProjection({ topKeys: ['value', 'extra'] })],
+    [jsonProjection({ nextLink: '/_api/x?$skip=1' }), jsonProjection()],
+    [jsonProjection({ nextLink: '/_api/x?$skip=1' }), jsonProjection({ nextLink: '/_api/x?$top=1' })],
+    [jsonProjection({ pagingCookie: 'a' }), jsonProjection({ pagingCookie: 'b' })],
+    [jsonProjection({ moreRecords: true }), jsonProjection({ moreRecords: false })],
+    [jsonProjection({ count: 2 }), jsonProjection({ count: 3 })],
+    [jsonProjection({ odataCount: 2 }), jsonProjection({ odataCount: 3 })],
+    [jsonProjection({ totalRecordCount: 2 }), jsonProjection({ totalRecordCount: 3 })],
+    [jsonProjection({ count: 0 }), jsonProjection({ count: 1 })],
+    [jsonProjection({ fields: { id: ['guid'], name: ['string'] } }), jsonProjection()],
+    [jsonProjection({ fields: { id: ['string'] } }), jsonProjection()],
+    [jsonProjection(), jsonProjection({ fields: { id: ['guid'], name: ['string'] } })],
+    [jsonProjection({ annotations: { id: ['OData.Community.Display'] } }), jsonProjection()],
+    [jsonProjection({ values: [{ id: 1 }] }), jsonProjection({ values: [{ id: 2 }] })],
+    [jsonProjection({ values: [{ id: 1 }, { id: 2 }] }), jsonProjection({ values: [{ id: 2 }, { id: 1 }] })],
+  ];
+}
+
+// @test-kind contract: network deltas reuse the compareJson kinds under a network- prefix, and every one is listed in DELTA_KINDS
+test('network delta kinds are the compareJson kinds, and every one a rule can name is listed in DELTA_KINDS', async () => {
+  const { COMPARE_JSON_KINDS } = await import('../parity-suite.mjs');
+  const cases = jsonDifferenceCases();
+  const record = (projection) => ({ method: 'GET', url: '/_api/x', status: 200, projection });
+  for (const [live, local] of cases)
+    for (const delta of compareNetwork([record(live)], [record(local)]).deltas)
+      assert.ok(DELTA_KINDS.includes(delta.kind), `unlisted network delta kind ${delta.kind}`);
+  const emitted = new Set();
+  for (const [live, local] of cases)
+    for (const options of [{ compareCount: true, compareValues: true }, {}])
+      for (const delta of compareJson(live, local, options)) emitted.add(delta.kind);
+  assert.deepEqual(
+    [...emitted].toSorted((a, b) => a.localeCompare(b)),
+    [...COMPARE_JSON_KINDS].toSorted((a, b) => a.localeCompare(b)),
+  );
+  for (const kind of COMPARE_JSON_KINDS)
+    assert.ok(DELTA_KINDS.includes(`network-${kind}`), `unlisted network kind network-${kind}`);
+});
+
+// @test-kind contract: a classification rule may name an exact network delta kind, as compareNetwork emits it
+test('a classification rule naming an exact network delta kind passes plan validation and matches that delta', () => {
+  const base = { version: 1, scenarios: [{ id: 'a', kind: 'page-dom', path: '/' }] };
+  const rules = [{ kind: 'network-field-type', class: 'data-difference', note: 'field types follow data' }];
+  assert.doesNotThrow(() => validatePlan({ ...base, classifications: rules }));
+  assert.equal(classifyDelta({ kind: 'network-field-type' }, 'home', rules).class, 'data-difference');
+});
+
+// @test-kind tooling: an opaque reference redirect is compared by status class, and the conditional re-read sends If-None-Match
+test('an opaque reference redirect compares by status class, and the conditional re-read sends If-None-Match', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-opaque-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+  const etag = '"v1"';
+  const localServer = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x.invalid');
+    if (url.pathname === '/__sim/api/state') {
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          status: { sourceFingerprint: 'source', implementationFingerprint: 'implementation' },
+          data: {},
+        }),
+      );
+    } else if (url.pathname === '/_api/redirect') {
+      if (req.headers['if-none-match'] === etag) res.writeHead(304, { etag }).end();
+      else res.writeHead(302, { etag, location: '/en-US/signin' }).end();
+    } else res.writeHead(404).end();
+  });
+  localServer.listen(0, '127.0.0.1');
+  await once(localServer, 'listening');
+  ownedFixture(t).add(() => new Promise((resolve) => localServer.close(resolve)));
+  const localOrigin = `http://127.0.0.1:${localServer.address().port}`;
+  const local = createHttpDriver({ origin: localOrigin, identity: 'local' });
+  const liveConditions = [];
+  const live = {
+    origin: 'https://reference.example.invalid',
+    http: async (_target, { ifNoneMatch } = {}) => {
+      liveConditions.push(ifNoneMatch ?? null);
+      // Like the signed-in CDP driver, a manual redirect is opaque: status 0 and type opaqueredirect.
+      return ifNoneMatch === etag
+        ? { status: 304, type: 'basic', headers: { etag }, body: '', ms: 1 }
+        : { status: 0, type: 'opaqueredirect', redirectObservable: false, headers: { etag }, body: '', ms: 1 };
+    },
+  };
+  const plan = {
+    version: 1,
+    scenarios: [
+      { id: 'api-redirect', kind: 'api-status', identity: 'anonymous', path: '/_api/redirect', conditional: true },
+    ],
+  };
+  const report = await runParitySuite({
+    plan,
+    localUrl: localOrigin,
+    origin: live.origin,
+    sides: { live, anonymous: live, local: { origin: localOrigin, http: local.http } },
+    outDir: directory,
+    delayMs: 0,
+  });
+  const [scenario] = report.scenarios;
+  assert.deepEqual(liveConditions, [null, etag]);
+  assert.deepEqual(scenario.deltas ?? [], []);
+  assert.equal(scenario.observations.live.redirect, 'opaque');
+});
+
 test('runner compares synthetic loopback sides, classifies deltas, redacts values and never writes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-suite-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-'));
   const writes = { live: 0, local: 0 };
   const signIns = [];
   const localCookies = [];
@@ -605,7 +836,7 @@ test('runner compares synthetic loopback sides, classifies deltas, redacts value
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    t.after(
+    ownedFixture(t).add(
       () =>
         new Promise((resolve) => {
           server.closeAllConnections();
@@ -756,6 +987,7 @@ test('runner compares synthetic loopback sides, classifies deltas, redacts value
   assert.match(summaryMarkdown(report), /anon-redirect \| anonymous/);
 });
 
+// @test-kind tooling: scenario sources combine the core set with matching data-pack plans and scope each plan's rules
 test("scenario sources combine the core set with matching data-pack plans and scope each plan's rules", async (t) => {
   const {
     packScenarioFiles,
@@ -784,7 +1016,7 @@ test("scenario sources combine the core set with matching data-pack plans and sc
   );
 
   // A temporary packs root with one pack that matches only its own portal.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-packs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-packs-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'demo-parity', 'fixtures'), { recursive: true });
   await fs.writeFile(
@@ -976,6 +1208,7 @@ test('portal discovery picks deterministic anonymous targets, and the core set v
   );
 });
 
+// @test-kind tooling: document shells compare the title, html/body attributes and bundle presence and order
 test('document shells compare the title, html/body attributes and bundle presence and order', async () => {
   const { compareShell } = await import('../parity-suite.mjs');
   const live = {
@@ -1079,7 +1312,7 @@ test('local identity mirrors the reference persona with a session role override 
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const controller = createIdentityController(`http://127.0.0.1:${server.address().port}`);
   assert.equal(controller.cookie(), null);
   const mirrored = await controller.mirror({
@@ -1106,6 +1339,7 @@ test('local identity mirrors the reference persona with a session role override 
   assert.throws(() => createIdentityController('http://example.com:8080'), /loopback/);
 });
 
+// @test-kind tooling: blocked request bodies keep only their top-level keys and the GUIDs they name
 test('blocked request bodies keep only their top-level keys and the GUIDs they name', async () => {
   const { bodyShape } = await import('../parity-suite.mjs');
   assert.deepEqual(
@@ -1119,6 +1353,7 @@ test('blocked request bodies keep only their top-level keys and the GUIDs they n
   assert.equal(bodyShape(''), undefined);
 });
 
+// @test-kind tooling: captures that never settled, or anonymous ones naming a portal user, are blocked, also on reclassify
 test('captures that never settled, or anonymous ones naming a portal user, are blocked, also on reclassify', async () => {
   const { captureProblem, reclassifyReport, loadScenarioPlans } = await import('../parity-suite.mjs');
   const view = (settled, nodeCount, portalUser) => ({
@@ -1174,12 +1409,13 @@ test('captures that never settled, or anonymous ones naming a portal user, are b
   assert.equal(report.totals.blocked, 2);
 });
 
+// @test-kind tooling: shell and client probes both block inadmissible captures and retain status diagnostics
 test('shell and client probes both block inadmissible captures and retain status diagnostics', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-probe-admission-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-probe-admission-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const server = http.createServer((_req, res) => res.end(JSON.stringify({ data: {}, config: {}, status: {} })));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -1226,6 +1462,7 @@ test('shell and client probes both block inadmissible captures and retain status
   }
 });
 
+// @test-kind tooling: client objects compare key presence, key order, value types and empty User values, never values
 test('client objects compare key presence, key order, value types and empty User values, never values', async () => {
   const { compareClientObject, validatePlan, loadScenarioPlans } = await import('../parity-suite.mjs');
   const entry = (key, type, empty) => (empty === undefined ? { key, type } : { key, type, empty });
@@ -1260,6 +1497,7 @@ test('client objects compare key presence, key order, value types and empty User
   assert.equal(plan.scenarios.find((scenario) => scenario.id === 'core-client-object').kind, 'client-object');
 });
 
+// @test-kind tooling: a plan denies its own routes, a matching pack's denied routes apply to every run, and no validation lifts a denial.
 test("a plan denies its own routes, a matching pack's denied routes guard every run, and no validation lifts a denial", async (t) => {
   const { validatePlan, mergePlans, assertReadOnlyPath, activatePackDeniedRoutes, __testing } =
     await import('../parity-suite.mjs');
@@ -1311,7 +1549,7 @@ test("a plan denies its own routes, a matching pack's denied routes guard every 
   );
 
   // A pack's denied routes apply to runs against the portal it matches, whatever scenarios run.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-denied-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-denied-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'denied-pack', 'fixtures'), { recursive: true });
   await fs.writeFile(
@@ -1333,6 +1571,7 @@ test("a plan denies its own routes, a matching pack's denied routes guard every 
   assert.throws(() => assertReadOnlyPath('/synthetic-exports/?id=1'), /deny list/);
 });
 
+// @test-kind tooling: the reference sees only GET and HEAD: the fixed allow-list is empty and no plan can widen it
 test('the reference sees only GET and HEAD: the fixed allow-list is empty and no plan can widen it', async () => {
   const { SAFE_REFERENCE_REQUESTS, loadScenarioPlans } = await import('../parity-suite.mjs');
   assert.deepEqual(SAFE_REFERENCE_REQUESTS, []);
@@ -1375,4 +1614,29 @@ test('the reference sees only GET and HEAD: the fixed allow-list is empty and no
   const plan = await loadScenarioPlans({ core: true, packs: 'all' });
   validatePlan(plan);
   assert.deepEqual(plan.allowPost, []);
+});
+
+// @test-kind contract: the page drivers retry a capture only when the page read lost its document, named by these exact texts
+test('a capture is retried only for the exact lost-context messages of the DevTools protocol and Playwright', () => {
+  const { PAGE_CONTEXT_LOST_MESSAGES, pageContextLost } = __testing;
+  assert.deepEqual(PAGE_CONTEXT_LOST_MESSAGES, [
+    'Execution context was destroyed',
+    'Cannot find context with specified id',
+    'Inspected target navigated or closed',
+  ]);
+  for (const message of [
+    'Execution context was destroyed.',
+    'page.evaluate: Execution context was destroyed, most likely because of a navigation',
+    'Cannot find context with specified id',
+    'Inspected target navigated or closed',
+  ])
+    assert.equal(pageContextLost(new Error(message)), true, message);
+  for (const message of [
+    'TypeError: navigation is not defined',
+    'Navigation failed because page crashed!',
+    'CDP Runtime.evaluate timed out.',
+    'execution context was destroyed',
+  ])
+    assert.equal(pageContextLost(new Error(message)), false, message);
+  assert.equal(pageContextLost(undefined), false);
 });

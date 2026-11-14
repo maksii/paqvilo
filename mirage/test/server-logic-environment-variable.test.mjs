@@ -38,19 +38,22 @@ function run(code, environmentVariables) {
       website: {},
       settings: {},
       environmentVariables,
-      timeout: 2000,
+      // The documented local server-logic allowance (mirage/docs/operations.md); the scripts here are trivial.
+      timeout: 5000,
     },
   });
   const messages = [];
+  let answered = false;
   return new Promise((resolve, reject) => {
     worker.on('message', (message) => {
       messages.push(message);
-      if (message.kind === 'result' || message.kind === 'failure') {
-        worker.terminate();
-        resolve(messages);
-      }
+      if (message.kind === 'result' || message.kind === 'failure') answered = true;
     });
     worker.on('error', reject);
+    worker.on('exit', (code) => {
+      if (answered) resolve(messages);
+      else reject(new Error(`The worker exited (${code}) without a result`));
+    });
   });
 }
 

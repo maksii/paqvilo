@@ -19,7 +19,7 @@ npx --no-install paqvilo mirage init --config ./paqvilo.config.yml --site portal
 npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 ```
 
-Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Visit `/_sim/` for local administration.
+Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Open the `adminUrl` address that the runtime prints for local administration; `/_sim/` on the portal address redirects there.
 
 Mirage appends local debugger metadata to exported scripts and stylesheets, including
 inline scripts and model-driven client resources. Set `mirage.sourceMaps: false`
@@ -30,7 +30,7 @@ When using Mirage as a local Lense reference, disabling Mirage maps removes the 
 for a trailer-stripping proxy. The runtime still accepts only its listening Host and
 registered identity-provider reply origin; arbitrary proxy origins are unsupported.
 
-Open **Model-driven apps** from `/_sim/` or visit `/main.aspx` for the local Power
+Open **Model-driven apps** from the administration page or visit `/main.aspx` on the `appsUrl` address for the local Power
 Pages Management app. It supports grids, saved views, search, filters, columns and
 record editing, and loads additional apps/forms/views from solution metadata.
 Portal customization edits stay in local runtime state and update the Mirage
@@ -71,11 +71,13 @@ the printed command. Replay checks the payload size and digest and rejects nonre
 or changed payloads fail. If a copied hint is no longer usable, use `status` and `stop` with the same project/catalogue
 selectors to identify and stop the intended runtime.
 
+Keep the ownership directory and its parents under trusted control during publication and cleanup. Concurrent Paqvilo publishers coordinate their own files; arbitrary replacement by another actor is outside this trust boundary. Portable pathname cleanup is not an atomic compare-and-unlink operation.
+
 If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
 
 ## Build scenarios you can repeat
 
-Use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
+On the `adminUrl` address, use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
 
 Local identity comes from a per-runtime cookie. The `_sim` session and Lense Tweaks control
 only that browser's identity. [Persona catalogues](docs/persona-catalog.md) add grouped

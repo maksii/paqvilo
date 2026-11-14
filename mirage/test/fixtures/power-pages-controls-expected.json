@@ -1,0 +1,824 @@
+[
+  {
+    "id": "field1.tag",
+    "value": "input"
+  },
+  {
+    "id": "field1.type",
+    "value": "text"
+  },
+  {
+    "id": "field1.maxLength",
+    "value": 160
+  },
+  {
+    "id": "field1.disabled",
+    "value": false
+  },
+  {
+    "id": "field1.readOnly",
+    "value": false
+  },
+  {
+    "id": "field1.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field1.formContainer",
+    "value": true
+  },
+  {
+    "id": "field1.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field1.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field2.tag",
+    "value": "input"
+  },
+  {
+    "id": "field2.type",
+    "value": "text"
+  },
+  {
+    "id": "field2.maxLength",
+    "value": 20
+  },
+  {
+    "id": "field2.disabled",
+    "value": false
+  },
+  {
+    "id": "field2.readOnly",
+    "value": false
+  },
+  {
+    "id": "field2.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field2.formContainer",
+    "value": true
+  },
+  {
+    "id": "field2.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field2.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field3.tag",
+    "value": "input"
+  },
+  {
+    "id": "field3.type",
+    "value": "email"
+  },
+  {
+    "id": "field3.maxLength",
+    "value": 100
+  },
+  {
+    "id": "field3.disabled",
+    "value": false
+  },
+  {
+    "id": "field3.readOnly",
+    "value": false
+  },
+  {
+    "id": "field3.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field3.formContainer",
+    "value": true
+  },
+  {
+    "id": "field4.tag",
+    "value": "input"
+  },
+  {
+    "id": "field4.type",
+    "value": "text"
+  },
+  {
+    "id": "field4.maxLength",
+    "value": 50
+  },
+  {
+    "id": "field4.disabled",
+    "value": false
+  },
+  {
+    "id": "field4.readOnly",
+    "value": false
+  },
+  {
+    "id": "field4.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field4.formContainer",
+    "value": true
+  },
+  {
+    "id": "field4.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field4.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field5.tag",
+    "value": "input"
+  },
+  {
+    "id": "field5.type",
+    "value": "url"
+  },
+  {
+    "id": "field5.maxLength",
+    "value": 200
+  },
+  {
+    "id": "field5.disabled",
+    "value": false
+  },
+  {
+    "id": "field5.readOnly",
+    "value": false
+  },
+  {
+    "id": "field5.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field5.formContainer",
+    "value": true
+  },
+  {
+    "id": "field6.tag",
+    "value": "input"
+  },
+  {
+    "id": "field6.type",
+    "value": "url"
+  },
+  {
+    "id": "field6.maxLength",
+    "value": 10
+  },
+  {
+    "id": "field6.disabled",
+    "value": false
+  },
+  {
+    "id": "field6.readOnly",
+    "value": false
+  },
+  {
+    "id": "field6.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field6.formContainer",
+    "value": true
+  },
+  {
+    "id": "field7.tag",
+    "value": "textarea"
+  },
+  {
+    "id": "field7.type",
+    "value": "textarea"
+  },
+  {
+    "id": "field7.maxLength",
+    "value": 2000
+  },
+  {
+    "id": "field7.disabled",
+    "value": false
+  },
+  {
+    "id": "field7.readOnly",
+    "value": false
+  },
+  {
+    "id": "field7.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field7.formContainer",
+    "value": true
+  },
+  {
+    "id": "field7.feedbackAssociation",
+    "value": true
+  },
+  {
+    "id": "field7.feedbackInitialLength",
+    "value": true
+  },
+  {
+    "id": "field7.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field7.feedbackEditedLength",
+    "value": true
+  },
+  {
+    "id": "field7.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field7.feedbackRestoredLength",
+    "value": true
+  },
+  {
+    "id": "field8.tag",
+    "value": "input"
+  },
+  {
+    "id": "field8.type",
+    "value": "text"
+  },
+  {
+    "id": "field8.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field8.disabled",
+    "value": false
+  },
+  {
+    "id": "field8.readOnly",
+    "value": false
+  },
+  {
+    "id": "field8.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field8.formContainer",
+    "value": true
+  },
+  {
+    "id": "field9.tag",
+    "value": "input"
+  },
+  {
+    "id": "field9.type",
+    "value": "text"
+  },
+  {
+    "id": "field9.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field9.disabled",
+    "value": false
+  },
+  {
+    "id": "field9.readOnly",
+    "value": false
+  },
+  {
+    "id": "field9.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field9.formContainer",
+    "value": true
+  },
+  {
+    "id": "field10.tag",
+    "value": "input"
+  },
+  {
+    "id": "field10.type",
+    "value": "text"
+  },
+  {
+    "id": "field10.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field10.disabled",
+    "value": false
+  },
+  {
+    "id": "field10.readOnly",
+    "value": false
+  },
+  {
+    "id": "field10.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field10.formContainer",
+    "value": true
+  },
+  {
+    "id": "field11.tag",
+    "value": "input"
+  },
+  {
+    "id": "field11.type",
+    "value": "text"
+  },
+  {
+    "id": "field11.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field11.disabled",
+    "value": false
+  },
+  {
+    "id": "field11.readOnly",
+    "value": false
+  },
+  {
+    "id": "field11.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field11.formContainer",
+    "value": true
+  },
+  {
+    "id": "field12.tag",
+    "value": "select"
+  },
+  {
+    "id": "field12.type",
+    "value": "select-one"
+  },
+  {
+    "id": "field12.maxLength",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field12.disabled",
+    "value": false
+  },
+  {
+    "id": "field12.readOnly",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "field12.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field12.formContainer",
+    "value": true
+  },
+  {
+    "id": "field13.tag",
+    "value": "input"
+  },
+  {
+    "id": "field13.type",
+    "value": "hidden"
+  },
+  {
+    "id": "field13.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field13.disabled",
+    "value": false
+  },
+  {
+    "id": "field13.readOnly",
+    "value": false
+  },
+  {
+    "id": "field13.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field13.formContainer",
+    "value": true
+  },
+  {
+    "id": "field14.tag",
+    "value": "input"
+  },
+  {
+    "id": "field14.type",
+    "value": "text"
+  },
+  {
+    "id": "field14.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field14.disabled",
+    "value": false
+  },
+  {
+    "id": "field14.readOnly",
+    "value": false
+  },
+  {
+    "id": "field14.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field14.formContainer",
+    "value": true
+  },
+  {
+    "id": "field15.tag",
+    "value": "input"
+  },
+  {
+    "id": "field15.type",
+    "value": "text"
+  },
+  {
+    "id": "field15.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field15.disabled",
+    "value": false
+  },
+  {
+    "id": "field15.readOnly",
+    "value": false
+  },
+  {
+    "id": "field15.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field15.formContainer",
+    "value": true
+  },
+  {
+    "id": "field16.tag",
+    "value": "input"
+  },
+  {
+    "id": "field16.type",
+    "value": "hidden"
+  },
+  {
+    "id": "field16.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field16.disabled",
+    "value": false
+  },
+  {
+    "id": "field16.readOnly",
+    "value": false
+  },
+  {
+    "id": "field16.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field16.formContainer",
+    "value": true
+  },
+  {
+    "id": "field17.tag",
+    "value": "input"
+  },
+  {
+    "id": "field17.type",
+    "value": "hidden"
+  },
+  {
+    "id": "field17.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field17.disabled",
+    "value": false
+  },
+  {
+    "id": "field17.readOnly",
+    "value": false
+  },
+  {
+    "id": "field17.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field17.formContainer",
+    "value": true
+  },
+  {
+    "id": "field18.tag",
+    "value": "input"
+  },
+  {
+    "id": "field18.type",
+    "value": "text"
+  },
+  {
+    "id": "field18.maxLength",
+    "value": 250
+  },
+  {
+    "id": "field18.disabled",
+    "value": false
+  },
+  {
+    "id": "field18.readOnly",
+    "value": false
+  },
+  {
+    "id": "field18.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field18.formContainer",
+    "value": true
+  },
+  {
+    "id": "field18.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field18.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field19.tag",
+    "value": "input"
+  },
+  {
+    "id": "field19.type",
+    "value": "text"
+  },
+  {
+    "id": "field19.maxLength",
+    "value": 80
+  },
+  {
+    "id": "field19.disabled",
+    "value": false
+  },
+  {
+    "id": "field19.readOnly",
+    "value": false
+  },
+  {
+    "id": "field19.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field19.formContainer",
+    "value": true
+  },
+  {
+    "id": "field19.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field19.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field20.tag",
+    "value": "input"
+  },
+  {
+    "id": "field20.type",
+    "value": "text"
+  },
+  {
+    "id": "field20.maxLength",
+    "value": 20
+  },
+  {
+    "id": "field20.disabled",
+    "value": false
+  },
+  {
+    "id": "field20.readOnly",
+    "value": false
+  },
+  {
+    "id": "field20.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field20.formContainer",
+    "value": true
+  },
+  {
+    "id": "field20.editedValue",
+    "value": "Proof O'Brien & Ω"
+  },
+  {
+    "id": "field20.restoredValue",
+    "value": true
+  },
+  {
+    "id": "field21.tag",
+    "value": "input"
+  },
+  {
+    "id": "field21.type",
+    "value": "text"
+  },
+  {
+    "id": "field21.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field21.disabled",
+    "value": false
+  },
+  {
+    "id": "field21.readOnly",
+    "value": true
+  },
+  {
+    "id": "field21.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field21.formContainer",
+    "value": true
+  },
+  {
+    "id": "field22.tag",
+    "value": "input"
+  },
+  {
+    "id": "field22.type",
+    "value": "text"
+  },
+  {
+    "id": "field22.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field22.disabled",
+    "value": false
+  },
+  {
+    "id": "field22.readOnly",
+    "value": true
+  },
+  {
+    "id": "field22.labelAssociated",
+    "value": false
+  },
+  {
+    "id": "field22.formContainer",
+    "value": true
+  },
+  {
+    "id": "field23.tag",
+    "value": "textarea"
+  },
+  {
+    "id": "field23.type",
+    "value": "textarea"
+  },
+  {
+    "id": "field23.maxLength",
+    "value": -1
+  },
+  {
+    "id": "field23.disabled",
+    "value": false
+  },
+  {
+    "id": "field23.readOnly",
+    "value": true
+  },
+  {
+    "id": "field23.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field23.formContainer",
+    "value": true
+  },
+  {
+    "id": "field24.tag",
+    "value": "input"
+  },
+  {
+    "id": "field24.type",
+    "value": "text"
+  },
+  {
+    "id": "field24.maxLength",
+    "value": 50
+  },
+  {
+    "id": "field24.disabled",
+    "value": false
+  },
+  {
+    "id": "field24.readOnly",
+    "value": false
+  },
+  {
+    "id": "field24.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field24.formContainer",
+    "value": true
+  },
+  {
+    "id": "field25.tag",
+    "value": "input"
+  },
+  {
+    "id": "field25.type",
+    "value": "text"
+  },
+  {
+    "id": "field25.maxLength",
+    "value": 80
+  },
+  {
+    "id": "field25.disabled",
+    "value": false
+  },
+  {
+    "id": "field25.readOnly",
+    "value": true
+  },
+  {
+    "id": "field25.labelAssociated",
+    "value": true
+  },
+  {
+    "id": "field25.formContainer",
+    "value": true
+  },
+  {
+    "id": "boolean.tag",
+    "value": "span"
+  },
+  {
+    "id": "boolean.formContainer",
+    "value": true
+  },
+  {
+    "id": "boolean.optionCount",
+    "value": 2
+  },
+  {
+    "id": "boolean.values",
+    "value": [
+      "0",
+      "1"
+    ]
+  },
+  {
+    "id": "boolean.disabled",
+    "value": [
+      false,
+      false
+    ]
+  },
+  {
+    "id": "boolean.labelsAssociated",
+    "value": true
+  },
+  {
+    "id": "boolean.selected.0",
+    "value": [
+      "0"
+    ]
+  },
+  {
+    "id": "boolean.selected.1",
+    "value": [
+      "1"
+    ]
+  },
+  {
+    "id": "boolean.restored",
+    "value": true
+  }
+]

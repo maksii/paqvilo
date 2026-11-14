@@ -1,6 +1,6 @@
 .persona-picker {
   --persona-accent: var(--accent, #4254dc);
-  --persona-border: var(--line, #dce2ec);
+  --persona-border: var(--line, var(--ui-c-dce2ec, #dce2ec));
   color: inherit;
   font: inherit;
 }
@@ -10,7 +10,7 @@
 .persona-tools {
   margin: 0 0 1rem;
   padding: 1rem;
-  background: #f6f8fc;
+  background: var(--ui-c-f6f8fc, #f6f8fc);
   border: 1px solid var(--persona-border);
   border-radius: 0.6rem;
 }
@@ -29,7 +29,7 @@
   flex: 1;
   width: 100%;
   padding: 0.65rem 0.8rem;
-  border: 1px solid #aebacf;
+  border: 1px solid var(--ui-l-aebacf, #aebacf);
   border-radius: 0.4rem;
   font: inherit;
 }
@@ -49,7 +49,7 @@
   border: 1px solid var(--persona-border);
   border-radius: 0.35rem;
   cursor: pointer;
-  background: white;
+  background: var(--ui-c-ffffff, white);
 }
 .persona-facet-options {
   position: absolute;
@@ -65,7 +65,7 @@
   border: 1px solid var(--persona-border);
   border-radius: 0.35rem;
   box-shadow: 0 0.5rem 1.5rem #15223d20;
-  background: white;
+  background: var(--ui-c-ffffff, white);
 }
 .persona-facet-options label {
   display: flex;
@@ -87,7 +87,7 @@
 }
 .persona-filter-help {
   margin: 0.65rem 0 0;
-  color: #56647b;
+  color: var(--ui-t-56647b, #56647b);
   font-size: 0.85em;
 }
 .persona-results-bar {
@@ -96,7 +96,7 @@
   align-items: center;
   gap: 1rem;
   margin: 0.5rem 0;
-  color: #56647b;
+  color: var(--ui-t-56647b, #56647b);
 }
 .persona-results-bar p {
   margin: 0;
@@ -113,14 +113,14 @@
   gap: 1rem;
   padding: 0.85rem;
   margin: 0.4rem 0;
-  background: white;
+  background: var(--ui-c-ffffff, white);
   border: 1px solid var(--persona-border);
   border-radius: 0.45rem;
 }
 .persona-card[data-selected='true'] {
   border-color: var(--persona-accent);
   box-shadow: inset 3px 0 var(--persona-accent);
-  background: #f7f8ff;
+  background: var(--ui-c-f7f8ff, #f7f8ff);
 }
 .persona-card-main {
   min-width: 0;
@@ -138,20 +138,20 @@
   padding: 0.1rem 0.3rem;
   font-size: 0.8em;
   overflow-wrap: anywhere;
-  color: #4f5c74;
-  background: #f1f4f9;
+  color: var(--ui-t-4f5c74, #4f5c74);
+  background: var(--ui-c-f1f4f9, #f1f4f9);
   border-radius: 0.2rem;
 }
 .persona-account {
   font-size: 0.9em;
-  color: #53617a;
+  color: var(--ui-t-53617a, #53617a);
   margin: 0.3rem 0;
   overflow-wrap: anywhere;
 }
 .persona-summary {
   font-size: 0.9em;
   margin: 0.3rem 0;
-  color: #36445b;
+  color: var(--ui-t-36445b, #36445b);
 }
 .persona-tags {
   display: flex;
@@ -165,17 +165,17 @@
 .persona-badge {
   padding: 0.1rem 0.4rem;
   border-radius: 1rem;
-  background: #edf1fa;
-  color: #405277;
+  background: var(--ui-c-edf1fa, #edf1fa);
+  color: var(--ui-t-405277, #405277);
   font-size: 0.75em;
 }
 .persona-badge {
-  background: #e3e9ff;
-  color: #3546a5;
+  background: var(--ui-c-e3e9ff, #e3e9ff);
+  color: var(--ui-t-3546a5, #3546a5);
 }
 .persona-context-label {
   margin: 0.4rem 0 0;
-  color: #56647b;
+  color: var(--ui-t-56647b, #56647b);
   font-size: 0.85em;
 }
 .persona-card-actions {
@@ -192,10 +192,10 @@
   justify-content: center;
   padding: 0.4rem 0.6rem;
   min-height: 2rem;
-  border: 1px solid #b9c4d7;
+  border: 1px solid var(--ui-l-b9c4d7, #b9c4d7);
   border-radius: 0.35rem;
-  background: #fff;
-  color: #293d65;
+  background: var(--ui-c-ffffff, #fff);
+  color: var(--ui-t-293d65, #293d65);
   font: inherit;
   font-size: 0.9em;
   cursor: pointer;
@@ -207,7 +207,7 @@
   outline-offset: 2px;
 }
 .persona-button:hover {
-  background: #edf1fb;
+  background: var(--ui-c-edf1fb, #edf1fb);
 }
 .persona-button.persona-primary {
   color: white;
@@ -219,8 +219,8 @@
   cursor: wait;
 }
 .persona-pin[aria-pressed='true'] {
-  color: #8b5a00;
-  background: #fff6d9;
+  color: var(--ui-t-8b5a00, #8b5a00);
+  background: var(--ui-c-fff6d9, #fff6d9);
 }
 .persona-group,
 .persona-subgroup {
@@ -231,13 +231,13 @@
   cursor: pointer;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--persona-border);
-  background: #f4f6fb;
+  background: var(--ui-c-f4f6fb, #f4f6fb);
   border-radius: 0.4rem;
   font-weight: 650;
 }
 .persona-group-count {
   float: right;
-  color: #596880;
+  color: var(--ui-t-596880, #596880);
   font-size: 0.9em;
   font-weight: 400;
 }
@@ -245,8 +245,8 @@
   padding: 0.25rem 0.5rem 0.5rem;
 }
 .persona-subgroup > summary {
-  background: #fafbfe;
-  border-color: #e5eaf2;
+  background: var(--ui-c-fafbfe, #fafbfe);
+  border-color: var(--ui-l-e5eaf2, #e5eaf2);
 }
 .persona-subgroup .persona-list {
   margin-left: 0.5rem;
@@ -261,18 +261,18 @@
 }
 .persona-empty {
   padding: 1rem;
-  border: 1px dashed #b9c4d7;
+  border: 1px dashed var(--ui-l-b9c4d7, #b9c4d7);
   border-radius: 0.4rem;
-  color: #53617a;
+  color: var(--ui-t-53617a, #53617a);
 }
 .persona-dialog {
   width: min(58rem, 94vw);
   max-height: 90vh;
   padding: 1.25rem;
-  border: 1px solid #cbd5e4;
+  border: 1px solid var(--ui-l-cbd5e4, #cbd5e4);
   border-radius: 0.6rem;
-  color: #213047;
-  background: #fff;
+  color: var(--ui-t-213047, #213047);
+  background: var(--ui-c-ffffff, #fff);
 }
 .persona-dialog::backdrop {
   background: #17243e66;
@@ -295,7 +295,7 @@
 .persona-context-detail {
   margin-top: 1rem;
   padding-top: 0.7rem;
-  border-top: 1px solid #dce2ec;
+  border-top: 1px solid var(--ui-l-dce2ec, #dce2ec);
 }
 .persona-picker-dialog {
   width: min(1000px, 94vw);
@@ -323,7 +323,7 @@
   font: inherit;
 }
 .persona-editor-fields fieldset {
-  border: 1px solid #dce2ec;
+  border: 1px solid var(--ui-l-dce2ec, #dce2ec);
   padding: 0.75rem;
 }
 .persona-map-row {
@@ -345,7 +345,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  border-bottom: 1px solid #dce2ec;
+  border-bottom: 1px solid var(--ui-l-dce2ec, #dce2ec);
   padding: 0.65rem 0;
 }
 .persona-management-list > li > span {
@@ -355,7 +355,7 @@
 }
 .persona-management-list small {
   display: block;
-  color: #566174;
+  color: var(--ui-t-566174, #566174);
 }
 .persona-launchbar {
   position: sticky;
@@ -363,8 +363,8 @@
   z-index: 5;
   padding: 0.7rem;
   margin: 0.8rem 0;
-  border: 1px solid #dce2ec;
-  background: #fff;
+  border: 1px solid var(--ui-l-dce2ec, #dce2ec);
+  background: var(--ui-c-ffffff, #fff);
   border-radius: 0.5rem;
   box-shadow: 0 3px 10px #12213b12;
 }

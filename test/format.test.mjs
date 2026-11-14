@@ -1,14 +1,16 @@
+// @test-kind unproven: the checks in this file exercise format with local fixtures; no native capture establishes the behaviour they assert.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import * as prettier from 'prettier';
 import { formatProject } from '../scripts/format.mjs';
+import { tempDir } from './fixture.mjs';
 
+// @test-kind tooling: atomic formatting retains CLI ignores and configuration and is idempotent
 test('atomic formatting retains CLI ignores and configuration and is idempotent', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-format-'));
+  const root = await tempDir('paqvilo-format-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, '.prettierrc.json'), '{"singleQuote":true,"tabWidth":4}\n');
   await fs.writeFile(path.join(root, '.prettierignore'), '.paqvilo/\nignored.mjs\n');
@@ -24,6 +26,8 @@ test('atomic formatting retains CLI ignores and configuration and is idempotent'
     ...(await prettier.resolveConfig(target, { editorconfig: true })),
     filepath: target,
   });
+  // The expectation itself must carry the project's Prettier and EditorConfig choices, not Prettier defaults.
+  assert.equal(expected, "const result = { name: 'Invented', values: [1, 2] };\r\n");
   await formatProject(root);
   assert.equal(await fs.readFile(target, 'utf8'), expected);
   assert.equal(await fs.readFile(path.join(root, 'ignored.mjs'), 'utf8'), source);
@@ -32,11 +36,12 @@ test('atomic formatting retains CLI ignores and configuration and is idempotent'
   assert.deepEqual(await fs.readdir(path.join(root, '.paqvilo', 'format')), []);
 });
 
+// @test-kind tooling: atomic formatting preserves permissions even under a restrictive umask
 test(
   'atomic formatting preserves permissions even under a restrictive umask',
   { skip: process.platform === 'win32' },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-format-mode-'));
+    const root = await tempDir('paqvilo-format-mode-');
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const target = path.join(root, 'source.mjs');
     await fs.writeFile(target, 'const value={x:1};\n');
@@ -51,8 +56,9 @@ test(
   },
 );
 
+// @test-kind tooling: formatting preserves a concurrent source save instead of overwriting it
 test('formatting preserves a concurrent source save instead of overwriting it', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-format-concurrent-'));
+  const root = await tempDir('paqvilo-format-concurrent-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const target = path.join(root, 'source.mjs');
   await fs.writeFile(target, 'const value={x:1};\n');

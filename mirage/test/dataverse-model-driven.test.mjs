@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -51,7 +52,7 @@ test('model-driven record service shares organization hooks, lookup validation, 
     if (info.data?.x_name === 'Rejected') throw Error('Organization validation rejected this name');
   });
   const records = createRecordHandlers({ store, principals, change: (fn) => fn(), hooks });
-  t.after(() => records.close());
+  ownedFixture(t).add(() => records.close());
   const write = createModelDrivenRecordService({
     store,
     records,

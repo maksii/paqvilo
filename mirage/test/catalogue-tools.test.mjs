@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,24 +12,28 @@ import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertProjectOutput } from '../lib/project-output.mjs';
 import { withProcessSlot } from './process-slots.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
-// Resolves with the exit status instead of rejecting, so callers can assert failures too.
-const runMirage = (args, timeout) =>
+// Resolves with the exit status and signal instead of rejecting, so callers can assert failures too. The test's own
+// signal ends the child when the runner's --test-timeout ends the test; nothing else bounds it.
+const runMirage = (args, t) =>
   withProcessSlot(
     () =>
       new Promise((resolve) =>
         execFile(
           process.execPath,
           [bin, 'mirage', ...args],
-          { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
-          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
+          { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, signal: t.signal },
+          (error, stdout, stderr) =>
+            resolve({ status: error ? error.code : 0, signal: error?.signal ?? null, stdout, stderr }),
         ),
       ),
   );
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
+  // The real path: reports name cache and state files as the OS resolves them (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -48,6 +53,8 @@ async function fixture(t) {
 }
 
 test('catalogue reports reuse their project cache and sweep selects the same project state', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const { root, config } = await fixture(t);
   const input = await resolveReportInputs({ config, site: 'synthetic' });
   assert.equal(input.cacheFile, path.join(root, '.paqvilo/simulator/synthetic/cache/solution-sources.json'));
@@ -64,6 +71,7 @@ test('catalogue reports reuse their project cache and sweep selects the same pro
   assert.equal(uncached.summary.timings.cache.hits, 0);
 });
 
+// @test-kind contract+security: generated output stays out of the installed package, also through a junction
 test('generated output rejects the installed package and a junction back into it', async (t) => {
   const { root } = await fixture(t);
   const installed = path.join(root, 'node_modules/paqvilo');
@@ -81,6 +89,7 @@ test('generated output rejects the installed package and a junction back into it
   );
 });
 
+// @test-kind contract: catalogue option tables produce registry help accepted by each parser and execute outside the project cwd
 test('catalogue option tables produce registry help accepted by each parser and execute outside the project cwd', async (t) => {
   const { root, config } = await fixture(t);
   const runs = [];
@@ -97,18 +106,26 @@ test('catalogue option tables produce registry help accepted by each parser and 
             : 'fixture';
       assert.doesNotThrow(() => parseToolArgs(name, [`--${key}`, ...(definition.type === 'string' ? [value] : [])]));
     }
+    // trace reads a running runtime's /_sim/api/trace, not the catalogue: its parser and help are checked above, and
+    // cli-contract.test.mjs covers its structured errors without a runtime.
+    if (name === 'trace') continue;
     const args = [name, '--config', config, '--json'];
     if (name !== 'portal-matrix') args.push('--site', 'synthetic');
     if (name === 'portal-matrix') args.push('--only', 'import,bootstrap,liquid,webapi');
-    runs.push(runMirage(args, 30000).then((result) => ({ name, result })));
+    runs.push(runMirage(args, t).then((result) => ({ name, result })));
   }
   for (const { name, result } of await Promise.all(runs)) {
-    assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
+    assert.deepEqual(
+      { status: result.status, signal: result.signal },
+      { status: 0, signal: null },
+      `${name}: ${result.stdout}\n${result.stderr}`,
+    );
     assert.equal(typeof JSON.parse(result.stdout), 'object', name);
   }
   assert.ok((await fs.readdir(path.join(root, '.paqvilo/portal-matrix'))).length);
 });
 
+// @test-kind contract: parity and conformance help name their real required plan options
 test('parity and conformance help name their real required plan options', async (t) => {
   const { root, config } = await fixture(t);
   const missing = path.join(root, 'missing-plan.json');
@@ -129,11 +146,40 @@ test('parity and conformance help name their real required plan options', async 
         missing,
       ],
       ['liquid-conformance', '--suite', missing, '--json'],
-    ].map((args) => runMirage(args, 10000)),
+    ].map((args) => runMirage(args, t)),
   );
-  for (const result of results) {
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /ENOENT/);
-    assert.doesNotMatch(result.stderr, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
+  for (const [index, result] of results.entries()) {
+    // parity-suite reports the failure on stderr with exit 1; liquid-conformance --json answers MIRAGE_FAILED with 2.
+    assert.deepEqual(
+      { status: result.status, signal: result.signal },
+      { status: index === 1 ? 2 : 1, signal: null },
+      result.stdout + result.stderr,
+    );
+    const message = index === 1 ? JSON.parse(result.stdout).error.message : result.stderr;
+    if (index === 1) assert.equal(result.stderr, '');
+    assert.match(message, /ENOENT/);
+    assert.doesNotMatch(message, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
   }
+});
+
+test('render-sweep --strict with a path that matches no page exits 2 and shows zero pages', async (t) => {
+  const { config } = await fixture(t);
+  const result = await runMirage(
+    [
+      'render-sweep',
+      '--config',
+      config,
+      '--site',
+      'synthetic',
+      '--persona',
+      'anonymous',
+      '--path',
+      '/nothing',
+      '--strict',
+    ],
+    t,
+  );
+  assert.deepEqual({ status: result.status, signal: result.signal }, { status: 2, signal: null }, result.stderr);
+  assert.match(result.stdout, /Pages: 0,/);
+  assert.match(result.stderr, /no page/);
 });

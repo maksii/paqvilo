@@ -21,8 +21,9 @@ import {
   projectManagedFlags,
 } from './dataverse-metadata-relationships.mjs';
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from './dataverse-security.mjs';
+import { resyncMessageFilters } from './dataverse-plugin-registration.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
-import { equalityKey } from './dataverse-values.mjs';
+import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
 import {
   assertElasticColumn,
   assertElasticKey,
@@ -34,12 +35,12 @@ import {
 } from './dataverse-elastic.mjs';
 
 // Assumed: a customization prefix of 2 to 8 letters, then an underscore and a name (the quote and space forms are refused).
-const SCHEMA_NAME = /^[A-Za-z][A-Za-z0-9]{1,7}_[A-Za-z0-9_]+$/;
+export const SCHEMA_NAME = /^[A-Za-z][A-Za-z0-9]{1,7}_\w+$/;
 const GUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
 const LOGICAL_KEY = /^LogicalName='([^']+)'$/i;
 // GlobalOptionSetDefinitions(Name='x') or GlobalOptionSetDefinitions(<MetadataId>), the two forms the bind documents.
 const GLOBAL_BIND =
-  /GlobalOptionSetDefinitions\((?:Name=['"]([^'"]+)['"]|\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?)\)/i;
+  /GlobalOptionSetDefinitions\((?:Name=['"]([^'"]+)['"]|\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?)\)/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 const WRITE_PATH = /^\/api\/data\/v[\d.]+\/(?:EntityDefinitions(?:[(/]|$)|Publish(?:All)?Xml$)/;
 const PUBLISH = new Set(['PublishXml', 'PublishAllXml']);
 const OWNERSHIP_TYPES = new Set(['UserOwned', 'OrganizationOwned']);
@@ -89,7 +90,7 @@ const VERB = { POST: 'Create', PUT: 'Write', DELETE: 'Delete' };
 // The inner codes are native; refusal messages and statuses are guesses.
 const fail = (message, status = 400, code = 'InvalidRequest', innerCode) =>
   new DataError(message, status, code, innerCode ? { innerCode } : undefined);
-const schemaNameError = (name, type) =>
+export const schemaNameError = (name, type) =>
   fail(
     `The schema name ${name} for type ${type} is invalid or missing.Custom attribute, entity, entitykey, option set and relationship names must start with a valid customization prefix.`,
     400,
@@ -118,8 +119,11 @@ const urlOf = (c, path) => `${c.origin}/api/data/${c.version}/${path}`;
 // MSCRM.MergeLabels is case-insensitive in the name and the value, as the relationships module reads it.
 const mergeHeader = (headers = {}) =>
   Object.entries(headers).some(([name, value]) => lower(name) === 'mscrm.mergelabels' && lower(value) === 'true');
-const mergeLabels = (existing = {}, incoming, merge) =>
-  incoming === undefined ? existing : merge ? { ...existing, ...incoming } : incoming;
+const mergeLabels = (existing = {}, incoming, merge) => {
+  if (incoming === undefined) return existing;
+  if (merge) return { ...existing, ...incoming };
+  return incoming;
+};
 const requiredLevelOf = (value) => String((typeof value === 'string' ? value : value?.Value) ?? 'None').toLowerCase();
 
 // Label complex type -> { languageCode: text }. Only LocalizedLabels is read. Undefined when the property is absent.
@@ -173,6 +177,22 @@ function optionSetOf(api, attr) {
   return { options: list };
 }
 
+const MAX_LENGTH_LIMITS = { nvarchar: 4000, memo: 1048576 };
+// A given MaxLength is a whole number from 1 to the type's maximum (Learn: MaxSupportedLength).
+function checkMaxLength(name, dataverseType, value) {
+  if (value == null) return null;
+  const limit = MAX_LENGTH_LIMITS[dataverseType];
+  if (!Number.isInteger(value) || value < 1 || value > limit)
+    throw fail(`MaxLength for ${name} must be a whole number from 1 to ${limit}.`);
+  return value;
+}
+
+// The one-to-many relationship whose lookup column this is, or null: a lookup column is owned by its relationship.
+function lookupOwnerOf(mapping, name) {
+  const owner = Object.values(mapping.relationships ?? {}).find((rel) => !rel.many && rel.from === name);
+  return owner?.schemaName ?? null;
+}
+
 // Column definition as the read side expects it: dataverseType plus columnMetadata facts (attribute-metadata.mjs).
 function columnField(api, attr, dataverseType, schemaName, primary) {
   const facts = {
@@ -191,12 +211,12 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
   switch (dataverseType) {
     case 'nvarchar':
       Object.assign(facts, {
-        maxLength: attr.MaxLength ?? null,
+        maxLength: checkMaxLength(schemaName, dataverseType, attr.MaxLength),
         format: String(attr.FormatName?.Value ?? attr.FormatName ?? 'Text').toLowerCase(),
       });
       break;
     case 'memo':
-      facts.maxLength = attr.MaxLength ?? null;
+      facts.maxLength = checkMaxLength(schemaName, dataverseType, attr.MaxLength);
       break;
     case 'int':
     case 'bigint':
@@ -231,7 +251,7 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
 }
 
 // API-created columns: state.dataverse.customColumns[table][column] is the source of truth, mapping.fields is its copy.
-const customBucket = (state, logical) => (((state.dataverse ??= {}).customColumns ??= {})[logical] ??= {});
+const customBucket = (state, logical) => (((state.dataverse ??= {}).customColumns ??= {})[logical] ??= {}); // NOSONAR: preserve proxy access and assignment order
 function remember(state, logical, mapping, name, field) {
   mapping.fields[name] = field;
   customBucket(state, logical)[name] = structuredClone(field);
@@ -260,7 +280,7 @@ export function reapplyCustomColumns(store) {
 function addColumn(api, mapping, table, attr, { primary = false, system = false } = {}) {
   const type = typeOf(attr);
   // A lookup is a relationship: its column comes from RelationshipDefinitions, not from an Attributes write.
-  if (/LookupAttributeMetadata$/.test(type)) {
+  if (type.endsWith('LookupAttributeMetadata')) {
     throw fail(
       'A lookup column is created with a one-to-many relationship: POST RelationshipDefinitions or CreatePolymorphicLookupAttribute.',
       400,
@@ -343,7 +363,7 @@ function columnNamed(api, logical, mapping, attributeId) {
 // top of it (the metadata log entry makes activeOnTop true; RemoveActiveCustomization restores the managed definition).
 function assertCustomizable(api, kind, logical, name, label) {
   const top = layerStack(managedLayerOf(api, kind, logical, name)).at(-1);
-  if (!top || top.customizable !== false) return;
+  if (top?.customizable !== false) return;
   // EntityIsNotCustomizable; the code for a column and the HTTP status are guesses.
   throw fail(
     `The specified ${kind === 'entity' ? 'entity' : 'attribute'} ${label} is not customizable`,
@@ -360,6 +380,22 @@ const attributeIdUrl = (c, logical, name) =>
     `EntityDefinitions(${ids(c.api).metadataId('entity', logical)})/Attributes(${ids(c.api).metadataId('attribute', logical, name)})`,
   );
 
+function tableAttributes(body) {
+  const attributes = body.Attributes;
+  if (!Array.isArray(attributes)) throw fail('Attributes must contain the primary name column.');
+  const primaries = attributes.filter((a) => a?.IsPrimaryName === true);
+  if (primaries.length !== 1 || typeOf(primaries[0]) !== 'StringAttributeMetadata') {
+    throw fail('Attributes must contain exactly one StringAttributeMetadata with IsPrimaryName true.');
+  }
+  return { attributes, primary: primaries[0] };
+}
+
+function validateTableFlags(body) {
+  for (const flag of ['IsActivity', 'HasActivities', 'HasNotes']) {
+    if (typeof body[flag] !== 'boolean') throw fail(`${flag} is required.`);
+  }
+}
+
 export function createTable(c, body) {
   const { api } = c;
   const schemaName = requireText(body.SchemaName, 'SchemaName');
@@ -371,15 +407,8 @@ export function createTable(c, body) {
     Description: labelMap(body.Description) ?? {},
   };
   if (!OWNERSHIP_TYPES.has(body.OwnershipType)) throw fail('OwnershipType must be UserOwned or OrganizationOwned.');
-  for (const flag of ['IsActivity', 'HasActivities', 'HasNotes']) {
-    if (typeof body[flag] !== 'boolean') throw fail(`${flag} is required.`);
-  }
-  const attributes = body.Attributes;
-  if (!Array.isArray(attributes)) throw fail('Attributes must contain the primary name column.');
-  const primaries = attributes.filter((a) => a?.IsPrimaryName === true);
-  if (primaries.length !== 1 || typeOf(primaries[0]) !== 'StringAttributeMetadata') {
-    throw fail('Attributes must contain exactly one StringAttributeMetadata with IsPrimaryName true.');
-  }
+  validateTableFlags(body);
+  const { attributes, primary } = tableAttributes(body);
   const tableType = tableTypeOf(body.TableType);
   if (tableType === 'Elastic') assertElasticTable(body);
   const { mappings } = api.store.state;
@@ -410,15 +439,17 @@ export function createTable(c, body) {
     },
   };
   logMetadataChange(api, 'add', 'entity', logical);
-  mapping.nameColumn = addColumn(api, mapping, logical, primaries[0], { primary: true });
-  for (const attr of attributes) if (attr !== primaries[0]) addColumn(api, mapping, logical, attr);
+  mapping.nameColumn = addColumn(api, mapping, logical, primary, { primary: true });
+  for (const attr of attributes) if (attr !== primary) addColumn(api, mapping, logical, attr);
   if (isElastic(mapping)) {
     for (const attr of SYSTEM_ATTRIBUTES) addColumn(api, mapping, logical, attr, { system: true });
     mapping.alternateKeys = [builtInKey(mapping.idColumn)];
   }
   mappings[logical] = mapping;
-  (api.store.state.tables ??= {})[logical] ??= [];
+  api.store.state.tables ??= {};
+  api.store.state.tables[logical] ??= [];
   grantTablePrivileges(api.store, api.settings.organizationId, logical); // Dataverse creates the table's privileges with it
+  resyncMessageFilters(api); // and its sdkmessagefilter rows (native: a custom table's filters come with it)
   return { status: 204, headers: { 'OData-EntityId': entityIdUrl(c, logical) } };
 }
 
@@ -430,7 +461,7 @@ export function updateTable(c, key, body) {
     throw fail('OwnershipType cannot change.');
   const merge = mergeHeader(c.headers);
   const dm = mapping.dataverseMetadata ?? {};
-  const labels = { ...(dm.labels ?? {}) };
+  const labels = { ...dm.labels };
   for (const name of ['DisplayName', 'DisplayCollectionName', 'Description']) {
     if (body[name] !== undefined) labels[name] = mergeLabels(labels[name], labelMap(body[name]), merge);
   }
@@ -458,6 +489,7 @@ export function dropTable(api, logical) {
   delete api.store.state.tables?.[logical];
   delete api.store.state.dataverse?.customColumns?.[logical];
   logMetadataChange(api, 'delete', 'entity', logical);
+  resyncMessageFilters(api); // the table's sdkmessagefilter rows go with it
 }
 
 // Columns may be added to any table, Solution and seeded tables included (Dataverse allows custom columns there).
@@ -486,32 +518,51 @@ function updateColumn(c, key, attributeId, body) {
   if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== name)
     throw fail(`The schema name of ${name} cannot change.`);
   const merge = mergeHeader(c.headers);
+  updateColumnFacts(body, name, field, facts, merge);
+  mapping.fields[name] = structuredClone(field);
+  logMetadataChange(c.api, 'change', 'attribute', logical, name);
+  return { status: 204 };
+}
+
+function updateColumnFacts(body, name, field, facts, merge) {
+  updateColumnLabels(body, facts, merge);
+  updateColumnLimits(body, name, field, facts);
+  updateColumnFormat(body, name, field, facts);
+}
+
+function updateColumnLabels(body, facts, merge) {
   if (body.DisplayName !== undefined) facts.labels = mergeLabels(facts.labels, labelMap(body.DisplayName), merge);
   if (body.Description !== undefined)
     facts.descriptionLabels = mergeLabels(facts.descriptionLabels, labelMap(body.Description), merge);
+}
+
+function updateColumnLimits(body, name, field, facts) {
   if (body.RequiredLevel !== undefined) facts.requiredLevel = requiredLevelOf(body.RequiredLevel);
   if (body.MaxLength !== undefined) {
     if (!TEXT.has(field.dataverseType)) throw fail(`MaxLength applies to text columns, not ${name}.`);
-    facts.maxLength = Number(body.MaxLength);
+    facts.maxLength = checkMaxLength(name, field.dataverseType, body.MaxLength);
   }
   if (body.MinValue !== undefined || body.MaxValue !== undefined) {
     if (!NUMERIC.has(field.dataverseType)) throw fail(`MinValue and MaxValue apply to numeric columns, not ${name}.`);
     if (body.MinValue !== undefined) facts.minValue = body.MinValue;
     if (body.MaxValue !== undefined) facts.maxValue = body.MaxValue;
   }
+}
+
+function updateColumnFormat(body, name, field, facts) {
   if (body.FormatName !== undefined) {
     if (field.dataverseType !== 'nvarchar') throw fail(`FormatName applies to text columns, not ${name}.`);
     facts.format = String(body.FormatName?.Value ?? body.FormatName).toLowerCase();
   }
-  mapping.fields[name] = structuredClone(field);
-  logMetadataChange(c.api, 'change', 'attribute', logical, name);
-  return { status: 204 };
 }
 
 function deleteColumn(c, key, attributeId) {
   const { logical, mapping } = anyTable(c.api, key);
   const name = columnNamed(c.api, logical, mapping, attributeId);
   assertNotManaged(c.api, 'attribute', logical, name, `${logical}.${name}`);
+  const owner = lookupOwnerOf(mapping, name);
+  if (owner)
+    throw fail(`${name} belongs to relationship ${owner} and must be deleted through RelationshipDefinitions.`);
   const facts = customColumnOf(c.api, logical, mapping, name).columnMetadata;
   if (facts.isPrimaryName) throw fail('The primary name column cannot be deleted.');
   if ((mapping.alternateKeys ?? []).some((k) => k.attributes.includes(name)))
@@ -590,10 +641,15 @@ function deleteKey(c, key, keyId) {
 function keyDuplicates(api, logical, key) {
   const seen = new Map();
   const duplicates = [];
+  const keyOf = alternateKeyOf(
+    key.attributes,
+    api.store.state.settings?.collation,
+    alternateKeyKinds(api.store.state.mappings[logical], key.attributes),
+  );
   for (const row of api.store.state.tables?.[logical] ?? []) {
-    const values = key.attributes.map((name) => row[name]);
-    if (values.some((value) => value == null || value === '')) continue;
-    const tuple = values.map((value) => equalityKey(value)).join('\u0001');
+    const values = alternateKeyValues(row, key.attributes);
+    const tuple = keyOf(row);
+    if (tuple === null) continue;
     // The first row's values name the duplicate tuple.
     if (!seen.has(tuple)) seen.set(tuple, values);
     else if (seen.get(tuple) !== true) {
@@ -633,9 +689,10 @@ export async function activateKey(api, logical, keyName, callerId = null) {
         .slice(0, 5)
         .map((values) => `(${values.join(', ')})`)
         .join(', ');
+      const remainder = duplicates.length > 5 ? ' and ' + (duplicates.length - 5) + ' more' : '';
       // The code is MultipleRecordsFoundByEntityKey; the job message is a guess.
       throw fail(
-        `More than one record exists for entity ${logical} with entity key involving attributes ${key.attributes.join(', ')}: ${sample}${duplicates.length > 5 ? ` and ${duplicates.length - 5} more` : ''}.`,
+        `More than one record exists for entity ${logical} with entity key involving attributes ${key.attributes.join(', ')}: ${sample}${remainder}.`,
         400,
         'InvalidRequest',
         '0x8006089D',
@@ -668,8 +725,11 @@ function publish(c) {
 }
 
 // Privilege for a write: table writes need prv*Entity, column and key writes prv*Attribute (a guess for keys).
-const privilegeFor = (method, segment) =>
-  VERB[method] ? `prv${VERB[method]}${segment ? 'Attribute' : 'Entity'}` : null;
+const privilegeFor = (method, segment) => {
+  if (!VERB[method]) return null;
+  const target = segment ? 'Attribute' : 'Entity';
+  return `prv${VERB[method]}${target}`;
+};
 
 /**
  * Seeded alternate keys (Solution sources, state, presets and packs: a key without indexStatus) over rows that already hold
@@ -715,14 +775,54 @@ export function reset(api) {
   });
 }
 
+/** PublishXml and PublishAllXml (route.kind 'function'), synchronously: a plug-in's SDK Execute calls it too. */
+export function handleMetadataPublish(c) {
+  const { api, method, route } = c;
+  if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
+  if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
+  return publish(c);
+}
+
+function dispatchTableWrite(c, api, method, segment, key, body, write) {
+  if (segment || (!key && method !== 'POST')) return { matched: false };
+  if (method === 'POST' && !key) return { matched: true, result: write(() => createTable(c, body)) };
+  if (method === 'PUT' && key)
+    return {
+      matched: true,
+      result: write(() => {
+        const logical = tableNameOf(api, key);
+        assertCustomizable(api, 'entity', logical, null, logical);
+        return updateTable(c, key, body);
+      }),
+    };
+  if (method === 'DELETE' && key) return { matched: true, result: write(() => deleteTable(c, key)) };
+  return { matched: false };
+}
+
+function dispatchAttributeWrite(c, method, segment, key, segmentKey, body, write) {
+  if (segment !== 'Attributes' || !key) return { matched: false };
+  if (method === 'POST' && !segmentKey) return { matched: true, result: write(() => createColumn(c, key, body)) };
+  if (method === 'PUT' && segmentKey)
+    return { matched: true, result: write(() => updateColumn(c, key, segmentKey, body)) };
+  if (method === 'DELETE' && segmentKey)
+    return { matched: true, result: write(() => deleteColumn(c, key, segmentKey)) };
+  return { matched: false };
+}
+
+function dispatchSimpleMetadataWrite(c, api, method, segment, key, { segmentKey, body, write }) {
+  const table = dispatchTableWrite(c, api, method, segment, key, body, write);
+  if (table.matched) return table;
+  const attribute = dispatchAttributeWrite(c, method, segment, key, segmentKey, body, write);
+  if (attribute.matched) return attribute;
+  if (segment === 'Keys' && key && segmentKey && method === 'DELETE')
+    return { matched: true, result: write(() => deleteKey(c, key, segmentKey)) };
+  return { matched: false };
+}
+
 /** Dispatches one metadata write. The privilege is checked first; each change then runs in one store transaction. */
 export async function handleMetadataWrite(c) {
   const { api, method, route } = c;
-  if (route.kind === 'function') {
-    if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
-    if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
-    return publish(c);
-  }
+  if (route.kind === 'function') return handleMetadataPublish(c);
   if (route.set !== 'EntityDefinitions') throw fail(`${route.set} is not a metadata resource.`, 404, 'NotFound');
   if (c.body !== undefined && (typeof c.body !== 'object' || c.body === null || Array.isArray(c.body)))
     throw fail('The request body must be a JSON object.');
@@ -738,25 +838,13 @@ export async function handleMetadataWrite(c) {
         return withSolutionMembership(api, c.headers, fn);
       }),
     );
-  if (!segment && !key && method === 'POST') return write(() => createTable(c, body));
-  if (!segment && key && method === 'PUT')
-    return write(() => {
-      const logical = tableNameOf(api, key);
-      assertCustomizable(api, 'entity', logical, null, logical);
-      return updateTable(c, key, body);
-    });
-  if (!segment && key && method === 'DELETE') return write(() => deleteTable(c, key));
-  if (segment === 'Attributes' && key && !segmentKey && method === 'POST')
-    return write(() => createColumn(c, key, body));
-  if (segment === 'Attributes' && key && segmentKey && method === 'PUT')
-    return write(() => updateColumn(c, key, segmentKey, body));
-  if (segment === 'Attributes' && key && segmentKey && method === 'DELETE')
-    return write(() => deleteColumn(c, key, segmentKey));
+  const dispatched = dispatchSimpleMetadataWrite(c, api, method, segment, key, { segmentKey, body, write });
+  if (dispatched.matched) return dispatched.result;
   if (segment === 'Keys' && key && !segmentKey && method === 'POST') {
     const result = await write(() => createKey(c, key, body));
     await activateKey(api, tableNameOf(api, key), lower(body.SchemaName).trim(), c.caller?.systemuserid ?? null);
     return result;
   }
-  if (segment === 'Keys' && key && segmentKey && method === 'DELETE') return write(() => deleteKey(c, key, segmentKey));
-  throw fail(`${method} is not supported for ${route.set}${segment ? `/${segment}` : ''}.`, 405, 'MethodNotAllowed'); // the answer to PATCH on definitions is a guess
+  const segmentPath = segment ? '/' + segment : '';
+  throw fail(`${method} is not supported for ${route.set}${segmentPath}.`, 405, 'MethodNotAllowed'); // the answer to PATCH on definitions is a guess
 }

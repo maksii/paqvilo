@@ -28,7 +28,13 @@ app picker, open a view and a record, and use the staff profile to select the
 identity under test. Dry run lets you exercise records without persisting them.
 Keep fixture records, script sources and their acceptance tests in the project.
 
+For an optional static check of authored model-driven JavaScript, see [web-resource lint](model-driven-web-resource-lint.md). The project owns its lint dependencies and rules.
+
 ## Supported baseline
+
+Supported FormXml layout visibility, disabled-state and label flags accept both
+XML Boolean spellings: `true`/`false` and `1`/`0`. Missing flags retain their
+existing layout defaults.
 
 | Exported component                                     | Local behavior                                                                                                                                               |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -184,6 +190,45 @@ paqvilo lense model-driven inspect --project mirage.project.yml --url https://ex
 paqvilo lense model-driven dev --project mirage.project.yml --url https://example.crm.dynamics.com --path "/main.aspx?appname=x_example" --resource-map resource-map.json --output .paqvilo/lense-model-driven.json
 ```
 
+The offline `inspect` report includes `clientEvents`, a source registration
+inventory across exported forms. Rows retain the entity, form identity/name,
+event and handler order, `handlerUniqueId`, attribute, source activation flags,
+library/function names, context flag and form-definition source references.
+Library declaration and imported-resource status are separate facts; an available
+script does not prove its function exists or ran. This uses the existing form
+compiler and the exported [FormXml event declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
+It does not inspect a connected organization's registrations or infer arbitrary
+JavaScript dependencies.
+FormXml event activation, handler enablement and execution-context flags accept
+the XML Boolean spellings `true`/`false` and `1`/`0`. Missing activation/enablement
+defaults to on; missing execution context defaults to off. Invalid tokens stay
+off instead of enabling a handler.
+
+Default pages contain at most 100 entries within 128 KiB, with explicit
+`complete`, `truncated`, diagnostics and `nextCursorToken` fields. Continue offline
+with `--event-cursor '<clientEvents.nextCursorToken>'` on the same inspect command.
+The cursor is bound to content-derived inventory revision and filters; changing
+forms, resources, source language or parameter inclusion requires restarting.
+Unavailable forms and oversized rows are diagnosed, and oversized rows are
+omitted with `truncated: true`. `complete` means the traversal finished, including
+those diagnosed gaps. Work limits can yield an empty page with a continuation.
+Follow every continuation before claiming the inventory is complete.
+
+Parameter literals are omitted by default. `parameterCount` uses the existing
+safe literal parser; unsupported syntax reports a null count. To explicitly
+include source literals, use `--include-event-parameters` on every page and keep
+that output private. The library API
+`createModelDrivenMetadataIndex(imported).eventRegistrations(request)` in
+`paqvilo/lense/model-driven-metadata.mjs` also accepts exact `library`, `entity`
+and `formId` filters, `includeParameters`, `cursor: page.nextCursor`, and
+`budget: { items, bytes }` (1–512 entries, 2048–524288 bytes). Entity/form filters
+normalize GUID braces/casing; library names retain their exported spelling.
+Library matching shares the host's case-insensitive `$webresource:` prefix
+removal; resource-name spelling remains case-sensitive. The envelope and CLI
+continuation token count toward the byte budget; an oversized revision envelope
+fails explicitly. Oversized diagnostic identity details are omitted with
+`detailsOmitted: true`, so every continuation can advance.
+
 Direct `/WebResources/<exported-name>` requests map automatically. Native cache
 prefixes and PCF bundle paths vary; bind paths actually observed in the app:
 
@@ -280,19 +325,22 @@ With `--local-simulation`, Lense observes and overlays those exact declared loca
 resource URLs as well as `/WebResources/` paths. Native targets retain their explicit
 resource mappings and never infer a resource from an arbitrary hashed URL.
 
-`model-driven dev --startup-timeout 120000` sets a separate 1,000–600,000 ms
-startup budget, starting before project/source loading and ending after the
-native document's load event. Workers and continuing application requests do not
-block startup; sign-in and native application readiness remain unverified.
+`model-driven dev --startup-timeout 120000` sets the longest silence allowed without
+start-up progress: 1,000–600,000 ms, default 120,000 ms. Progress is a phase change,
+a completed step, or a page request, its completion or failure, or a navigation
+(including a sign-in redirect). An absolute cap of 600,000 ms also ends a start that
+keeps progressing. Both guards apply until the native document's load event.
+Workers and requests that continue after that event do not hold the start open;
+sign-in and native application readiness remain unverified.
 With `--local-simulation`, the Mirage application readiness marker also gates
-startup. The budget covers browser attachment, interception,
-watcher setup and navigation; failures name the active phase. Async waits
-are interrupted at the deadline; synchronous filesystem/parsing work observes
-it when control returns to an async boundary. It is not a process watchdog for
-blocked native code. Late browser acquisitions are disposed, only the owned app
-tab is closed in an attached browser, and the attached browser remains running.
-Ctrl+C cancels pending startup. Cleanup drains owned resources separately from
-the startup budget. `--timeout` starts after startup and limits session lifetime.
+startup. A failure names the guard that ended the start (silence or cap), the last
+phase reached, and the duration. Async waits are interrupted at the guard;
+synchronous filesystem/parsing work observes it when control returns to an async
+boundary. It is not a process watchdog for blocked native code. Late browser
+acquisitions are disposed, only the owned app tab is closed in an attached browser,
+and the attached browser remains running. Ctrl+C cancels pending startup. Cleanup
+drains owned resources separately from the start guards. `--timeout` starts after
+startup and limits session lifetime.
 
 Source links use `PAQVILO_EDITOR` from the shell or the selected catalogue's
 `.env`, then the catalogue's `editor`, then `code`. By default, the catalogue is

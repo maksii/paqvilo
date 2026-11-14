@@ -9,7 +9,7 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 ## The panel
 
-- **Inspect** shows the current page's template chain, access rules, forms, views, tables, columns, snippets and settings. Permission explanations use this browser's session. Source items open their portal or Solution file in the configured editor.
+- **Inspect** shows the current page's template chain, access rules, forms, views, tables, columns, snippets and settings. Access rules are reported as the runtime enforces them for the selected persona, so an identity with role ids but no contact id is anonymous here too. Permission explanations use this browser's session. Source items open their portal or Solution file in the configured editor.
 - **Tweaks** signs this browser in or out, selects local enforcement, scenarios and presets, and links to `/_sim/`. Identity always comes from this browser's session cookie, never from a saved global persona.
 
 Mirage watches its sources and reloads local rendering when they change. When a source is missing, a Solution cannot resolve a relationship, a pack does not match or a managed dependency needs enrichment, read the bootstrap and runtime diagnostics. Lifecycle files and logs stay under `.paqvilo/mirage`. An attached browser is detached on shutdown, not closed.

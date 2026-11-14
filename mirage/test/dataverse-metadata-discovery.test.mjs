@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -238,7 +239,7 @@ test('advertised metadata paths and exact source navigation names work over HTTP
       }),
       log() {},
     });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const auth = await fetch(server.authority + '/oauth2/v2.0/token', {
     method: 'POST',
     body: new URLSearchParams({

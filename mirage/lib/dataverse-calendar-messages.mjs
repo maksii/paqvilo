@@ -190,28 +190,40 @@ function checkRule(rule) {
     throw invalid('Interval must be at least 1.');
   const endType = rule.patternendtype === undefined ? END.noEnd : integerOf(rule.patternendtype, 'PatternEndType');
   if (![END.noEnd, END.occurrences, END.endDate].includes(endType)) throw invalid('PatternEndType must be 1, 2 or 3.');
+  checkPatternEnd(rule, endType);
+  checkPatternFields(rule, type);
+  return type;
+}
+
+function checkPatternEnd(rule, endType) {
   if (endType === END.occurrences && integerOf(rule.occurrences, 'Occurrences') < 1)
     throw invalid('Occurrences must be at least 1.');
-  if (endType === END.endDate) {
-    if (rule.patternenddate == null) throw invalid('PatternEndDate is required for an end date.');
-    if (instantOf(rule.patternenddate, 'PatternEndDate') < instantOf(rule.patternstartdate, 'PatternStartDate')) {
-      throw invalid('PatternEndDate must be on or after PatternStartDate.');
-    }
-  }
-  if (type === PATTERN.weekly) {
-    const mask = integerOf(rule.daysofweekmask, 'DaysOfWeekMask');
-    if (mask < 1 || mask > 127) throw invalid('DaysOfWeekMask must be between 1 and 127.');
-  }
-  if (type === PATTERN.monthly || type === PATTERN.yearly) {
-    const day = integerOf(rule.dayofmonth, 'DayOfMonth');
-    if (!rule.isnthmonthly && !rule.isnthyearly && (day < 1 || day > 31))
-      throw invalid('DayOfMonth must be between 1 and 31.');
-  }
-  if (type === PATTERN.yearly) {
-    const month = integerOf(rule.monthofyear, 'MonthOfYear');
-    if (month < 1 || month > 12) throw invalid('MonthOfYear must be between 1 and 12.');
-  }
-  return type;
+  if (endType !== END.endDate) return;
+  if (rule.patternenddate == null) throw invalid('PatternEndDate is required for an end date.');
+  if (instantOf(rule.patternenddate, 'PatternEndDate') < instantOf(rule.patternstartdate, 'PatternStartDate'))
+    throw invalid('PatternEndDate must be on or after PatternStartDate.');
+}
+
+function checkPatternFields(rule, type) {
+  if (type === PATTERN.weekly) checkWeeklyPattern(rule);
+  if (type === PATTERN.monthly || type === PATTERN.yearly) checkMonthlyPattern(rule);
+  if (type === PATTERN.yearly) checkYearlyPattern(rule);
+}
+
+function checkWeeklyPattern(rule) {
+  const mask = integerOf(rule.daysofweekmask, 'DaysOfWeekMask');
+  if (mask < 1 || mask > 127) throw invalid('DaysOfWeekMask must be between 1 and 127.');
+}
+
+function checkMonthlyPattern(rule) {
+  const day = integerOf(rule.dayofmonth, 'DayOfMonth');
+  if (!rule.isnthmonthly && !rule.isnthyearly && (day < 1 || day > 31))
+    throw invalid('DayOfMonth must be between 1 and 31.');
+}
+
+function checkYearlyPattern(rule) {
+  const month = integerOf(rule.monthofyear, 'MonthOfYear');
+  if (month < 1 || month > 12) throw invalid('MonthOfYear must be between 1 and 12.');
 }
 
 // Whether a local date (day number) is an occurrence of the rule. n0 is the day number of the pattern start.
@@ -307,45 +319,66 @@ function dateParts(iana, value) {
 function busyBlocks(store, resourceId, fromMs, toMs, exceptActivity = null) {
   const blocks = [];
   for (const party of tableOf(store, 'activityparty').filter((row) => sameId(row.partyid, resourceId))) {
-    const activityId = idOf(party.activityid);
-    if (!activityId || sameId(activityId, exceptActivity)) continue;
-    const row = rowOf(store, 'appointment', 'activityid', activityId);
-    if (row) {
-      const startMs = Date.parse(row.scheduledstart);
-      const endMs = Date.parse(row.scheduledend);
-      if (row.statecode === 0 && startMs < toMs && fromMs < endMs) blocks.push({ activityId, startMs, endMs });
-      continue;
-    }
-    const master = rowOf(store, 'recurringappointmentmaster', 'activityid', activityId);
-    if (!master) continue;
-    for (const occurrence of seriesOccurrences(store, master, fromMs, toMs)) {
-      if (!occurrence.materialized) blocks.push({ activityId, startMs: occurrence.startMs, endMs: occurrence.endMs });
-    }
+    appendBusyParty(store, party, fromMs, toMs, exceptActivity, blocks);
   }
   return blocks.sort((left, right) => left.startMs - right.startMs);
 }
 
+function appendBusyParty(store, party, fromMs, toMs, exceptActivity, blocks) {
+  const activityId = idOf(party.activityid);
+  if (!activityId || sameId(activityId, exceptActivity)) return;
+  const row = rowOf(store, 'appointment', 'activityid', activityId);
+  if (row) {
+    const startMs = Date.parse(row.scheduledstart);
+    const endMs = Date.parse(row.scheduledend);
+    if (row.statecode === 0 && startMs < toMs && fromMs < endMs) blocks.push({ activityId, startMs, endMs });
+    return;
+  }
+  const master = rowOf(store, 'recurringappointmentmaster', 'activityid', activityId);
+  if (!master) return;
+  for (const occurrence of seriesOccurrences(store, master, fromMs, toMs))
+    if (!occurrence.materialized) blocks.push({ activityId, startMs: occurrence.startMs, endMs: occurrence.endMs });
+}
+
 // ---- availability and calendar rules ----
 
-// Spans [start, end) in ms, as pairs. A span is cut by each cut span; the pieces left are returned.
-function minus(spans, cuts) {
-  return cuts.reduce(
-    (pieces, [cutStart, cutEnd]) =>
-      pieces.flatMap(([s, e]) =>
-        cutEnd <= s || cutStart >= e
-          ? [[s, e]]
-          : [
-              [s, cutStart],
-              [cutEnd, e],
-            ].filter(([a, b]) => b > a),
-      ),
-    spans,
-  );
-}
 function intersect(left, right) {
   return left.flatMap(([s1, e1]) =>
     right.map(([s2, e2]) => [Math.max(s1, s2), Math.min(e1, e2)]).filter(([s, e]) => e > s),
   );
+}
+
+// The overlaps of two span lists, in the order of the left spans, as one sweep: both lists sorted by start and
+// disjoint (see disjointSpans), so a pointer into the right spans only moves forward and each span is met by a few
+// others. An optional work object counts the comparisons made.
+export function intersectSpans(left, right, work = null) {
+  const out = [];
+  let first = 0;
+  for (const [s1, e1] of left) {
+    const start = first;
+    while (first < right.length && right[first][1] <= s1) first += 1;
+    let last = first;
+    while (last < right.length && right[last][0] < e1) {
+      const s = Math.max(s1, right[last][0]);
+      const e = Math.min(e1, right[last][1]);
+      if (e > s) out.push([s, e]);
+      last += 1;
+    }
+    if (work) work.comparisons += 1 + (first - start) + (last - first);
+  }
+  return out;
+}
+
+// The positive spans sorted by start, with those that strictly overlap merged: disjoint and ascending, as
+// intersectSpans needs. Touching spans stay apart, so each keeps the split it has.
+export function disjointSpans(spans) {
+  const merged = [];
+  for (const [startMs, endMs] of spans.filter(([s, e]) => e > s).toSorted((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const last = merged.at(-1);
+    if (last && startMs < last[1]) last[1] = Math.max(last[1], endMs);
+    else merged.push([startMs, endMs]);
+  }
+  return merged;
 }
 
 const RRULE_DAY = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
@@ -356,6 +389,7 @@ const MAX_NEST = 5;
 // A calendar rule's RRULE pattern as a recurrence rule. ponytail: FREQ DAILY or WEEKLY only; a weekly rule without BYDAY repeats
 // on every day.
 function patternOf(text) {
+  /** @type {Partial<Record<string, string>>} */
   const parts = Object.fromEntries(
     String(text)
       .split(';')
@@ -390,61 +424,203 @@ function expandRules(store, calendarId, fromMs, toMs, base = null, depth = 0) {
   const blocks = [];
   for (const rule of tableOf(store, 'calendarrule').filter((row) => sameId(idOf(row.calendarid), calendarId))) {
     if (!rule.pattern) {
-      const startMs =
-        base === null ? (rule.starttime ? Date.parse(rule.starttime) : NaN) : base + Number(rule.offset ?? 0) * MIN;
-      const endMs = rule.duration != null ? startMs + Number(rule.duration) * MIN : Date.parse(rule.endtime);
-      if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < toMs && fromMs < endMs)
-        blocks.push({ startMs, endMs, rule, calendarId });
+      appendLeafRule(rule, calendarId, fromMs, toMs, base, blocks);
       continue;
     }
-    const zone = zoneOf(rule.timezonecode ?? calendar?.timezonecode ?? UTC_CODE);
-    const recurrence = patternOf(rule.pattern);
-    const first = wallOf(zone.iana, fromMs);
-    const startDay = dayNumber(first.y, first.m, first.d);
-    const last = wallOf(zone.iana, toMs);
-    const endDay = dayNumber(last.y, last.m, last.d);
-    const effectiveStart = rule.effectiveintervalstart
-      ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalstart))
-      : -Infinity;
-    const effectiveEnd = rule.effectiveintervalend
-      ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalend))
-      : Infinity;
-    const anchor = Number.isFinite(effectiveStart) ? effectiveStart : startDay;
-    for (let dayN = startDay; dayN <= endDay && dayN - startDay < MAX_DAYS; dayN += 1) {
-      if (dayN < effectiveStart || dayN > effectiveEnd) continue;
-      const wall = fromDayNumber(dayN);
-      if (!dayMatches(recurrence, anchor, dayN, wall)) continue;
-      const midnight = utcFromWall(zone.iana, Date.UTC(wall.y, wall.m - 1, wall.d));
-      if (rule.innercalendarid) {
-        const dayFrom = Math.max(fromMs, midnight);
-        const dayTo = Math.min(toMs, midnight + DAY);
-        if (dayFrom < dayTo)
-          blocks.push(...expandRules(store, idOf(rule.innercalendarid), dayFrom, dayTo, midnight, depth + 1));
-        continue;
-      }
-      const startMs = midnight + Number(rule.offset ?? 0) * MIN;
-      const endMs = startMs + Number(rule.duration ?? 0) * MIN;
-      if (startMs < toMs && fromMs < endMs) blocks.push({ startMs, endMs, rule, calendarId });
-    }
+    appendPatternRules(store, rule, { calendarZone: calendar?.timezonecode, calendarId, fromMs, toMs, depth, blocks });
   }
   return blocks;
 }
 
+function appendLeafRule(rule, calendarId, fromMs, toMs, base, blocks) {
+  let startMs;
+  if (base !== null) startMs = base + Number(rule.offset ?? 0) * MIN;
+  else startMs = rule.starttime ? Date.parse(rule.starttime) : Number.NaN;
+  const endMs = rule.duration != null ? startMs + Number(rule.duration) * MIN : Date.parse(rule.endtime);
+  if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < toMs && fromMs < endMs)
+    blocks.push({ startMs, endMs, rule, calendarId });
+}
+
+function appendPatternRules(store, rule, { calendarZone, calendarId, fromMs, toMs, depth, blocks }) {
+  const zone = zoneOf(rule.timezonecode ?? calendarZone ?? UTC_CODE);
+  const recurrence = patternOf(rule.pattern);
+  const first = wallOf(zone.iana, fromMs);
+  const startDay = dayNumber(first.y, first.m, first.d);
+  const last = wallOf(zone.iana, toMs);
+  const endDay = dayNumber(last.y, last.m, last.d);
+  const effectiveStart = rule.effectiveintervalstart
+    ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalstart))
+    : -Infinity;
+  const effectiveEnd = rule.effectiveintervalend
+    ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalend))
+    : Infinity;
+  const anchor = Number.isFinite(effectiveStart) ? effectiveStart : startDay;
+  for (let dayN = startDay; dayN <= endDay && dayN - startDay < MAX_DAYS; dayN += 1)
+    appendPatternDay(store, rule, zone, recurrence, {
+      anchor,
+      effectiveStart,
+      effectiveEnd,
+      calendarId,
+      fromMs,
+      toMs,
+      depth,
+      dayN,
+      blocks,
+    });
+}
+
+function appendPatternDay(
+  store,
+  rule,
+  zone,
+  recurrence,
+  { anchor, effectiveStart, effectiveEnd, calendarId, fromMs, toMs, depth, dayN, blocks },
+) {
+  if (dayN < effectiveStart || dayN > effectiveEnd) return;
+  const wall = fromDayNumber(dayN);
+  if (!dayMatches(recurrence, anchor, dayN, wall)) return;
+  const midnight = utcFromWall(zone.iana, Date.UTC(wall.y, wall.m - 1, wall.d));
+  if (rule.innercalendarid) {
+    const dayFrom = Math.max(fromMs, midnight);
+    const dayTo = Math.min(toMs, midnight + DAY);
+    if (dayFrom < dayTo)
+      blocks.push(...expandRules(store, idOf(rule.innercalendarid), dayFrom, dayTo, midnight, depth + 1));
+    return;
+  }
+  const startMs = midnight + Number(rule.offset ?? 0) * MIN;
+  const endMs = startMs + Number(rule.duration ?? 0) * MIN;
+  if (startMs < toMs && fromMs < endMs) blocks.push({ startMs, endMs, rule, calendarId });
+}
+
 // Blocks from a lower rank trim the higher-rank blocks they cover (the rank direction is a guess).
 function calendarBlocks(store, calendarId, fromMs, toMs) {
-  const blocks = expandRules(store, calendarId, fromMs, toMs);
+  return trimByRank(expandRules(store, calendarId, fromMs, toMs));
+}
+
+// The blocks of each rank minus the spans of the lower ranks. A block that ends before it starts covers no time, so it is
+// not a lower-rank span (piecesAgainst drops it). An optional work object counts the comparisons made.
+export function trimByRank(blocks, work = null) {
   const out = [];
   let covered = [];
   const ranks = [...new Set(blocks.map((block) => Number(block.rule.rank ?? 0)))].sort((a, b) => a - b);
   for (const rank of ranks) {
     const layer = blocks.filter((block) => Number(block.rule.rank ?? 0) === rank);
-    for (const block of layer) {
-      for (const [startMs, endMs] of minus([[block.startMs, block.endMs]], covered))
-        out.push({ ...block, startMs, endMs });
-    }
+    const pieces = piecesAgainst(
+      layer.map((block) => [block.startMs, block.endMs]),
+      covered,
+      work,
+    );
+    layer.forEach((block, index) => {
+      for (const [startMs, endMs] of pieces[index]) out.push({ ...block, startMs, endMs });
+    });
     covered = covered.concat(layer.map((block) => [block.startMs, block.endMs]));
   }
   return out.sort((left, right) => left.startMs - right.startMs);
+}
+
+// The spans [start, end) in ms minus the cut spans: the pieces left, in the order of the spans, as one sweep. Malformed
+// spans are normalised: a cut that ends before it starts is dropped and removes no time. A span that ends before it starts
+// is removed only by a cut that starts before its end and ends after its start (emptyPieces); otherwise it is kept as given.
+export function subtractSpans(spans, cuts, work = null) {
+  return piecesAgainst(spans, cuts, work).flat();
+}
+
+// The pieces each span keeps outside the cut spans, by the span's index. The spans are swept in start order against the cuts,
+// merged into disjoint ones, with pointers that only move forward. A cut that ends before it starts names no time to remove,
+// so it is dropped before the sweep.
+function piecesAgainst(spans, cuts, work) {
+  const live = cuts.filter(([startMs, endMs]) => endMs >= startMs);
+  const pieces = new Array(spans.length);
+  const positive = [...spans.keys()].filter((index) => spans[index][1] > spans[index][0]);
+  const empty = [...spans.keys()].filter((index) => spans[index][1] <= spans[index][0]);
+  emptyPieces(spans, empty, live, pieces, work);
+  const merged = mergeSpans(live.filter(([startMs, endMs]) => endMs > startMs).toSorted((a, b) => a[0] - b[0]));
+  const points = [
+    ...new Set(live.filter(([startMs, endMs]) => endMs === startMs).map(([startMs]) => startMs)),
+  ].toSorted((a, b) => a - b);
+  const order = positive.toSorted((a, b) => spans[a][0] - spans[b][0] || a - b);
+  const cursor = { span: 0, point: 0 };
+  for (const index of order) {
+    const [startMs, endMs] = spans[index];
+    pieces[index] = piecesOf({ startMs, endMs }, { spans: merged, points, cursor, work });
+  }
+  return pieces;
+}
+
+// A span that ends at or before it starts is removed by a cut only when one cut alone starts before its end and ends after its
+// start (the pairwise cut tests each cut on its own). Those spans are swept by end against the cuts by start, with the largest
+// end among the cuts that start before the span ends.
+function emptyPieces(spans, indexes, cuts, pieces, work) {
+  const byStart = cuts.toSorted((a, b) => a[0] - b[0]);
+  const reach = [];
+  for (const [, endMs] of byStart) reach.push(Math.max(endMs, reach.at(-1) ?? endMs));
+  let known = 0;
+  for (const index of indexes.toSorted((a, b) => spans[a][1] - spans[b][1] || a - b)) {
+    const [startMs, endMs] = spans[index];
+    const before = known;
+    while (known < byStart.length && byStart[known][0] < endMs) known += 1;
+    if (work) work.comparisons += 1 + (known - before);
+    pieces[index] = known > 0 && reach[known - 1] > startMs ? [] : [[startMs, endMs]];
+  }
+}
+
+// Positive spans sorted by start, merged where they overlap or touch: disjoint and ascending.
+function mergeSpans(sorted) {
+  const merged = [];
+  for (const [startMs, endMs] of sorted) {
+    const last = merged.at(-1);
+    if (last && startMs <= last[1]) last[1] = Math.max(last[1], endMs);
+    else merged.push([startMs, endMs]);
+  }
+  return merged;
+}
+
+// The pieces of one block that the merged spans and the points strictly inside it leave. The cursors move past the spans
+// and points that end or fall before the block, which holds for every later block since the blocks are swept in start order.
+function piecesOf(block, { spans, points, cursor, work }) {
+  const { startMs, endMs } = block;
+  const before = cursor.span + cursor.point;
+  while (cursor.span < spans.length && spans[cursor.span][1] <= startMs) cursor.span += 1;
+  while (cursor.point < points.length && points[cursor.point] <= startMs) cursor.point += 1;
+  let stop = cursor.span;
+  while (stop < spans.length && spans[stop][0] < endMs) stop += 1;
+  let stopPoint = cursor.point;
+  while (stopPoint < points.length && points[stopPoint] < endMs) stopPoint += 1;
+  if (work)
+    work.comparisons += 1 + cursor.span + cursor.point - before + (stop - cursor.span) + (stopPoint - cursor.point);
+  const overlapping = spans.slice(cursor.span, stop);
+  const inside = points.slice(cursor.point, stopPoint);
+  if (!overlapping.length && !inside.length) return [[startMs, endMs]];
+  return splitAt(gapsOf(startMs, endMs, overlapping), inside);
+}
+
+// The parts of [startMs, endMs) that the overlapping merged spans, in order, leave.
+function gapsOf(startMs, endMs, overlapping) {
+  const gaps = [];
+  let from = startMs;
+  for (const [spanStart, spanEnd] of overlapping) {
+    if (spanStart > from) gaps.push([from, spanStart]);
+    from = Math.max(from, spanEnd);
+  }
+  if (from < endMs) gaps.push([from, endMs]);
+  return gaps;
+}
+
+// Each gap cut at the points strictly inside it, in order.
+function splitAt(gaps, points) {
+  const pieces = [];
+  let next = 0;
+  for (const [startMs, endMs] of gaps) {
+    while (next < points.length && points[next] <= startMs) next += 1;
+    let from = startMs;
+    while (next < points.length && points[next] < endMs) {
+      pieces.push([from, points[next]]);
+      from = points[next];
+      next += 1;
+    }
+    pieces.push([from, endMs]);
+  }
+  return pieces;
 }
 
 // The resource's calendar (systemuser.calendarid), or null when it has none.
@@ -568,7 +744,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -681,12 +857,14 @@ function operations(api) {
         const args = argsOf(c);
         const resourceId = idOf(args.ResourceId);
         if (!resourceId) throw invalid('ResourceId must be a GUID.');
-        const codes = (Array.isArray(args.TimeCodes) ? args.TimeCodes : [args.TimeCodes]).map((code) => {
-          if (typeof code === 'number' || /^\d+$/.test(String(code))) return Number(code);
-          const name = String(code).replace(/^.*'(\w+)'$/, '$1');
-          if (!(name in TIME_CODE)) throw invalid('TimeCodes must be Available, Busy, Unavailable or Filter.');
-          return TIME_CODE[name];
-        });
+        const codes = new Set(
+          (Array.isArray(args.TimeCodes) ? args.TimeCodes : [args.TimeCodes]).map((code) => {
+            if (typeof code === 'number' || /^\d+$/.test(String(code))) return Number(code);
+            const name = String(code).replace(/^.*'(\w+)'$/, '$1');
+            if (!(name in TIME_CODE)) throw invalid('TimeCodes must be Available, Busy, Unavailable or Filter.');
+            return TIME_CODE[name];
+          }),
+        );
         const fromMs = instantOf(args.Start, 'Start');
         const toMs = instantOf(args.End, 'End');
         const calendarId = calendarOf(store, resourceId);
@@ -707,7 +885,7 @@ function operations(api) {
           ...extra,
         });
         const TimeInfos = [];
-        if (codes.includes(BUSY)) {
+        if (codes.has(BUSY)) {
           for (const block of busy) {
             TimeInfos.push({
               ActivityStatusCode: 0,
@@ -724,21 +902,24 @@ function operations(api) {
             });
           }
         }
-        if (available && codes.includes(TIME_CODE.Available)) {
-          for (const [startMs, endMs] of minus(
+        if (available && codes.has(TIME_CODE.Available)) {
+          for (const [startMs, endMs] of subtractSpans(
             available,
             busy.map((block) => [block.startMs, block.endMs]),
           )) {
             TimeInfos.push(info(startMs, endMs, TIME_CODE.Available, { CalendarId: calendarId }));
           }
         }
-        if (available && codes.includes(TIME_CODE.Unavailable)) {
-          for (const [startMs, endMs] of minus([[fromMs, toMs]], available)) {
+        if (available && codes.has(TIME_CODE.Unavailable)) {
+          for (const [startMs, endMs] of subtractSpans([[fromMs, toMs]], available)) {
             TimeInfos.push(info(startMs, endMs, TIME_CODE.Unavailable, { CalendarId: calendarId }));
           }
         }
         return respond(c, 'QuerySchedule', {
-          TimeInfos: TimeInfos.sort((left, right) => Date.parse(left.Start) - Date.parse(right.Start)),
+          TimeInfos: /* NOSONAR */ TimeInfos.sort(
+            // NOSONAR: retain in-place receiver mutation and ordering
+            /* NOSONAR: preserve in-place sorting */ (left, right) => Date.parse(left.Start) - Date.parse(right.Start),
+          ),
         });
       },
       csdl: null,
@@ -772,24 +953,18 @@ function operations(api) {
           const id = idOf(entry?.ResourceId);
           if (!id) throw invalid('ResourceId must be a GUID.');
           const row = rowOf(store, 'systemuser', 'systemuserid', id);
-          const free = minus(
-            intersect(availableSpans(store, id, fromMs, toMs), [[fromMs, toMs]]),
-            busyBlocks(store, id, fromMs, toMs).map((block) => [block.startMs, block.endMs]),
+          // The free spans are merged, sorted and without duplicates (disjointSpans), so each proposal start is made once.
+          const free = disjointSpans(
+            subtractSpans(
+              intersect(availableSpans(store, id, fromMs, toMs), [[fromMs, toMs]]),
+              busyBlocks(store, id, fromMs, toMs).map((block) => [block.startMs, block.endMs]),
+            ),
           );
           return { id, name: row?.fullname ?? id, free };
         });
         if (!resources.length) throw invalid('RequiredResources must name at least one resource.');
-        const common = resources.reduce((spans, resource) => intersect(spans, resource.free), [[fromMs, toMs]]);
-        const starts = [];
-        for (const [s, e] of direction === 0 ? common : [...common].reverse()) {
-          if (direction === 0) {
-            for (let t = Math.ceil(s / STEP) * STEP; t + durationMs <= e && starts.length < limit; t += STEP)
-              starts.push(t);
-          } else {
-            for (let t = Math.floor((e - durationMs) / STEP) * STEP; t >= s && starts.length < limit; t -= STEP)
-              starts.push(t);
-          }
-        }
+        const common = resources.reduce((spans, resource) => intersectSpans(spans, resource.free), [[fromMs, toMs]]);
+        const starts = proposalStarts(common, direction, durationMs, limit);
         const Proposals = starts.map((startMs) => ({
           Start: iso(startMs),
           End: iso(startMs + durationMs),
@@ -1100,6 +1275,25 @@ function operations(api) {
       csdl: null,
     },
   ];
+}
+
+function proposalStarts(common, direction, durationMs, limit) {
+  const starts = [];
+  for (const [s, e] of direction === 0 ? common : [...common].reverse()) {
+    if (direction === 0) appendForwardProposals(starts, s, e, durationMs, limit);
+    else appendBackwardProposals(starts, s, e, durationMs, limit);
+  }
+  return starts;
+}
+
+function appendForwardProposals(starts, start, end, durationMs, limit) {
+  for (let time = Math.ceil(start / STEP) * STEP; time + durationMs <= end && starts.length < limit; time += STEP)
+    starts.push(time);
+}
+
+function appendBackwardProposals(starts, start, end, durationMs, limit) {
+  for (let time = Math.floor((end - durationMs) / STEP) * STEP; time >= start && starts.length < limit; time -= STEP)
+    starts.push(time);
 }
 
 // ponytail: no CSDL fragments, so these operations are served but absent from $metadata until a client needs them.

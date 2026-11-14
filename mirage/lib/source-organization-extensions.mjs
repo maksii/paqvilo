@@ -4,6 +4,7 @@ import {
   describeCustomApis,
   parseCustomApiFiles,
   parseFxExpressionFiles,
+  prepareCustomApiRuntimes,
 } from './dataverse-customapi.mjs';
 import { parseDuplicateRuleXml } from './dataverse-duplicates.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
@@ -16,11 +17,120 @@ import { uuidV5 } from './dataverse-security.mjs';
 
 // Source-owned row ids per table (state.dataverse.sourceSeeded): what the last seed wrote, so a later seed removes the rows
 // whose source definition is gone. It lives in state, so a rolled-back transaction restores it with the rows.
-const seededOf = (store) => ((store.state.dataverse ??= {}).sourceSeeded ??= {});
+const seededOf = (store) => ((store.state.dataverse ??= {}).sourceSeeded ??= {}); // NOSONAR: preserve proxy access and assignment order
 const idKey = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+
+function seedLogicalRows(store, seeded, logical, rows) {
+  // An explicitly declared normalized schema snapshot owns the entire operation table, including an empty array representing deletion.
+  // Source defaults must not resurrect or replace those authored rows.
+  if (store.storageAdapter?.schemaRecordsAuthoritative?.(logical)) return null;
+  // fxexpression is a standard table: nothing to write or remove while the Solution has none and none was seeded.
+  if (!store.state.mappings[logical] && !rows.length && !seeded[logical]?.length) return null;
+  store.state.tables[logical] ??= [];
+  const idColumn = store.state.mappings[logical]?.idColumn ?? `${logical}id`,
+    table = () => store.tableRows(logical);
+  const next = new Set(rows.map((row) => idKey(row[idColumn])));
+  const counts = { added: 0, changed: 0, removed: 0 };
+  for (const id of seeded[logical] ?? []) {
+    if (next.has(id)) continue;
+    const index = table().findIndex((item) => idKey(item[idColumn]) === id);
+    if (index >= 0) {
+      store.removeRow(logical, table(), index);
+      counts.removed += 1;
+    }
+  }
+  for (const row of rows) {
+    const index = table().findIndex((item) => idKey(item[idColumn]) === idKey(row[idColumn]));
+    if (index >= 0) {
+      if (isDeepStrictEqual(table()[index], row)) continue;
+      store.removeRow(logical, table(), index);
+      counts.changed += 1;
+    } else counts.added += 1;
+    store.insertRow(logical, table(), structuredClone(row));
+  }
+  seeded[logical] = [...next];
+  return counts;
+}
+
+function parseCatalogSource(file, { text, diagnostic }) {
+  try {
+    return parseSolutionXml(text(file), { recover: true });
+  } catch (error) {
+    diagnostic({ code: 'SOLUTION_CATALOG_UNREADABLE', source: file.name, message: error.message });
+    return null;
+  }
+}
+
+function appendCatalogFile(file, context) {
+  const root = parseCatalogSource(file, context),
+    node = root?.name === 'catalog' ? root : root && descendants(root, 'catalog')[0];
+  if (!node?.attrs.uniquename) return;
+  const parent = childText(child(node, 'parentcatalogid'), 'uniquename');
+  context.rows.catalog.push({
+    catalogid: context.idOf(node.attrs.uniquename),
+    uniquename: node.attrs.uniquename,
+    name: childText(node, 'name') ?? node.attrs.uniquename,
+    displayname: child(node, 'displayname')?.attrs.default ?? childText(node, 'displayname') ?? null,
+    description: child(node, 'description')?.attrs.default ?? childText(node, 'description') ?? null,
+    parentcatalogid: parent ? context.idOf(parent) : null,
+  });
+}
+
+function catalogApiId(customapis, name) {
+  return (
+    customapis.find((row) => String(row.uniquename).toLowerCase() === String(name ?? '').toLowerCase())?.customapiid ??
+    null
+  );
+}
+
+function appendCatalogAssignment(node, context) {
+  const a = node.attrs,
+    type = String(a.objectidtype ?? a.objecttypeid ?? '').toLowerCase(),
+    catalog = a['catalogid.uniquename'];
+  const objectName = a['object.uniquename'] ?? a['object.logicalname'] ?? a['object.workflowid'] ?? null;
+  if (!catalog || !objectName) return;
+  let object = null;
+  if (type === 'customapi') object = catalogApiId(context.customapis, objectName);
+  else if (type === 'workflow') object = String(objectName).replace(/[{}]/g, '').toLowerCase();
+  context.rows.catalogassignment.push({
+    catalogassignmentid: uuidV5(
+      context.NS,
+      'catalogassignment:' + catalog.toLowerCase() + ':' + type + ':' + String(objectName).toLowerCase(),
+    ),
+    catalogid: context.idOf(catalog),
+    name: childText(node, 'name') ?? objectName,
+    objectidtype: type || null,
+    object,
+    objectname: objectName,
+  });
+}
+
+function appendCatalogAssignmentFile(file, context) {
+  const root = parseCatalogSource(file, context);
+  let nodes = [];
+  if (root) {
+    if (root.name === 'catalogassignment') nodes = [root];
+    else nodes = descendants(root, 'catalogassignment');
+  }
+  for (const node of nodes) appendCatalogAssignment(node, context);
+}
+
+function readSolutionCatalogs(layers, customapis, { folderFiles, text, diagnostic }) {
+  const rows = { catalog: [], catalogassignment: [] },
+    NS = '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+    idOf = (name) => uuidV5(NS, 'catalog:' + String(name).toLowerCase()),
+    context = { rows, NS, idOf, customapis, text, diagnostic };
+  for (const files of folderFiles(layers, /^catalogs$/i))
+    for (const file of files.filter((item) => /^[^/]+\/[^/]+\/catalog\.xml$/i.test(item.name)))
+      appendCatalogFile(file, context);
+  for (const files of folderFiles(layers, /^assets$/i))
+    for (const file of files.filter((item) => /^[^/]+\/catalogassignments\.xml$/i.test(item.name)))
+      appendCatalogAssignmentFile(file, context);
+  return rows;
+}
 
 /**
  * Read-only Solution/trusted-pack composition shared by every runtime host. layers and plugins are values or getters over the
@@ -33,6 +143,9 @@ export async function sourceOrganizationExtensions({
   plugins,
   customApis = new Map(),
   pluginHandlers = new Map(),
+  pluginRuntimes = new Map(),
+  pluginRuntimeCache = new Map(),
+  prepareRuntime,
   workflowHandlers = new Map(),
   workflowOverrides = () => ({}),
   cloudFlow,
@@ -89,75 +202,15 @@ export async function sourceOrganizationExtensions({
   // A custom API assignment's object is the customapiid of that unique name among the Solution's custom APIs.
   // Guessed: the exported file layout beyond the Learn examples (the Assets folder name's case, a catalog.xml that is the
   // root element itself or wrapped); row ids are name-derived UUIDs (uuidV5), not the exported ids.
-  const readSolutionCatalogs = (layers, customapis) => {
-    const rows = { catalog: [], catalogassignment: [] },
-      NS = '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-      idOf = (name) => uuidV5(NS, 'catalog:' + String(name).toLowerCase());
-    const parse = (file) => {
-      try {
-        return parseSolutionXml(text(file), { recover: true });
-      } catch (error) {
-        diagnostic({ code: 'SOLUTION_CATALOG_UNREADABLE', source: file.name, message: error.message });
-        return null;
-      }
-    };
-    const labelled = (node, name) => child(node, name)?.attrs.default ?? childText(node, name) ?? null;
-    for (const files of folderFiles(layers, /^catalogs$/i))
-      for (const file of files.filter((item) => /^[^/]+\/[^/]+\/catalog\.xml$/i.test(item.name))) {
-        const root = parse(file),
-          node = root?.name === 'catalog' ? root : root && descendants(root, 'catalog')[0];
-        if (!node?.attrs.uniquename) continue;
-        const parent = childText(child(node, 'parentcatalogid'), 'uniquename');
-        rows.catalog.push({
-          catalogid: idOf(node.attrs.uniquename),
-          uniquename: node.attrs.uniquename,
-          name: childText(node, 'name') ?? node.attrs.uniquename,
-          displayname: labelled(node, 'displayname'),
-          description: labelled(node, 'description'),
-          parentcatalogid: parent ? idOf(parent) : null,
-        });
-      }
-    const apiOf = (name) =>
-      customapis.find((row) => String(row.uniquename).toLowerCase() === String(name ?? '').toLowerCase());
-    for (const files of folderFiles(layers, /^assets$/i))
-      for (const file of files.filter((item) => /^[^/]+\/catalogassignments\.xml$/i.test(item.name))) {
-        const root = parse(file);
-        for (const node of root
-          ? root.name === 'catalogassignment'
-            ? [root]
-            : descendants(root, 'catalogassignment')
-          : []) {
-          const a = node.attrs,
-            type = String(a.objectidtype ?? a.objecttypeid ?? '').toLowerCase(),
-            catalog = a['catalogid.uniquename'];
-          const objectName = a['object.uniquename'] ?? a['object.logicalname'] ?? a['object.workflowid'] ?? null;
-          if (!catalog || !objectName) continue;
-          const object =
-            type === 'customapi'
-              ? (apiOf(objectName)?.customapiid ?? null)
-              : type === 'workflow'
-                ? String(objectName).replace(/[{}]/g, '').toLowerCase()
-                : null;
-          rows.catalogassignment.push({
-            catalogassignmentid: uuidV5(
-              NS,
-              'catalogassignment:' + catalog.toLowerCase() + ':' + type + ':' + String(objectName).toLowerCase(),
-            ),
-            catalogid: idOf(catalog),
-            name: childText(node, 'name') ?? objectName,
-            objectidtype: type || null,
-            object,
-            objectname: objectName,
-          });
-        }
-      }
-    return rows;
-  };
   const read = async () => {
     const current = layersOf(),
       apis = readSolutionCustomApis(current);
     return {
-      rows: { ...apis, ...readSolutionDuplicateRules(current), ...readSolutionCatalogs(current, apis.customapi) },
+      rows: {
+        ...apis,
+        ...readSolutionDuplicateRules(current),
+        ...readSolutionCatalogs(current, apis.customapi, { folderFiles, text, diagnostic }),
+      },
       facts: await readSolutionWorkflows(current, { diagnostic }),
     };
   };
@@ -170,36 +223,8 @@ export async function sourceOrganizationExtensions({
       seeded = seededOf(store),
       changes = {};
     for (const [logical, rows] of Object.entries(solutionRows)) {
-      // An explicitly declared normalized schema snapshot owns the entire
-      // operation table, including an empty array representing deletion.
-      // Source defaults must not resurrect or replace those authored rows.
-      if (store.storageAdapter?.schemaRecordsAuthoritative?.(logical)) continue;
-      // fxexpression is a standard table: nothing to write or remove while the Solution has none and none was seeded.
-      if (!store.state.mappings[logical] && !rows.length && !seeded[logical]?.length) continue;
-      store.state.tables[logical] ??= [];
-      const idColumn = store.state.mappings[logical]?.idColumn ?? `${logical}id`,
-        table = () => store.tableRows(logical);
-      const next = new Set(rows.map((row) => idKey(row[idColumn])));
-      const counts = { added: 0, changed: 0, removed: 0 };
-      for (const id of seeded[logical] ?? []) {
-        if (next.has(id)) continue;
-        const index = table().findIndex((item) => idKey(item[idColumn]) === id);
-        if (index >= 0) {
-          store.removeRow(logical, table(), index);
-          counts.removed += 1;
-        }
-      }
-      for (const row of rows) {
-        const index = table().findIndex((item) => idKey(item[idColumn]) === idKey(row[idColumn]));
-        if (index >= 0) {
-          if (isDeepStrictEqual(table()[index], row)) continue;
-          store.removeRow(logical, table(), index);
-          counts.changed += 1;
-        } else counts.added += 1;
-        store.insertRow(logical, table(), structuredClone(row));
-      }
-      seeded[logical] = [...next];
-      changes[logical] = counts;
+      const counts = seedLogicalRows(store, seeded, logical, rows);
+      if (counts !== null) changes[logical] = counts;
     }
     return changes;
   };
@@ -212,14 +237,24 @@ export async function sourceOrganizationExtensions({
     describe: (api) => describeCustomApis(api),
     async install(api) {
       installedApi = api;
-      ({ sync: syncCustomApis } = installCustomApis(
+      const installation = installCustomApis(
         { ...api, change: (fn) => fn() },
-        { handlers: customApis, pluginTypes: pluginHandlers, timeoutMs: timeoutMs },
-      ));
+        {
+          handlers: customApis,
+          pluginTypes: pluginHandlers,
+          pluginRuntimes,
+          runtimes: pluginRuntimeCache,
+          prepareRuntime,
+          timeoutMs: timeoutMs,
+        },
+      );
+      syncCustomApis = installation.sync;
+      await installation.ready;
       await api.store.transact(() => {
         seedRows(api, sources.rows);
       });
       syncCustomApis();
+      await prepareCustomApiRuntimes(api);
     },
     async reset(api) {
       await customApiExtension.install(api);
@@ -248,6 +283,7 @@ export async function sourceOrganizationExtensions({
       }));
       sources = next;
       syncCustomApis();
+      await prepareCustomApiRuntimes(api, { refresh: true });
       const changed = Object.fromEntries(
         Object.entries(changes).filter(([, counts]) => counts.added || counts.changed || counts.removed),
       );

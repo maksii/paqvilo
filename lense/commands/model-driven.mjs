@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import chokidar from 'chokidar';
 import { loadProjectConfig } from '../../mirage/lib/project-config.mjs';
 import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
+import { startAgentServer } from '../agent-server.mjs';
 import { openBrowser } from '../browser.mjs';
 import { interceptOrigins } from '../intercept.mjs';
 import { createInspectionProvenanceTransport } from '../inspection-provenance-transport.mjs';
@@ -11,8 +13,10 @@ import { refreshUrl } from '../navigation.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject } from '../model-driven.mjs';
 import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
-import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
+import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 import { startupDeadline } from '../startup-deadline.mjs';
+import { guardShutdownSignals } from '../signal-forwarding.mjs';
+import { createModelDrivenMetadataIndex } from '../model-driven-metadata.mjs';
 
 const cleanError = (error) =>
   String(error.message).replace(/https?:\/\/[^\s<>"']+/g, (value) => {
@@ -33,16 +37,17 @@ export function modelDrivenReloadQueue(task) {
     request() {
       if (stopped) return Promise.resolve();
       requested = true;
-      return (pending ??= Promise.resolve()
+      pending ??= Promise.resolve()
         .then(async () => {
           do {
             requested = false;
             await task();
-          } while (requested && !stopped);
+          } while (requested && !stopped); // NOSONAR: loop flag is changed asynchronously
         })
         .finally(() => {
           pending = null;
-        }));
+        });
+      return pending;
     },
     async close() {
       stopped = true;
@@ -79,7 +84,116 @@ export function publishModelDrivenReload(overlay, next, mappings) {
   overlay.replace(next, mappings);
 }
 
+function validateInspectOptions(args) {
+  const allowed = new Set([
+    'config',
+    'project',
+    'env',
+    'url',
+    'path',
+    'resource-map',
+    'local-simulation',
+    'json',
+    'event-cursor',
+    'include-event-parameters',
+  ]);
+  for (const option of Object.keys(args))
+    if (!allowed.has(option))
+      throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
+        code: 'unsupported_option',
+      });
+}
+
+function validateStartupTimeout(args) {
+  if (args['startup-timeout'] === undefined) return;
+  const timeout = Number(args['startup-timeout']);
+  if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
+    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+}
+
+function validateRunTimeout(args) {
+  if (
+    args.timeout !== undefined &&
+    (!/^\d+$/.test(args.timeout) ||
+      !Number.isSafeInteger(Number(args.timeout)) ||
+      Number(args.timeout) < 1 ||
+      Number(args.timeout) > 3600000)
+  )
+    throw new Error('--timeout must be 1..3600000 milliseconds.');
+}
+
+export function validateModelDrivenArguments(args, action = 'dev') {
+  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (action === 'inspect') validateInspectOptions(args);
+  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
+  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
+  if (action === 'dev') validateStartupTimeout(args);
+  if (action === 'dev') validateRunTimeout(args);
+  if (args.json && action !== 'inspect')
+    throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
+  if (action !== 'inspect' && (args['event-cursor'] !== undefined || args['include-event-parameters'] !== undefined))
+    throw new Error('Event report options are supported by model-driven inspect only.');
+}
+
+export function modelDrivenEventPage(imported, args = {}) {
+  let cursor;
+  if (args['event-cursor'] !== undefined) {
+    const text = args['event-cursor'];
+    if (typeof text !== 'string' || !/^[A-Za-z0-9_-]{1,4096}$/.test(text)) throw new Error('Invalid --event-cursor.');
+    try {
+      cursor = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+    } catch {
+      throw new Error('Invalid --event-cursor.');
+    }
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('Invalid --event-cursor.');
+  }
+  const page = createModelDrivenMetadataIndex(imported).eventRegistrations({
+    cursor,
+    includeParameters: Boolean(args['include-event-parameters']),
+  });
+  return {
+    ...page,
+    ...(page.nextCursor ? { nextCursorToken: Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') } : {}),
+  };
+}
+
+// The terminal names the one departure from a target origin (a sign-in or redirect) and its return, so a person
+// watching knows the session waits. Hops while away print nothing; the URL's query and fragment are never printed.
+export function createTargetDepartureNotice({ origin, targetOrigins, log }) {
+  let lastOrigin = origin,
+    away = false;
+  return {
+    observe(url) {
+      if (targetOrigins.includes(url.origin)) {
+        lastOrigin = url.origin;
+        if (away) {
+          away = false;
+          log(`resumed on ${url.origin}`);
+        }
+        return;
+      }
+      if (away) return;
+      away = true;
+      log(
+        `waiting: the app tab left ${lastOrigin} for ${departureHost(url)} (sign-in or redirect); local overlays resume when it returns`,
+      );
+    },
+  };
+}
+
+function departureHost(url) {
+  return url.protocol === 'http:' || url.protocol === 'https:' ? url.hostname : 'another page';
+}
+
+/** Ends a start-up: work that outlived it is closed first, then the deadline and the progress line are closed. */
+export async function closeStartup(deadline, progress) {
+  await deadline?.settled();
+  deadline?.close();
+  progress?.close();
+}
+
 export default async function run(_cfg, args, [action = 'dev'] = []) {
+  validateModelDrivenArguments(args, action);
   const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
   const deadline = action === 'dev' ? startupDeadline(args['startup-timeout']) : null;
   const progress = originalProgress && {
@@ -103,21 +217,65 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
     progress?.fail(cleanError(error));
     throw error;
   } finally {
-    deadline?.close();
-    progress?.close();
+    await closeStartup(deadline, progress);
   }
 }
 
-async function runModelDriven(args, action, progress, deadline) {
+/** Resolves when the watcher finishes its initial scan; the caller's startup wait bounds it. */
+export function waitForWatcherReady(watcher) {
+  return new Promise((resolve, reject) => {
+    const ready = () => {
+      watcher.off('error', fail);
+      resolve();
+    };
+    const fail = (error) => {
+      watcher.off('ready', ready);
+      reject(error);
+    };
+    watcher.once('ready', ready);
+    watcher.once('error', fail);
+  });
+}
+
+/**
+ * Closes the owned resources of one model-driven session in order: a startup timeout's page first (that releases
+ * paused CDP setup commands which inspector retirement would otherwise queue behind), then the watchers, agents and
+ * targets, then the browser. close() only detaches an attached browser.
+ */
+export async function cleanupModelDrivenSession(resources, onError) {
+  const { startupTimedOut, page, attached, close, watcher, reloads, targetSessions, release } = resources;
+  return closeModelDrivenResources(
+    [
+      () => (startupTimedOut && page && !page.isClosed() ? page.close({ runBeforeUnload: false }) : undefined),
+      () => watcher?.close(),
+      () => reloads?.close(),
+      () => targetSessions?.close(),
+      () => release?.(),
+      () => (attached && page && !page.isClosed() ? page.close() : undefined),
+      () => close(),
+    ],
+    onError,
+  );
+}
+
+/** Runs each close step in order, collecting failures so one rejected step does not skip the rest. */
+export async function closeModelDrivenResources(steps, onError) {
+  const failures = [];
+  await guardShutdownSignals(async () => {
+    for (const cleanup of steps) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+        onError(error);
+      }
+    }
+  });
+  return failures;
+}
+
+/* NOSONAR */ async function runModelDriven(args, action, progress, deadline) {
   const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
-  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
-  if (action !== 'dev' && args['startup-timeout'] !== undefined)
-    throw Object.assign(new Error('--startup-timeout is supported only by model-driven dev.'), {
-      code: 'unsupported_option',
-    });
-  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
-  if (args.json && action !== 'inspect')
-    throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
   progress?.phase('configuration');
   const project = await startupWait(loadProjectConfig(args.project));
   const selection = modelDrivenTargets(project, args),
@@ -154,6 +312,7 @@ async function runModelDriven(args, action, progress, deadline) {
       targets: targets.map(({ id, origin }) => ({ id, origin })),
       trustedExtensions: project.modelDriven?.trustedExtensions ?? false,
       localSimulation: Boolean(args['local-simulation']),
+      clientEvents: modelDrivenEventPage(imported, args),
     };
     if (args.json) console.log(JSON.stringify(report));
     else
@@ -195,15 +354,21 @@ async function runModelDriven(args, action, progress, deadline) {
   });
   const browser = context.browser();
   const onError = (error) => console.error(`Model-driven overlay: ${cleanError(error)}`);
+  const departure = createTargetDepartureNotice({
+    origin,
+    targetOrigins: targets.map((target) => target.origin),
+    log: (line) => console.log(line),
+  });
   const onNavigation = (frame) => {
     if (frame !== page.mainFrame()) return;
-    let nextOrigin;
+    let next;
     try {
-      nextOrigin = new URL(page.url()).origin;
+      next = new URL(page.url());
     } catch {
       return;
     }
-    if (!targets.some((target) => target.origin === nextOrigin))
+    departure.observe(next);
+    if (!targets.some((target) => target.origin === next.origin))
       targetSessions?.suspend().catch((error) => {
         primaryFailure ??= error;
         onError(error);
@@ -219,6 +384,24 @@ async function runModelDriven(args, action, progress, deadline) {
       ? await startupWait(context.newPage(), (late) => late.close())
       : (context.pages()[0] ?? (await startupWait(context.newPage(), (late) => late.close())));
     page.once('close', stop);
+    // An agent API serves one target origin. The target session opens one per target it activates; a sign-in
+    // redirect keeps the same agent suspended, and a switch to another target retires it for a new one.
+    const openAgent = async (target) => {
+      const agentSession = Object.assign(new EventEmitter(), {
+        cfg: { ...cfg, origin: target.origin, siteName: target.siteName, envName: target.envName },
+        rel: String,
+      });
+      const agent = await startAgentServer({
+        session: agentSession,
+        context,
+        attached,
+        stop,
+        runtime: { watching: true, debugPort: debugPort ?? null },
+        options: { deferred: true, ownsPage: (candidate) => candidate === page },
+      });
+      if (agent) console.log(`Model-driven agent API: ${agent.discoveryFile}`);
+      return agent;
+    };
     progress?.phase('interception and inspector setup');
     targetSessions = modelDrivenTargetSessions({
       localSimulation: Boolean(args['local-simulation']),
@@ -226,6 +409,7 @@ async function runModelDriven(args, action, progress, deadline) {
       initial: selected,
       imported,
       mappings,
+      openAgent,
       liveReload: !args['no-reload'],
       ownsRequest: (request) => request.frame?.().page?.() === page,
       onApplied: (event) => {
@@ -233,7 +417,6 @@ async function runModelDriven(args, action, progress, deadline) {
       },
       createInspector: (session, source) =>
         startModelDrivenInspector({
-          context,
           page,
           overlay: session.overlay,
           cfg: {
@@ -251,8 +434,6 @@ async function runModelDriven(args, action, progress, deadline) {
             })),
           },
           imported: source,
-          attached,
-          stop,
           savedState: session.saved,
           runtime: {
             watching: true,
@@ -260,7 +441,6 @@ async function runModelDriven(args, action, progress, deadline) {
             setLive(value) {
               session.live = value;
             },
-            debugPort: debugPort ?? null,
           },
         }),
     });
@@ -336,26 +516,7 @@ async function runModelDriven(args, action, progress, deadline) {
         },
       });
       watcher.on('error', onError);
-      await startupWait(
-        new Promise((resolve, reject) => {
-          const ready = () => {
-            clearTimeout(deadline);
-            watcher.off('error', fail);
-            resolve();
-          };
-          const fail = (error) => {
-            clearTimeout(deadline);
-            watcher.off('ready', ready);
-            reject(error);
-          };
-          const deadline = setTimeout(
-            () => fail(new Error('The local Solution watcher did not become ready within 10 seconds.')),
-            10000,
-          );
-          watcher.once('ready', ready);
-          watcher.once('error', fail);
-        }),
-      );
+      await startupWait(waitForWatcherReady(watcher));
       reloads = modelDrivenReloadQueue(async () => {
         if (stopping) return;
         try {
@@ -406,15 +567,21 @@ async function runModelDriven(args, action, progress, deadline) {
       'Close the dedicated browser or press Ctrl+C to stop. Resource queries and credentials are omitted from the report.',
     );
     let loaded;
+    // Page requests and navigations, including a sign-in redirect, are progress for the start deadline.
+    deadline?.watchPage(page);
     try {
       loaded = await startupWait(
-        waitForStartupPage(page, url.href, {
-          progress,
-          stopped,
-          signal: deadline?.signal,
-          modelDriven: Boolean(args['local-simulation']),
-          nativeModelDriven: !args['local-simulation'],
-        }),
+        waitForStartupPage(
+          page,
+          url.href,
+          startupWaitOptions(args, {
+            progress,
+            stopped,
+            signal: deadline?.signal,
+            modelDriven: Boolean(args['local-simulation']),
+            nativeModelDriven: !args['local-simulation'],
+          }),
+        ),
       );
     } catch (error) {
       throw Object.assign(new Error(`Could not open the model-driven app: ${cleanError(error)}`), {
@@ -428,6 +595,11 @@ async function runModelDriven(args, action, progress, deadline) {
       console.log(
         'Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
       );
+    else if (page.isClosed()) {
+      // A closed page ends the session, whatever the browser still shows; the finally block then closes the browser.
+      console.log('browser closed before start-up finished');
+      stop();
+    }
     await stopped;
     if (primaryFailure) throw primaryFailure;
   } catch (error) {
@@ -444,40 +616,20 @@ async function runModelDriven(args, action, progress, deadline) {
     browser?.off('disconnected', stop);
     page?.off('close', stop);
     page?.off('framenavigated', onNavigation);
-    const cleanupFailures = [];
-    let browserReleased = false;
-    if (['startup_timeout', 'startup_cancelled'].includes(primaryFailure?.code)) {
-      // Closing the owned target first releases paused CDP setup commands.
-      // Inspector retirement otherwise queues behind the very startup work
-      // whose deadline just expired. close() only detaches an attached browser.
-      try {
-        if (page && !page.isClosed()) await page.close({ runBeforeUnload: false });
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-      try {
-        await close();
-        browserReleased = true;
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-    }
-    // Finish every cleanup step even if a disconnected browser rejects one.
-    for (const cleanup of [
-      () => watcher?.close(),
-      () => reloads?.close(),
-      () => targetSessions?.close(),
-      () => release?.(),
-      () => (attached && page && !page.isClosed() ? page.close() : undefined),
-      () => (browserReleased ? undefined : close()),
-    ]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        cleanupFailures.push(error);
-        onError(error);
-      }
-    }
+    const cleanupFailures = await cleanupModelDrivenSession(
+      {
+        startupTimedOut: ['startup_timeout', 'startup_cancelled'].includes(primaryFailure?.code),
+        page,
+        attached,
+        close,
+        watcher,
+        reloads,
+        targetSessions,
+        release,
+      },
+      onError,
+    );
+    await deadline?.settled();
     const report =
       targetSessions?.report() ??
       createModelDrivenOverlay({

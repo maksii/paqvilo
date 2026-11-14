@@ -66,10 +66,12 @@ export class TdsSqlError extends Error {
 }
 
 const WHITESPACE = /[ \t\r\n\f\v]/;
-const DIGIT = /[0-9]/;
+const DIGIT = /\d/;
 const HEX_DIGIT = /[0-9a-fA-F]/;
 const IDENT_START = /[\p{L}_]/u;
 const IDENT_PART = /[\p{L}\p{N}_$#]/u;
+// Local safeguard for the simulator process, not a SQL Server limit.
+const MAX_BATCH_REPEAT = 1000;
 
 const KEYWORDS = new Set([
   'ALL',
@@ -254,81 +256,97 @@ function scan(sql) {
   const tokens = [];
   let i = 0;
   while (i < n) {
-    const ch = sql[i];
-    if (WHITESPACE.test(ch)) {
-      i++;
+    const skipped = skipScanTrivia(sql, i, n, at);
+    if (skipped !== null) {
+      i = skipped;
       continue;
     }
-    if (ch === '-' && at(i + 1) === '-') {
-      const newline = sql.indexOf('\n', i);
-      i = newline === -1 ? n : newline;
+    const valueEnd = scanValueToken(sql, i, n, at, tokens);
+    if (valueEnd !== null) {
+      i = valueEnd;
       continue;
     }
-    if (ch === '/' && at(i + 1) === '*') {
-      i = skipBlockComment(sql, i);
-      continue;
-    }
-    const start = i;
-    if (ch === "'" || ((ch === 'N' || ch === 'n') && at(i + 1) === "'")) {
-      const national = ch !== "'";
-      const { value, end } = readString(sql, national ? i + 1 : i);
-      tokens.push(token('string', sql, start, end, { value, national }));
-      i = end;
-      continue;
-    }
-    if (ch === '"' || ch === '[') {
-      const { value, end } = readQuotedIdentifier(sql, i);
-      tokens.push(token('identifier', sql, start, end, { value, quoting: ch === '"' ? 'double' : 'bracket' }));
-      i = end;
-      continue;
-    }
-    if (ch === '@') {
-      const global = at(i + 1) === '@';
-      const nameStart = i + (global ? 2 : 1);
-      let end = nameStart;
-      while (end < n && IDENT_PART.test(sql[end])) end++;
-      if (end === nameStart) throw new TdsSqlError(102, "Incorrect syntax near '@'.", { pos: i });
-      tokens.push(token(global ? 'globalVariable' : 'variable', sql, start, end, { value: sql.slice(start, end) }));
-      i = end;
-      continue;
-    }
-    if (DIGIT.test(ch) || (ch === '.' && DIGIT.test(at(i + 1)))) {
-      const { end, numberType } = readNumber(sql, i);
-      tokens.push(token('number', sql, start, end, { value: sql.slice(start, end), numberType }));
-      i = end;
-      continue;
-    }
-    if (IDENT_START.test(ch)) {
-      let end = i + 1;
-      while (end < n && IDENT_PART.test(sql[end])) end++;
-      const word = sql.slice(i, end);
-      const upper = word.toUpperCase();
-      const separator = upper === 'GO' ? batchSeparatorAt(sql, i, end) : null;
-      if (separator) {
-        tokens.push(token('batchSeparator', sql, start, separator.end, { value: 'GO', count: separator.count }));
-        i = separator.end;
-        continue;
-      }
-      if (KEYWORDS.has(upper)) tokens.push(token('keyword', sql, start, end, { value: upper }));
-      else tokens.push(token('identifier', sql, start, end, { value: word, quoting: 'none' }));
-      i = end;
-      continue;
-    }
-    const pair = sql.slice(i, i + 2);
-    if (TWO_CHAR_OPERATORS.has(pair)) {
-      tokens.push(token('operator', sql, start, i + 2, { value: pair }));
-      i += 2;
-    } else if (ONE_CHAR_OPERATORS.has(ch)) {
-      tokens.push(token('operator', sql, start, i + 1, { value: ch }));
-      i++;
-    } else if (PUNCTUATION.has(ch)) {
-      tokens.push(token('punct', sql, start, i + 1, { value: ch }));
-      i++;
-    } else {
-      throw new TdsSqlError(102, `Incorrect syntax near '${ch}'.`, { pos: i });
-    }
+    i = scanOperatorToken(sql, i, tokens);
   }
   return tokens;
+}
+
+function skipScanTrivia(sql, i, n, at) {
+  const ch = sql[i];
+  if (WHITESPACE.test(ch)) return i + 1;
+  if (ch === '-' && at(i + 1) === '-') {
+    const newline = sql.indexOf('\n', i);
+    return newline === -1 ? n : newline;
+  }
+  if (ch === '/' && at(i + 1) === '*') return skipBlockComment(sql, i);
+  return null;
+}
+
+function scanValueToken(sql, i, n, at, tokens) {
+  const ch = sql[i];
+  const start = i;
+  if (ch === "'" || ((ch === 'N' || ch === 'n') && at(i + 1) === "'")) {
+    const national = ch !== "'";
+    const { value, end } = readString(sql, national ? i + 1 : i);
+    tokens.push(token('string', sql, start, end, { value, national }));
+    return end;
+  }
+  if (ch === '"' || ch === '[') {
+    const { value, end } = readQuotedIdentifier(sql, i);
+    tokens.push(token('identifier', sql, start, end, { value, quoting: ch === '"' ? 'double' : 'bracket' }));
+    return end;
+  }
+  if (ch === '@') return scanVariableToken(sql, i, n, at, tokens);
+  if (DIGIT.test(ch) || (ch === '.' && DIGIT.test(at(i + 1)))) {
+    const { end, numberType } = readNumber(sql, i);
+    tokens.push(token('number', sql, start, end, { value: sql.slice(start, end), numberType }));
+    return end;
+  }
+  if (IDENT_START.test(ch)) return scanWordToken(sql, i, n, tokens);
+  return null;
+}
+
+function scanVariableToken(sql, i, n, at, tokens) {
+  const global = at(i + 1) === '@';
+  const nameStart = i + (global ? 2 : 1);
+  let end = nameStart;
+  while (end < n && IDENT_PART.test(sql[end])) end++;
+  if (end === nameStart) throw new TdsSqlError(102, "Incorrect syntax near '@'.", { pos: i });
+  tokens.push(token(global ? 'globalVariable' : 'variable', sql, i, end, { value: sql.slice(i, end) }));
+  return end;
+}
+
+function scanWordToken(sql, i, n, tokens) {
+  let end = i + 1;
+  while (end < n && IDENT_PART.test(sql[end])) end++;
+  const word = sql.slice(i, end);
+  const upper = word.toUpperCase();
+  const separator = upper === 'GO' ? batchSeparatorAt(sql, i, end) : null;
+  if (separator) {
+    tokens.push(token('batchSeparator', sql, i, separator.end, { value: 'GO', count: separator.count }));
+    return separator.end;
+  }
+  if (KEYWORDS.has(upper)) tokens.push(token('keyword', sql, i, end, { value: upper }));
+  else tokens.push(token('identifier', sql, i, end, { value: word, quoting: 'none' }));
+  return end;
+}
+
+function scanOperatorToken(sql, i, tokens) {
+  const ch = sql[i];
+  const pair = sql.slice(i, i + 2);
+  if (TWO_CHAR_OPERATORS.has(pair)) {
+    tokens.push(token('operator', sql, i, i + 2, { value: pair }));
+    return i + 2;
+  }
+  if (ONE_CHAR_OPERATORS.has(ch)) {
+    tokens.push(token('operator', sql, i, i + 1, { value: ch }));
+    return i + 1;
+  }
+  if (PUNCTUATION.has(ch)) {
+    tokens.push(token('punct', sql, i, i + 1, { value: ch }));
+    return i + 1;
+  }
+  throw new TdsSqlError(102, `Incorrect syntax near '${ch}'.`, { pos: i });
 }
 
 function token(type, sql, start, end, fields) {
@@ -418,12 +436,7 @@ function readQuotedIdentifier(sql, start) {
 
 function readNumber(sql, start) {
   const at = (k) => (k < sql.length ? sql[k] : '');
-  if (sql[start] === '0' && (at(start + 1) === 'x' || at(start + 1) === 'X')) {
-    let end = start + 2;
-    while (HEX_DIGIT.test(at(end))) end++;
-    if (end === start + 2) throw new TdsSqlError(102, "Incorrect syntax near '0x'.", { pos: start });
-    return { end, numberType: 'binary' };
-  }
+  if (sql[start] === '0' && (at(start + 1) === 'x' || at(start + 1) === 'X')) return readBinaryNumber(at, start);
   let end = start;
   while (DIGIT.test(at(end))) end++;
   let decimal = false;
@@ -432,22 +445,31 @@ function readNumber(sql, start) {
     end++;
     while (DIGIT.test(at(end))) end++;
   }
-  let float = false;
-  if (at(end) === 'e' || at(end) === 'E') {
-    const signed = at(end + 1) === '+' || at(end + 1) === '-';
-    if (DIGIT.test(at(end + (signed ? 2 : 1)))) {
-      float = true;
-      end += signed ? 2 : 1;
-      while (DIGIT.test(at(end))) end++;
-    }
-  }
+  const exponentEnd = readExponent(at, end);
+  const float = exponentEnd !== end;
+  end = exponentEnd;
   if (float) return { end, numberType: 'float' };
   if (decimal) return { end, numberType: 'decimal' };
-  // Integer literals widen like SQL Server: int, then bigint, then numeric.
+  // SQL Server treats integer constants above int range as decimal, not bigint.
   const value = BigInt(sql.slice(start, end));
   if (value <= 2147483647n) return { end, numberType: 'int' };
-  if (value <= 9223372036854775807n) return { end, numberType: 'bigint' };
   return { end, numberType: 'decimal' };
+}
+
+function readBinaryNumber(at, start) {
+  let end = start + 2;
+  while (HEX_DIGIT.test(at(end))) end++;
+  if (end === start + 2) throw new TdsSqlError(102, "Incorrect syntax near '0x'.", { pos: start });
+  return { end, numberType: 'binary' };
+}
+
+function readExponent(at, end) {
+  if (at(end) !== 'e' && at(end) !== 'E') return end;
+  const signed = at(end + 1) === '+' || at(end + 1) === '-';
+  if (!DIGIT.test(at(end + (signed ? 2 : 1)))) return end;
+  end += signed ? 2 : 1;
+  while (DIGIT.test(at(end))) end++;
+  return end;
 }
 
 // GO must stand alone on its line: only blanks before it, and after it an optional
@@ -468,6 +490,9 @@ function batchSeparatorAt(sql, start, end) {
     let d = m;
     while (DIGIT.test(sql[d] ?? '')) d++;
     count = Number(sql.slice(m, d));
+    if (count > MAX_BATCH_REPEAT) {
+      throw new TdsSqlError(102, `GO accepts a repeat count up to ${MAX_BATCH_REPEAT}.`, { pos: m });
+    }
     stop = d;
     m = skipBlanks(d);
   }
@@ -476,6 +501,13 @@ function batchSeparatorAt(sql, start, end) {
 }
 
 // ---- parser
+
+// Parser diagnostics need the originating token without changing the public AST shape.
+export const SQL_OPERATOR_TOKEN = Symbol('sqlOperatorToken');
+const withOperatorToken = (node, token) => {
+  Object.defineProperty(node, SQL_OPERATOR_TOKEN, { value: token });
+  return node;
+};
 
 const peek = (s, k = 0) => s.tokens[s.pos + k];
 const advance = (s) => s.tokens[s.pos++];
@@ -533,7 +565,7 @@ function parsePrefix(s, ctx) {
   const tok = peek(s);
   if (isKeyword(tok, 'NOT')) {
     advance(s);
-    return { type: 'Unary', operator: 'NOT', operand: parseBinding(s, BP.NOT, ctx) };
+    return withOperatorToken({ type: 'Unary', operator: 'NOT', operand: parseBinding(s, BP.NOT, ctx) }, tok);
   }
   if (isOperator(tok, '-') || isOperator(tok, '+')) {
     advance(s);
@@ -550,13 +582,13 @@ function parseInfix(s, left, ctx) {
   const tok = advance(s);
   if (tok.type === 'operator' || isKeyword(tok, 'AND') || isKeyword(tok, 'OR')) {
     const right = parseBinding(s, bindingPower(tok), ctx);
-    return { type: 'Binary', operator: tok.value, left, right };
+    return withOperatorToken({ type: 'Binary', operator: tok.value, left, right }, tok);
   }
   if (isKeyword(tok, 'IS')) {
     const negated = isKeyword(peek(s), 'NOT');
     if (negated) advance(s);
     expectKeyword(s, 'NULL');
-    return { type: 'IsNull', operand: left, negated };
+    return withOperatorToken({ type: 'IsNull', operand: left, negated }, tok);
   }
   let negated = false;
   let kw = tok;
@@ -569,14 +601,14 @@ function parseInfix(s, left, ctx) {
     if (isKeyword(peek(s), 'SELECT')) {
       const subquery = parseSubqueryHere(s, ctx);
       expectPunct(s, ')');
-      return { type: 'In', operand: left, negated, list: null, subquery };
+      return withOperatorToken({ type: 'In', operand: left, negated, list: null, subquery }, tok);
     }
     const list = [];
     do {
       list.push(parseBinding(s, 0, ctx));
     } while (eatPunct(s, ','));
     expectPunct(s, ')');
-    return { type: 'In', operand: left, negated, list, subquery: null };
+    return withOperatorToken({ type: 'In', operand: left, negated, list, subquery: null }, tok);
   }
   if (kw.value === 'LIKE') {
     const pattern = parseBinding(s, BP.PREDICATE, ctx);
@@ -585,13 +617,13 @@ function parseInfix(s, left, ctx) {
       advance(s);
       escape = parseBinding(s, BP.PREDICATE, ctx);
     }
-    return { type: 'Like', operand: left, negated, pattern, escape };
+    return withOperatorToken({ type: 'Like', operand: left, negated, pattern, escape }, tok);
   }
   // BETWEEN: the bounds stop before AND so that "x BETWEEN 1 AND 2 AND y" splits correctly.
   const low = parseBinding(s, BP.AND, ctx);
   expectKeyword(s, 'AND');
   const high = parseBinding(s, BP.AND, ctx);
-  return { type: 'Between', operand: left, negated, low, high };
+  return withOperatorToken({ type: 'Between', operand: left, negated, low, high }, tok);
 }
 
 function eatPunct(s, value) {
@@ -650,7 +682,7 @@ function parseKeywordExpression(s, ctx, tok) {
     expectPunct(s, '(');
     const subquery = parseSubqueryHere(s, ctx);
     expectPunct(s, ')');
-    return { type: 'Exists', subquery };
+    return withOperatorToken({ type: 'Exists', subquery }, tok);
   }
   if (FUNCTION_KEYWORDS.has(tok.value) && isPunct(peek(s, 1), '(')) {
     advance(s);
@@ -693,12 +725,12 @@ function parseIdentifierExpression(s, ctx) {
 const PREDICATE_OPS = new Set(['=', '<>', '!=', '<', '>', '<=', '>=', '!<', '!>', 'AND', 'OR']);
 const PREDICATE_NODES = new Set(['IsNull', 'In', 'Between', 'Like', 'Exists', 'Quantified']);
 export function checkPredicate(s, node) {
-  const boolean =
-    node.type === 'Unary'
-      ? node.operator === 'NOT'
-      : node.type === 'Binary'
-        ? PREDICATE_OPS.has(node.operator)
-        : PREDICATE_NODES.has(node.type) || (node.type === 'FunctionCall' && /^(CONTAINS|FREETEXT)$/i.test(node.name));
+  let boolean;
+  if (node.type === 'Unary') boolean = node.operator === 'NOT';
+  else if (node.type === 'Binary') boolean = PREDICATE_OPS.has(node.operator);
+  else
+    boolean =
+      PREDICATE_NODES.has(node.type) || (node.type === 'FunctionCall' && /^(CONTAINS|FREETEXT)$/i.test(node.name));
   if (boolean) return node;
   const tok = s.tokens[s.pos] ?? s.tokens[s.pos - 1];
   throw new TdsSqlError(
@@ -719,7 +751,7 @@ function parseCase(s, ctx) {
     advance(s);
     const when = operand === null ? checkPredicate(s, parseBinding(s, 0, ctx)) : parseBinding(s, 0, ctx);
     expectKeyword(s, 'THEN');
-    whens.push({ when, then: parseBinding(s, 0, ctx) });
+    whens.push({ when, then: parseBinding(s, 0, ctx) }); // NOSONAR: `then` is a domain property, not a thenable
   }
   if (whens.length === 0) throw syntaxError(peek(s));
   let elseExpr = null;
@@ -734,10 +766,10 @@ function parseCase(s, ctx) {
 function parseCast(s, ctx, tryCast) {
   expectPunct(s, '(');
   const operand = parseBinding(s, 0, ctx);
-  expectKeyword(s, 'AS');
+  const asToken = expectKeyword(s, 'AS');
   const targetType = parseTypeSpec(s);
   expectPunct(s, ')');
-  return { type: 'Cast', operand, targetType, tryCast };
+  return withOperatorToken({ type: 'Cast', operand, targetType, tryCast }, asToken);
 }
 
 function parseConvert(s, ctx, tryConvert) {

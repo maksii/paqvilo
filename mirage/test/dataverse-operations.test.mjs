@@ -98,19 +98,19 @@ async function startServer({ extensions = [], change = (fn) => fn() } = {}) {
     }),
   });
   const authorization = `Bearer ${(await tokenResponse.json()).access_token}`;
-  const timed = (init) => ({ ...init, signal: AbortSignal.timeout(5000) });
   return {
     server,
     store,
     origin: server.origin,
     authorization,
     appUserId: uuidV5(server.organizationId, `systemuser:app:${APP_ID}`),
-    get: (path) => fetch(`${server.origin}${path}`, timed({ headers: { authorization } })),
+    get: (path) => fetch(`${server.origin}${path}`, { headers: { authorization } }),
     send: (method, path, body) =>
-      fetch(
-        `${server.origin}${path}`,
-        timed({ method, headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(body) }),
-      ),
+      fetch(`${server.origin}${path}`, {
+        method,
+        headers: { authorization, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
     close: async () => {
       delete process.env[SECRET_VAR];
       await server.close();
@@ -531,7 +531,6 @@ describe('batch-aware api.change', () => {
         method: 'POST',
         headers: { authorization: probe.authorization, 'content-type': `multipart/mixed; boundary=${boundary}` },
         body,
-        signal: AbortSignal.timeout(5000),
       });
       assert.equal(response.status, 200);
       const text = await response.text();

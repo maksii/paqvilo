@@ -51,13 +51,17 @@ export function frameState(frameEvents) {
       // A new document replaces the child frames of the one before it; Chromium does not
       // always report their removal.
       if (loaders.has(row.frameId) && loaders.get(row.frameId) !== row.loaderId)
-        for (const child of parents.keys())
-          if (child !== row.frameId && withinFrame(child, row.frameId, parents)) detached.add(child);
+        detachFrameChildren(row.frameId, parents, detached);
       loaders.set(row.frameId, row.loaderId);
       detached.delete(row.frameId);
     } else if (row.event === 'frameDetached' && row.reason !== 'swap') detached.add(row.frameId);
   }
   return { loaders, detached };
+}
+
+function detachFrameChildren(frameId, parents, detached) {
+  for (const child of parents.keys())
+    if (child !== frameId && withinFrame(child, frameId, parents)) detached.add(child);
 }
 
 /**
@@ -116,8 +120,9 @@ export async function awaitWritesBeforeDocument(
  * Wait until a loaded page's own requests are done: none of the current documents' requests
  * (or a pending navigation) is open and nothing started or ended for `quietMs`. Exported
  * pages chain their load-time work (ready handlers, then anti-forgery token, then reads and
- * writes), so a user acts once the page has finished loading. Event streams never end and
- * `ignore(row)` excludes further records. Bounded by `timeout`; never fails the caller.
+ * writes), so a user acts once the page has finished loading. Event streams never end, a
+ * `handedOff` record completes in another CDP target and `ignore(row)` excludes further
+ * records. Bounded by `timeout`; never fails the caller.
  * Returns { waitedMs, settled, pending? }.
  */
 export async function awaitNetworkQuiet(
@@ -135,6 +140,7 @@ export async function awaitNetworkQuiet(
         row.type !== 'EventSource' &&
         row.finishedTimestamp === undefined &&
         !row.failure &&
+        !row.handedOff &&
         !ignore(row) &&
         (row.type === 'Document' ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
     );

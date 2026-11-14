@@ -1,5 +1,6 @@
 // The model-driven shell's mobile offline toggle (model-driven/offline.mjs): going offline downloads the profile, the form
 // edits the offline copy and shows the change pending, going online uploads it to the organization.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,8 +14,7 @@ const PROFILE = '77777777-7777-4777-8777-777777777791',
   COPPER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 test('the shell goes offline, edits a record in the offline copy, shows it pending and syncs it when back online', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const dir = initial.solutionDir;
   await fs.mkdir(path.join(dir, 'MobileOfflineProfiles'), { recursive: true });
   await fs.writeFile(
@@ -32,7 +32,7 @@ test('the shell goes offline, edits a record in the offline copy, shows it pendi
   );
   const sim = await initial.start();
   const origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 
 test('HTTP writes journal, report save timing, share queued sessions and reopen after restart', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-journal-http-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-journal-http-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: Synthetic storage\n');
   await fs.writeFile(

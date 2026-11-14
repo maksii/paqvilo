@@ -82,12 +82,13 @@ export function validatePowerFxAdapter(adapter) {
  */
 export function createPowerFxEvaluator({ adapter, engine = true } = {}) {
   const registered = adapter !== undefined;
-  const source = registered ? 'adapter' : engine === false ? 'disabled' : 'core';
-  const active = registered
-    ? validatePowerFxAdapter(adapter)
-    : source === 'core'
-      ? powerFxEngine
-      : notImplementedPowerFx;
+  let source = 'core';
+  if (registered) source = 'adapter';
+  else if (engine === false) source = 'disabled';
+  let active;
+  if (registered) active = validatePowerFxAdapter(adapter);
+  else if (source === 'core') active = powerFxEngine;
+  else active = notImplementedPowerFx;
   const available = source !== 'disabled';
   const expressionText = (expression) => {
     if (typeof expression !== 'string' || !expression.trim())

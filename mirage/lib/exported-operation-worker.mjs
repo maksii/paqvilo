@@ -2,7 +2,8 @@ import { parentPort, workerData } from 'node:worker_threads';
 import vm from 'node:vm';
 
 // This is an execution boundary for explicitly trusted project code, not a
-// security sandbox for arbitrary downloads. The parent terminates the worker.
+// security sandbox for arbitrary downloads. The worker ends by itself after its answer; the parent
+// terminates it only when it has not answered at its limit.
 // One RPC channel (Atomics.wait over a SharedArrayBuffer) carries every bridge to the parent
 // (exported-operations.mjs runExportedServerLogic): Dataverse CRUD, custom APIs, cloud flows and HTTP.
 const rpc = (kind, args) => {
@@ -17,7 +18,11 @@ const rpc = (kind, args) => {
   return JSON.stringify(answer.value);
 };
 const connectorCall = (kind, entitySet, id, options, payload) => rpc(kind, { entitySet, id, options, payload });
-const text = (value) => (value == null ? null : typeof value === 'string' ? value : JSON.stringify(value));
+const text = (value) => {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+};
 const connector = {
   RetrieveMultipleRecords: (entitySet, options = '') => connectorCall('query', entitySet, null, options),
   RetrieveRecord: (entitySet, id, options = '') => connectorCall('get', entitySet, id, options),
@@ -93,6 +98,11 @@ const Server = {
   Connector: { Dataverse: connector, HttpClient, CloudFlow },
   Logger: { Log: log('Log'), Info: log('Log'), Warn: log('Warn'), Error: log('Error') },
 };
+// Set before the answer (result or failure) is posted: the host leaves a limit that falls due while the answer is still
+// queued to that answer. A caller that passes no flag (a direct test of this worker) gets the answer alone.
+const answered = () => {
+  if (workerData.answered) Atomics.store(new Int32Array(workerData.answered), 0, 1);
+};
 parentPort.postMessage({ kind: 'ready' });
 try {
   const context = vm.createContext(
@@ -101,15 +111,17 @@ try {
   );
   const name = workerData.operation;
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new Error('Invalid server-logic operation');
-  new vm.Script(workerData.code, { filename: 'exported-server-logic.js' }).runInContext(context, {
+  /* NOSONAR */ new vm.Script(workerData.code, { filename: 'exported-server-logic.js' }).runInContext(context, {
     timeout: workerData.timeout,
   });
-  const result = await new vm.Script(
+  /* NOSONAR: intentional local script execution or generated handler */ const result = await new vm.Script(
     `if(typeof ${name} !== 'function') throw new Error('The exported operation is not defined'); ${name}();`,
   ).runInContext(context, { timeout: workerData.timeout });
   const raw = typeof result === 'string' ? result : JSON.stringify(result ?? null);
   if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error('Server-logic result exceeds the local limit');
+  answered();
   parentPort.postMessage({ kind: 'result', raw });
 } catch (error) {
+  answered();
   parentPort.postMessage({ kind: 'failure', message: String(error.message).slice(0, 1000) });
 }

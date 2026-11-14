@@ -15,6 +15,7 @@ import {
   loadPages,
   parseEntityPage,
 } from '../../scripts/dataverse-standard-tables.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = fs.readFileSync(path.join(here, 'fixtures', 'standard-entity-page.md'), 'utf8');
@@ -133,7 +134,7 @@ test('unmapped Learn types are reported as problems, not guessed', () => {
 });
 
 test('loadPages fetches a missing page once and reads the cache afterwards', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'standard-tables-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'standard-tables-'));
   const urls = [];
   const fetchFn = async (url, options) => {
     assert.equal(options.redirect, 'error', 'Pinned reference downloads cannot redirect to another origin.');

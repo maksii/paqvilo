@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { DataStore, parseFetchXml } from './lib/data.mjs';
 import { LiveBridge } from './lib/live.mjs';
 import { collectFetchXmlPages, escapeXmlAttribute } from './lib/paging-validation.mjs';
@@ -12,6 +13,16 @@ const serialize = (node) =>
   `<${node.name}${Object.entries(node.attrs)
     .map(([key, value]) => ` ${key}="${escapeXmlAttribute(value)}"`)
     .join('')}>${escapeXmlAttribute(node.text ?? '')}${node.children.map(serialize).join('')}</${node.name}>`;
+
+const LOOKUP_VALUE_KEY = /^_(.*)_value$/;
+
+// A live key that is only an annotation, or the raw form of a lookup that the normalised column already carries.
+function isStateKey(row, key) {
+  const lookup = LOOKUP_VALUE_KEY.exec(key);
+  return !key.includes('@') && !(lookup && Object.hasOwn(row, lookup[1]));
+}
+
+const stateRow = (row) => Object.fromEntries(Object.entries(row).filter(([key]) => isStateKey(row, key)));
 
 /** Read reference records, then persist every completed import in one state replacement. */
 export async function enrichReference({ store, origin, cdpUrl, plan, bridge: suppliedBridge, beforeCommit }) {
@@ -79,8 +90,11 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
           row,
         ]),
       );
-      records.forEach((row) =>
-        merged.set(row[mapping.idColumn].toLowerCase(), { ...merged.get(row[mapping.idColumn].toLowerCase()), ...row }),
+      records.map(stateRow).forEach((row) =>
+        merged.set(row[mapping.idColumn].toLowerCase(), {
+          ...merged.get(row[mapping.idColumn].toLowerCase()),
+          ...row,
+        }),
       );
       state.tables[mapping.logicalName] = [...merged.values()];
       provenance.push({
@@ -108,14 +122,8 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        state: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-      },
-    });
+    const values = parseToolArgs('enrich-reference', process.argv.slice(2));
+    assertToolOptions('enrich-reference', values, ['origin', 'cdp']);
     // Require an existing workspace; the command never fabricates source configuration.
     await assertOfflineState(values.state);
     const fingerprint = await stateFileFingerprint(values.state);

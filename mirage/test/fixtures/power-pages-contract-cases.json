@@ -1,0 +1,262 @@
+[
+  {
+    "id": "filter-batch",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{% assign grouped = vector | batch: 2 %}{% for g in grouped %}[{{ g | join: ':' }}]{% endfor %}"
+  },
+  {
+    "id": "filter-concat",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{% assign more = 'x,y' | split: ',' %}{{ vector | concat: more | join: ':' }}|{{ vector | concat: 'z' | join: ':' }}"
+  },
+  {
+    "id": "filter-first",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | first }}|{{ vector.first }}"
+  },
+  {
+    "id": "filter-join",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | join: ':' }}"
+  },
+  {
+    "id": "filter-last",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | last }}|{{ vector.last }}"
+  },
+  {
+    "id": "filter-random",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{% assign picked = vector | random %}{% if vector contains picked %}member{% else %}invalid{% endif %}"
+  },
+  {
+    "id": "filter-shuffle",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{% assign mixed = vector | shuffle %}{{ mixed | size }}|{{ mixed | sort | join: ':' }}"
+  },
+  {
+    "id": "filter-size",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | size }}|{{ vector.size }}"
+  },
+  {
+    "id": "filter-skip",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | skip: 2 | join: ':' }}"
+  },
+  {
+    "id": "filter-take",
+    "source": "{% assign vector = 'c,a,b,a' | split: ',' %}{{ vector | take: 2 | join: ':' }}"
+  },
+  {
+    "id": "filter-date",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_days",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_days: 1.5 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_hours",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_hours: -2.5 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_minutes",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_minutes: 1.5 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_months",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_months: 1 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_seconds",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_seconds: -1.25 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_add_years",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_add_years: 1 | date: 'yyyy-MM-dd HH:mm:ss' }}"
+  },
+  {
+    "id": "filter-date_to_iso8601",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_to_iso8601 }}"
+  },
+  {
+    "id": "filter-date_to_rfc822",
+    "source": "{% assign fixeddate = '2024-01-31T10:20:30Z' %}{{ fixeddate | date_to_rfc822 }}"
+  },
+  {
+    "id": "filter-escape",
+    "source": "{{ '<b>\"quoted\" & value</b>' | escape }}"
+  },
+  {
+    "id": "filter-xml_escape",
+    "source": "{{ '<b>\"quoted\" & value</b>' | xml_escape }}"
+  },
+  {
+    "id": "filter-html_safe_escape",
+    "source": "{{ '<b>label</b><img src=x onerror=bad()><script>bad()</script>' | html_safe_escape }}"
+  },
+  {
+    "id": "filter-url_escape",
+    "source": "{{ 'a b+&/?' | url_escape }}"
+  },
+  {
+    "id": "filter-current_sort",
+    "source": "{{ 'title ASC, createdon DESC' | current_sort: 'createdon' }}|{{ 'title ASC' | current_sort: 'absent' }}"
+  },
+  {
+    "id": "filter-reverse_sort",
+    "source": "{{ 'ASC' | reverse_sort }}|{{ 'desc' | reverse_sort }}|[{{ 'other' | reverse_sort }}]"
+  },
+  {
+    "id": "filter-ceil",
+    "source": "{{ 4.3 | ceil }}"
+  },
+  {
+    "id": "filter-floor",
+    "source": "{{ 4.6 | floor }}"
+  },
+  {
+    "id": "filter-divided_by",
+    "source": "{{ 10 | divided_by: 3 }}"
+  },
+  {
+    "id": "filter-minus",
+    "source": "{{ 10 | minus: 1.1 }}"
+  },
+  {
+    "id": "filter-modulo",
+    "source": "{{ 12 | modulo: 5 }}"
+  },
+  {
+    "id": "filter-plus",
+    "source": "{{ 10 | plus: 1.1 }}"
+  },
+  {
+    "id": "filter-round",
+    "source": "{{ 2.5 | round }}"
+  },
+  {
+    "id": "filter-times",
+    "source": "{{ 10 | times: 2.2 }}"
+  },
+  {
+    "id": "filter-append",
+    "source": "{{ 'probe' | append: '.js' }}"
+  },
+  {
+    "id": "filter-capitalize",
+    "source": "{{ 'capitalize me' | capitalize }}"
+  },
+  {
+    "id": "filter-downcase",
+    "source": "{{ 'MIxed Case' | downcase }}"
+  },
+  {
+    "id": "filter-prepend",
+    "source": "{{ 'probe' | prepend: 'prefix-' }}"
+  },
+  {
+    "id": "filter-remove",
+    "source": "{{ 'ab-ab' | remove: 'ab' }}"
+  },
+  {
+    "id": "filter-remove_first",
+    "source": "{{ 'ab-ab' | remove_first: 'ab' }}"
+  },
+  {
+    "id": "filter-replace",
+    "source": "{{ 'ab-ab' | replace: 'ab', 'xy' }}"
+  },
+  {
+    "id": "filter-replace_first",
+    "source": "{{ 'ab-ab' | replace_first: 'ab', 'xy' }}"
+  },
+  {
+    "id": "filter-split",
+    "source": "{{ 'a--b--c' | split: '--' | join: ':' }}"
+  },
+  {
+    "id": "filter-strip_html",
+    "source": "{{ '<p>bold <b>value</b></p>' | strip_html }}"
+  },
+  {
+    "id": "filter-truncate",
+    "source": "{{ 'abcdefghijk' | truncate: 8 }}"
+  },
+  {
+    "id": "filter-truncate_words",
+    "source": "{{ 'one two three four' | truncate_words: 2 }}"
+  },
+  {
+    "id": "filter-upcase",
+    "source": "{{ 'Mixed Case' | upcase }}"
+  },
+  {
+    "id": "filter-newline_to_br",
+    "source": "{% capture line %}first\nsecond\n\nthird & fourth{% endcapture %}{{ line | newline_to_br }}"
+  },
+  {
+    "id": "filter-strip_newlines",
+    "source": "{% capture line %}first\nsecond\n\nthird & fourth{% endcapture %}{{ line | strip_newlines }}"
+  },
+  {
+    "id": "filter-text_to_html",
+    "source": "{% capture line %}first\nsecond\n\nthird & fourth{% endcapture %}{{ line | text_to_html }}"
+  },
+  {
+    "id": "filter-boolean",
+    "source": "{{ 'enabled' | boolean }}|[{{ 'not-a-value' | boolean }}]"
+  },
+  {
+    "id": "filter-decimal",
+    "source": "{{ '3.14' | decimal }}|[{{ 'not-a-value' | decimal }}]"
+  },
+  {
+    "id": "filter-integer",
+    "source": "{{ '10' | integer }}|[{{ 'not-a-value' | integer }}]"
+  },
+  {
+    "id": "filter-string",
+    "source": "{{ 12.5 | string }}|[{{ 'not-a-value' | string }}]"
+  },
+  {
+    "id": "filter-base",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | base }}"
+  },
+  {
+    "id": "filter-host",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | host }}"
+  },
+  {
+    "id": "filter-path",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | path }}"
+  },
+  {
+    "id": "filter-path_and_query",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | path_and_query }}"
+  },
+  {
+    "id": "filter-port",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | port }}"
+  },
+  {
+    "id": "filter-scheme",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | scheme }}"
+  },
+  {
+    "id": "filter-add_query",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | add_query: 'existing', 'two & three' | escape }}"
+  },
+  {
+    "id": "filter-remove_query",
+    "source": "{{ 'https://example.test:8443/path?existing=one#fragment' | remove_query: 'existing' | escape }}"
+  },
+  {
+    "id": "filter-default",
+    "source": "[{{ nil | default: 'fallback' }}]|[{{ '' | default: 'fallback' }}]|[{{ false | default: 'fallback' }}]"
+  },
+  {
+    "id": "filter-file_size",
+    "source": "{{ 2050 | file_size: 0 }}|{{ 10000000 | file_size: 2 }}"
+  },
+  {
+    "id": "filter-h",
+    "source": "{{ '<b>value & text</b>' | h }}"
+  },
+  {
+    "id": "filter-liquid",
+    "source": "{% assign probe = 'inner' %}{% assign code = '{{ probe }}' %}{{ code | liquid }}"
+  }
+]

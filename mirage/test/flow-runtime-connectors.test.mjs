@@ -1,3 +1,5 @@
+// @test-kind contract: Paqvilo's designed flow runtime behaviour for Dataverse actions under connection principals and flow identity overrides.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -45,7 +47,7 @@ const store = (references = []) =>
 async function listen(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return `http://127.0.0.1:${server.address().port}`;
 }
 
@@ -199,7 +201,7 @@ test('a flow with an unbound connection reference stays a placeholder until the 
   );
 });
 
-test('Dataverse actions behave as before and a connection principal yields to the flowIdentities override', async () => {
+test('Dataverse actions run under their connection principal, which yields to the flowIdentities override', async () => {
   const actions = {
     create: dataverse('CreateRecord', { entityName: 'x_widgets', 'item/x_name': "@triggerBody()?['name']" }, 'x_dv'),
     reply: {

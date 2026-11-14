@@ -6,10 +6,11 @@ import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
-import { drainFixture } from '../testing/owned-fixture.mjs';
+import { sharedBrowser, moduleGraph } from './shared-browser.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
+const controlsModule = new URL('../lib/model-driven/controls.mjs', import.meta.url);
 
 // A compiled standard control: the same public lifecycle a PAC bundle exports.
 const bundle = `var InventedExports; InventedExports = { Input: class {
@@ -21,9 +22,19 @@ const bundle = `var InventedExports; InventedExports = { Input: class {
   destroy() { window.lifecycle.push('destroy');this.input.remove(); }
 } };`;
 
-async function fixture(t) {
+async function fixture(t, { isolateFramework = true, moduleTransport = null } = {}) {
+  // Every module the framework imports, served at the path its importer resolves to.
+  const modules = await moduleGraph(controlsModule, '/assets/controls.mjs');
   let scripts = 0;
+  const trail = [];
+  const record = (event) => {
+    if (trail.length < 80) trail.push(event);
+  };
   const server = http.createServer(async (req, res) => {
+    const pathname = new URL(req.url, 'http://fixture').pathname;
+    record({ event: 'request', path: pathname });
+    res.once('finish', () => record({ event: 'response', path: pathname, status: res.statusCode }));
+    res.once('close', () => record({ event: 'closed', path: pathname, finished: res.writableEnded }));
     if (req.url === '/bundle.js') {
       scripts++;
       res.setHeader('content-type', 'text/javascript');
@@ -68,26 +79,17 @@ async function fixture(t) {
       }, 50);
       return;
     }
-    if (req.url.startsWith('/assets/')) {
-      const name = req.url.slice('/assets/'.length);
-      if (
-        ![
-          'pcf-runtime.mjs',
-          'controls.mjs',
-          'choice-control.mjs',
-          'lookup-control.mjs',
-          'date-control.mjs',
-          'duration-control.mjs',
-          'control-descriptors.mjs',
-          'icons.mjs',
-        ].includes(name)
-      ) {
+    if (req.url.startsWith('/assets/') || modules.has(req.url)) {
+      moduleTransport?.requests.push(req.url.replace(/^\/assets\//, ''));
+      if (moduleTransport?.reset) return req.socket.destroy();
+      const file = modules.get(req.url);
+      if (!file) {
         res.writeHead(404);
         res.end();
         return;
       }
       res.setHeader('content-type', 'text/javascript');
-      res.end(await fs.readFile(new URL(`../lib/model-driven/${name}`, import.meta.url)));
+      res.end(await fs.readFile(file));
       return;
     }
     res.setHeader('content-type', 'text/html');
@@ -97,7 +99,7 @@ async function fixture(t) {
   const browserCleanup = [];
   // A browser can retain speculative or partial HTTP connections. Close its
   // context before the server, and drain remaining connections even on failure.
-  t.after(() =>
+  ownedFixture(t).add(() =>
     drainFixture([
       ...browserCleanup,
       () =>
@@ -110,42 +112,84 @@ async function fixture(t) {
   const page = await chrome.page({ after: (cleanup) => browserCleanup.push(cleanup) });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.evaluate(async () => {
-    window.lifecycle = [];
-    window.changes = 0;
-    window.render = (await import('/assets/controls.mjs')).renderControl;
-    window.field = { name: 'x_name', label: 'Name', type: 'text', maxLength: 20 };
-    window.extensions = {
-      trusted: true,
-      pcf: {
-        controls: [
-          {
-            name: 'publisher.InventedInput',
-            constructor: 'Invented.Input',
-            controlType: 'standard',
-            properties: [
-              { name: 'value', ofType: 'SingleLine.Text', usage: 'bound' },
-              { name: 'prefix', ofType: 'Whole.None', usage: 'input' },
-            ],
-            resources: { code: ['/bundle.js'], exports: ['InventedExports'] },
-          },
-        ],
-      },
-    };
-    window.options = {
-      pcf: { name: 'publisher.InventedInput', bindings: { value: { field: 'x_name' }, prefix: { value: '3' } } },
-      clientExtensions: window.extensions,
-    };
-    window.mount = async (options) => {
-      window.control = window.render(window.field, 'Initial', options ?? window.options);
-      document.querySelector('main').append(window.control.element);
-      window.control.element.addEventListener('input', () => window.changes++);
-      await window.control.ready;
-    };
+  page.on('requestfailed', (request) =>
+    record({ event: 'requestfailed', path: new URL(request.url()).pathname, error: request.failure()?.errorText }),
+  );
+  page.on('response', (response) => {
+    const pathname = new URL(response.url()).pathname;
+    if (pathname.startsWith('/assets/'))
+      record({
+        event: 'module-response',
+        path: pathname,
+        status: response.status(),
+        type: response.headers()['content-type'],
+      });
   });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  // Framework initialization is fixture plumbing. Component bundles, styles and platform libraries still use HTTP.
+  // Routing disables the browser HTTP cache, so scriptCount also proves the PCF runtime owns resource reuse.
+  if (isolateFramework)
+    for (const [served, file] of modules)
+      await page.route(`${origin}${served}`, async (route) =>
+        route.fulfill({ contentType: 'text/javascript', body: await fs.readFile(file) }),
+      );
+  await page.goto(origin);
+  try {
+    await page.evaluate(async () => {
+      window.lifecycle = [];
+      window.changes = 0;
+      window.render = (await import('/assets/controls.mjs')).renderControl;
+      window.field = { name: 'x_name', label: 'Name', type: 'text', maxLength: 20 };
+      window.extensions = {
+        trusted: true,
+        pcf: {
+          controls: [
+            {
+              name: 'publisher.InventedInput',
+              constructor: 'Invented.Input',
+              controlType: 'standard',
+              properties: [
+                { name: 'value', ofType: 'SingleLine.Text', usage: 'bound' },
+                { name: 'prefix', ofType: 'Whole.None', usage: 'input' },
+              ],
+              resources: { code: ['/bundle.js'], exports: ['InventedExports'] },
+            },
+          ],
+        },
+      };
+      window.options = {
+        pcf: { name: 'publisher.InventedInput', bindings: { value: { field: 'x_name' }, prefix: { value: '3' } } },
+        clientExtensions: window.extensions,
+      };
+      window.mount = async (options) => {
+        window.control = window.render(window.field, 'Initial', options ?? window.options);
+        document.querySelector('main').append(window.control.element);
+        window.control.element.addEventListener('input', () => window.changes++);
+        await window.control.ready;
+      };
+    });
+  } catch (error) {
+    t.diagnostic('PCF framework initialization: ' + JSON.stringify(trail));
+    throw error;
+  }
   return { page, errors, scriptCount: () => scripts };
 }
+
+test('PCF framework initialization is independent of module HTTP resets while component bundles remain real HTTP', async (t) => {
+  const legacy = { reset: true, requests: [] };
+  await assert.rejects(
+    fixture(t, { isolateFramework: false, moduleTransport: legacy }),
+    /Failed to fetch dynamically imported module/,
+  );
+  assert.ok(legacy.requests.includes('controls.mjs'), 'the controlled legacy module transport actually reset');
+  const transport = { reset: true, requests: [] };
+  const { page, errors, scriptCount } = await fixture(t, { moduleTransport: transport });
+  await page.evaluate(() => window.mount());
+  assert.equal(await page.evaluate(() => window.control.read()), 'Initial');
+  assert.equal(scriptCount(), 1, 'the compiled PCF bundle still executes through the HTTP server');
+  assert.deepEqual(transport.requests, [], 'only the exact framework modules bypass their independent HTTP transport');
+  assert.deepEqual(errors, []);
+});
 
 test('PCF fixture teardown closes speculative HTTP connections after its browser context', async (t) => {
   const { page } = await fixture(t);
@@ -155,15 +199,14 @@ test('PCF fixture teardown closes speculative HTTP connections after its browser
   await once(socket, 'connect');
   // No HTTP request is sent: this models a browser's speculative connection,
   // which bare server.close() cannot finish while the socket remains open.
-  let deadlineExpired = false;
-  const deadline = setTimeout(() => {
-    deadlineExpired = true;
-    socket.destroy(); // Release a broken teardown so the regression fails promptly.
-  }, 5000);
+  // After hooks run in registration order, so this one runs once the fixture's own teardown (registered first) has
+  // finished: its server.close() resolves only after the server has ended this connection. A teardown that cannot end
+  // it never reaches this hook, and the runner's --test-timeout reports the test. The test's signal aborts only after
+  // its hooks have run or when that timeout ends it; the socket is released then, so a broken teardown cannot keep the
+  // process alive.
+  t.signal.addEventListener('abort', () => socket.destroy(), { once: true });
   t.after(async () => {
     await closed;
-    clearTimeout(deadline);
-    assert.equal(deadlineExpired, false, 'fixture teardown must drain the socket before its cleanup deadline');
     assert.equal(page.isClosed(), true);
     assert.equal(socket.destroyed, true);
   });
@@ -219,6 +262,34 @@ test('trusted standard PCF uses compiled exports, typed context, dirty outputs a
   assert.equal(await page.locator('input').count(), 0);
   await page.evaluate(() => window.mount());
   assert.equal(scriptCount(), 1); // Constructor resources load once; each form owns its instance.
+  assert.deepEqual(errors, []);
+});
+
+test('bound PCF column metadata preserves all exported requirement levels independently of disabled presentation', async (t) => {
+  const { page, errors } = await fixture(t);
+  const states = await page.evaluate(async () => {
+    const result = [];
+    for (const [requiredLevel, required] of [
+      ['none', false],
+      ['recommended', false],
+      ['systemrequired', true],
+      ['applicationrequired', true],
+      [undefined, true],
+    ]) {
+      window.field = { ...window.field, requiredLevel, required };
+      await window.mount({ ...window.options, disabled: true });
+      result.push({
+        requiredLevel: window.pcfContext.parameters.value.attributes.RequiredLevel,
+        disabled: window.pcfContext.mode.isControlDisabled,
+      });
+      window.control.destroy();
+    }
+    return result;
+  });
+  assert.deepEqual(
+    states,
+    [0, 3, 1, 2, 2].map((requiredLevel) => ({ requiredLevel, disabled: true })),
+  );
   assert.deepEqual(errors, []);
 });
 
@@ -526,8 +597,7 @@ test('disposal stops later PCF resource loads and retained contexts cannot resta
 });
 
 test('an exported Solution PCF edits and saves through the actual model-driven shell', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const controlDir = path.join(source.solutionDir, 'Controls', 'publisher.InventedInput');
   await fs.mkdir(controlDir, { recursive: true });
   await fs.writeFile(
@@ -556,7 +626,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
     );
   await fs.writeFile(formFile, xml);
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   const errors = [];
@@ -593,8 +663,6 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   try {
     await page.waitForFunction(
       () => document.querySelector('h1')?.textContent === 'PCF updated' || !document.querySelector('#notice')?.hidden,
-      null,
-      { timeout: 5000 },
     );
   } catch (error) {
     assert.fail(

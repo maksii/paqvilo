@@ -1,3 +1,5 @@
+// @test-kind contract: rich text edit and assert actions on native managed frames and local adapter editors, including mode resolution and modal focus handoff
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -12,7 +14,7 @@ after(() => browser?.close());
 
 test('native editor actions wait for asynchronous blur binding before authored Save reads it', async (t) => {
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const outer = (field) => {
     const content = `<body contenteditable="true"><script>document.body.addEventListener('blur',()=>{const text=document.body.innerText;setTimeout(()=>{parent.parent.document.getElementById('${field}').value=JSON.stringify('<p>'+text+'</p>');},80);},true);</script></body>`;
     const nested = `<iframe class="cke_wysiwyg_frame" srcdoc="${content.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')}"></iframe>`;
@@ -36,7 +38,7 @@ test('native editor actions wait for asynchronous blur binding before authored S
 
 test('auto mode follows the rendered editor: the native managed frame or the local compatibility editor', async (t) => {
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const escape = (html) => html.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
   // The editable body commits its text to the control's hidden JSON input on blur.
   const body = (target) =>
@@ -60,7 +62,7 @@ test('auto mode follows the rendered editor: the native managed frame or the loc
 
 test('typing waits for a hosting modal to finish showing, so its focus handoff cannot cut the text', async (t) => {
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const escape = (html) => html.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
   // The form page in the modal: an adapter editor that commits its text on every input.
   const editor = `<body contenteditable="true"><script>document.body.addEventListener('input',()=>{parent.document.getElementById('note').value=JSON.stringify('<p>'+document.body.innerText+'</p>');});</script></body>`;

@@ -6,10 +6,10 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('clean source-only forms use local date and rich-text compatibility assets with explicit mode', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-compatibility-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'local-compatibility-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',
@@ -73,15 +73,13 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('response', (response) => {
-    if (response.url().includes('/__sim-static/vendor/') && response.status() >= 400)
-      errors.push(`HTTP ${response.status()} ${response.url()}`);
     if (response.status() >= 400) errors.push(`HTTP ${response.status()} ${response.url()}`);
     if (response.url().includes('/__sim-static/vendor/'))
       assets.push({ path: new URL(response.url()).pathname, status: response.status() });
   });
   await page.goto(app.url);
   try {
-    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function', null, { timeout: 5000 });
+    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function');
   } catch {
     throw new Error(
       JSON.stringify({
@@ -239,7 +237,8 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   assert.equal(await page.locator('#effective').inputValue(), '2025-02-03T00:00:00.0000000');
   assert.equal(await page.locator('#effective_datepicker_description').inputValue(), '2/3/2025');
-  await page.locator('[data-sim-editor-mode=compatibility]').waitFor();
+  // The editor mode is marked before its frame loads; the instance exists once the container reports it ready.
+  await page.locator('[data-sim-editor-mode=compatibility][data-mounted=ready]').waitFor();
   assert.equal(await page.locator('.sim-compatibility-badge').innerText(), 'Compatibility editor');
   assert.equal(
     await page.evaluate(() =>

@@ -14,7 +14,7 @@
 import { DataError } from './data-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
-import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
+import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
 import { zipOf } from './dataverse-solutions.mjs';
 import { componentsOf } from './dataverse-solution-messages.mjs';
 
@@ -88,7 +88,7 @@ function destinationOf(target) {
 function profileIdOf(target) {
   const type = String(target?.['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
   const text = String(target?.mobileofflineprofileid ?? target?.['@odata.id'] ?? '');
-  const set = /([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
+  const set = /(?<![a-z_])([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
   const id = GUID.exec(text)?.[1];
   if (!id || (type && type !== 'mobileofflineprofile') || (set && set !== 'mobileofflineprofiles')) {
     throw invalid('Target must be a mobileofflineprofile reference.'); // native message text not known
@@ -108,6 +108,11 @@ function csdlOf(kind, name, { bound = null, params = [], returns = null, respons
   return `${complexType}<${tag} Name="${name}"${bound ? ' IsBound="true"' : ''}>\n  ${parts.join('\n  ')}\n</${tag}>`;
 }
 
+// The columns a copy of a form carries. The managed flag and the solution columns of a form are never copied.
+const FORM_CONTENT = ['name', 'description', 'formxml', 'formjson', 'type', 'objecttypecode'];
+const formContentOf = (row) =>
+  Object.fromEntries(FORM_CONTENT.filter((column) => column in row).map((column) => [column, row[column]]));
+
 function operations(api) {
   const { store } = api;
   // The table a parameter names; a missing name is a request error, an unknown one is the store's 404.
@@ -119,7 +124,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, operation, schemaName, entity) => {
     const name = privilegeName(operation, schemaName);
-    if (!(api.principals.privileges(c.user).get(name) > 0)) throw privilegeDeniedError(c.user, name, entity);
+    if (!(api.principals.privileges(c.user).get(name) > 0)) throw privilegeDeniedError(c.user, name, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, body) => ({
     status: 200,
@@ -276,25 +281,25 @@ function operations(api) {
       handle: async (c) => {
         const destination = destinationOf(c.body?.Target);
         need(c, 'create', 'SystemForm', 'systemform');
-        if (destination) need(c, 'write', 'SystemForm', 'systemform');
-        const source = c.target.row;
+        const content = formContentOf(c.target.row);
         // The primary id of systemform is formid (standard tables file), so every lookup and write uses the mapping's id column.
         const idColumn = c.target.mapping.idColumn;
-        const newId = await write(() => {
-          const rows = tableOf(store, 'systemform');
-          const copy = { ...source };
-          if (destination) {
-            const row = rows.find((r) => sameId(r[idColumn], destination));
-            if (!row) throw notFound('systemform', destination);
-            Object.assign(row, { ...copy, [idColumn]: row[idColumn] });
-            return row[idColumn];
+        const newId = await write(async () => {
+          if (!destination) {
+            const created = await api.records.createInternal(c, 'systemform', content, { authorized: true });
+            return created[idColumn];
           }
-          let n = rows.length,
-            id;
-          do id = uuidV5(source[idColumn], `copy:${n++}`);
-          while (rows.some((r) => sameId(r[idColumn], id)));
-          rows.push({ ...copy, [idColumn]: id });
-          return id;
+          const row = tableOf(store, 'systemform').find((r) => sameId(r[idColumn], destination));
+          if (!row) throw notFound('systemform', destination);
+          api.principals.authorize({
+            user: c.user,
+            entity: 'systemform',
+            operation: 'write',
+            row,
+            mapping: c.target.mapping,
+          });
+          await api.records.updateInternal(c, 'systemform', row[idColumn], content, { authorized: true });
+          return row[idColumn];
         });
         return read(c, `/api/data/${c.version}/systemforms(${newId})`);
       },
@@ -330,12 +335,10 @@ function operations(api) {
           component.kind === 'entity' || component.kind === 'attribute'
             ? store.resolveMapping(component.logical)
             : null;
-        const customizable =
-          component.kind === 'attribute'
-            ? mapping.fields[component.name]?.columnMetadata?.isCustomizable
-            : component.kind === 'entity'
-              ? mapping.dataverseMetadata?.IsCustomizable?.Value
-              : undefined;
+        let customizable;
+        if (component.kind === 'attribute')
+          customizable = mapping.fields[component.name]?.columnMetadata?.isCustomizable;
+        else if (component.kind === 'entity') customizable = mapping.dataverseMetadata?.IsCustomizable?.Value;
         return respond(c, 'IsComponentCustomizable', { IsComponentCustomizable: customizable ?? true });
       },
       csdl: csdlOf('function', 'IsComponentCustomizable', {
@@ -404,25 +407,27 @@ function operations(api) {
 
   for (const entity of UNPUBLISHED_ENTITIES) {
     if (!store.state.mappings[entity]) continue;
-    ops.push({
-      name: 'RetrieveUnpublished',
-      kind: 'function',
-      binding: 'entity',
-      entity,
-      handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}(${c.target.id})`),
-      csdl: csdlOf('function', 'RetrieveUnpublished', { bound: entity, returns: 'mscrm.savedqueryvisualization' }),
-    });
-    ops.push({
-      name: 'RetrieveUnpublishedMultiple',
-      kind: 'function',
-      binding: 'collection',
-      entity,
-      handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}`),
-      csdl: csdlOf('function', 'RetrieveUnpublishedMultiple', {
-        bound: entity,
-        returns: 'Collection(mscrm.savedqueryvisualization)',
-      }),
-    });
+    ops.push(
+      {
+        name: 'RetrieveUnpublished',
+        kind: 'function',
+        binding: 'entity',
+        entity,
+        handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}(${c.target.id})`),
+        csdl: csdlOf('function', 'RetrieveUnpublished', { bound: entity, returns: 'mscrm.savedqueryvisualization' }),
+      },
+      {
+        name: 'RetrieveUnpublishedMultiple',
+        kind: 'function',
+        binding: 'collection',
+        entity,
+        handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}`),
+        csdl: csdlOf('function', 'RetrieveUnpublishedMultiple', {
+          bound: entity,
+          returns: 'Collection(mscrm.savedqueryvisualization)',
+        }),
+      },
+    );
   }
   return ops;
 }

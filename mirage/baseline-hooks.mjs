@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 export async function runHook(command, { persona, cwd } = {}) {
   if (!command) return { skipped: true };
-  const resolved = command.replace(/\{persona\}/g, persona ?? '');
+  const resolved = command.replaceAll('{persona}', persona ?? '');
   const words = resolved.match(/(?:[^\s"]+|"[^"]*")+/g);
   if (!words) throw new Error('Hook command is empty.');
   const [file, ...args] = words.map((item) => item.replace(/^"|"$/g, ''));
@@ -22,10 +22,11 @@ export async function runHook(command, { persona, cwd } = {}) {
       out += chunk;
     });
     child.on('error', reject);
-    child.on('exit', (code) =>
+    // 'close' follows the end of the output streams; 'exit' can come before the last output arrives.
+    child.on('close', (code, signal) =>
       code === 0
         ? resolve({ code, output: out.slice(-2000) })
-        : reject(new Error(`Hook failed (${code}): ${resolved}\n${out.slice(-2000)}`)),
+        : reject(new Error(`Hook failed (${code ?? signal}): ${resolved}\n${out.slice(-2000)}`)),
     );
   });
 }

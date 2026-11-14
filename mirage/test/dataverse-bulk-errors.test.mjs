@@ -1,3 +1,4 @@
+// @test-kind unproven: native error answers claimed in the header without a capture cited; native behaviour assumed, no capture cited
 // Native error answers for bulk actions and If-Match / If-None-Match on PATCH: the status, the Dataverse code and the
 // message the platform answers, with no write before the error.
 import test from 'node:test';
@@ -134,6 +135,7 @@ test('CreateMultiple accepts targets typed as its own table, with or without the
 
 // Only CreateMultiple was observed natively; UpdateMultiple and UpsertMultiple are assumed to take the same refusals, with
 // their own message name in the 0x80040800 text.
+// @test-kind unproven: UpdateMultiple/UpsertMultiple refusals assumed from CreateMultiple; capture pending (NATIVE bulk-edge-semantics)
 for (const name of ['UpdateMultiple', 'UpsertMultiple']) {
   const action = `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.${name}`;
   const id = '00000000-0000-4000-8000-0000000000aa';

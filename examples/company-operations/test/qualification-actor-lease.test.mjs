@@ -7,9 +7,10 @@ import {
   planQualificationActorWrite,
   restoreQualificationActorWrite,
 } from '../portal-security/qualification-actor-lease.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 test('Self scalar lease targets actual actor, restores conditional versions, and rejects foreign identity drift', async () => {
-  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'self-contact-lease-')),
+  const folder = await makeTemporaryDirectory(path.join(os.tmpdir(), 'self-contact-lease-')),
     journalFile = path.join(folder, 'journal.json');
   const actor = '00000000-0000-0000-0000-000000000001',
     operation = '00000000-0000-0000-0000-000000000002';

@@ -1,7 +1,8 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
+import { loopbackServer } from './shared-browser.mjs';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
@@ -32,7 +33,7 @@ const POLL = `<div class="poll-questionpanel" data-id="poll-1" data-name="Questi
 
 test('app bundle equivalent: read-only control focus, ad and poll placements', async (t) => {
   const submitted = [];
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     if (req.url === '/page') return res.end(PAGE);
     if (req.url === '/app.js') {
       res.setHeader('content-type', 'text/javascript');
@@ -52,14 +53,8 @@ test('app bundle equivalent: read-only control focus, ad and poll placements', a
     res.statusCode = 404;
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/page`);
@@ -85,7 +80,7 @@ test('app bundle equivalent: read-only control focus, ad and poll placements', a
 // placeholder instead (live read-only contact form: the phone boxes carry no dash).
 test('empty read-only boxes get the dash unless they carry a placeholder', async (t) => {
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   await page.route('http://127.0.0.1:11111/**', (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/')

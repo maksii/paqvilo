@@ -1,9 +1,15 @@
+// @test-kind unproven: local model of business process flow instances and messages; no native capture cited
 // Business process flows (lib/dataverse-bpf.mjs): category-4 inventory, instance rows through createInstance, the existing BPF
 // messages and the SetProcess 501 with its pack override.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, createInstance } from '../lib/dataverse-bpf.mjs';
 import { addonHandlers } from '../lib/dataverse-addon-common.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
+import { dataverseSettings } from '../lib/dataverse-settings.mjs';
+import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { webApiCall } from './support/dataverse-fixtures.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 
 const FLOW_OK = '88888888-8888-4888-8888-888888888801';
@@ -141,6 +147,7 @@ test('createInstance writes the instance at the first stage when the instance ta
     owninguser,
     owningteam,
     owningbusinessunit,
+    organizationid,
     versionnumber,
     statecode,
     statuscode,
@@ -149,6 +156,7 @@ test('createInstance writes the instance at the first stage when the instance ta
   assert.equal(typeof createdon, 'string', 'the pipeline stamps the row');
   assert.equal(modifiedon, createdon);
   assert.equal(createdby?.name, 'SYSTEM');
+  assert.equal(organizationid?.logical_name, 'organization', 'an organization-owned instance records its organization');
   assert.deepEqual(stored, {
     x_orderflowid: first.x_orderflowid,
     businessprocessflowinstanceid: first.x_orderflowid,
@@ -227,6 +235,271 @@ test('createInstance awaited inside an open store transaction joins it and rolls
   );
   assert.equal(created.processid, FLOW_OK);
   assert.equal(store.state.tables.x_orderflow?.length ?? 0, 0);
+});
+
+// @test-kind unproven: local stage-move model; assumes 0x80040203 and a comma-separated traversedpath, no native capture
+test('a PATCH moves an instance only to a stage of its process, and each move keeps traversedpath', async (t) => {
+  const instanceFields = {
+    ...INSTANCE_MAPPING.x_orderflow.fields,
+    activestageid: { dataverseType: 'uniqueidentifier' },
+    traversedpath: { dataverseType: 'nvarchar' },
+  };
+  const mappings = { ...MAPPINGS, x_orderflow: { ...INSTANCE_MAPPING.x_orderflow, fields: instanceFields } };
+  const { api, store, request } = await setup(t, { mappings });
+  const OTHER_FLOW = '88888888-8888-4888-8888-888888888804';
+  const OTHER_STAGE = '88888888-8888-4888-8888-888888888813';
+  store.state.tables.workflow.push({
+    workflowid: OTHER_FLOW,
+    name: 'Invented other flow',
+    category: 4,
+    type: 1,
+    statecode: 1,
+    statuscode: 2,
+    primaryentity: 'x_order',
+    uniquename: 'x_otherflow',
+    clientdata: JSON.stringify({ stages: [{ stageid: OTHER_STAGE, stagename: 'Elsewhere' }] }),
+  });
+  const instance = await createInstance(api, FLOW_OK, ORDER);
+  const path = `/x_orderflows(${instance.x_orderflowid})`;
+  const stored = () => store.state.tables.x_orderflow.find((row) => row.x_orderflowid === instance.x_orderflowid);
+  for (const stage of [OTHER_STAGE, '88888888-8888-4888-8888-888888888899']) {
+    const refused = await request('PATCH', path, { activestageid: stage });
+    const text = await refused.text();
+    assert.equal(refused.status, 400, text);
+    assert.match(text, /0x80040203/);
+  }
+  assert.equal(stored().activestageid, STAGE_ONE);
+  assert.equal(stored().traversedpath, STAGE_ONE);
+  assert.ok((await request('PATCH', path, { activestageid: STAGE_TWO })).ok);
+  assert.equal(stored().activestageid, STAGE_TWO);
+  assert.equal(stored().traversedpath, `${STAGE_ONE},${STAGE_TWO}`);
+  assert.ok((await request('PATCH', path, { activestageid: STAGE_ONE })).ok);
+  assert.equal(stored().activestageid, STAGE_ONE);
+  assert.equal(stored().traversedpath, STAGE_ONE);
+});
+
+// ---- Row checks of the process messages (DV3b-4), through the Web API as an admin application and as a Basic User application.
+
+const ADMIN_APP = '11111111-1111-4111-8111-111111111111';
+const BASIC_APP = '12121212-1212-4121-8121-121212121212';
+const ADMIN_SECRET = 'PAQVILO_BPF_ADMIN_SECRET';
+const BASIC_SECRET = 'PAQVILO_BPF_BASIC_SECRET';
+const ACCOUNT_FLOW = '88888888-8888-4888-8888-888888888831';
+const ACCOUNT_STAGE = '88888888-8888-4888-8888-888888888841';
+const ACCOUNT_INSTANCE = '77777777-7777-4777-8777-777777777731';
+const BASIC_INSTANCE = '77777777-7777-4777-8777-777777777732';
+// An ownerid column makes the instance table user-owned, so a Basic User reads its own instance rows only.
+const ACCOUNT_FLOW_MAPPINGS = {
+  x_acctflow: {
+    logicalName: 'x_acctflow',
+    entitySet: 'x_acctflows',
+    idColumn: 'x_acctflowid',
+    fields: {
+      x_acctflowid: { dataverseType: 'uniqueidentifier' },
+      ownerid: { dataverseType: 'uniqueidentifier' },
+      processid: { dataverseType: 'uniqueidentifier' },
+      activestageid: { dataverseType: 'uniqueidentifier' },
+      traversedpath: { dataverseType: 'nvarchar' },
+      bpf_accountid: { dataverseType: 'uniqueidentifier' },
+    },
+  },
+};
+const ACCOUNT_FLOW_TABLES = {
+  workflow: [
+    {
+      workflowid: ACCOUNT_FLOW,
+      name: 'Invented account flow',
+      category: 4,
+      type: 1,
+      statecode: 1,
+      statuscode: 2,
+      primaryentity: 'account',
+      uniquename: 'x_acctflow',
+    },
+  ],
+  processstage: [{ processstageid: ACCOUNT_STAGE, processid: ACCOUNT_FLOW, stagename: 'Qualify' }],
+};
+
+async function bearer(server, appId, secret) {
+  const response = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: appId,
+      client_secret: secret,
+      scope: `${server.origin}/.default`,
+    }),
+  });
+  return (await response.json()).access_token;
+}
+
+// The Web API of one organization with two applications: the admin (System Administrator) and a Basic User.
+async function secureApi(t, { mappings = {}, tables = {} } = {}) {
+  process.env[ADMIN_SECRET] = 'bpf-admin-secret';
+  process.env[BASIC_SECRET] = 'bpf-basic-secret';
+  t.after(() => {
+    delete process.env[ADMIN_SECRET];
+    delete process.env[BASIC_SECRET];
+  });
+  const state = emptyState();
+  Object.assign(state.mappings, structuredClone(mappings));
+  for (const [logical, rows] of Object.entries(tables)) state.tables[logical] = structuredClone(rows);
+  const store = await new DataStore({ state }).init();
+  const settings = dataverseSettings({
+    enabled: true,
+    applications: [
+      {
+        appId: ADMIN_APP,
+        displayName: 'BPF admin app',
+        secretEnvironmentVariable: ADMIN_SECRET,
+        roles: ['System Administrator'],
+      },
+      {
+        appId: BASIC_APP,
+        displayName: 'BPF basic app',
+        secretEnvironmentVariable: BASIC_SECRET,
+        roles: ['Basic User'],
+      },
+    ],
+  });
+  const server = await startDataverseApi({ store, settings, log: () => {} });
+  ownedFixture(t).add(() => server.close());
+  const tokens = {
+    admin: await bearer(server, ADMIN_APP, 'bpf-admin-secret'),
+    basic: await bearer(server, BASIC_APP, 'bpf-basic-secret'),
+  };
+  const request = async (who, method, path, body) => {
+    const headers = {
+      authorization: `Bearer ${tokens[who]}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json', prefer: 'return=representation' }),
+    };
+    return webApiCall(server.origin, 'v9.2', method, path, headers, body);
+  };
+  return { store, request };
+}
+
+// Creates a row as the given application and returns the row it answers with; the status must be a creation.
+async function created(request, who, path, body) {
+  const response = await request(who, 'POST', path, body);
+  assert.equal(response.status, 201, response.text);
+  return response.json;
+}
+
+// @test-kind security: DV3b-4 RetrieveProcessInstances refuses an account the caller cannot read, with the Web API 403 of that account
+test('RetrieveProcessInstances refuses an admin-owned account to a Basic User, as the Web API does', async (t) => {
+  const { request } = await secureApi(t, { mappings: ACCOUNT_FLOW_MAPPINGS, tables: ACCOUNT_FLOW_TABLES });
+  const accountId = (await created(request, 'admin', 'accounts', { name: 'Admin account' })).accountid;
+  const instanceId = ACCOUNT_INSTANCE;
+  await created(request, 'admin', 'x_acctflows', {
+    x_acctflowid: instanceId,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: accountId,
+  });
+  const direct = await request('basic', 'GET', `accounts(${accountId})?$select=name`);
+  assert.equal(direct.status, 403, direct.text);
+  const refused = await request(
+    'basic',
+    'GET',
+    `RetrieveProcessInstances(EntityId=${accountId},EntityLogicalName='account')`,
+  );
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json.error.code, direct.json.error.code);
+  assert.doesNotMatch(refused.text, new RegExp(instanceId));
+});
+
+// @test-kind security: DV3b-4 RetrieveProcessInstances answers an admin with the instances of an account and their stage
+test('RetrieveProcessInstances answers an admin with the instance rows and the stage of each', async (t) => {
+  const { request } = await secureApi(t, { mappings: ACCOUNT_FLOW_MAPPINGS, tables: ACCOUNT_FLOW_TABLES });
+  const accountId = (await created(request, 'admin', 'accounts', { name: 'Admin account' })).accountid;
+  const instanceId = ACCOUNT_INSTANCE;
+  await created(request, 'admin', 'x_acctflows', {
+    x_acctflowid: instanceId,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: accountId,
+  });
+  const listed = await request(
+    'admin',
+    'GET',
+    `RetrieveProcessInstances(EntityId=${accountId},EntityLogicalName='account')`,
+  );
+  assert.equal(listed.status, 200, listed.text);
+  assert.equal(listed.json.value.length, 1);
+  assert.equal(listed.json.value[0].x_acctflowid, instanceId);
+  assert.equal(listed.json.value[0].processstageid, ACCOUNT_STAGE);
+});
+
+// @test-kind security: DV3b-4 RetrieveProcessInstances on the caller's own account returns only the instance rows the read filter passes
+test('RetrieveProcessInstances on the caller own account omits an instance row that the caller cannot read', async (t) => {
+  const { request } = await secureApi(t, { mappings: ACCOUNT_FLOW_MAPPINGS, tables: ACCOUNT_FLOW_TABLES });
+  const ownAccount = (await created(request, 'basic', 'accounts', { name: 'Basic account' })).accountid;
+  await created(request, 'admin', 'x_acctflows', {
+    x_acctflowid: ACCOUNT_INSTANCE,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: ownAccount,
+  });
+  await created(request, 'basic', 'x_acctflows', {
+    x_acctflowid: BASIC_INSTANCE,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: ownAccount,
+  });
+  const listed = await request(
+    'basic',
+    'GET',
+    `RetrieveProcessInstances(EntityId=${ownAccount},EntityLogicalName='account')`,
+  );
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(
+    listed.json.value.map((row) => row.x_acctflowid),
+    [BASIC_INSTANCE],
+  );
+  assert.doesNotMatch(listed.text, new RegExp(ACCOUNT_INSTANCE));
+});
+
+// @test-kind security: DV3b-4 RetrieveActivePath refuses an instance the caller cannot read, with the Web API 403 of that instance
+test('RetrieveActivePath refuses an admin-owned instance to a Basic User, as the Web API does', async (t) => {
+  const { request } = await secureApi(t, { mappings: ACCOUNT_FLOW_MAPPINGS, tables: ACCOUNT_FLOW_TABLES });
+  const accountId = (await created(request, 'admin', 'accounts', { name: 'Admin account' })).accountid;
+  const instanceId = ACCOUNT_INSTANCE;
+  await created(request, 'admin', 'x_acctflows', {
+    x_acctflowid: instanceId,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: accountId,
+  });
+  const direct = await request('basic', 'GET', `x_acctflows(${instanceId})?$select=activestageid`);
+  assert.equal(direct.status, 403, direct.text);
+  const refused = await request('basic', 'GET', `RetrieveActivePath(ProcessInstanceId=${instanceId})`);
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json.error.code, direct.json.error.code);
+  assert.doesNotMatch(refused.text, /Qualify/);
+});
+
+// @test-kind security: DV3b-4 RetrieveActivePath answers an admin with the stages of the instance's flow
+test('RetrieveActivePath answers an admin with the stages of the flow', async (t) => {
+  const { request } = await secureApi(t, { mappings: ACCOUNT_FLOW_MAPPINGS, tables: ACCOUNT_FLOW_TABLES });
+  const accountId = (await created(request, 'admin', 'accounts', { name: 'Admin account' })).accountid;
+  const instanceId = ACCOUNT_INSTANCE;
+  await created(request, 'admin', 'x_acctflows', {
+    x_acctflowid: instanceId,
+    processid: ACCOUNT_FLOW,
+    activestageid: ACCOUNT_STAGE,
+    traversedpath: ACCOUNT_STAGE,
+    bpf_accountid: accountId,
+  });
+  const path = await request('admin', 'GET', `RetrieveActivePath(ProcessInstanceId=${instanceId})`);
+  assert.equal(path.status, 200, path.text);
+  assert.equal(path.json.value[0].processstageid, ACCOUNT_STAGE);
+  assert.equal(path.json.value[0].stagename, 'Qualify');
 });
 
 test('a stage XAML nested deeper than 64 elements is unparsed, not a stack overflow', async (t) => {

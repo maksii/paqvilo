@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
@@ -23,7 +24,7 @@ test('local state transfers never follow redirects with their body or credential
     received = { body: Buffer.concat(chunks).toString('utf8'), token: request.headers['x-sim-csrf'] };
     response.writeHead(307, { location: '/destination' }).end();
   });
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();

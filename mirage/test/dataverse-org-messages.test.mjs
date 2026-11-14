@@ -1,5 +1,6 @@
 // Simulated Dataverse organization, environment variable, license and deployment messages: happy paths, the documented refusals,
 // a privilege denial on a write and one SOAP call through the generic OrganizationRequest.
+// @test-kind contract: Paqvilo's own designed runtime behaviour for organization and environment variable messages
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -193,6 +194,22 @@ test('RetrieveEnvironmentVariables returns the definitions with their current va
   );
 });
 
+// @test-kind security: a stored variable value is returned only to a caller who may read the value row and its definition row
+test('RetrieveEnvironmentVariableValue and RetrieveEnvironmentVariables withhold a stored value from a user without value read', async () => {
+  const t = await setup();
+  await upsert(t, { SchemaName: 'new_Token', Type: 100000000, Value: 'internal-value-123' });
+  await assert.rejects(
+    invoke(t.api, 'RetrieveEnvironmentVariableValue', { user: t.basic, params: { DefinitionSchemaName: 'new_Token' } }),
+    (e) => e.status === 403,
+  );
+  const listed = await invoke(t.api, 'RetrieveEnvironmentVariables', { user: t.basic });
+  assert.equal(
+    listed.body.value.some((row) => row.value === 'internal-value-123'),
+    false,
+    'the list does not carry the stored value',
+  );
+});
+
 test('UpsertEnvironmentVariable creates the definition and its value once, updates them in place, and refuses a bad type or secret store', async () => {
   const t = await setup();
   assert.equal(
@@ -213,6 +230,7 @@ test('UpsertEnvironmentVariable creates the definition and its value once, updat
   await assert.rejects(upsert(t, { SchemaName: 'new_Count', Type: 100000000, SecretStore: 1 }), refused);
 });
 
+// @test-kind security: a user without write privilege cannot upsert an environment variable
 test('UpsertEnvironmentVariable is refused to a user without the write privilege on the definition table', async () => {
   const t = await setup();
   await denied(upsert({ ...t, admin: t.norole }, { SchemaName: 'new_Denied', Type: 100000000, Value: 'x' }));
@@ -239,6 +257,38 @@ test('RetrieveEnvironmentVariableSecretValue refuses an unknown name and answers
     }),
     notFound,
   );
+});
+
+// @test-kind security: the secret read checks the caller's read on the definition and on its value row before any secret is resolved (R1-5)
+test('RetrieveEnvironmentVariableSecretValue refuses a caller that reads the definition but not its value row', async () => {
+  const t = await setup();
+  // The Basic User writes the definition, so it owns and reads it; the administrator then writes the value, which it cannot read.
+  assert.equal(
+    (await upsert({ ...t, admin: t.basic }, { SchemaName: 'new_Kv', Type: 100000005, SecretStore: 0 })).status,
+    204,
+  );
+  await upsert(t, { SchemaName: 'new_Kv', Type: 100000005, Value: 'kv-reference' });
+  await assert.rejects(
+    action(t.api, 'RetrieveEnvironmentVariableSecretValue', {
+      user: t.basic,
+      body: { EnvironmentVariableName: 'new_Kv' },
+    }),
+    (e) => e.status === 403,
+  );
+});
+
+// @test-kind security: an upsert is refused to a caller without write on the stored definition, and writes no row (R1-5)
+test('UpsertEnvironmentVariable refuses a Basic User on a definition the administrator owns, and changes no row', async () => {
+  const t = await setup();
+  await upsert(t, { SchemaName: 'new_Owned', Type: 100000000, DisplayName: 'Admin name', Value: 'a' });
+  const stored = () =>
+    JSON.stringify([t.store.state.tables.environmentvariabledefinition, t.store.state.tables.environmentvariablevalue]);
+  const before = stored();
+  await assert.rejects(
+    upsert({ ...t, admin: t.basic }, { SchemaName: 'new_Owned', Type: 100000000, DisplayName: 'Basic name' }),
+    (e) => e.status === 403,
+  );
+  assert.equal(stored(), before);
 });
 
 test('NotifyEnvironmentVariableSecretChange needs both arguments and answers 204 with no state change', async () => {
@@ -416,6 +466,7 @@ test('RetrieveSetting refuses an unknown setting or app', async () => {
   await assert.rejects(readSetting(t, 'new_Both', 'new_noapp'), notFound);
 });
 
+// @test-kind security: a Basic User cannot set or read the data encryption key
 test('SetDataEncryptionKey stores the key that RetrieveDataEncryptionKey returns; both refuse a Basic User', async () => {
   const t = await setup();
   const standIn = (await invoke(t.api, 'RetrieveDataEncryptionKey', { user: t.admin })).body.EncryptionKey;

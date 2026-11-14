@@ -8,12 +8,13 @@ import { AssetCache } from '../lib/asset-cache.mjs';
 import { captureRichTextConfiguration } from '../lib/richtext-config.mjs';
 import { sourceFingerprint } from '../lib/evidence.mjs';
 import { validateNativeNetworkBaseline, classifyNativeNetworkFailures } from '../lib/native-network-baseline.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const font = '/uclient/resources/styles/CRMMDL2.woff',
   skin = '/webresources/msdyn_/RichTextEditorControl/libs/ckeditor_latest/skins/superowa/editor.css',
   hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-native-network-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-native-network-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const sourceDir = path.join(directory, 'source');
   await fs.mkdir(sourceDir);

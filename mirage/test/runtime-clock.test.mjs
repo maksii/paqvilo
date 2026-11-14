@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -30,7 +31,7 @@ async function organization(t) {
     settings: dataverseSettings({ enabled: false, auditing: true }),
     extensions: await sourceOrganizationExtensions(),
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   return { store, core, clock, scheduler };
 }
 

@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "scope": "Repeated native HTTP truth tables and read-projection metadata facts. Owned synthetic fixture rows and source-derived organization binding; parameter values/identities are replaced by invented schema roles in public tests. All response bodies remain private unchanged.",
+  "captures": [
+    {
+      "runSha256": "363170e9c3ddc6a62437460e87c1232250c6d1f86c64eb524da335ae8da2c478",
+      "identitySha256": "070f7790cd7c2bfc82cc673e67a493bc34ddebac1b72d8d21d43a78b705e4813",
+      "cases": [
+        {
+          "id": "deep.metadataOrder.attributesAsc",
+          "responseSha256": "0826396f5e9555cc9415842f93f9ed371fa5ce8e257ee2a1d7a2d62f476d59ce"
+        },
+        {
+          "id": "deep.metadataOrder.attributesDesc",
+          "responseSha256": "df6490833ee740142898816d757adfa9991994eb8e14c4cbf44a334fcd5fa3b3"
+        },
+        {
+          "id": "deep.metadataOrder.relationshipsDesc",
+          "responseSha256": "0ea2a6a35d3e127488e8429f5311ecb7a7c288950fc5db92accac41913c30447"
+        },
+        {
+          "id": "deep.metadataOrder.invalidAttribute",
+          "responseSha256": "d9cda7ce3072a5f35a093f5f52e1282e7c914b83f2ed21302232f861a27be351"
+        },
+        {
+          "id": "deep.relationship.single",
+          "responseSha256": "8643d927be4e7def9eb023d73de921b0158cc7983dcbaffe4fac4fa6f5a148c2"
+        },
+        {
+          "id": "deep.relationship.expanded",
+          "responseSha256": "ddd14d4e9ca23283dde2bec02c079e2892e101c1787569e5da382309476b4008"
+        },
+        {
+          "id": "deep.relationship.collection",
+          "responseSha256": "09b7ba6cc70da06f11de93d7526028a6de598f3bdd636931a0d631c98708556e"
+        },
+        {
+          "id": "deep.relationship.childFk",
+          "responseSha256": "4684595db2427aa918fd16a431862ebcbd8d74035b621257631d0a7aed0ebb4f"
+        },
+        {
+          "id": "deep.null.ne1",
+          "responseSha256": "9bd6e9218c2c06162aeaadfa095a9b859b93da6629eb8f744a91a0ac4e8ac748"
+        },
+        {
+          "id": "deep.null.eq1",
+          "responseSha256": "320567fe7373ef8868ab0f602658833294e97b107d6f3b37f82c29d1fab39175"
+        },
+        {
+          "id": "deep.null.notEq1",
+          "responseSha256": "7363c4a5c9b71189c348bbd3cc4449d80bfd328c17c8f1fa5b1b74d9f433d9bd"
+        },
+        {
+          "id": "deep.null.gt1",
+          "responseSha256": "9fef9466c930ec28284032c6c706cd9e71424318ad93988879497489ede8a1c8"
+        },
+        {
+          "id": "deep.null.notGt1",
+          "responseSha256": "dd42400c5b633241ed8738504e2a58bb9102af4189c6addad7df3e0f51fe7d11"
+        },
+        {
+          "id": "deep.null.eqNull",
+          "responseSha256": "d6c6963f6f129a31ae26fb4d3a35e5e45ee2ac80677168d3c32e0f711445c2f1"
+        },
+        {
+          "id": "deep.null.neNull",
+          "responseSha256": "0162a7417ab6832a40cb3be275f235b063681ffb284be3271638f39ccda6263d"
+        }
+      ],
+      "ownedAbsenceCases": 6
+    },
+    {
+      "runSha256": "b6df201884f439730a6cee0f4a6652837550902f7a6ea3ac367a27091f842bb6",
+      "identitySha256": "070f7790cd7c2bfc82cc673e67a493bc34ddebac1b72d8d21d43a78b705e4813",
+      "cases": [
+        {
+          "id": "deep.metadataOrder.attributesAsc",
+          "responseSha256": "14e7dd60688dd90cd724e4a320e87ad5a1c884007c9ad13663e4acf110b92b53"
+        },
+        {
+          "id": "deep.metadataOrder.attributesDesc",
+          "responseSha256": "30d970c5bf704569302ce291b75bbda99d49f30df308bd77361e009e7e116ffe"
+        },
+        {
+          "id": "deep.metadataOrder.relationshipsDesc",
+          "responseSha256": "a0c1eaf9e58414a4e1d133610739051734fcb93f560bfa234e60e72dd46e0f20"
+        },
+        {
+          "id": "deep.metadataOrder.invalidAttribute",
+          "responseSha256": "bcd607c4b8ef42de4d8e6b53bbc20349bbcbdb42e45aade00e37da36b40c2db0"
+        },
+        {
+          "id": "deep.relationship.single",
+          "responseSha256": "16f18f2db3865f2ff3e35d43d80c6de586eb66f9db3d9a0f5ec532601f2c7951"
+        },
+        {
+          "id": "deep.relationship.expanded",
+          "responseSha256": "7cabf4c27b334bee66cad5a992e3f8211929f894cfb6a39de03d916f79033177"
+        },
+        {
+          "id": "deep.relationship.collection",
+          "responseSha256": "1c759416f59f13a8ceaf22458b027d33be12f527bb1c8bc7d43c337241517b60"
+        },
+        {
+          "id": "deep.relationship.childFk",
+          "responseSha256": "fd9a9e1fc31baed5371e1f7534ca6c64809545f1302a55d37a888dfa623c5436"
+        },
+        {
+          "id": "deep.null.ne1",
+          "responseSha256": "467d49623600fffc138c4680351b1caad2a22bbbdaed297d36636fb3e2cfa7f6"
+        },
+        {
+          "id": "deep.null.eq1",
+          "responseSha256": "671363308f633278b85b6b055fbf29f364f1f41c93a35a3d165bc7d8b83ba3af"
+        },
+        {
+          "id": "deep.null.notEq1",
+          "responseSha256": "039a0f33d28fed3078114fbe61029c57b23d98cfe6cd70613feb507379157227"
+        },
+        {
+          "id": "deep.null.gt1",
+          "responseSha256": "be712495a69c834c8b82dcba4091b508f26304dbd6343e1383f2eddc5a388aa8"
+        },
+        {
+          "id": "deep.null.notGt1",
+          "responseSha256": "81da8d1b6ca56b2515024d2db48d49a52136cd6e639b9fee6de603d186c35f04"
+        },
+        {
+          "id": "deep.null.eqNull",
+          "responseSha256": "41f566567f02069f738b7850384044bdd16463dee19db9ebb7efe64b82aee3b6"
+        },
+        {
+          "id": "deep.null.neNull",
+          "responseSha256": "bf8a75cb021ca4a273743352dc183c3ac5e8e3ad3465adaf88b2f17a7f42ea73"
+        }
+      ],
+      "ownedAbsenceCases": 6
+    }
+  ],
+  "expected": {
+    "nullComparisons": {
+      "ne1": [
+        null,
+        2
+      ],
+      "eq1": [
+        1
+      ],
+      "notEq1": [
+        null,
+        2
+      ],
+      "gt1": [
+        2
+      ],
+      "notGt1": [
+        1
+      ],
+      "eqNull": [
+        null
+      ],
+      "neNull": [
+        1,
+        2
+      ]
+    },
+    "organizationLookup": {
+      "selectedSingle": true,
+      "selectedSingleExpanded": true,
+      "selectedCollection": false
+    },
+    "metadataOrdering": {
+      "attributesAscIgnored": true,
+      "attributesDescIgnored": true,
+      "unknownOrderFieldIgnored": true
+    }
+  }
+}

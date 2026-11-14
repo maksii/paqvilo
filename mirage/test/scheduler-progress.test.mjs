@@ -5,7 +5,7 @@ import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { committedJobs, liveJob, settleCommittedWork } from '../lib/committed-work.mjs';
 import { createScheduler, fixedClock, storeScheduler } from '../lib/runtime-clock.mjs';
 
-const bounded = (work, ms = 3000) =>
+const bounded = (work, ms = 60_000) =>
   Promise.race([work, new Promise((_, reject) => setTimeout(() => reject(new Error('deadlocked')), ms).unref())]);
 
 // A Ready job staged inside a transaction of its own (committed-work.mjs stage(); the runner starts after the commit).

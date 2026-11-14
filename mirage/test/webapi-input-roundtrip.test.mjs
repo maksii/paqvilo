@@ -1,3 +1,4 @@
+// @test-kind contract: Web API input round-trips of Paqvilo's own runtime behaviour on invented probe tables
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { parseDateValue } from '../lib/dataverse-values.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const BASE_ID = '00000000-0000-0000-0000-000000000001';
 const COLLECTION = '/_api/probeentries';
@@ -36,7 +37,7 @@ const probeState = (app) => ({
 const literal = (value) => `'${value.replace(/'/g, "''")}'`;
 
 async function start(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-input-roundtrip-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-input-roundtrip-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: probe-site\nadx_name: Input probe\n');
   await fs.writeFile(
@@ -190,6 +191,22 @@ test('malformed JSON and non-object Web API bodies reject create/update/property
   }
 });
 
+// @test-kind security: a refused reference must answer the client error of a malformed bind, never an unexpected 500
+test('a malformed percent escape in an absolute bind is refused like any other malformed reference', async () => {
+  const { app, call } = await shared;
+  const origin = new URL(app.url).origin;
+  const before = probeState(app);
+  const bind = (value) =>
+    call(COLLECTION, { method: 'POST', body: { 'referenceid@odata.bind': value, title: 'Escape probe' } });
+  const unclosed = await bind(`${origin}${COLLECTION}(`);
+  const escaped = await bind(`${origin}${COLLECTION}(%E0%A4%A)`);
+  assert.equal(unclosed.status, 400);
+  assert.equal(escaped.status, 400, `malformed escape answers ${escaped.status}: ${escaped.text}`);
+  assert.deepEqual(escaped.json.error, unclosed.json.error);
+  assert.deepEqual(probeState(app), before, 'a refused bind must not mutate rows or versions');
+});
+
+// @test-kind security: a Web API write with a missing or wrong CSRF token changes nothing
 test('missing and wrong CSRF tokens reject each Web API write before any mutation', async () => {
   const { app, call } = await shared;
   const writes = [

@@ -4,9 +4,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { stringify } from 'yaml';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
+// Tests that select staff or create records own their simulator; read-only tests share one.
+const scope = fileScope();
+let sharedApp;
 
 // The custom page: a project canvas app whose OnStart reads the navigateTo parameters (Param("recordId"),
 // Param("entityName")) and looks the record up in Dataverse; its screen's OnVisible sets a context variable.
@@ -46,9 +49,8 @@ const grid = `ComponentFramework.registerControl('Invented.Grid', class {
   destroy() {}
 });`;
 
-async function fixture(t) {
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
-  await initial.sim.close();
+async function app(owner) {
+  const initial = await modelDrivenFixture(owner, { modelDriven: { trustedExtensions: true }, defer: true });
   const dir = initial.solutionDir,
     write = async (name, content) => {
       await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -112,8 +114,11 @@ async function fixture(t) {
     projectRoot: initial.root,
     canvas: { sources: ['apps/x_invented_page', 'apps/x_other_page'] },
   });
-  const origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
+  return { sim, origin: sim.origin ?? sim.url };
+}
+
+async function fixture(t, { readOnly = false } = {}) {
+  const { sim, origin } = await (readOnly ? (sharedApp ??= app(scope)) : app(t));
   const page = await chrome.page(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -292,7 +297,7 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
 });
 
 test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async (t) => {
-  const { page, origin, errors } = await fixture(t);
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
   await page.evaluate(async () => {
     const pane = await window.Xrm.App.sidePanes.createPane({ title: 'Invented pane', paneId: 'invented' });
@@ -339,8 +344,284 @@ test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async
   assert.deepEqual(errors, []);
 });
 
+test('a closed side pane refuses navigation before changing its detached frame or a replacement pane', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    const closed = await panes.createPane({ paneId: 'reused-id', title: 'Closed pane' });
+    const frame = document.querySelector('.side-pane iframe');
+    const before = frame.getAttribute('src');
+    closed.close();
+    const replacement = await panes.createPane({ paneId: 'reused-id', title: 'Replacement pane' });
+    const outcome = closed.navigate({ pageType: 'entitylist', entityName: 'x_item' }).then(
+      () => 'resolved',
+      (error) => error.code,
+    );
+    // A stale browser load must not turn a disposed handle back into a live pane.
+    frame.dispatchEvent(new Event('load'));
+    return {
+      outcome: await outcome,
+      unchanged: frame.getAttribute('src') === before,
+      replacementSelected: panes.getSelectedPane() === replacement,
+      panes: panes.getAllPanes().getLength(),
+    };
+  });
+  assert.deepEqual(result, { outcome: 'PaneClosed', unchanged: true, replacementSelected: true, panes: 1 });
+  assert.deepEqual(errors, []);
+});
+
+test('closing a pane rejects in-flight navigation and releases stale frame load handlers', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    const pane = await panes.createPane({ paneId: 'pending-pane' });
+    const frame = document.querySelector('.side-pane iframe');
+    const outcomes = [
+      pane.navigate({ pageType: 'entitylist', entityName: 'x_item' }),
+      pane.navigate({ pageType: 'entityrecord', entityName: 'x_item' }),
+    ].map((pending) =>
+      pending.then(
+        () => 'resolved',
+        (error) => error.code,
+      ),
+    );
+    pane.close();
+    frame.dispatchEvent(new Event('load'));
+    const replacement = await panes.createPane({ paneId: 'pending-pane' });
+    return {
+      outcomes: await Promise.all(outcomes),
+      replacementSelected: panes.getSelectedPane() === replacement,
+      panes: panes.getAllPanes().getLength(),
+    };
+  });
+  assert.deepEqual(result, { outcomes: ['PaneClosed', 'PaneClosed'], replacementSelected: true, panes: 1 });
+  assert.deepEqual(errors, []);
+});
+
+test('side pane selection expands the group and clears badges unless retained', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  assert.deepEqual(
+    await page.evaluate(async () => {
+      const panes = window.Xrm.App.sidePanes;
+      const first = await panes.createPane({ paneId: 'first', title: 'First pane' });
+      first.badge = 4;
+      panes.state = 0;
+      const second = await panes.createPane({
+        paneId: 'second',
+        title: 'Second pane',
+        isSelected: false,
+        keepBadgeOnSelect: true,
+      });
+      second.badge = 2;
+      const background = [panes.getSelectedPane().paneId, panes.state, first.badge, second.badge];
+      second.select();
+      const selected = [panes.getSelectedPane().paneId, panes.state, second.badge];
+      panes.state = 0;
+      first.select();
+      return { background, selected, restored: [panes.getSelectedPane().paneId, panes.state, first.badge] };
+    }),
+    { background: ['first', 0, 4, 2], selected: ['second', 1, 2], restored: ['first', 1, null] },
+  );
+  assert.equal(await page.getByRole('region', { name: 'First pane', exact: true }).isVisible(), true);
+  assert.equal(await page.getByRole('region', { name: 'Second pane', exact: true }).isVisible(), false);
+  // Creating a foreground pane also expands a previously collapsed group.
+  await page.evaluate(async () => {
+    window.Xrm.App.sidePanes.state = 0;
+    await window.Xrm.App.sidePanes.createPane({ paneId: 'foreground', title: 'Foreground pane' });
+  });
+  assert.equal(await page.getByRole('region', { name: 'Foreground pane', exact: true }).isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('explicit source form selection refuses unavailable forms without substituting a default', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  const route =
+    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await page.goto(route + '&formid=not-imported');
+  await page.waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState));
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'error');
+  assert.match(await page.locator('#notice').textContent(), /requested form.*unavailable/i);
+  assert.equal(await page.locator('#record-form').count(), 0, 'no different source form is rendered');
+  for (const suffix of ['&formid=%7BITEM-FORM%7D', '']) {
+    await page.goto(route + suffix);
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
+    assert.equal(await page.getByRole('textbox', { name: 'Name', exact: true }).inputValue(), 'Copper');
+    assert.equal(await page.evaluate(() => window.Xrm.Page.ui.formSelector.getCurrentItem().getId()), '{item-form}');
+  }
+  const refusal = await page.evaluate(async () => {
+    const pane = await window.Xrm.App.sidePanes.createPane({ paneId: 'source-form', title: 'Source form' });
+    await pane.navigate({ pageType: 'entityrecord', entityName: 'x_item', formId: '{ITEM-FORM}' });
+    const frame = document.querySelector('.side-pane[data-pane-id="source-form"] iframe');
+    const before = frame.getAttribute('src');
+    let code;
+    try {
+      await pane.navigate({ pageType: 'entityrecord', entityName: 'x_item', formId: 'not-imported' });
+    } catch (error) {
+      code = error.code;
+    }
+    return { code, unchanged: before === frame.getAttribute('src') };
+  });
+  assert.deepEqual(refusal, { code: 'FormUnavailable', unchanged: true });
+  assert.deepEqual(errors, []);
+});
+
+test('a reused record pane follows current and newly supplied record context, source form and named tab', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  await page.evaluate(async () => {
+    const form = window.Xrm.Page,
+      panes = window.Xrm.App.sidePanes;
+    const pane = await panes.createPane({ paneId: 'record-context', title: 'Record context' });
+    await pane.navigate({
+      pageType: 'entityrecord',
+      entityName: form.data.entity.getEntityName(),
+      entityId: form.data.entity.getId(),
+      formId: form.ui.formSelector.getCurrentItem().getId(),
+      tabName: 'related',
+    });
+  });
+  const frame = page.frameLocator('.side-pane[data-pane-id="record-context"] iframe');
+  await frame.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  await frame.getByText('Rows: Copper child', { exact: true }).waitFor();
+  await frame.locator('html[data-mirage-app-state="ready"]').waitFor();
+  assert.equal(
+    await frame.getByRole('tab', { name: 'Related items', exact: true }).getAttribute('aria-selected'),
+    'true',
+  );
+  assert.equal(
+    await frame
+      .getByRole('tab', { name: 'Related items', exact: true })
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  await page.evaluate(async () => {
+    const pane = window.Xrm.App.sidePanes.getPane('record-context');
+    await pane.navigate({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      formId: 'item-form',
+      tabName: 'general',
+      data: { x_name: 'Ignored existing-row default' },
+    });
+    pane.select();
+  });
+  await frame.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  assert.equal(await frame.getByRole('textbox', { name: 'Name', exact: true }).inputValue(), 'Silver');
+  assert.equal(await frame.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('.side-pane[data-pane-id="record-context"]').count(), 1);
+  assert.equal(await page.getByRole('heading', { name: 'Copper', exact: true }).count(), 1);
+  await page.evaluate(async () => {
+    await window.Xrm.App.sidePanes.getPane('record-context').navigate({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      formId: 'item-form',
+      tabName: 'general',
+      data: { x_name: 'Invented unsaved default' },
+    });
+  });
+  await frame.getByRole('textbox', { name: 'Name', exact: true }).waitFor();
+  assert.equal(
+    await frame.getByRole('textbox', { name: 'Name', exact: true }).inputValue(),
+    'Invented unsaved default',
+  );
+  await page.evaluate(async () => {
+    await window.Xrm.App.sidePanes
+      .getPane('record-context')
+      .navigate({ pageType: 'entitylist', entityName: 'x_item', viewId: 'items-view', viewType: 'savedquery' });
+  });
+  await frame.locator('html[data-mirage-app-state="ready"]').waitFor();
+  assert.deepEqual(
+    await frame.locator('html').evaluate(() => {
+      const context = window.Xrm.Utility.getPageContext().input;
+      return [context.pageType, context.entityName, context.viewId, context.viewType];
+    }),
+    ['entitylist', 'x_item', 'items-view', 'savedquery'],
+  );
+  const before = await page.locator('.side-pane[data-pane-id="record-context"] iframe').getAttribute('src');
+  // A saved view is addressed by its object type code, as in a native main.aspx URL.
+  assert.equal(new URL(before, origin).searchParams.get('viewtype'), '1039');
+  const refused = await page.evaluate(async () => {
+    try {
+      await window.Xrm.App.sidePanes
+        .getPane('record-context')
+        .navigate({ pageType: 'entitylist', entityName: 'x_item', viewId: 'items-view', viewType: 'userquery' });
+    } catch (error) {
+      return error.code;
+    }
+  });
+  assert.equal(refused, 'PersonalViewUnsupported');
+  assert.equal(await page.locator('.side-pane[data-pane-id="record-context"] iframe').getAttribute('src'), before);
+  assert.deepEqual(errors, []);
+});
+
+test('side panes respect hidden headers and visibility, and allow programmatic close without a close button', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    await panes.createPane({ paneId: 'retained', title: 'Retained pane', canClose: false });
+    const hidden = await panes.createPane({ paneId: 'hidden', title: 'Hidden pane', hideHeader: true, hidden: true });
+    hidden.title = 'Renamed pane';
+  });
+  const renamed = page.locator('.side-pane[data-pane-id="hidden"]');
+  assert.equal(await renamed.isVisible(), false);
+  await page.evaluate(() => {
+    window.Xrm.App.sidePanes.getPane('hidden').hidden = false;
+  });
+  assert.equal(await renamed.isVisible(), true);
+  assert.equal(await renamed.getAttribute('aria-label'), 'Renamed pane');
+  assert.equal(await renamed.locator('iframe').getAttribute('title'), 'Renamed pane');
+  assert.equal(await renamed.locator('.page-dialog-heading').isVisible(), false);
+  assert.equal(await page.locator('.side-pane[data-pane-id="retained"] button').count(), 0);
+  await page.evaluate(() => window.Xrm.App.sidePanes.getPane('hidden').close());
+  assert.equal(await page.getByRole('region', { name: 'Retained pane', exact: true }).isVisible(), true);
+  assert.equal(await page.evaluate(() => window.Xrm.App.sidePanes.getSelectedPane().paneId), 'retained');
+  await page.evaluate(() => window.Xrm.App.sidePanes.getPane('retained').close());
+  assert.equal(await page.locator('#side-panes').isVisible(), false);
+  assert.deepEqual(errors, []);
+});
+
+test('generated side pane ids survive close and explicit ids, and a repeated close cannot remove another pane', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    await panes.createPane({ paneId: 'pane-1' });
+    const first = await panes.createPane();
+    const second = await panes.createPane();
+    first.close();
+    const third = await panes.createPane();
+    first.close();
+    first.select();
+    let duplicate;
+    try {
+      await panes.createPane({ paneId: second.paneId });
+    } catch (error) {
+      duplicate = error.message;
+    }
+    return {
+      ids: panes
+        .getAllPanes()
+        .get()
+        .map((pane) => pane.paneId),
+      generated: [first.paneId, second.paneId, third.paneId],
+      selected: panes.getSelectedPane().paneId,
+      duplicate,
+    };
+  });
+  assert.equal(new Set(['pane-1', ...result.generated]).size, 4);
+  assert.deepEqual(result.ids, ['pane-1', result.generated[1], result.generated[2]]);
+  assert.equal(result.selected, result.generated[2]);
+  assert.match(result.duplicate, /already exists/);
+  assert.deepEqual(errors, []);
+});
+
 test('a dataset component on a related subgrid receives the parent rows and the staff context', async (t) => {
-  const { page, origin, errors } = await fixture(t);
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
   await page.getByRole('tab', { name: 'Related items' }).click();
   await page.getByText('Rows: Copper child', { exact: true }).waitFor();

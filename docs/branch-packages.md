@@ -1,6 +1,6 @@
 # Testing branch packages before merge
 
-Maintainers can publish a branch build through the existing [Release workflow](../.github/workflows/release.yml). It uses the configured npm trusted publisher, full CI gates and the `npm` environment. A colleague can install the exact preview version in their own project and run that project's tests before the branch is merged.
+Maintainers can publish a branch build through the existing [Release workflow](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml). It uses the configured npm trusted publisher, full CI gates and the `npm` environment. A colleague can install the exact preview version in their own project and run that project's tests before the branch is merged.
 
 From an updated toolkit checkout with dependencies installed and GitHub CLI signed in, request a dry run:
 

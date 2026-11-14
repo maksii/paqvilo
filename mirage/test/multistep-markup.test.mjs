@@ -1,7 +1,9 @@
+// @test-kind contract: the multistep step markup is the rendering of Paqvilo's own platform control, checked against this toolkit's output.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';
 import { createWebFormSessions, webFormSession } from '../lib/form-service.mjs';
+import { emptyAnswerStore, surveySchemas } from './support/form-fixtures.mjs';
 
 // A "survey" multistep form on a Bootstrap 5 site: one insert step with a metadata
 // description and a required radio choice, then a second step.
@@ -60,17 +62,8 @@ const step = (stepId, extra) => ({
   layout: [{ name: 'tab', columns: [{ sections: [{ name: 's', rows: [[{ name: 'note' }], [{ name: 'colour' }]] }] }] }],
   ...extra,
 });
-const schemas = {
-  survey: {
-    initialStepId: 'one',
-    steps: [step('one', { nextStepId: 'two', title: 'One' }), step('two', { title: 'Two' })],
-  },
-};
-const store = {
-  resolveMapping: () => ({ entitySet: 'answers', idColumn: 'answerid' }),
-  get: async () => null,
-  query: async () => ({ value: [] }),
-};
+const schemas = surveySchemas(step);
+const store = emptyAnswerStore();
 
 test('multistep step markup follows the platform control (row wrapper, form name, layout, honeypot, buttons)', async () => {
   const webFormSessions = createWebFormSessions();

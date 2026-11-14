@@ -7,9 +7,11 @@ import { organizationRecord } from './organization-context.mjs';
 // 0x80040203 and their texts are guesses.
 import { createHash, randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
-import { idOf, registerInternalMessage, registerAddon } from './dataverse-addon-common.mjs';
+import { idOf, registerInternalMessage, registerAddon, STAMPED_COLUMNS } from './dataverse-addon-common.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
+import { valueRowOf } from './dataverse-org-messages.mjs';
+import { messageCollection } from './dataverse-message-context.mjs';
 import { toFetchXml } from './dataverse-soap-query.mjs';
 import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
 
@@ -131,11 +133,10 @@ const sdkOperator = (op) => {
 function conditionJson(node) {
   if (node.attrs.valueof !== undefined)
     throw invalid("FetchXML condition 'valueof' has no QueryExpression equivalent in this simulator.");
-  const values = node.children.some((c) => c.name === 'value')
-    ? node.children.filter((c) => c.name === 'value').map((c) => c.text ?? '')
-    : node.attrs.value !== undefined
-      ? [node.attrs.value]
-      : [];
+  let values = [];
+  if (node.children.some((c) => c.name === 'value'))
+    values = node.children.filter((c) => c.name === 'value').map((c) => c.text ?? '');
+  else if (node.attrs.value !== undefined) values = [node.attrs.value];
   return {
     '@odata.type': 'Microsoft.Dynamics.CRM.ConditionExpression',
     AttributeName: node.attrs.attribute ?? null,
@@ -275,11 +276,14 @@ const contains = (value, text) =>
     .includes(String(text).toLowerCase());
 const sameId = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 
-// Rows the caller may read. No privilege is documented, so the table read privilege is the one checked.
+// Rows the caller may read: the table read privilege, then the Dataverse row read filter (depth and shares), with the
+// secured columns masked as a records read masks them. No privilege is documented for the searches.
 function readRows(api, ctx, logical) {
   const mapping = api.store.resolveMapping(logical);
   api.principals.authorize({ user: ctx.user, entity: logical, operation: 'read', mapping });
-  return api.store.rows(logical, ctx.identity);
+  const readable = api.principals.readFilter({ user: ctx.user, entity: logical, mapping });
+  const rows = api.store.rows(logical, ctx.identity).filter((row) => !readable || readable(row));
+  return api.fieldSecurity?.maskAll ? api.fieldSecurity.maskAll(ctx.user, logical, rows) : rows;
 }
 
 // A subject given as a GUID or as an object (or JSON text) with subjectid.
@@ -451,7 +455,7 @@ const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
 const argsOf = (c) => ({
   ...(typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {})),
-  ...(c.params ?? {}),
+  ...c.params,
 });
 const respond = (c, name, payload) => ({
   status: 200,
@@ -460,8 +464,17 @@ const respond = (c, name, payload) => ({
 const write = (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
 const need = (api, c, logical, right) => {
   const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-  if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+  if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
 };
+// The row check of an operation on one stored row (its depth and shares), refused with the same 403 as the Web API.
+const authorizeRow = (api, c, logical, operation, row) =>
+  api.principals.authorize({
+    user: c.user,
+    entity: logical,
+    operation,
+    row,
+    mapping: api.store.resolveMapping(logical),
+  });
 // Reads go through store.tableRows (no table is created by a read); writes inside write() use tableOf.
 const findRow = (store, logical, pk, id) =>
   id == null ? null : (store.tableRows(logical).find((row) => sameId(row[pk], id)) ?? null);
@@ -478,17 +491,19 @@ const tenantOf = (api) =>
 function refOf(api, value) {
   const text = typeof value === 'string' ? value : String(value?.['@odata.id'] ?? '');
   const type = value?.['@odata.type'];
-  const logical = type
-    ? String(type).split('.').pop()
-    : text
-      ? api.store.resolveMapping(text.split('(')[0].split('/').pop()).logicalName
-      : null;
+  let logical = null;
+  if (type) logical = String(type).split('.').pop();
+  else if (text) logical = api.store.resolveMapping(text.split('(')[0].split('/').pop()).logicalName;
   return { logical, id: idOf(value) };
 }
 
-// A knowledge article copy, as a draft that is not a root article: the source minus its id and state.
+// The columns the platform stamps on a row, without the organization id: a copy keeps its organization. A copy drops the
+// stamped columns, so the caller that creates it owns and stamps it.
+const COPY_STAMPED_COLUMNS = [...STAMPED_COLUMNS].filter((column) => column !== 'organizationid');
+// A knowledge article copy, as a draft that is not a root article: the source minus its id, state and stamped columns.
 const draftOf = (source, fields) => {
   const { knowledgearticleid, statecode, statuscode, ...rest } = source;
+  for (const column of COPY_STAMPED_COLUMNS) delete rest[column];
   return {
     ...rest,
     knowledgearticleid: randomUUID(),
@@ -499,7 +514,8 @@ const draftOf = (source, fields) => {
     ...fields,
   };
 };
-// Only one article per root and language is the latest version.
+// Only one article per root and language is the latest version. The flag is cleared on the stored rows, inside the write,
+// after the caller has been authorized to read the source.
 function clearLatest(rows, root, language) {
   for (const row of rows)
     if (sameId(row.rootarticleid ?? row.knowledgearticleid, root) && key(row.languagelocaleid) === key(language))
@@ -512,7 +528,13 @@ async function incrementViews(api, c) {
   need(api, c, 'knowledgearticle', 'Read');
   const { Source, ViewDate, Location, Count } = argsOf(c);
   const articleId = idOf(Source);
-  mustRow(api.store, 'knowledgearticle', 'knowledgearticleid', articleId);
+  authorizeRow(
+    api,
+    c,
+    'knowledgearticle',
+    'read',
+    mustRow(api.store, 'knowledgearticle', 'knowledgearticleid', articleId),
+  );
   const location = Number(Location),
     count = Number(Count),
     date = new Date(ViewDate);
@@ -520,24 +542,35 @@ async function incrementViews(api, c) {
     throw invalid('Invalid argument.');
   const day = date.toISOString().slice(0, 10);
   let view;
-  await write(api, () => {
+  await write(api, async () => {
     const article = mustRow(api.store, 'knowledgearticle', 'knowledgearticleid', articleId);
-    const rows = tableOf(api.store, 'knowledgearticleviews');
-    view = rows.find((row) => sameId(row.knowledgearticleid, articleId) && String(row.viewdate).slice(0, 10) === day);
-    if (view) view.knowledgearticleview = Number(view.knowledgearticleview ?? 0) + count;
-    else {
-      view = {
-        knowledgearticleviewsid: uuidV5(articleId, `kav:${day}:${location}`),
-        knowledgearticleid: articleId,
-        viewdate: `${day}T00:00:00Z`,
-        location,
-        knowledgearticleview: count,
-        statecode: 0,
-        statuscode: 1,
-      };
-      rows.push(view);
-    }
-    article.knowledgearticleviews = rows
+    const existing = api.store
+      .tableRows('knowledgearticleviews')
+      .find((row) => sameId(row.knowledgearticleid, articleId) && String(row.viewdate).slice(0, 10) === day);
+    view = existing
+      ? await api.records.updateInternal(
+          c,
+          'knowledgearticleviews',
+          existing.knowledgearticleviewsid,
+          { knowledgearticleview: Number(existing.knowledgearticleview ?? 0) + count },
+          { authorized: true },
+        )
+      : await api.records.createInternal(
+          c,
+          'knowledgearticleviews',
+          {
+            knowledgearticleviewsid: uuidV5(articleId, `kav:${day}:${location}`),
+            knowledgearticleid: articleId,
+            viewdate: `${day}T00:00:00Z`,
+            location,
+            knowledgearticleview: count,
+            statecode: 0,
+            statuscode: 1,
+          },
+          { authorized: true },
+        );
+    // The article total is a derived counter: the sum of the view counts of the article's day rows, stored on the article row.
+    article.knowledgearticleviews = tableOf(api.store, 'knowledgearticleviews')
       .filter((row) => sameId(row.knowledgearticleid, articleId))
       .reduce((sum, row) => sum + Number(row.knowledgearticleview ?? 0), 0);
     article.knowledgearticleviews_date = new Date(api.clock ? api.clock() : Date.now()).toISOString();
@@ -551,22 +584,26 @@ async function createVersion(api, c) {
   need(api, c, 'knowledgearticle', 'Create');
   const args = argsOf(c);
   const source = mustRow(api.store, 'knowledgearticle', 'knowledgearticleid', idOf(args.Source));
+  authorizeRow(api, c, 'knowledgearticle', 'read', source);
   const major = String(args.IsMajor) === 'true';
   const root = source.rootarticleid ?? source.knowledgearticleid;
   const majorNumber = Number(source.majorversionnumber ?? 1),
     minorNumber = Number(source.minorversionnumber ?? 0);
   let fresh;
-  await write(api, () => {
-    const rows = tableOf(api.store, 'knowledgearticle');
-    fresh = draftOf(source, {
-      majorversionnumber: major ? majorNumber + 1 : majorNumber,
-      minorversionnumber: major ? 0 : minorNumber + 1,
-      rootarticleid: root,
-      parentarticlecontentid: source.knowledgearticleid,
-      previousarticlecontentid: source.knowledgearticleid,
-    });
-    clearLatest(rows, root, source.languagelocaleid);
-    rows.push(fresh);
+  await write(api, async () => {
+    clearLatest(tableOf(api.store, 'knowledgearticle'), root, source.languagelocaleid);
+    fresh = await api.records.createInternal(
+      c,
+      'knowledgearticle',
+      draftOf(source, {
+        majorversionnumber: major ? majorNumber + 1 : majorNumber,
+        minorversionnumber: major ? 0 : minorNumber + 1,
+        rootarticleid: root,
+        parentarticlecontentid: source.knowledgearticleid,
+        previousarticlecontentid: source.knowledgearticleid,
+      }),
+      { authorized: true },
+    );
   });
   return { status: 200, body: { '@odata.context': contextFor(c, 'knowledgearticles/$entity'), ...fresh } };
 }
@@ -582,6 +619,7 @@ async function createTranslation(api, c) {
     });
   }
   const source = mustRow(api.store, 'knowledgearticle', 'knowledgearticleid', idOf(args.Source));
+  authorizeRow(api, c, 'knowledgearticle', 'read', source);
   if (source.isprimary === false)
     throw new DataError('Only primary articles can be translated.', 400, 'InvalidRequest', { innerCode: '0x80061402' });
   const root = source.rootarticleid ?? source.knowledgearticleid;
@@ -599,16 +637,19 @@ async function createTranslation(api, c) {
       innerCode: '0x80061403',
     });
   let fresh;
-  await write(api, () => {
-    const rows = tableOf(api.store, 'knowledgearticle');
-    fresh = draftOf(source, {
-      languagelocaleid: languageId,
-      isprimary: false,
-      parentarticlecontentid: source.knowledgearticleid,
-      rootarticleid: root,
-    });
-    clearLatest(rows, root, languageId);
-    rows.push(fresh);
+  await write(api, async () => {
+    clearLatest(tableOf(api.store, 'knowledgearticle'), root, languageId);
+    fresh = await api.records.createInternal(
+      c,
+      'knowledgearticle',
+      draftOf(source, {
+        languagelocaleid: languageId,
+        isprimary: false,
+        parentarticlecontentid: source.knowledgearticleid,
+        rootarticleid: root,
+      }),
+      { authorized: true },
+    );
   });
   return { status: 200, body: { '@odata.context': contextFor(c, 'knowledgearticles/$entity'), ...fresh } };
 }
@@ -631,7 +672,7 @@ const notForRollup = (name) =>
 // RollupType as a name or a number, in the forms a Web API caller sends: Microsoft.Dynamics.CRM.RollupType'Related', Related or 1.
 function rollupTypeOf(value) {
   const text = String(value ?? '');
-  const name = /^\d+$/.test(text) ? ROLLUP_TYPES[Number(text)] : (text.match(/'(\w+)'$/)?.[1] ?? text);
+  const name = /^\d+$/.test(text) ? ROLLUP_TYPES[Number(text)] : (/'(\w+)'$/.exec(text)?.[1] ?? text);
   const type = ROLLUP_TYPES.find((entry) => entry.toLowerCase() === String(name).toLowerCase());
   if (!type) throw invalid('The rollup type is invalid.', '0x80040234');
   return type;
@@ -644,18 +685,21 @@ function rollupSet(store, targetId, type) {
   let frontier = type === 'None' ? [] : [targetId];
   while (frontier.length) {
     const next = [];
-    for (const parent of frontier)
-      for (const [table, column] of CHILD_RELATIONS)
-        for (const row of store.tableRows(table)) {
-          const id = row[`${table}id`];
-          if (sameId(idOf(row[column]), parent) && !set.has(key(id))) {
-            set.add(key(id));
-            next.push(id);
-          }
-        }
+    for (const parent of frontier) addRollupChildren(store, parent, set, next);
     frontier = type === 'Extended' ? next : [];
   }
   return set;
+}
+
+function addRollupChildren(store, parent, set, next) {
+  for (const [table, column] of CHILD_RELATIONS)
+    for (const row of store.tableRows(table)) {
+      const id = row[`${table}id`];
+      if (sameId(idOf(row[column]), parent) && !set.has(key(id))) {
+        set.add(key(id));
+        next.push(id);
+      }
+    }
 }
 
 async function rollup(api, c) {
@@ -720,8 +764,7 @@ function onExternalEvent(name) {
     if (name === 'OnExternalUpdated' && !Array.isArray(args.ChangedFields)) throw invalid('ChangedFields is required.');
     const meta = virtualEventMetadata(api, logical);
     const enabled = `is${name.toLowerCase()}enabled`;
-    if (!meta || meta[enabled] !== true)
-      throw invalid(`External event ${name} is not enabled for ${logical}.`, '0x80090309');
+    if (meta?.[enabled] !== true) throw invalid(`External event ${name} is not enabled for ${logical}.`, '0x80090309');
     if (
       name === 'OnExternalUpdated' &&
       args.ChangedFields.length &&
@@ -731,7 +774,7 @@ function onExternalEvent(name) {
         innerCode: '0x80073019',
       });
     }
-    const { ['@odata.type']: ignoredType, ['@odata.id']: ignoredId, ...target } = args.Target ?? {};
+    const { ['@odata.type']: ignoredType, ['@odata.id']: ignoredId, ...target } = args.Target ?? {}; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const id = refOf(api, args.Target).id;
     if (id) target[mapping.idColumn] ??= id;
     // Notifications publish the supplied external snapshot. They never create or
@@ -748,19 +791,45 @@ function onExternalEvent(name) {
 }
 
 // Composite data sources are environment variable definitions: a parent of type 100000004 (Data source) with an optional child
-// that names it as its parent. The ids are derived from the schema name, so both messages address the same rows.
+// that names it as its parent. A new row's id is derived from the schema name, so both messages address the same rows.
 const ENV_DEFINITION = 'environmentvariabledefinition';
+const ENV_VALUE = 'environmentvariablevalue';
 const DATA_SOURCE_TYPE = 100000004;
+// The definition row of a schema name, compared without case: the name is unique, so an existing definition is found
+// whoever wrote it, and its id is kept.
+const definitionRowOf = (store, schema) =>
+  store.tableRows(ENV_DEFINITION).find((row) => row.schemaname != null && key(row.schemaname) === key(schema));
 const definitionIdOf = (store, schema) =>
-  uuidV5(orgIdOf(store), `environmentvariabledefinition:${String(schema).toLowerCase()}`);
-const valueIdOf = (store, schema) => uuidV5(orgIdOf(store), `environmentvariablevalue:${String(schema).toLowerCase()}`);
+  definitionRowOf(store, schema)?.environmentvariabledefinitionid ??
+  uuidV5(orgIdOf(store), `environmentvariabledefinition:${key(schema)}`);
+const valueIdOf = (store, schema) => uuidV5(orgIdOf(store), `environmentvariablevalue:${key(schema)}`);
 const missingComposite = (schema) =>
   new DataError(`Failed to find environment variables with schema name(s) '${schema}'.`, 404, 'NotFound', {
     innerCode: '0x80095004',
   });
 
-function upsertDefinition(store, { schema, displayName, parameterKey, apiId, parentId }) {
-  const id = definitionIdOf(store, schema);
+// The privileges of an upsert of one definition and its value, checked before anything is written: write on an existing
+// row, create for a new one. An existing definition that is not a data source is refused with 412 0x80040237.
+const authorizeWrite = (api, c, logical, row) => authorizeRow(api, c, logical, row ? 'write' : 'create', row);
+function authorizeUpsert(api, c, { schema, value }) {
+  const definition = definitionRowOf(api.store, schema);
+  authorizeWrite(api, c, ENV_DEFINITION, definition);
+  if (definition && Number(definition.type) !== DATA_SOURCE_TYPE)
+    throw new DataError(`Environment variable '${schema}' is not a data source.`, 412, 'PreconditionFailed', {
+      innerCode: '0x80040237',
+    });
+  if (value == null || value === '') return;
+  authorizeWrite(
+    api,
+    c,
+    ENV_VALUE,
+    definition ? valueRowOf(api.store, definition.environmentvariabledefinitionid) : null,
+  );
+}
+
+// Writes a definition through the pipeline, so ownership, audit and plug-in steps apply; returns its id.
+async function upsertDefinition(api, c, { schema, displayName, parameterKey, apiId, parentId }) {
+  const id = definitionIdOf(api.store, schema);
   const fields = {
     schemaname: schema,
     displayname: displayName ?? null,
@@ -769,75 +838,124 @@ function upsertDefinition(store, { schema, displayName, parameterKey, apiId, par
     type: DATA_SOURCE_TYPE,
     parentdefinitionid: parentId ?? null,
   };
-  const rows = tableOf(store, ENV_DEFINITION);
-  const row = rows.find((entry) => sameId(entry.environmentvariabledefinitionid, id));
-  if (row) Object.assign(row, fields);
-  else rows.push({ environmentvariabledefinitionid: id, ...fields });
+  if (definitionRowOf(api.store, schema))
+    await api.records.updateInternal(c, ENV_DEFINITION, id, fields, { authorized: true });
+  else
+    await api.records.createInternal(
+      c,
+      ENV_DEFINITION,
+      { environmentvariabledefinitionid: id, ...fields },
+      { authorized: true },
+    );
   return id;
 }
 
-function upsertValue(store, definitionId, schema, value) {
+// Writes a value through the pipeline; an empty value is not written.
+async function upsertValue(api, c, definitionId, schema, value) {
   if (value == null || value === '') return;
-  const id = valueIdOf(store, schema);
-  const rows = tableOf(store, 'environmentvariablevalue');
-  const row = rows.find((entry) => sameId(entry.environmentvariablevalueid, id));
-  if (row) row.value = value;
-  else rows.push({ environmentvariablevalueid: id, environmentvariabledefinitionid: definitionId, value });
+  const row = valueRowOf(api.store, definitionId);
+  if (row)
+    await api.records.updateInternal(c, ENV_VALUE, row.environmentvariablevalueid, { value }, { authorized: true });
+  else
+    await api.records.createInternal(
+      c,
+      ENV_VALUE,
+      {
+        environmentvariablevalueid: valueIdOf(api.store, schema),
+        environmentvariabledefinitionid: definitionId,
+        value,
+      },
+      { authorized: true },
+    );
+}
+
+// The rows that pass the caller's read filter on a table; every row when the caller has no row filter there.
+function readableRows(api, user, logical, rows) {
+  const readable = api.principals.readFilter({ user, entity: logical, mapping: api.store.resolveMapping(logical) });
+  return readable ? rows.filter((row) => readable(row)) : rows;
+}
+
+// Whether the caller holds the read privilege of a table at some depth.
+function canRead(api, user, logical) {
+  try {
+    api.principals.authorize({ user, entity: logical, operation: 'read', mapping: api.store.resolveMapping(logical) });
+    return true;
+  } catch (error) {
+    if (error.status === 403) return false;
+    throw error;
+  }
+}
+
+// The values of a definition the caller may see: none without read on the value table, else those past its read filter.
+function valuesOf(api, c, definition) {
+  if (!canRead(api, c.user, ENV_VALUE)) return [];
+  const values = api.store
+    .tableRows(ENV_VALUE)
+    .filter((value) => sameId(value.environmentvariabledefinitionid, definition.environmentvariabledefinitionid));
+  return readableRows(api, c.user, ENV_VALUE, values);
 }
 
 // The definition with its values expanded under the navigation property name.
-const expanded = (store, row) => ({
+const expanded = (api, c, row) => ({
   ...row,
-  environmentvariabledefinition_environmentvariablevalue: store
-    .tableRows('environmentvariablevalue')
-    .filter((value) => sameId(value.environmentvariabledefinitionid, row.environmentvariabledefinitionid)),
+  environmentvariabledefinition_environmentvariablevalue: valuesOf(api, c, row),
 });
 const definitionOf = (store, schema) =>
   findRow(store, ENV_DEFINITION, 'environmentvariabledefinitionid', definitionIdOf(store, schema));
 
 async function upsertComposite(api, c) {
-  need(api, c, ENV_DEFINITION, 'Write');
   const a = argsOf(c);
   if (!a.ParentSchemaName || !a.ParentParameterKey)
     throw invalid('ParentSchemaName and ParentParameterKey are required.');
-  await write(api, () => {
-    const parentId = upsertDefinition(api.store, {
-      schema: a.ParentSchemaName,
-      displayName: a.ParentDisplayName,
-      parameterKey: a.ParentParameterKey,
-      apiId: a.ParentApiId,
-    });
-    upsertValue(api.store, parentId, a.ParentSchemaName, a.ParentValue);
-    if (a.ChildSchemaName) {
-      const childId = upsertDefinition(api.store, {
+  const parent = {
+    schema: a.ParentSchemaName,
+    displayName: a.ParentDisplayName,
+    parameterKey: a.ParentParameterKey,
+    apiId: a.ParentApiId,
+    value: a.ParentValue,
+  };
+  const child = a.ChildSchemaName
+    ? {
         schema: a.ChildSchemaName,
         displayName: a.ChildDisplayName,
         parameterKey: a.ChildParameterKey,
-        parentId,
-      });
-      upsertValue(api.store, childId, a.ChildSchemaName, a.ChildValue);
+        value: a.ChildValue,
+      }
+    : null;
+  authorizeUpsert(api, c, parent);
+  if (child) authorizeUpsert(api, c, child);
+  await write(api, async () => {
+    const parentId = await upsertDefinition(api, c, parent);
+    await upsertValue(api, c, parentId, parent.schema, parent.value);
+    if (child) {
+      const childId = await upsertDefinition(api, c, { ...child, parentId });
+      await upsertValue(api, c, childId, child.schema, child.value);
     }
   });
   return { status: 204 };
 }
 
 function retrieveComposite(api, c) {
-  need(api, c, ENV_DEFINITION, 'Read');
+  authorizeRow(api, c, ENV_DEFINITION, 'read');
   const a = argsOf(c);
   const parent = definitionOf(api.store, a.ParentSchemaName) ?? throwMissing(a.ParentSchemaName);
   const child = definitionOf(api.store, a.ChildSchemaName) ?? throwMissing(a.ChildSchemaName);
-  return collection(c, [expanded(api.store, parent), expanded(api.store, child)]);
+  return collection(
+    c,
+    readableRows(api, c.user, ENV_DEFINITION, [parent, child]).map((row) => expanded(api, c, row)),
+  );
 }
 
 function retrieveAllComposite(api, c) {
-  need(api, c, ENV_DEFINITION, 'Read');
-  const parent = definitionOf(api.store, argsOf(c).ParentSchemaName) ?? throwMissing(argsOf(c).ParentSchemaName);
+  authorizeRow(api, c, ENV_DEFINITION, 'read');
+  const { ParentSchemaName } = argsOf(c);
+  const parent = definitionOf(api.store, ParentSchemaName) ?? throwMissing(ParentSchemaName);
   const children = api.store
     .tableRows(ENV_DEFINITION)
     .filter((row) => sameId(row.parentdefinitionid, parent.environmentvariabledefinitionid));
   return collection(
     c,
-    [parent, ...children].map((row) => expanded(api.store, row)),
+    readableRows(api, c.user, ENV_DEFINITION, [parent, ...children]).map((row) => expanded(api, c, row)),
   );
 }
 function throwMissing(schema) {
@@ -910,7 +1028,7 @@ async function removeCertificate(api, c) {
 
 // .NET Guid.ToByteArray order: the first three groups little-endian, the last two as written.
 function netGuidBytes(guid) {
-  const b = Buffer.from(guid.replace(/-/g, ''), 'hex');
+  const b = Buffer.from(guid.replaceAll('-', ''), 'hex');
   return Buffer.concat([
     b.subarray(0, 4).reverse(),
     b.subarray(4, 6).reverse(),
@@ -956,12 +1074,47 @@ function instanceMapping(store, name) {
   }
 }
 
-// RetrieveProcessInstances. The instances of the activated flows on this entity, newest first.
-function processInstances(api, c) {
+// The column of an instance row that names the primary record: bpf_<entity>id, else <entity>id.
+function instanceLookupOf(store, mapping, logical) {
+  const rows = store.tableRows(mapping.logicalName);
+  return [`bpf_${logical}id`, `${logical}id`].find(
+    (column) => column in (mapping.fields ?? {}) || rows.some((row) => column in row),
+  );
+}
+
+// The instance rows of one flow on the primary record that the caller may read, in the records layer's format, each with
+// its stage. The caller needs the read privilege of the instance table first.
+async function instanceRowsOf(api, c, mapping, lookup, entityId) {
+  need(api, c, mapping.logicalName, 'Read');
+  const matched = api.store.tableRows(mapping.logicalName).filter((row) => sameId(row[lookup], entityId));
+  const readable = readableRows(api, c.user, mapping.logicalName, matched);
+  const stages = new Map(readable.map((row) => [key(row[mapping.idColumn]), idOf(row.activestageid)]));
+  const { value } = (
+    await messageCollection(
+      api,
+      c,
+      mapping.logicalName,
+      readable.map((row) => row[mapping.idColumn]),
+    )
+  ).body;
+  return value.map((row) => ({ ...row, processstageid: stages.get(key(row[mapping.idColumn])) ?? null }));
+}
+
+// RetrieveProcessInstances. The instances of the activated flows on this entity, newest first. The caller needs read on the
+// primary table, then the primary record must exist (404 when it is missing) and be readable by the caller; the instance rows
+// are those that pass the caller's read filter.
+async function processInstances(api, c) {
   const a = argsOf(c);
   const logical = a.EntityLogicalName;
-  need(api, c, logical, 'Read');
   const entityId = idOf(a.EntityId);
+  need(api, c, logical, 'Read');
+  authorizeRow(
+    api,
+    c,
+    logical,
+    'read',
+    mustRow(api.store, logical, api.store.resolveMapping(logical).idColumn, entityId),
+  );
   const found = [];
   for (const definition of bpfDefinitions(
     api.store,
@@ -969,16 +1122,24 @@ function processInstances(api, c) {
   )) {
     const mapping = instanceMapping(api.store, definition.uniquename);
     if (!mapping) continue;
-    const rows = api.store.tableRows(mapping.logicalName);
-    const lookup = [`bpf_${logical}id`, `${logical}id`].find(
-      (column) => column in (mapping.fields ?? {}) || rows.some((row) => column in row),
-    );
+    const lookup = instanceLookupOf(api.store, mapping, logical);
     if (!lookup) continue;
-    for (const row of rows)
-      if (sameId(row[lookup], entityId)) found.push({ ...row, processstageid: idOf(row.activestageid) });
+    found.push(...(await instanceRowsOf(api, c, mapping, lookup, entityId)));
   }
   found.sort((x, y) => (Date.parse(y.modifiedon) || 0) - (Date.parse(x.modifiedon) || 0));
   return collection(c, found);
+}
+
+// The instance row with this id, in the instance table that holds it, with its flow definition.
+function instanceById(store, id) {
+  for (const definition of bpfDefinitions(store, () => true)) {
+    const mapping = instanceMapping(store, definition.uniquename);
+    const row = mapping
+      ? store.tableRows(mapping.logicalName).find((entry) => sameId(entry[mapping.idColumn], id))
+      : undefined;
+    if (row) return { definition, instance: row, logical: mapping.logicalName };
+  }
+  return null;
 }
 
 // RetrieveActivePath. ponytail: no branch conditions, so every stage of the flow is on the path; the traversed stages come
@@ -986,23 +1147,13 @@ function processInstances(api, c) {
 function activePath(api, c) {
   need(api, c, 'processstage', 'Read');
   const id = idOf(argsOf(c).ProcessInstanceId);
-  let instance = null,
-    definition = null;
-  for (const candidate of bpfDefinitions(api.store, () => true)) {
-    const mapping = instanceMapping(api.store, candidate.uniquename);
-    const row = mapping
-      ? api.store.tableRows(mapping.logicalName).find((entry) => sameId(entry[mapping.idColumn], id))
-      : undefined;
-    if (row) {
-      instance = row;
-      definition = candidate;
-      break;
-    }
-  }
-  if (!instance)
+  const found = instanceById(api.store, id);
+  if (!found)
     throw new DataError(`Supplied process instance ${id} does not match any existing instance.`, 404, 'NotFound', {
       innerCode: '0x80060370',
     });
+  authorizeRow(api, c, found.logical, 'read', found.instance);
+  const { definition, instance } = found;
   const stages = api.store.tableRows('processstage').filter((stage) => sameId(stage.processid, definition.workflowid));
   const traversed = String(instance.traversedpath ?? '')
     .split(',')
@@ -1248,7 +1399,7 @@ function install(api) {
       binding: 'unbound',
       signature,
       fallback: () =>
-        new DataError(`${name} has no configured local implementation.`, 501, 'NotImplemented', {
+        /* NOSONAR */ new DataError(`${name} has no configured local implementation.`, 501, 'NotImplemented', {
           innerCode: '0x80040216',
         }),
     });

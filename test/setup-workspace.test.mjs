@@ -1,8 +1,12 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: the guided setup workspace saves, validates and serves configuration as the product designs it.
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
+import { once } from 'node:events';
 import path from 'node:path';
 import http from 'node:http';
 import YAML from 'yaml';
@@ -12,8 +16,11 @@ import { createSimulator } from '../mirage/server.mjs';
 import { createFixture } from './fixture.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 
+// `paqvilo mirage dev|start` exports MIRAGE_SETUP_RUNTIME to its child; inherited here it would rename restart commands.
+delete process.env.MIRAGE_SETUP_RUNTIME;
+
 async function work(t, prefix = 'paqvilo-setup-unit-') {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -196,6 +203,38 @@ test('personal settings and shell choices show provenance without exposing unrel
   assert.equal((await store.snapshot()).sites[0].source, '.');
 });
 
+test('a personal save refuses when Git gives no answer on whether the file is tracked', async (t) => {
+  const directory = await work(t);
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(minimal));
+  const personal = path.join(directory, 'paqvilo.config.local.yml');
+  let outcome;
+  const runGit = async (_command, args) => {
+    assert.deepEqual(args.slice(0, 2), ['ls-files', '--error-unmatch']);
+    if (outcome === 'tracked') return { stdout: 'paqvilo.config.local.yml\n' };
+    throw outcome;
+  };
+  const store = new SetupStore({ directory, processEnv: {}, runGit });
+  const save = () => edit(store, 'personal', [set(['browser', 'channel'], 'chromium')]);
+  // Killed at its hang guard, or not started because no git program was found: no answer, so nothing is written.
+  for (const [failure, message] of [
+    [Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null }), /Git did not answer.*Retry/],
+    [Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }), /^Git was not found\. Install Git or add it/],
+  ]) {
+    outcome = failure;
+    await assert.rejects(save(), (error) => error.status === 503 && message.test(error.message));
+    await assert.rejects(fs.access(personal), { code: 'ENOENT' });
+  }
+  outcome = 'tracked';
+  await assert.rejects(save(), /already tracked by Git/);
+  // Exit 1 (not tracked) and exit 128 (no repository) are answers: the save goes ahead.
+  for (outcome of [
+    Object.assign(new Error('exit 1'), { code: 1 }),
+    Object.assign(new Error('exit 128'), { code: 128 }),
+  ])
+    await save();
+  assert.match(await fs.readFile(personal, 'utf8'), /chromium/);
+});
+
 test('scaffold setup reports missing folders and packs without executing module code', async (t) => {
   const directory = await work(t);
   await prepareProject(directory, { name: 'sample' });
@@ -346,9 +385,13 @@ test('Mirage serves setup independently from simulation identity/state and repor
   const status = await fetch(simulator.url + '/_setup/api/status').then((res) => res.json());
   assert.equal(status.runtime.restartRequired, false);
   assert.equal(status.runtime.product, 'Mirage');
-  const saved = await fetch(simulator.url + '/_setup/api/config', {
+  const saved = await fetch(simulator.setupUrl + 'api/config', {
     method: 'POST',
-    headers: { Origin: simulator.url, 'Content-Type': 'application/json', 'X-Paqvilo-Setup-CSRF': status.csrf },
+    headers: {
+      Origin: new URL(simulator.setupUrl).origin,
+      'Content-Type': 'application/json',
+      'X-Paqvilo-Setup-CSRF': status.csrf,
+    },
     body: JSON.stringify({
       layer: 'shared',
       revision: status.revision,
@@ -665,12 +708,8 @@ test('linked project files outside the catalogue folder, under .paqvilo/ or not 
     await fs.readFile(path.join(directory, '.paqvilo', 'session-77777777.json'), 'utf8'),
     /never-return-discovery/,
   );
-  const link = path.join(directory, 'linked');
-  try {
-    await fs.symlink(outside, link, 'junction');
-  } catch {
-    return t.diagnostic('symbolic links are unavailable here');
-  }
+  // A Windows junction and a POSIX directory link need no symlink privilege.
+  await fs.symlink(outside, path.join(directory, 'linked'), 'junction');
   await fs.writeFile(
     path.join(outside, 'escape.project.yml'),
     'version: 2\nruntime:\n  kind: model-driven\nsolutions: []\nenvironmentVariables:\n  x_Escaped: never-return-link\n',
@@ -859,6 +898,12 @@ test('restart drift names the running site and command, is unknown when the iden
     ownedFixture(t).add(() => server.close());
     const value = await fetch(base + '/_setup/api/status').then((response) => response.json());
     assert.match(value.runtime.restartCommand, /^npx paqvilo mirage dev --config .* --site beta$/);
+    // The variable describes the Mirage child it was set for; an inheriting Lense keeps its own command.
+    const inheriting = await createSetupHandler({ store, runtime: { product: 'Lense', site: 'portal' } });
+    const lenseHost = await serve(t, inheriting);
+    ownedFixture(t).add(() => lenseHost.server.close());
+    const lenseValue = await fetch(lenseHost.base + '/_setup/api/status').then((response) => response.json());
+    assert.match(lenseValue.runtime.restartCommand, /^npx paqvilo lense dev --config .* --site portal$/);
   } finally {
     if (previous === undefined) delete process.env.MIRAGE_SETUP_RUNTIME;
     else process.env.MIRAGE_SETUP_RUNTIME = previous;
@@ -982,4 +1027,345 @@ test('a setup server of its own relays the running Mirage preview views read-onl
     ['/_sim/api/dashboard', '/_sim/api/preflight?requires=table%3Ax_item'],
     'a Lense portal is never contacted',
   );
+});
+
+async function lockedProject(t, lockText) {
+  const directory = await work(t),
+    filename = path.join(directory, 'organization.json');
+  await fs.mkdir(path.join(directory, 'solution'));
+  const raw = {
+    version: 2,
+    runtime: { kind: 'model-driven', defaultApp: '11111111-2222-4333-8444-555555555555' },
+    solutions: [{ id: 'core', path: './solution' }],
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: false },
+  };
+  await fs.writeFile(filename, JSON.stringify(raw));
+  await fs.writeFile(filename + '.setup.lock', lockText);
+  return { directory, filename, store: new SetupStore({ directory, project: filename, processEnv: {} }) };
+}
+
+function pidIsGone(pid) {
+  let gone = false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    gone = error.code === 'ESRCH';
+  }
+  return gone;
+}
+
+/** A start-time reader for a store that answers `answer(pid)` and counts its reads. */
+function startTimeReader(answer) {
+  const asked = [];
+  return {
+    asked,
+    startTimeOf: async (pid) => {
+      asked.push(pid);
+      return answer(pid);
+    },
+  };
+}
+
+// @test-kind contract: a save lock left by an interrupted save must not block every later save, a live save still does.
+test('a save lock whose process has exited does not block the next save', async (t) => {
+  let exitedPid = null;
+  for (let attempt = 0; attempt < 5 && exitedPid === null; attempt += 1) {
+    const pid = spawnSync(process.execPath, ['-e', '']).pid;
+    if (pidIsGone(pid)) exitedPid = pid;
+  }
+  assert.notEqual(exitedPid, null, 'no exited child pid was free after 5 spawns; the pids were reused');
+  const { filename, store } = await lockedProject(t, JSON.stringify({ pid: exitedPid, at: Date.now() }));
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a save lock whose content is not a lock record is reclaimed once the lock file is stale.
+test('a save lock with garbled content older than the stale window does not block the next save', async (t) => {
+  const { filename, store } = await lockedProject(t, 'interrupted write, not JSON');
+  const past = new Date(Date.now() - 60_000);
+  await fs.utimes(filename + '.setup.lock', past, past);
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a fresh save lock whose content is not yet a lock record answers busy and is left in place.
+test('a garbled or empty save lock within the stale window answers busy and is kept', async (t) => {
+  for (const lockText of ['interrupted write, not JSON', '']) {
+    const { filename, store } = await lockedProject(t, lockText);
+    await assert.rejects(
+      edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]),
+      (error) => error.status === 409 && /being saved/.test(error.message),
+    );
+    assert.equal(await fs.readFile(filename + '.setup.lock', 'utf8'), lockText);
+  }
+});
+
+// @test-kind contract: a save lock held by a live process within the stale window still answers the busy response.
+test('a save lock held by a live process within the stale window still answers busy and is kept', async (t) => {
+  const lockText = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const { filename, store } = await lockedProject(t, lockText);
+  await assert.rejects(
+    edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]),
+    (error) => error.status === 409 && /being saved/.test(error.message),
+  );
+  assert.equal(await fs.readFile(filename + '.setup.lock', 'utf8'), lockText);
+});
+
+// @test-kind contract: a running save keeps its lock however long its work takes, so no second save runs beside it.
+test('a save that outlasts the old stale window keeps its lock against a second save', async (t) => {
+  const directory = await work(t);
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(minimal));
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  const runGit = async () => {
+    throw Object.assign(new Error('exit 1'), { code: 1 });
+  };
+  // The first save waits inside the lock, at the replacement of its file, until the test lets it go on.
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (path.basename(to) === 'paqvilo.config.local.yml') {
+      entered.resolve();
+      await release.promise;
+    }
+    return rename(from, to);
+  });
+  ownedFixture(t).add(() => release.resolve());
+  // The live save started before it took the lock, so the second save, past the stale window, is refused.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const started = Date.now() - 60_000;
+  const reader = startTimeReader(() => started);
+  const store = new SetupStore({
+    directory,
+    processEnv: {},
+    runGit,
+    lock: { startTimeOf: reader.startTimeOf, platform: 'win32' },
+  });
+  const first = edit(store, 'personal', [set(['browser', 'channel'], 'chromium')]);
+  await entered.promise;
+  t.mock.timers.tick(10 * 60_000);
+  await assert.rejects(
+    edit(store, 'shared', [set(['defaultSite'], 'portal')]),
+    (error) => error.status === 409 && /being saved/.test(error.message),
+  );
+  assert.deepEqual(
+    reader.asked,
+    [process.pid],
+    'the holder start time was read once the lock was held past the window',
+  );
+  release.resolve();
+  await first;
+  assert.match(await fs.readFile(path.join(directory, 'paqvilo.config.local.yml'), 'utf8'), /chromium/);
+  await assert.rejects(fs.access(path.join(directory, 'paqvilo.config.yml.setup.lock')), { code: 'ENOENT' });
+});
+
+/** The number of a live process other than this one: an owned node child that ends when its input ends. */
+async function liveHolder(t) {
+  const holder = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { stdio: ['pipe', 'ignore', 'ignore'] });
+  ownedFixture(t).add(async () => {
+    holder.stdin.end();
+    if (holder.exitCode === null && holder.signalCode === null) await once(holder, 'close');
+  });
+  await once(holder, 'spawn');
+  return holder.pid;
+}
+
+/** A save lock `{pid, at}` taken a minute ago by a live process other than this one, past the stale window. */
+async function oldLock(t) {
+  const pid = await liveHolder(t);
+  const at = Date.now() - 60_000;
+  const project = await lockedProject(t, JSON.stringify({ pid, at }));
+  await fs.utimes(project.filename + '.setup.lock', new Date(at), new Date(at));
+  return { ...project, at, pid, text: JSON.stringify({ pid, at }) };
+}
+
+// @test-kind contract: a save lock whose live number now names a process started after the lock does not block the next save.
+test('a save lock held past the stale window by a reused process number is taken over', async (t) => {
+  const { directory, filename, at, pid } = await oldLock(t);
+  const reader = startTimeReader(() => at + 2_001);
+  const store = new SetupStore({
+    directory,
+    project: filename,
+    processEnv: {},
+    lock: { startTimeOf: reader.startTimeOf },
+  });
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  assert.deepEqual(reader.asked, [pid]);
+  await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a save lock whose live holder started before it, or whose start time is unread, is kept.
+test('a save lock held past the stale window by its own process, or one whose start time is unread, is kept', async (t) => {
+  for (const [started, note] of [
+    [(at) => at - 3_600_000, null],
+    [() => null, /Its start time could not be read, so the lock is kept\./],
+  ]) {
+    const { directory, filename, at, pid, text } = await oldLock(t);
+    const reader = startTimeReader(() => started(at));
+    const store = new SetupStore({
+      directory,
+      project: filename,
+      processEnv: {},
+      lock: { startTimeOf: reader.startTimeOf },
+    });
+    await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]), (error) => {
+      assert.equal(error.status, 409);
+      assert.ok(error.message.includes(`if no save is running, remove ${filename}.setup.lock`), error.message);
+      if (note) assert.match(error.message, note);
+      else assert.doesNotMatch(error.message, /could not be read/);
+      return true;
+    });
+    assert.deepEqual(reader.asked, [pid]);
+    assert.equal(await fs.readFile(filename + '.setup.lock', 'utf8'), text);
+  }
+});
+
+// @test-kind contract: a save lock taken on another host is never judged here; one from this host or naming none is.
+test('a save lock taken on another host answers busy naming that host, and one from this host or naming none is judged here', async (t) => {
+  // No process can have this number, as a holder in another process namespace has none here.
+  const ended = 2_147_483_646;
+  const reader = startTimeReader(() => assert.fail('a start time was read'));
+  const lock = { host: 'win32/here', platform: 'win32', startTimeOf: reader.startTimeOf };
+  const at = Date.now() - 60_000;
+  const text = JSON.stringify({ pid: ended, at, host: 'linux/elsewhere' });
+  const foreign = await lockedProject(t, text);
+  await fs.utimes(foreign.filename + '.setup.lock', new Date(at), new Date(at));
+  const store = new SetupStore({ directory: foreign.directory, project: foreign.filename, processEnv: {}, lock });
+  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]), (error) => {
+    assert.equal(error.status, 409);
+    assert.match(error.message, /It was taken on linux\/elsewhere and can only be judged there/);
+    return true;
+  });
+  assert.equal(await fs.readFile(foreign.filename + '.setup.lock', 'utf8'), text);
+  for (const host of ['win32/here', undefined]) {
+    const { directory, filename } = await lockedProject(t, JSON.stringify({ pid: ended, at: Date.now(), host }));
+    const local = new SetupStore({ directory, project: filename, processEnv: {}, lock });
+    const saved = await edit(local, 'shared', [set(['simulation', 'level'], 'simulation')]);
+    assert.equal(saved.settings.simulation.level, 'simulation');
+    await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+  }
+  assert.deepEqual(reader.asked, []);
+});
+
+// @test-kind contract: a free save lock, or one held within the stale window, never has a start time read.
+test('no start time is read for a free save lock or one held within the stale window', async (t) => {
+  const recent = await lockedProject(t, JSON.stringify({ pid: await liveHolder(t), at: Date.now() }));
+  const reader = startTimeReader(() => assert.fail('a start time was read'));
+  const store = new SetupStore({
+    directory: recent.directory,
+    project: recent.filename,
+    processEnv: {},
+    lock: { startTimeOf: reader.startTimeOf },
+  });
+  await assert.rejects(
+    edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]),
+    (error) => error.status === 409 && /being saved/.test(error.message),
+  );
+  await fs.rm(recent.filename + '.setup.lock');
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  assert.deepEqual(reader.asked, []);
+});
+
+/** Replaces `fs.open` for the exclusive create of `lockFile` with `create(open, ...arguments)`. */
+function mockLockCreate(t, lockFile, create) {
+  const open = fs.open;
+  t.mock.method(fs, 'open', (file, flags, ...rest) =>
+    path.resolve(String(file)) === path.resolve(lockFile) && flags === 'wx'
+      ? create(open, file, flags, ...rest)
+      : open(file, flags, ...rest),
+  );
+}
+
+// @test-kind contract: a folder that refuses the save lock is reported as such, not as a save in progress.
+test('a folder that refuses the save lock answers that it refuses new files', async (t) => {
+  const { filename, store } = await lockedProject(t, '');
+  const lockFile = filename + '.setup.lock';
+  await fs.rm(lockFile);
+  // Windows answers an exclusive create in an unwritable folder with EPERM, and the lock then does not exist.
+  mockLockCreate(t, lockFile, () =>
+    Promise.reject(Object.assign(new Error('operation not permitted'), { code: 'EPERM' })),
+  );
+  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]), (error) => {
+    assert.equal(
+      error.message,
+      `Could not create ${lockFile}: the folder refuses new files. Make it writable and save again.`,
+    );
+    assert.equal(error.status, undefined, 'the setup server answers it as it answered the raw refusal before');
+    assert.equal(error.cause.code, 'EPERM');
+    return true;
+  });
+});
+
+// @test-kind contract: a save lock whose record cannot be written is removed, so it blocks no later save.
+test('a save lock whose record cannot be written is removed before the error is answered', async (t) => {
+  const { filename, store } = await lockedProject(t, '');
+  const lockFile = filename + '.setup.lock';
+  await fs.rm(lockFile);
+  mockLockCreate(t, lockFile, async (open, ...rest) => {
+    const handle = await open(...rest);
+    return {
+      writeFile: () => Promise.reject(Object.assign(new Error('no space left on device'), { code: 'ENOSPC' })),
+      close: () => handle.close(),
+    };
+  });
+  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]), { code: 'ENOSPC' });
+  await assert.rejects(fs.access(lockFile), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a save lock whose removal fails is reported once, keeps the save's result and is taken again.
+test('a save lock that cannot be removed is reported once, the save stands, and the next save takes it again', async (t) => {
+  const { filename } = await lockedProject(t, '');
+  const lockFile = filename + '.setup.lock';
+  await fs.rm(lockFile);
+  let refuse = true;
+  const rm = fs.rm;
+  t.mock.method(fs, 'rm', (file, ...rest) =>
+    refuse && path.resolve(String(file)) === path.resolve(lockFile)
+      ? Promise.reject(Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+      : rm(file, ...rest),
+  );
+  const warnings = [];
+  const store = new SetupStore({
+    directory: path.dirname(filename),
+    project: filename,
+    processEnv: {},
+    lock: { warn: (message) => warnings.push(message) },
+  });
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].includes(`Could not remove the lock file ${lockFile} (EBUSY)`), warnings[0]);
+  refuse = false;
+  const again = await edit(store, 'shared', [set(['simulation', 'level'], 'dry-run')]);
+  assert.equal(again.settings.simulation.level, 'dry-run');
+  assert.equal(warnings.length, 1);
+  await assert.rejects(fs.access(lockFile), { code: 'ENOENT' });
+});
+
+// @test-kind contract: the Git tracked check of a personal save runs before the save lock, so a slow Git holds no lock.
+test('a personal save waiting for Git does not hold the save lock', async (t) => {
+  const directory = await work(t);
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(minimal));
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  const runGit = async () => {
+    entered.resolve();
+    await release.promise;
+    throw Object.assign(new Error('exit 1'), { code: 1 });
+  };
+  ownedFixture(t).add(() => release.resolve());
+  const store = new SetupStore({ directory, processEnv: {}, runGit });
+  const personal = edit(store, 'personal', [set(['browser', 'channel'], 'chromium')]);
+  await entered.promise;
+  await fs.access(path.join(directory, 'paqvilo.config.yml.setup.lock')).then(
+    () => assert.fail('the save lock is held while Git is asked'),
+    (error) => assert.equal(error.code, 'ENOENT'),
+  );
+  release.resolve();
+  await personal;
+  assert.match(await fs.readFile(path.join(directory, 'paqvilo.config.local.yml'), 'utf8'), /chromium/);
 });

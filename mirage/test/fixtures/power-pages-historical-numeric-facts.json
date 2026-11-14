@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "guarantee": "The context-free numeric-string decimal-multiplication expression renders2 under native conversion semantics.",
+  "source": "{{ '2' | times: 1.0 }}",
+  "output": "2",
+  "witnesses": [
+    {
+      "source": "{{ '2' | times: 1.0 }}",
+      "output": "2",
+      "captureSha256": "66e3b5e399f9ff8fd1b550d77329290a99cf7ea733583dca80167d57b310b395",
+      "planSha256": "89d46d0e8325327ae039361ed17823ef908901e4ff6e58d1d6a6673b490ed2f4",
+      "publishSha256": "9739e03ec74524eb4a9e72f93d56aa0b6d80750456f7a1fc1b3fff975ddce4e1",
+      "sourceSha256": "e1e30663c820d39942e1bb3c89c85b4495865b8a3030cde198cb00643a0b6afd"
+    },
+    {
+      "source": "a{{ '2' | times: 1.0 }}b",
+      "output": "a2b",
+      "captureSha256": "fbc11a97ab52eae8c2b5782591b8182b2b59adf89ad6b4c50aaec17864f1612a",
+      "planSha256": "f093d0ee36c57f58d5dcccf981f28adf39ad42768ccb8f667879b936ede97f99",
+      "publishSha256": "e60b388ea56b469fe73a3990db67b8bd71698a4df0328d621d17460ebe7c41a4",
+      "sourceSha256": "63647a37ede93b02231134e1d0a0b21abae45f9e0ee50ae7060036fe6484baf1"
+    }
+  ],
+  "derivation": "Second native source differs only by literal a/b text around the identical expression, and its output differs by exactly the same literal a/b. No value/error/context normalization."
+}

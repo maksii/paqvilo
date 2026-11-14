@@ -1,0 +1,548 @@
+[
+  {
+    "id": "text.getAttributeType",
+    "value": "string"
+  },
+  {
+    "id": "text.getFormat",
+    "value": "email"
+  },
+  {
+    "id": "text.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "text.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "text.getMaxLength",
+    "value": 200
+  },
+  {
+    "id": "text.value.\"a@example.invalid\"",
+    "value": "a@example.invalid"
+  },
+  {
+    "id": "text.value.\"\"",
+    "value": null
+  },
+  {
+    "id": "text.value.null",
+    "value": null
+  },
+  {
+    "id": "text.setValue.eventCount",
+    "value": 0
+  },
+  {
+    "id": "text.fireOnChange",
+    "value": {
+      "calls": 1,
+      "context": {
+        "form": true,
+        "source": true,
+        "depth": 0
+      }
+    }
+  },
+  {
+    "id": "text.removeOnChange",
+    "value": 1
+  },
+  {
+    "id": "text.handlerDepths",
+    "value": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "text.required.required",
+    "value": "required"
+  },
+  {
+    "id": "text.required.recommended",
+    "value": "recommended"
+  },
+  {
+    "id": "text.required.none",
+    "value": "none"
+  },
+  {
+    "id": "text.submit.dirty",
+    "value": "dirty"
+  },
+  {
+    "id": "text.submit.always",
+    "value": "always"
+  },
+  {
+    "id": "text.submit.never",
+    "value": "never"
+  },
+  {
+    "id": "memo.getAttributeType",
+    "value": "memo"
+  },
+  {
+    "id": "memo.getFormat",
+    "value": "textarea"
+  },
+  {
+    "id": "memo.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "memo.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "memo.getMaxLength",
+    "value": 5000
+  },
+  {
+    "id": "memo.value.\"Invented\\ntext\"",
+    "value": "Invented\ntext"
+  },
+  {
+    "id": "memo.value.\"\"",
+    "value": null
+  },
+  {
+    "id": "memo.value.null",
+    "value": null
+  },
+  {
+    "id": "integer.getAttributeType",
+    "value": "integer"
+  },
+  {
+    "id": "integer.getFormat",
+    "value": "none"
+  },
+  {
+    "id": "integer.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "integer.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "integer.getMin",
+    "value": 0
+  },
+  {
+    "id": "integer.getMax",
+    "value": 10000
+  },
+  {
+    "id": "integer.getPrecision",
+    "value": 0
+  },
+  {
+    "id": "integer.value.7",
+    "value": 7
+  },
+  {
+    "id": "integer.value.0",
+    "value": 0
+  },
+  {
+    "id": "integer.value.-2",
+    "value": 0
+  },
+  {
+    "id": "integer.value.null",
+    "value": null
+  },
+  {
+    "id": "decimal.getAttributeType",
+    "value": "decimal"
+  },
+  {
+    "id": "decimal.getFormat",
+    "value": null
+  },
+  {
+    "id": "decimal.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "decimal.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "decimal.getMin",
+    "value": 0
+  },
+  {
+    "id": "decimal.getMax",
+    "value": 100
+  },
+  {
+    "id": "decimal.getPrecision",
+    "value": 2
+  },
+  {
+    "id": "decimal.value.1.25",
+    "value": 1.25
+  },
+  {
+    "id": "decimal.value.0",
+    "value": 0
+  },
+  {
+    "id": "decimal.value.-2.5",
+    "value": 0
+  },
+  {
+    "id": "decimal.value.null",
+    "value": null
+  },
+  {
+    "id": "double.getAttributeType",
+    "value": "double"
+  },
+  {
+    "id": "double.getFormat",
+    "value": null
+  },
+  {
+    "id": "double.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "double.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "double.getMin",
+    "value": 0
+  },
+  {
+    "id": "double.getMax",
+    "value": 10000
+  },
+  {
+    "id": "double.getPrecision",
+    "value": 3
+  },
+  {
+    "id": "double.value.1.25",
+    "value": 1.25
+  },
+  {
+    "id": "double.value.0",
+    "value": 0
+  },
+  {
+    "id": "double.value.-2.5",
+    "value": 0
+  },
+  {
+    "id": "double.value.null",
+    "value": null
+  },
+  {
+    "id": "money.getAttributeType",
+    "value": "money"
+  },
+  {
+    "id": "money.getFormat",
+    "value": null
+  },
+  {
+    "id": "money.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "money.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "money.getMin",
+    "value": 0
+  },
+  {
+    "id": "money.getMax",
+    "value": 1000000
+  },
+  {
+    "id": "money.getPrecision",
+    "value": 2
+  },
+  {
+    "id": "money.value.1.25",
+    "value": 1.25
+  },
+  {
+    "id": "money.value.0",
+    "value": 0
+  },
+  {
+    "id": "money.value.-2.5",
+    "value": 0
+  },
+  {
+    "id": "money.value.null",
+    "value": null
+  },
+  {
+    "id": "boolean.getAttributeType",
+    "value": "boolean"
+  },
+  {
+    "id": "boolean.getFormat",
+    "value": null
+  },
+  {
+    "id": "boolean.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "boolean.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "boolean.getOptions",
+    "value": [
+      {
+        "text": "No",
+        "value": 0
+      },
+      {
+        "text": "Yes",
+        "value": 1
+      }
+    ]
+  },
+  {
+    "id": "boolean.value.true",
+    "value": true
+  },
+  {
+    "id": "boolean.value.false",
+    "value": false
+  },
+  {
+    "id": "boolean.value.null",
+    "value": null
+  },
+  {
+    "id": "choice.getAttributeType",
+    "value": "optionset"
+  },
+  {
+    "id": "choice.getFormat",
+    "value": null
+  },
+  {
+    "id": "choice.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "choice.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "choice.getOptions",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "choice.value.198720000",
+    "value": 198720000
+  },
+  {
+    "id": "choice.value.198720001",
+    "value": 198720001
+  },
+  {
+    "id": "choice.value.100000000",
+    "error": {
+      "name": "UciError",
+      "message": "Invalid value 100000000 for OptionSetValue"
+    }
+  },
+  {
+    "id": "choice.value.null",
+    "value": null
+  },
+  {
+    "id": "multi.getAttributeType",
+    "value": "multiselectoptionset"
+  },
+  {
+    "id": "multi.getFormat",
+    "value": null
+  },
+  {
+    "id": "multi.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "multi.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "multi.getOptions",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "multi.value.[198720000]",
+    "value": [
+      198720000
+    ]
+  },
+  {
+    "id": "multi.value.[198720000,198720001]",
+    "value": [
+      198720000,
+      198720001
+    ]
+  },
+  {
+    "id": "multi.value.[198720001,198720000]",
+    "value": [
+      198720000,
+      198720001
+    ]
+  },
+  {
+    "id": "multi.value.[100000000]",
+    "value": null
+  },
+  {
+    "id": "multi.value.[198720001,100000000]",
+    "value": [
+      198720001
+    ]
+  },
+  {
+    "id": "multi.value.[]",
+    "value": null
+  },
+  {
+    "id": "multi.value.null",
+    "value": null
+  },
+  {
+    "id": "lookup.getAttributeType",
+    "value": "lookup"
+  },
+  {
+    "id": "lookup.getFormat",
+    "value": "none"
+  },
+  {
+    "id": "lookup.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "lookup.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "lookup.value.null",
+    "value": null
+  },
+  {
+    "id": "date.getAttributeType",
+    "value": "datetime"
+  },
+  {
+    "id": "date.getFormat",
+    "value": "date"
+  },
+  {
+    "id": "date.getRequiredLevel",
+    "value": "none"
+  },
+  {
+    "id": "date.getSubmitMode",
+    "value": "dirty"
+  },
+  {
+    "id": "date.value.null",
+    "value": null
+  },
+  {
+    "id": "attributes.missing",
+    "value": null
+  },
+  {
+    "id": "controls.missing",
+    "value": null
+  },
+  {
+    "id": "attributes.length",
+    "value": true
+  },
+  {
+    "id": "attributes.negativeIndex",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "attributes.outOfRange",
+    "value": null
+  },
+  {
+    "id": "attributes.filterEmpty",
+    "value": []
+  },
+  {
+    "id": "attributes.forEach",
+    "value": true
+  },
+  {
+    "id": "controls.length",
+    "value": true
+  },
+  {
+    "id": "controls.negativeIndex",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "controls.outOfRange",
+    "value": null
+  },
+  {
+    "id": "controls.filterEmpty",
+    "value": []
+  },
+  {
+    "id": "controls.forEach",
+    "value": true
+  }
+]

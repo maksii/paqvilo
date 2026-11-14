@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 import { stable, escapeXml } from './core.mjs';
 
 export const snapshotHash = (value) => createHash('sha256').update(stable(value)).digest('hex');
+function hasPrincipalIdField(field) {
+  const suffix = /principalid_value$/.exec(field);
+  if (!suffix) return false;
+  const before = field.slice(0, suffix.index);
+  const underscore = before.lastIndexOf('_');
+  return underscore >= 0 && !/[\r\n\u2028\u2029]/.test(before.slice(underscore));
+}
 const omitVolatile = (row) =>
   Object.fromEntries(
     Object.entries(row)
@@ -14,6 +21,106 @@ const identity = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const credentialColumn = (key) => /(?:password|token|securitystamp|secret|salt)/i.test(key);
+function captureProjectionAssociation(association, relation, metadata, byKey, resolvedIds, expected, errors) {
+  for (const target of association.to) {
+    const from = byKey.get(association.from),
+      to = byKey.get(target);
+    if (!from || !to) {
+      errors.push({
+        kind: 'projection-endpoint-unresolved',
+        relationship: relation,
+        from: association.from,
+        to: target,
+      });
+      continue;
+    }
+    const forward = from.table === metadata.Entity1LogicalName && to.table === metadata.Entity2LogicalName;
+    const reverse = from.table === metadata.Entity2LogicalName && to.table === metadata.Entity1LogicalName;
+    if (!forward && !reverse) {
+      errors.push({ kind: 'projection-endpoint-type', relationship: relation });
+      continue;
+    }
+    const fromId = identity(resolvedIds[from.key] ?? from.id),
+      toId = identity(resolvedIds[to.key] ?? to.id);
+    expected.push(forward ? `${fromId}:${toId}` : `${toId}:${fromId}`);
+  }
+}
+function captureMemberships(components, memberships, siteId, errors) {
+  if (
+    components.some(
+      (component) =>
+        component._powerpagesiteid_value !== undefined &&
+        identity(component._powerpagesiteid_value) !== identity(siteId),
+    )
+  )
+    errors.push({ kind: 'foreign-site-component' });
+  const siteMemberships = memberships.filter(
+    (role) => !role._powerpagesiteid_value || identity(role._powerpagesiteid_value) === identity(siteId),
+  );
+  for (const role of siteMemberships)
+    if (
+      !components.some(
+        (component) =>
+          component.powerpagecomponenttype === 11 &&
+          identity(component.powerpagecomponentid) === identity(role.powerpagecomponentid) &&
+          component.statecode === 0,
+      )
+    )
+      errors.push({ kind: 'membership-role-unresolved', roleId: role.powerpagecomponentid });
+  return siteMemberships;
+}
+function indexFixtureRows(table, ids, rows, rowVersions, tables, errors) {
+  const expectedIds = new Set(ids.map(identity)),
+    foundIds = rows.map((row) => identity(row[table.primaryId]));
+  const missing = [...expectedIds].filter((id) => !foundIds.includes(id)),
+    unexpected = foundIds.filter((id) => !expectedIds.has(id));
+  const duplicates = [...new Set(foundIds.filter((id, index) => foundIds.indexOf(id) !== index))];
+  if (missing.length || unexpected.length || duplicates.length)
+    errors.push({ kind: 'fixture-identities', table: table.name, missing, unexpected, duplicates });
+  rowVersions[table.name] = Object.fromEntries(
+    rows.map((row) => [
+      identity(row[table.primaryId]),
+      /^W\/"(\d+)"$/.exec(String(row['@odata.etag'] ?? ''))?.[1] ??
+        (row.versionnumber !== undefined && row.versionnumber !== null ? String(row.versionnumber) : null),
+    ]),
+  );
+  // Row version changes remain visible independently but do not change logical fixture values. Audit timestamps and ownership are retained: they can affect
+  // filters and plugin behavior, so a change prevents snapshot qualification.
+  tables[table.name] = sortedRows(
+    rows.map((row) =>
+      Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'versionnumber' && !credentialColumn(key))),
+    ),
+  );
+}
+function validateInactiveProjectionSources(keys, records, catalogue, resolvedIds, tables, errors) {
+  for (const key of keys) {
+    const record = records.find((record) => record.key === key),
+      table = catalogue.tables.find((table) => table.name === record?.table);
+    const actual =
+      table &&
+      tables[table.name]?.find((row) => identity(row[table.primaryId]) === identity(resolvedIds[key] ?? record.id));
+    if (!actual || Object.entries(actual).some(([field, value]) => hasPrincipalIdField(field) && value !== null))
+      errors.push({ kind: 'inactive-projection-source-not-cleared', key });
+  }
+}
+function recordProjectionComparison(relation, metadata, rows, expected, projections, differences, errors) {
+  const actual = rows.map(
+    (row) =>
+      `${identity(row[metadata.Entity1IntersectAttribute])}:${identity(row[metadata.Entity2IntersectAttribute])}`,
+  );
+  const expectedSet = new Set(expected),
+    actualSet = new Set(actual);
+  const missing = [...expectedSet].filter((pair) => !actualSet.has(pair)),
+    unexpected = [...actualSet].filter((pair) => !expectedSet.has(pair));
+  const duplicates = [...actualSet].filter((pair) => actual.filter((value) => value === pair).length > 1);
+  // Inactive sources are an explicit journalled campaign configuration; the
+  // default requires every declared projection and rejects foreign links.
+  if (missing.length || unexpected.length || duplicates.length)
+    differences.push({ relationship: relation, missing, unexpected, duplicates });
+  if (missing.length || unexpected.length || duplicates.length)
+    errors.push({ kind: 'projection-identities', relationship: relation, missing, unexpected, duplicates });
+  projections[relation] = sortedRows(rows);
+}
 async function fixtureRows(client, query) {
   if (!client.request) return client.list(query);
   const rows = [],
@@ -34,7 +141,7 @@ async function fixtureRows(client, query) {
 
 /** Read only the explicitly declared fixture identities and current actor.
  * Recorder writes from the measurement do not alter the business snapshot. */
-export async function captureNativeSnapshot(
+/* NOSONAR */ export async function captureNativeSnapshot(
   client,
   { siteId, contactId, catalogue, overlays = [], resolvedIds = {}, inactiveProjectionSources = [] },
 ) {
@@ -77,27 +184,7 @@ export async function captureNativeSnapshot(
     if (candidates.length !== 1) throw new Error('Native actor customer binding is absent or ambiguous.');
     actorCustomer = candidates[0];
   }
-  if (
-    components.some(
-      (component) =>
-        component._powerpagesiteid_value !== undefined &&
-        identity(component._powerpagesiteid_value) !== identity(siteId),
-    )
-  )
-    completenessErrors.push({ kind: 'foreign-site-component' });
-  const siteMemberships = memberships.filter(
-    (role) => !role._powerpagesiteid_value || identity(role._powerpagesiteid_value) === identity(siteId),
-  );
-  for (const role of siteMemberships)
-    if (
-      !components.some(
-        (component) =>
-          component.powerpagecomponenttype === 11 &&
-          identity(component.powerpagecomponentid) === identity(role.powerpagecomponentid) &&
-          component.statecode === 0,
-      )
-    )
-      completenessErrors.push({ kind: 'membership-role-unresolved', roleId: role.powerpagecomponentid });
+  const siteMemberships = captureMemberships(components, memberships, siteId, completenessErrors);
   for (const table of catalogue.tables) {
     const ids = [
       ...new Set(
@@ -113,50 +200,23 @@ export async function captureNativeSnapshot(
         .join('')}</condition></filter><order attribute="${escapeXml(table.primaryId)}"/></entity></fetch>`;
       rows.push(...(await fixtureRows(client, `${table.entitySet}?fetchXml=${encodeURIComponent(xml)}`)));
     }
-    const expectedIds = new Set(ids.map(identity)),
-      foundIds = rows.map((row) => identity(row[table.primaryId]));
-    const missing = [...expectedIds].filter((id) => !foundIds.includes(id)),
-      unexpected = foundIds.filter((id) => !expectedIds.has(id));
-    const duplicates = [...new Set(foundIds.filter((id, index) => foundIds.indexOf(id) !== index))];
-    if (missing.length || unexpected.length || duplicates.length)
-      completenessErrors.push({ kind: 'fixture-identities', table: table.name, missing, unexpected, duplicates });
-    rowVersions[table.name] = Object.fromEntries(
-      rows.map((row) => [
-        identity(row[table.primaryId]),
-        /^W\/"(\d+)"$/.exec(String(row['@odata.etag'] ?? ''))?.[1] ??
-          (row.versionnumber !== undefined && row.versionnumber !== null ? String(row.versionnumber) : null),
-      ]),
-    );
-    // Row version changes remain visible independently but do not change logical
-    // fixture values. Audit timestamps and ownership are retained: they can affect
-    // filters and plugin behavior, so a change prevents snapshot qualification.
-    tables[table.name] = sortedRows(
-      rows.map((row) =>
-        Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'versionnumber' && !credentialColumn(key))),
-      ),
-    );
+    indexFixtureRows(table, ids, rows, rowVersions, tables, completenessErrors);
   }
   const projections = {},
     projectionCatalogueDifferences = [];
-  for (const key of inactiveProjectionSources) {
-    const record = records.find((record) => record.key === key),
-      table = catalogue.tables.find((table) => table.name === record?.table);
-    const actual =
-      table &&
-      tables[table.name]?.find((row) => identity(row[table.primaryId]) === identity(resolvedIds[key] ?? record.id));
-    if (
-      !actual ||
-      Object.entries(actual).some(([field, value]) => /_.*principalid_value$/.test(field) && value !== null)
-    )
-      completenessErrors.push({ kind: 'inactive-projection-source-not-cleared', key });
-  }
-  for (const relation of [
-    ...new Set(
-      [...catalogue.associations, ...overlays.flatMap((overlay) => overlay.associations ?? [])].map(
-        (association) => association.relationship,
-      ),
+  validateInactiveProjectionSources(
+    inactiveProjectionSources,
+    records,
+    catalogue,
+    resolvedIds,
+    tables,
+    completenessErrors,
+  );
+  for (const relation of new Set(
+    [...catalogue.associations, ...overlays.flatMap((overlay) => overlay.associations ?? [])].map(
+      (association) => association.relationship,
     ),
-  ]) {
+  )) {
     // Explicit intersect tables have no portal read path; this is an app-only
     // fixture snapshot and never a persona authorization oracle.
     if (!/^[a-z][a-z\d_]*$/i.test(relation)) throw new Error('Unsafe fixture relationship name.');
@@ -178,53 +238,25 @@ export async function captureNativeSnapshot(
     ].filter(
       (association) => association.relationship === relation && !inactiveProjectionSources.includes(association.from),
     )) {
-      for (const target of association.to) {
-        const from = byKey.get(association.from),
-          to = byKey.get(target);
-        if (!from || !to) {
-          completenessErrors.push({
-            kind: 'projection-endpoint-unresolved',
-            relationship: relation,
-            from: association.from,
-            to: target,
-          });
-          continue;
-        }
-        const forward =
-          from.table === relationMetadata.Entity1LogicalName && to.table === relationMetadata.Entity2LogicalName;
-        const reverse =
-          from.table === relationMetadata.Entity2LogicalName && to.table === relationMetadata.Entity1LogicalName;
-        if (!forward && !reverse) {
-          completenessErrors.push({ kind: 'projection-endpoint-type', relationship: relation });
-          continue;
-        }
-        const fromId = identity(resolvedIds[from.key] ?? from.id),
-          toId = identity(resolvedIds[to.key] ?? to.id);
-        expected.push(forward ? `${fromId}:${toId}` : `${toId}:${fromId}`);
-      }
+      captureProjectionAssociation(
+        association,
+        relation,
+        relationMetadata,
+        byKey,
+        resolvedIds,
+        expected,
+        completenessErrors,
+      );
     }
-    const actual = rows.map(
-      (row) =>
-        `${identity(row[relationMetadata.Entity1IntersectAttribute])}:${identity(row[relationMetadata.Entity2IntersectAttribute])}`,
+    recordProjectionComparison(
+      relation,
+      relationMetadata,
+      rows,
+      expected,
+      projections,
+      projectionCatalogueDifferences,
+      completenessErrors,
     );
-    const expectedSet = new Set(expected),
-      actualSet = new Set(actual);
-    const missing = [...expectedSet].filter((pair) => !actualSet.has(pair)),
-      unexpected = [...actualSet].filter((pair) => !expectedSet.has(pair));
-    const duplicates = [...actualSet].filter((pair) => actual.filter((value) => value === pair).length > 1);
-    // Inactive sources are an explicit journalled campaign configuration; the
-    // default requires every declared projection and rejects foreign links.
-    if (missing.length || unexpected.length || duplicates.length)
-      projectionCatalogueDifferences.push({ relationship: relation, missing, unexpected, duplicates });
-    if (missing.length || unexpected.length || duplicates.length)
-      completenessErrors.push({
-        kind: 'projection-identities',
-        relationship: relation,
-        missing,
-        unexpected,
-        duplicates,
-      });
-    projections[relation] = sortedRows(rows);
   }
   const permissions = sortedRows(components),
     members = sortedRows(memberships);

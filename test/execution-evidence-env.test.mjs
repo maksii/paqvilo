@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { loadCatalogue } from '../lense/config.mjs';
+import { tempDir } from './fixture.mjs';
 
 test('Execution receipt output uses a separate namespace while catalogue typos still fail', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-execution-env-'));
+  const directory = await tempDir('paqvilo-execution-env-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
   const config = path.join(directory, 'catalogue.json');
   await fs.writeFile(

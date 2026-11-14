@@ -1,9 +1,11 @@
+// @test-kind tooling: release checks validate repository scripts and shipped documentation against temporary package trees.
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
+import { collectSyntheticEvidence, syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 import {
   validateReleaseFiles,
   REQUIRED_RELEASE_FILES,
@@ -52,8 +54,9 @@ test('release counts distinct archive entries whose GUID paths npm masks identic
   assert.equal(validateReleaseFiles([...required, masked, masked]), required.length + 2);
 });
 
-test('release checks nested user guides and example documentation links', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
+/** A temporary checkout with the root guides and ignore entries the documentation check requires. */
+function documentationRoot(t, prefix) {
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const write = (name, text) => {
     const file = path.join(root, name);
@@ -63,6 +66,11 @@ test('release checks nested user guides and example documentation links', (t) =>
   for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md'])
     write(name, '# Guide\n');
   write('.gitignore', '.env\npaqvilo.config.local.yml\n');
+  return { root, write };
+}
+
+test('release checks nested user guides and example documentation links', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-links-');
   write('mirage/docs/baseline/rerun.md', '[Input](./scenario%20inputs.md#fields)');
   assert.throws(() => checkDocumentation(root), /Broken documentation link.*rerun\.md/);
   write('mirage/docs/baseline/scenario inputs.md', '# Fields\n');
@@ -70,6 +78,53 @@ test('release checks nested user guides and example documentation links', (t) =>
   assert.throws(() => checkDocumentation(root), /Broken documentation link.*README\.md/);
   write('missing.md', '# Site\n');
   write('mirage/docs/node_modules/private/README.md', '[Ignore](absent.md)');
+  assert.doesNotThrow(() => checkDocumentation(root));
+});
+
+test('release rejects shipped guides that link to repository-only files', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-shipped-');
+  const shipped = [
+    'README.md',
+    'AGENTS.md',
+    'CONTRIBUTING.md',
+    'SECURITY.md',
+    'mirage/README.md',
+    'docs/guide.md',
+    'docs/other.md',
+    'examples/project/README.md',
+  ];
+  write('.github/workflows/ci.yml', 'name: CI\n');
+  write('docs/other.md', '# Other\n');
+  write('examples/project/README.md', '# Project\n');
+  write('docs/guide.md', '[CI](../.github/workflows/ci.yml)');
+  assert.throws(
+    () => checkDocumentation(root, shipped),
+    /Documentation link in docs\/guide\.md links to a file that is not shipped: \.\.\/\.github\/workflows\/ci\.yml/,
+  );
+  write('docs/guide.md', '[CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml)');
+  assert.doesNotThrow(() => checkDocumentation(root, shipped));
+  write('docs/guide.md', '[Other](other.md)\n[Project](../examples/project/)');
+  assert.doesNotThrow(() => checkDocumentation(root, shipped));
+});
+
+test('release rejects evidence ledgers and test receipts among shipped guides', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-ledgers-');
+  write('docs/guide.md', '# Guide\n\nA calendar view from 2026-01-01 and a receipt ID returned by the collector.\n');
+  assert.doesNotThrow(() => checkDocumentation(root));
+  for (const [name, text] of [
+    ['docs/consumer-feedback.md', '# Consumer\n'],
+    ['mirage/docs/startup-receipt.md', '# Startup\n'],
+    [
+      'docs/timeouts.md',
+      '| File | Git blob |\n| --- | --- |\n| `a.mjs` | `a23dc1fcbe74aec9c4d52e4f710b29d8d7629ba6` |\n',
+    ],
+    ['docs/startup.md', 'Local Windows / Node 24 x64 results on 2026-10-28:\n'],
+    ['mirage/docs/browser.md', 'Local verification on 2026-10-28: Windows, Edge.\n'],
+  ]) {
+    write(name, text);
+    assert.throws(() => checkDocumentation(root), new RegExp('Evidence ledger or receipt.*' + path.basename(name)));
+    fs.rmSync(path.join(root, name));
+  }
   assert.doesNotThrow(() => checkDocumentation(root));
 });
 
@@ -128,6 +183,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/../../secret.mjs',
     'mirage/test/server.test.mjs',
     'mirage/test-browser/admin.test.mjs',
+    'examples/company-operations/test/temporary-cleanup-live.test.mjs',
     'mirage/node_modules/liquidjs/index.js',
     'mirage/.paqvilo/state.json',
     'mirage/packs/customer/pack.mjs',
@@ -154,6 +210,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/model-driven-native-comparison.mjs',
     'lense/model-driven-targets.mjs',
     'lense/owned-page-binding.mjs',
+    'examples/company-operations/test/temporary-cleanup.test.mjs',
   ])
     assert.throws(
       () => validateReleaseFiles(required.filter((file) => file.path !== requiredPath)),
@@ -185,6 +242,58 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   }
 });
 
+test('release includes only the named Code Apps example assets', () => {
+  const paths = [
+    'examples/project/code-app/app.js',
+    'examples/project/code-app/index.html',
+    'examples/project/code-app/mirage.mjs',
+    'examples/project/code-app/power.config.json',
+    'examples/project/code-app/server.mjs',
+    'examples/project/code-app/solution/Other/Solution.xml',
+    'examples/project/code-app/solution/Entities/x_item/Entity.xml',
+  ];
+  const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  assert.equal(validateReleaseFiles(required), required.length);
+  for (const path of paths) {
+    assert.ok(REQUIRED_RELEASE_FILES.includes(path), `${path} must be packaged`);
+    assert.throws(() => validateReleaseFiles(required.filter((file) => file.path !== path)), /Required release file/);
+  }
+  for (const path of [
+    'examples/project/code-app/unreviewed.js',
+    'examples/project/code-app/.env',
+    'examples/project/code-app/credentials.json',
+    'examples/project/code-app/.paqvilo/evidence.json',
+    'examples/project/code-app/solution/Entities/private/Entity.xml',
+    'examples/project/code-app/screenshot.png',
+  ]) {
+    assert.throws(() => validateReleaseFiles([...required, { path }]), /Unexpected release file/);
+  }
+});
+
+test('release requires the public Code Apps integration and workbench assets', () => {
+  const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  for (const path of [
+    'mirage/lib/code-apps-client.js',
+    'mirage/lib/code-apps-client.d.ts',
+    'mirage/lib/code-apps-sdk.js',
+    'mirage/lib/code-apps-sdk.d.ts',
+    'mirage/lib/code-apps-vite.mjs',
+    'mirage/lib/code-apps-vite.d.ts',
+    'mirage/lib/code-apps-workbench.mjs',
+    'mirage/lib/code-apps-workbench.js',
+    'mirage/lib/code-apps-workbench.css',
+    'lense/code-app-dev-servers.mjs',
+    'lense/code-app-dev-wrapper.mjs',
+  ]) {
+    assert.ok(REQUIRED_RELEASE_FILES.includes(path));
+    assert.throws(() => validateReleaseFiles(required.filter((file) => file.path !== path)), /Required release file/);
+  }
+  assert.throws(
+    () => validateReleaseFiles([...required, { path: 'mirage/lib/unreviewed.d.ts' }]),
+    /Unexpected release file/,
+  );
+});
+
 test('the package names its GitHub repository, which npm provenance requires', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.doesNotThrow(() => checkPackageMetadata(pkg));
@@ -193,16 +302,22 @@ test('the package names its GitHub repository, which npm provenance requires', (
 });
 
 test('CI collects only synthetic outputs and ignores profile/token/live files and links', (t) => {
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-ci-evidence-'));
+  const state = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-ci-evidence-'));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const write = (name, text) => {
     const file = path.join(state, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
   };
-  write('extended-round/multipart.json', '{"synthetic":true}');
+  // Round evidence is collected under the run's own name, as browser tests write it; the bare name is not collected.
+  const evidence = syntheticEvidencePath(state, 'extended-round', 'multipart.json');
+  const collected = path.relative(state, evidence).replaceAll('\\', '/');
+  fs.writeFileSync(evidence, '{"synthetic":true}');
+  write('extended-round/multipart.json', 'NOT-COLLECTED');
   write('extended-round/private.session.json', 'PRIVATE');
   write('agents/session.json', 'PRIVATE');
+  // An allowlisted name behind the linked folder below: only the link check keeps it out.
+  write('agents/acceptance.run-1.json', 'PRIVATE');
   write('profiles/Default/Cookies', 'PRIVATE');
   write('audit/live.png', 'PRIVATE');
   write('extended-round/applications-layout-fixture.png', 'PROJECT-OWNED');
@@ -213,8 +328,49 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
     process.platform === 'win32' ? 'junction' : 'dir',
   );
   const result = collectSyntheticEvidence(state);
-  assert.deepEqual(result.files, ['extended-round/multipart.json']);
+  assert.deepEqual(result.files, [collected]);
   assert.deepEqual(fs.readdirSync(result.output).sort(), ['extended-round', 'manifest.json']);
   assert.equal(fs.readFileSync(path.join(result.output, result.files[0]), 'utf8'), '{"synthetic":true}');
   assert.equal(JSON.parse(fs.readFileSync(path.join(result.output, 'manifest.json'), 'utf8')).synthetic, true);
+});
+
+// Manifests declare the project's own AGPL licence, which LICENSE covers; they are not third-party data.
+const projectManifests = new Set(['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'mirage/package.json']);
+
+// Directory names that .npmignore excludes at any depth: local state and build output are never shipped.
+const unshippedDirectories = new Set(['node_modules', '.paqvilo', '.git', 'obj', 'out', 'coverage']);
+
+// JSON files the package ships, found by walking the package.json "files" entries under the .npmignore directory rules.
+function shippedJsonFiles(root) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const found = [];
+  const visit = (relative) => {
+    const absolute = path.join(root, relative);
+    if (fs.statSync(absolute).isDirectory()) {
+      for (const entry of fs.readdirSync(absolute))
+        if (!unshippedDirectories.has(entry)) visit(path.posix.join(relative, entry));
+    } else if (relative.endsWith('.json') && !projectManifests.has(relative)) found.push(relative);
+  };
+  for (const entry of pkg.files) if (!entry.includes('*')) visit(entry.replace(/\/$/, ''));
+  return found;
+}
+
+test('every shipped JSON data file that declares a licence is named in NOTICE with its licence text', () => {
+  const root = path.resolve(import.meta.dirname, '..');
+  const notice = fs.readFileSync(path.join(root, 'NOTICE'), 'utf8');
+  const declared = shippedJsonFiles(root).flatMap((relative) => {
+    const data = JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'));
+    const licence = data.licence ?? data.license;
+    return licence === undefined ? [] : [{ relative, licence }];
+  });
+  assert.ok(
+    declared.some((entry) => entry.relative === 'mirage/lib/dataverse-standard-tables.json'),
+    'the walk reaches the shipped Dataverse reference data',
+  );
+  for (const { relative, licence } of declared) {
+    const text = `licenses/${licence.toLowerCase()}.txt`;
+    assert.ok(notice.includes(relative), `NOTICE names ${relative}`);
+    assert.ok(notice.includes(text), `NOTICE points to ${text} for ${relative}`);
+    assert.ok(fs.existsSync(path.join(root, text)), `${text} exists`);
+  }
 });

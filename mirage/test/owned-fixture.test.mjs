@@ -1,11 +1,217 @@
+// @test-kind contract: owned fixtures remove their directories and restore state in order, and report every drain failure they retain.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawnSync } from 'node:child_process';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import readline from 'node:readline';
+import { ownedFixture, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
+
+test('drained fixture removal retains errors after its bounded asynchronous retry policy', async (t) => {
+  const failure = Object.assign(new Error('Invented persistent cleanup failure'), { code: 'EACCES' });
+  const calls = [];
+  t.mock.method(fs, 'rm', async (...args) => {
+    calls.push(args);
+    throw failure;
+  });
+  await assert.rejects(removeFixtureDirectory('invented-owned-directory'), (error) => error === failure);
+  assert.deepEqual(calls, [
+    ['invented-owned-directory', { recursive: true, force: true, maxRetries: 25, retryDelay: 100 }],
+  ]);
+});
+
+test('a resource registered after cleanup ran is released in order and the registration fails', async (t) => {
+  const hooks = [],
+    events = [],
+    controller = new AbortController();
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook), signal: controller.signal });
+  owner.remove(() => events.push('remove-on-time'));
+  controller.abort();
+  await hooks[0]();
+  const warnings = [];
+  t.mock.method(process, 'emitWarning', (warning) => warnings.push(warning));
+  const failure = new Error('Invented late close failure');
+  assert.throws(
+    () =>
+      owner.add(async () => {
+        events.push('close-late');
+        throw failure;
+      }),
+    /cleanup has already started/,
+  );
+  assert.throws(() => owner.remove(() => events.push('remove-late')), /cleanup has already started/);
+  assert.deepEqual(events, ['remove-on-time']);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['remove-on-time', 'close-late', 'remove-late']);
+  assert.deepEqual(warnings, [failure]);
+});
+
+test('a late resource waits for the cleanup that is still running', async () => {
+  const hooks = [],
+    events = [];
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook) });
+  let release;
+  owner.add(async () => {
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    events.push('close-on-time');
+  });
+  const cleanup = hooks[0]();
+  assert.throws(() => owner.add(() => events.push('close-late')), /cleanup has already started/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, []);
+  release();
+  await cleanup;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['close-on-time', 'close-late']);
+});
+
+test('a resource registered after the test ended but before its hook ran is released by the hook', async () => {
+  const hooks = [],
+    events = [],
+    controller = new AbortController();
+  const owner = ownedFixture({ after: (hook) => hooks.push(hook), signal: controller.signal });
+  controller.abort();
+  assert.throws(() => owner.add(() => events.push('close')), /test has ended/);
+  assert.deepEqual(events, []);
+  await hooks[0]();
+  assert.deepEqual(events, ['close']);
+});
+
+test('an owner first requested after its test ended releases what it is given at once', async () => {
+  const events = [],
+    controller = new AbortController();
+  controller.abort();
+  const owner = ownedFixture({ after: () => {}, signal: controller.signal });
+  assert.throws(() => owner.add(() => events.push('close')), /cleanup has already started/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['close']);
+});
+
+test('a listener started by a body that outlived its timeout is closed and the test process ends', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-late-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const fixture = path.join(root, 'late.test.mjs');
+  const helperUrl = new URL('../testing/owned-fixture.mjs', import.meta.url).href;
+  // The body waits until the owner's after hook has run, so it registers its listener after cleanup in every run.
+  await fs.writeFile(
+    fixture,
+    `
+    import test from 'node:test';
+    import http from 'node:http';
+    import { ownedFixture } from ${JSON.stringify(helperUrl)};
+    test('late listener', { timeout: 1 }, async t => {
+      const owner = ownedFixture(t);
+      const cleanupRan = new Promise(resolve => t.after(resolve));
+      await cleanupRan;
+      const server = http.createServer();
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      console.log('late-listener-started');
+      owner.add(() => new Promise(resolve => server.close(() => { console.log('late-listener-closed'); resolve(); })));
+      console.log('UNEXPECTED_BODY_CONTINUED');
+    });
+  `,
+  );
+  const child = spawn(process.execPath, ['--test', fixture], {
+    windowsHide: true,
+    signal: t.signal,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => (output += chunk));
+  child.stderr.on('data', (chunk) => (output += chunk));
+  const [code] = await once(child, 'close');
+  assert.equal(code, 1, output);
+  assert.match(output, /test timed out after 1ms/);
+  assert.match(output, /late-listener-started/);
+  assert.match(output, /late-listener-closed/);
+  assert.doesNotMatch(output, /UNEXPECTED_BODY_CONTINUED/);
+});
+
+test(
+  'fixture removal permits a scheduled Windows exclusive log-handle release',
+  {
+    skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion',
+  },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-log-'));
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$stream = [System.IO.File]::Open($env:PAQVILO_FIXTURE_LOG, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); try { [Console]::WriteLine("holding-log"); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }',
+      ],
+      {
+        env: { ...process.env, PAQVILO_FIXTURE_LOG: path.join(directory, 'chrome_debug.log') },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    ownedFixture(t).add(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-log');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM'].includes(error.code),
+    );
+    let released = false;
+    setImmediate(() => {
+      released = true;
+      child.stdin.end('release\n');
+    });
+    await removeFixtureDirectory(directory);
+    assert.equal(released, true);
+    assert.deepEqual(await closed, [0, null]);
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
+
+test(
+  'fixture removal tolerates a held Windows solution directory handle',
+  { skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-directory-'));
+    const solution = path.join(directory, 'solution');
+    await fs.mkdir(solution);
+    const child = spawn(process.execPath, ['-e', "console.log('holding-directory'); process.stdin.resume()"], {
+      cwd: solution,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    ownedFixture(t).add(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-directory');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM', 'EACCES'].includes(error.code),
+    );
+    const removal = removeFixtureDirectory(directory);
+    child.stdin.end('release\n');
+    assert.deepEqual(await closed, [0, null]);
+    await removal;
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
 
 test('one context shares its owner across builders and retains the declared close order', async () => {
   const hooks = [],
@@ -62,7 +268,7 @@ test('several close failures retain all original causes in registration order', 
 });
 
 test('a directory failure occurs after listener shutdown and cannot retain its process handle', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-listener-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-listener-'));
   const server = http.createServer((request, response) => response.end('invented'));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + server.address().port,
@@ -79,7 +285,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
   });
   try {
     await assert.rejects(hooks[0], (error) => error === failure);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    await assert.rejects(fetch(url), /fetch failed/);
     assert.ok((await fs.stat(root)).isDirectory());
   } finally {
     server.closeAllConnections();
@@ -89,7 +295,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
 });
 
 test('cleanup awaits accepted asynchronous work before removing its state directory', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-write-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-write-'));
   const hooks = [],
     owner = ownedFixture({ after: (hook) => hooks.push(hook) });
   let release,
@@ -155,7 +361,7 @@ test('the original test failure remains visible while later cleanup still runs',
   `;
   const result = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', source], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: CLI_HANG_GUARD_MS,
     windowsHide: true,
   });
   assert.equal(result.error, undefined);

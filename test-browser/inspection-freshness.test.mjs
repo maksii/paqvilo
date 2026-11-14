@@ -1,16 +1,15 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: Lense X-ray and refresh never show a stale inspection report over a newer navigation
 // Response ordering and history navigation.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
-import { createFixture, SITE } from '../test/fixture.mjs';
-import { fakeBrowser } from '../test/fake-browser.mjs';
-import { OverlaySession } from '../lense/session.mjs';
-import { enablePanel } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
+import { panelSession } from './helpers/panel-session.mjs';
 
+// Routed entirely by page.route; nothing listens on this loopback port.
 const origin = 'http://127.0.0.1:11111';
 let browser;
 before(async () => {
@@ -31,35 +30,13 @@ const report = (name) => ({
   ],
 });
 async function fixture(t) {
-  const source = createFixture(),
-    fake = fakeBrowser(),
-    fakeTab = fake.openTab(origin + '/');
-  const session = new OverlaySession({
-    origin,
-    sourceDir: source.dir,
-    site: structuredClone(SITE),
-    siteName: 'Invented',
-    envName: 'loopback',
-    stateDir: source.dir,
-  });
-  const controller = enablePanel(fake.context, session),
-    state = controller.stateFor(fakeTab.page);
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  ownedFixture(t).add(async () => {
-    await controller.dispose();
-  });
-  ownedFixture(t).add(async () => {
-    await context.close();
-  });
-  ownedFixture(t).remove(async () => {
-    source.cleanup();
-  });
-  const page = await context.newPage(),
-    pending = [];
-  page.setDefaultTimeout(5000);
+  const { state, page } = await panelSession(t, browser, origin),
+    pending = [],
+    arrivals = new EventEmitter();
   await page.route('**/*', (route) => {
     if (new URL(route.request().url()).pathname === '/__paqvilo/api/inspect') {
       pending.push({ route, body: route.request().postDataJSON() });
+      arrivals.emit('request');
       return;
     }
     if (route.request().resourceType() === 'document')
@@ -75,8 +52,7 @@ async function fixture(t) {
   await page.evaluate(xrayUi, state);
   await page.evaluate(panelUi, state);
   const waitForRequest = async (count) => {
-    const end = Date.now() + 5000;
-    while (pending.length < count && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+    while (pending.length < count) await once(arrivals, 'request');
     assert.equal(pending.length, count);
     return pending[count - 1];
   };
@@ -145,8 +121,20 @@ test('a delayed manual refresh clears its old report and cannot overwrite a newe
       .__px.identify(document.getElementById('picked'))
       .evidence.source.refs.some((ref) => ref.name === 'Latest source'),
   );
+  // The panel reads each inspection answer with Response.json() and accepts or rejects it in the promise reactions
+  // of that read, so its handling has ended once the read has settled and the page has run another task.
+  await page.evaluate(() => {
+    const json = Response.prototype.json;
+    window.inspectionAnswersRead = 0;
+    Response.prototype.json = function (...args) {
+      const read = json.apply(this, args);
+      if (new URL(this.url).pathname === '/__paqvilo/api/inspect')
+        read.finally(() => window.inspectionAnswersRead++).catch(() => {});
+      return read;
+    };
+  });
   await answer(1, 2, 'Obsolete refresh');
-  await page.waitForTimeout(100);
+  await page.waitForFunction(() => window.inspectionAnswersRead === 1);
   assert.deepEqual(await identity(), ['Latest source']);
   assert.doesNotMatch(await page.locator('#paqvilo-xray .card').innerText(), /Old source|Obsolete refresh/);
 });

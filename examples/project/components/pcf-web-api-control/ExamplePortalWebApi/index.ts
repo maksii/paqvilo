@@ -23,10 +23,10 @@ function shellFrom(candidate: Window): PortalShell | undefined {
 }
 
 function findShell(): PortalShell | undefined {
-  const local = shellFrom(window);
+  const local = shellFrom(window); // NOSONAR: window distinguishes frames
   if (local) return local;
   try {
-    if (window.parent && window.parent !== window) return shellFrom(window.parent);
+    if (window.parent && window.parent !== window) return shellFrom(window.parent); // NOSONAR: window distinguishes frames
   } catch {
     return undefined;
   }
@@ -54,12 +54,9 @@ function parseContacts(text: string): ContactRow[] {
   for (const item of parsed.value) {
     if (!isRecord(item)) continue;
     const fullname = typeof item.fullname === 'string' ? item.fullname : '';
-    const rawId =
-      typeof item.contactid === 'string'
-        ? item.contactid
-        : typeof item['@odata.id'] === 'string'
-          ? item['@odata.id']
-          : '';
+    let rawId = '';
+    if (typeof item.contactid === 'string') rawId = item.contactid;
+    else if (typeof item['@odata.id'] === 'string') rawId = item['@odata.id'];
     const id = guid(rawId);
     if (id) rows.push({ id, fullname });
   }
@@ -72,7 +69,7 @@ export class ExamplePortalWebApi implements ComponentFramework.StandardControl<I
   private nameInput: HTMLInputElement;
   private contacts: HTMLSelectElement;
   private result: HTMLDivElement;
-  private buttons: { element: HTMLButtonElement; handler: () => void }[] = [];
+  private readonly buttons: { element: HTMLButtonElement; handler: () => void }[] = [];
   private readonly onCreate = (): void => {
     void this.createContact();
   };

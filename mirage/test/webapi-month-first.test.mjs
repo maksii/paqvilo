@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { portalMonthFirstDate, parseDateValue } from '../lib/dataverse-values.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('month-first conversion validates calendar and clock without relaxing the ISO parser', () => {
   assert.equal(portalMonthFirstDate('2/7/2025'), '2025-02-07');
@@ -33,7 +33,7 @@ test('month-first conversion validates calendar and clock without relaxing the I
 
 for (const enabled of [false, true])
   test(`portal Web API conversion is evidenced and opt-in (${enabled})`, async (t) => {
-    const root = await fs.mkdtemp(join(tmpdir(), 'mirage-month-first-'));
+    const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-month-first-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     await fs.writeFile(join(root, 'website.yml'), 'adx_name: Synthetic date site\nadx_websiteid: site\n');
     await fs.writeFile(

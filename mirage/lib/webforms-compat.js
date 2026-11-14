@@ -12,9 +12,13 @@
  */
 (() => {
   'use strict';
-  if (window.__ppWebFormsRuntime) return;
-  window.__ppWebFormsRuntime = true;
-  const w = window;
+  if (globalThis.__ppWebFormsRuntime) return;
+  globalThis.__ppWebFormsRuntime = true;
+  const w = globalThis;
+  const chooseLazily = (condition, yes, no) => {
+    if (condition()) return yes();
+    return no();
+  };
 
   // ---- WebUIValidation.js
   w.Page_ValidationVer = '125';
@@ -37,32 +41,42 @@
     w.Page_IsValid = w.AllValidatorsValid(w.Page_Validators);
   };
   w.AllValidatorsValid = function (validators) {
-    if (typeof validators !== 'undefined' && validators != null)
-      for (let i = 0; i < validators.length; i++) if (!validators[i].isvalid) return false;
+    if (validators !== undefined && validators != null)
+      for (let i = 0; i < validators.length; i++) if (!validators[i].isvalid) return false; // NOSONAR: array-like or mutated collection, index loop kept
     return true;
   };
   w.ValidatorHookupControlID = function (controlID, val) {
     if (typeof controlID !== 'string') return;
     const control = document.getElementById(controlID);
-    if (typeof control !== 'undefined' && control != null) w.ValidatorHookupControl(control, val);
+    if (control != null) w.ValidatorHookupControl(control, val);
     else {
       val.isvalid = true;
       val.enabled = false;
     }
   };
+  // WebUIValidation.js hooks through the inline on<event> property, which jQuery's .trigger also calls.
+  // An inline handler that is already set runs first, and its return value is kept.
+  function hookValidationEvent(control, eventType) {
+    const property = 'on' + eventType;
+    const previous = control[property];
+    control[property] = function (event) {
+      const result = typeof previous === 'function' ? previous.call(this, event) : undefined;
+      w.ValidatorOnChange(event);
+      return result;
+    };
+  }
   w.ValidatorHookupControl = function (control, val) {
     if (typeof control.tagName !== 'string') return;
     if (control.tagName !== 'INPUT' && control.tagName !== 'TEXTAREA' && control.tagName !== 'SELECT') {
-      for (let i = 0; i < control.childNodes.length; i++) w.ValidatorHookupControl(control.childNodes[i], val);
+      for (let i = 0; i < control.childNodes.length; i++) w.ValidatorHookupControl(control.childNodes[i], val); // NOSONAR: array-like or mutated collection, index loop kept
       return;
     }
-    if (typeof control.Validators === 'undefined') {
+    if (control.Validators === undefined) {
       control.Validators = [];
-      const eventType = control.type === 'radio' ? 'click' : 'change';
-      control.addEventListener(eventType, (event) => w.ValidatorOnChange(event));
+      hookValidationEvent(control, control.type === 'radio' ? 'click' : 'change');
     }
     // Several forms on one page each run ValidatorOnLoad; hook a validator once.
-    if (control.Validators.indexOf(val) < 0) control.Validators[control.Validators.length] = val;
+    if (!control.Validators.includes(val)) control.Validators[control.Validators.length] = val;
   };
   w.ValidatorGetValue = function (id) {
     const control = document.getElementById(id);
@@ -79,7 +93,7 @@
       control.tagName !== 'TABLE'
     )
       return control.value;
-    for (let i = 0; i < control.childNodes.length; i++) {
+    /* NOSONAR */ for (let i = 0; i < control.childNodes.length; i++) {
       const value = w.ValidatorGetValueRecursive(control.childNodes[i]);
       if (value !== '') return value;
     }
@@ -87,8 +101,8 @@
   };
   w.Page_ClientValidate = function (validationGroup) {
     w.Page_InvalidControlToBeFocused = null;
-    if (typeof w.Page_Validators === 'undefined') return true;
-    for (let i = 0; i < w.Page_Validators.length; i++) w.ValidatorValidate(w.Page_Validators[i], validationGroup, null);
+    if (w.Page_Validators === undefined) return true;
+    for (let i = 0; i < w.Page_Validators.length; i++) w.ValidatorValidate(w.Page_Validators[i], validationGroup, null); // NOSONAR: array-like or mutated collection, index loop kept
     w.ValidatorUpdateIsValid();
     w.ValidationSummaryOnSubmit(validationGroup);
     w.Page_BlockSubmit = !w.Page_IsValid;
@@ -114,15 +128,12 @@
     w.Page_InvalidControlToBeFocused = null;
     const target = event?.target ?? event?.srcElement;
     const validators = target?.Validators ?? [];
-    for (let i = 0; i < validators.length; i++) w.ValidatorValidate(validators[i], null, event);
+    for (let i = 0; i < validators.length; i++) w.ValidatorValidate(validators[i], null, event); // NOSONAR: array-like or mutated collection, index loop kept
     w.ValidatorUpdateIsValid();
   };
   w.ValidatorValidate = function (val, validationGroup, event) {
     val.isvalid = true;
-    if (
-      (typeof val.enabled === 'undefined' || val.enabled !== false) &&
-      w.IsValidationGroupMatch(val, validationGroup)
-    ) {
+    if ((val.enabled === undefined || val.enabled !== false) && w.IsValidationGroupMatch(val, validationGroup)) {
       if (typeof val.evaluationfunction === 'function') {
         val.isvalid = val.evaluationfunction(val);
         if (
@@ -144,13 +155,13 @@
     }
   };
   w.IsValidationGroupMatch = function (control, validationGroup) {
-    if (typeof validationGroup === 'undefined' || validationGroup == null) return true;
+    if (validationGroup === undefined || validationGroup == null) return true;
     const controlGroup = typeof control.validationGroup === 'string' ? control.validationGroup : '';
     return controlGroup === validationGroup;
   };
   w.ValidatorOnLoad = function () {
-    if (typeof w.Page_Validators === 'undefined') return;
-    for (let i = 0; i < w.Page_Validators.length; i++) {
+    if (w.Page_Validators === undefined) return;
+    /* NOSONAR */ for (let i = 0; i < w.Page_Validators.length; i++) {
       const val = w.Page_Validators[i];
       if (typeof val.evaluationfunction === 'string') val.evaluationfunction = w[val.evaluationfunction];
       if (typeof val.isvalid === 'string') val.isvalid = val.isvalid !== 'False';
@@ -162,7 +173,7 @@
     w.Page_ValidationActive = true;
   };
   w.ValidatorTrim = function (value) {
-    const match = String(value ?? '').match(/^\s*(\S+(\s+\S+)*)\s*$/);
+    const match = /^\s*(\S+(\s+\S+)*)\s*$/.exec(String(value ?? ''));
     return match == null ? '' : match[1];
   };
   w.RequiredFieldValidatorEvaluateIsValid = function (val) {
@@ -189,10 +200,10 @@
       w[val.clientvalidationfunction](val, args);
     return args.IsValid;
   };
-  w.ValidatorConvert = function (op, dataType) {
-    if (dataType === 'Integer') return /^\s*[-+]?\d+\s*$/.test(op) ? parseInt(op, 10) : null;
+  /* NOSONAR: mixed return values are part of the contract */ w.ValidatorConvert = function (op, dataType) {
+    if (dataType === 'Integer') return /^\s*[-+]?\d+\s*$/.test(op) ? Number.parseInt(op, 10) : null;
     if (dataType === 'Double' || dataType === 'Currency') {
-      const number = Number(String(op).replace(/,/g, ''));
+      const number = Number(String(op).replaceAll(',', ''));
       return Number.isFinite(number) ? number : null;
     }
     if (dataType === 'Date') {
@@ -241,33 +252,37 @@
     );
   };
   w.ValidationSummaryOnSubmit = function (validationGroup) {
-    if (typeof w.Page_ValidationSummaries === 'undefined') return;
-    for (let i = 0; i < w.Page_ValidationSummaries.length; i++) {
+    if (w.Page_ValidationSummaries === undefined) return;
+    /* NOSONAR */ for (let i = 0; i < w.Page_ValidationSummaries.length; i++) {
       const summary = w.Page_ValidationSummaries[i];
       if (!summary) continue;
       summary.style.display = 'none';
-      if (!w.Page_IsValid && w.IsValidationGroupMatch(summary, validationGroup)) {
-        if (summary.showsummary !== 'False') {
-          summary.style.display = '';
-          const mode = typeof summary.displaymode === 'string' ? summary.displaymode : 'BulletList';
-          const [headerSep, first, pre, post, end] =
-            mode === 'List'
-              ? ['<br>', '', '', '<br>', '']
-              : mode === 'SingleParagraph'
-                ? [' ', '', '', ' ', '<br>']
-                : ['', '<ul>', '<li>', '</li>', '</ul>'];
-          let html = typeof summary.headertext === 'string' ? summary.headertext + headerSep : '';
-          html += first;
-          for (let j = 0; j < w.Page_Validators.length; j++)
-            if (!w.Page_Validators[j].isvalid && typeof w.Page_Validators[j].errormessage === 'string')
-              html += pre + w.Page_Validators[j].errormessage + post;
-          html += end;
-          summary.innerHTML = html;
-          w.scrollTo(0, 0);
-        }
-      }
+      if (!w.Page_IsValid && w.IsValidationGroupMatch(summary, validationGroup)) renderValidationSummary(summary);
     }
   };
+  function renderValidationSummary(summary) {
+    if (summary.showsummary === 'False') return;
+    summary.style.display = '';
+    const mode = typeof summary.displaymode === 'string' ? summary.displaymode : 'BulletList';
+    const [headerSep, first, pre, post, end] = chooseLazily(
+      () => mode === 'List',
+      () => ['<br>', '', '', '<br>', ''],
+      () =>
+        chooseLazily(
+          () => mode === 'SingleParagraph',
+          () => [' ', '', '', ' ', '<br>'],
+          () => ['', '<ul>', '<li>', '</li>', '</ul>'],
+        ),
+    );
+    let html = typeof summary.headertext === 'string' ? summary.headertext + headerSep : '';
+    html += first;
+    /* NOSONAR */ for (let j = 0; j < w.Page_Validators.length; j++)
+      if (!w.Page_Validators[j].isvalid && typeof w.Page_Validators[j].errormessage === 'string')
+        html += pre + w.Page_Validators[j].errormessage + post;
+    html += end;
+    summary.innerHTML = html;
+    w.scrollTo(0, 0);
+  }
   w.ValidatorOnSubmit = function () {
     return w.Page_ValidationActive ? w.ValidatorCommonOnSubmit() : true;
   };
@@ -356,13 +371,12 @@
     else if (!valid) restoreButtons();
   };
   w.WebForm_OnSubmit = function () {
-    if (typeof w.ValidatorOnSubmit === 'function' && w.ValidatorOnSubmit() === false) return false;
-    return true;
+    return typeof w.ValidatorOnSubmit !== 'function' || w.ValidatorOnSubmit() !== false;
   };
   w.WebForm_FireDefaultButton = function (event, target) {
     if (event.keyCode === 13 && !(event.target && /^(TEXTAREA|A|BUTTON)$/i.test(event.target.tagName))) {
       const button = document.getElementById(target);
-      if (button && typeof button.click !== 'undefined') {
+      if (button?.click !== undefined) {
         button.click();
         event.cancelBubble = true;
         if (event.stopPropagation) event.stopPropagation();
@@ -386,7 +400,7 @@
   };
   const nativeFormOf = (node) => {
     adoptNativeForms();
-    for (let current = node; current && current.nodeType === 1; current = current.parentElement)
+    for (let current = node; current?.nodeType === 1; current = current.parentElement)
       if (nativeForms.has(current)) return current;
     return null;
   };
@@ -412,16 +426,12 @@
       location.reload();
       return;
     }
-    const action = /PreviousButton$/.test(String(eventTarget))
-      ? 'previous'
-      : /DeleteButton$/.test(String(eventTarget))
-        ? 'delete'
-        : /DeactivateButton$/.test(String(eventTarget))
-          ? 'deactivate'
-          : /ActivateButton$/.test(String(eventTarget))
-            ? 'activate'
-            : 'submit';
-    submitNativeForm(form, action, button, eventArgument, String(eventTarget));
+    let action = 'submit';
+    if (String(eventTarget).endsWith('PreviousButton')) action = 'previous';
+    else if (String(eventTarget).endsWith('DeleteButton')) action = 'delete';
+    else if (String(eventTarget).endsWith('DeactivateButton')) action = 'deactivate';
+    else if (String(eventTarget).endsWith('ActivateButton')) action = 'activate';
+    void submitNativeForm(form, action, button, eventArgument, String(eventTarget));
   };
   function findFormFromTarget(eventTarget) {
     const control =
@@ -464,9 +474,9 @@
           name: file.name,
           type: file.type || 'application/octet-stream',
           size: file.size,
-          content: String(reader.result).replace(/^data:[^,]*,/, ''),
+          content: String(reader.result).replace(/^data:[^,]*,/, ''), // NOSONAR: stringification is intentional here
         });
-      reader.onerror = () => reject(reader.error);
+      reader.onerror = () => reject(reader.error); // NOSONAR: forward the native FileReader rejection value
       reader.readAsDataURL(file);
     });
   const radios = (field, element) => [
@@ -489,55 +499,84 @@
   function controlValue(field) {
     const element = document.getElementById(field.id);
     switch (field.control) {
-      case 'lookup': {
-        const value = String(element?.value ?? '').trim();
-        // A native dropdown stores the reference in its selected option rather
-        // than the modal lookup's hidden id/entity-name pair.
-        const entity =
-          element?.tagName === 'SELECT'
-            ? element.selectedOptions[0]?.dataset.entity ||
-              (Object.keys(field.bindings ?? {}).length === 1 ? Object.keys(field.bindings)[0] : '')
-            : document.getElementById(`${field.id}_entityname`)?.value || '';
-        // Native hidden lookups contribute an empty reference when the record
-        // identity cannot be parsed or its entity name is absent. On an edit
-        // that clears the reference; it does not become a malformed API bind.
-        const valid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
-        return { lookup: true, value: valid && entity ? value : '', entity };
-      }
+      case 'lookup':
+        return lookupControlValue(field, element);
       case 'checkbox':
         return element ? element.checked : null;
-      case 'boolean-radio': {
-        const checked = radios(field, element).find((input) => input.checked);
-        return checked ? checked.value === '1' || checked.value === 'true' : null;
-      }
+      case 'boolean-radio':
+        return booleanRadioValue(field, element);
       case 'boolean-dropdown':
         return element?.value === '' || element == null ? null : element.value === '1' || element.value === 'true';
-      case 'picklist-radio': {
-        const checked = element?.querySelector('input:checked');
-        return checked ? Number(checked.value) : null;
-      }
+      case 'picklist-radio':
+        return picklistRadioValue(element);
       case 'picklist':
         return element?.value === '' || element == null ? null : Number(element.value);
       case 'multiselect':
         return element?.value ? element.value : null;
-      case 'number': {
-        if (element?.value === '' || element == null) return null;
-        const number = Number(String(element.value).replace(/,/g, ''));
-        // JSON.stringify(NaN) becomes null; retain the invalid textbox instead
-        // so the native server format validator rejects it without a write.
-        return Number.isFinite(number) ? number : element.value;
-      }
+      case 'number':
+        return numberControlValue(element);
       case 'datetime':
         return element?.value ? element.value : null;
       case 'richtext':
-        try {
-          return JSON.parse(element?.value ?? '""');
-        } catch {
-          throw new Error(`Invalid rich text value for ${field.name}`);
-        }
+        return richTextControlValue(field, element);
       default:
         // An empty text box saves as null (Dataverse stores no empty strings).
         return element?.value === '' || element == null ? null : element.value;
+    }
+  }
+  function lookupControlValue(field, element) {
+    const value = String(element?.value ?? '').trim();
+    // A native dropdown stores the reference in its selected option rather
+    // than the modal lookup's hidden id/entity-name pair.
+    const entity = chooseLazily(
+      () => element?.tagName === 'SELECT',
+      () =>
+        element.selectedOptions[0]?.dataset.entity ||
+        chooseLazily(
+          () => Object.keys(field.bindings ?? {}).length === 1,
+          () => Object.keys(field.bindings)[0],
+          () => '',
+        ),
+      () => document.getElementById(`${field.id}_entityname`)?.value || '',
+    );
+    // Native hidden lookups contribute an empty reference when the record
+    // identity cannot be parsed or its entity name is absent. On an edit
+    // that clears the reference; it does not become a malformed API bind.
+    const valid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
+    return { lookup: true, value: valid && entity ? value : '', entity };
+  }
+  function booleanRadioValue(field, element) {
+    const checked = radios(field, element).find((input) => input.checked);
+    return checked ? checked.value === '1' || checked.value === 'true' : null;
+  }
+  function picklistRadioValue(element) {
+    const checked = element?.querySelector('input:checked');
+    return checked ? Number(checked.value) : null;
+  }
+  function numberControlValue(element) {
+    if (element?.value === '' || element == null) return null;
+    const text = String(element.value);
+    const decimal = element.dataset.numberdecimalseparator === ',' ? ',' : '.';
+    const normalized = numberText(text, decimal);
+    // Only plain decimal text is a number. Anything else keeps the textbox text, so the native server
+    // format validator rejects it without a write (JSON.stringify(NaN) would become null).
+    const number = normalized !== null && PLAIN_DECIMAL.test(normalized) ? Number(normalized) : Number.NaN;
+    return Number.isFinite(number) ? number : element.value;
+  }
+  const PLAIN_DECIMAL = /^[-+]?(\d+(\.\d*)?|\.\d+)$/;
+  // A group separator is a number's separator only between two digits, so one at either end or two in a row is
+  // left in the text and makes it null (not a number).
+  const GROUP_BETWEEN_DIGITS = { '.': /(?<=\d)\.(?=\d)/g, ',': /(?<=\d),(?=\d)/g };
+  function numberText(text, decimal) {
+    const group = decimal === ',' ? '.' : ',';
+    const grouped = text.replaceAll(/\s/g, '').replaceAll(GROUP_BETWEEN_DIGITS[group], '');
+    return grouped.includes(group) ? null : grouped.replaceAll(decimal, '.');
+  }
+  function richTextControlValue(field, element) {
+    try {
+      return JSON.parse(element?.value ?? '""');
+    } catch {
+      throw new Error(`Invalid rich text value for ${field.name}`);
     }
   }
   // LiquidServerControl.OnItemSaved writes HtmlErrorValidationDiv into the
@@ -547,7 +586,7 @@
     for (const previous of document.querySelectorAll('[data-pp-save-error]')) previous.remove();
     const div = document.createElement('div');
     div.className = 'alert alert-block alert-danger';
-    div.setAttribute('data-pp-save-error', '');
+    div.dataset.ppSaveError = '';
     div.innerHTML = `<p class='text-danger'><span class='fa fa-exclamation-triangle' aria-hidden='true'></span> ${escapeHtml(message)} </p>`;
     document.body.prepend(div);
     if (typeof w.scrollTo === 'function') w.scrollTo(0, 0);
@@ -596,7 +635,7 @@
       link.href = '#' + error.field + '_label';
       link.setAttribute(
         'onclick',
-        `javascript:scrollToAndFocus(${JSON.stringify(error.field + '_label')},${JSON.stringify(error.field)});return false;`,
+        `javascript:scrollToAndFocus(${JSON.stringify(error.field + '_label')},${JSON.stringify(error.field)});return false;`, // NOSONAR: intentional local script execution or generated handler
       );
       link.setAttribute('referencecontrolid', error.field);
       link.textContent = `${error.message} `;
@@ -631,7 +670,7 @@
       button.value = 'x';
       button.id = 'btnCloseMessage';
       button.className = 'btn-close';
-      button.setAttribute('data-bs-dismiss', 'alert');
+      button.dataset.bsDismiss = 'alert';
       button.setAttribute('aria-label', 'close');
       button.style.borderStyle = 'none';
       button.addEventListener('click', () =>
@@ -658,18 +697,19 @@
   }
   // Posted values come back as rendered values (value attributes) of the re-rendered form.
   function restorePostedControls(form, controls) {
-    for (const control of controls ?? []) {
-      const node = document.getElementById(control.id);
-      if (!node || !form.contains(node)) continue;
-      node.value = control.value;
-      if (node instanceof HTMLInputElement && !['checkbox', 'radio', 'file'].includes(node.type)) {
-        if (control.value) node.setAttribute('value', control.value);
-        else node.removeAttribute('value');
-      }
-      if (typeof control.checked === 'boolean') node.checked = control.checked;
-      if (node.multiple && Array.isArray(control.selected))
-        for (const option of node.options) option.selected = control.selected.includes(option.value);
+    for (const control of controls ?? []) restorePostedControl(form, control);
+  }
+  function restorePostedControl(form, control) {
+    const node = document.getElementById(control.id);
+    if (!node || !form.contains(node)) return;
+    node.value = control.value;
+    if (node instanceof HTMLInputElement && !['checkbox', 'radio', 'file'].includes(node.type)) {
+      if (control.value) node.setAttribute('value', control.value);
+      else node.removeAttribute('value');
     }
+    if (typeof control.checked === 'boolean') node.checked = control.checked;
+    if (node.multiple && Array.isArray(control.selected))
+      for (const option of node.options) option.selected = control.selected.includes(option.value);
   }
   // An insert form re-rendered by its postback: the view repeats its entity-form class and the
   // option sets' blank options lose their "Select" label (the platform labels them on first render).
@@ -678,7 +718,7 @@
       view.setAttribute('class', `${view.getAttribute('class')} entity-form`);
     for (const select of form.querySelectorAll('select.picklist')) {
       const blank = select.options[0];
-      if (!blank || blank.value !== '') continue;
+      if (blank?.value !== '') continue;
       blank.removeAttribute('label');
       blank.removeAttribute('aria-label');
       blank.textContent = '';
@@ -719,79 +759,150 @@
     if (!value.startsWith('/wE')) return null;
     try {
       const state = JSON.parse(atob(value.slice(3)));
-      return state && state.v === 1 && typeof state.k === 'string' && state.k ? state.k : null;
+      return state?.v === 1 && typeof state.k === 'string' && state.k ? state.k : null;
     } catch {
       return null;
     }
+  }
+  function prepareNativePostback(form) {
+    const outer = serverForm(form);
+    if (!outer) throw new Error('Native postback requires its page form.');
+    const target = postbackTarget(form);
+    if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
+    // Files post with the page only through a multipart form (the attach-file control's form).
+    if (
+      outer.enctype !== 'multipart/form-data' &&
+      [...form.querySelectorAll('input[type="file"]')].some((input) => input.files?.length)
+    )
+      throw new Error('Native URLencoded file submission is not supported.');
+    return { outer, target, token: postbackToken() };
+  }
+  function completeNativePostback(pending, tokenValue, button, eventArgument, eventTarget) {
+    const { outer, target } = pending;
+    const hidden = (name, value) => {
+      const existing = [...outer.elements].filter((node) => node.name === name);
+      if (existing.length > 1) throw new Error('Ambiguous native postback control.');
+      const input = existing[0] ?? document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value ?? '';
+      if (!existing.length) outer.append(input);
+    };
+    // A WebForms submit button (an auto-generated step's Next) is the submitter: it posts its
+    // own name=value pair with an empty __EVENTTARGET, as the browser would.
+    const submitter =
+      button?.type === 'submit' && button.name && (!eventTarget || eventTarget === button.name) ? button : null;
+    hidden('__EVENTTARGET', submitter ? '' : eventTarget || button?.name);
+    if (submitter) {
+      const control = document.createElement('input');
+      control.type = 'hidden';
+      control.name = submitter.name;
+      control.value = submitter.value;
+      outer.append(control);
+    }
+    hidden('__EVENTARGUMENT', eventArgument);
+    // A page whose __VIEWSTATE carries the anti-forgery key (lib/native-postback.mjs
+    // nativeViewStateKey) posts its own fields only, as native postbacks do.
+    if (!viewStateKey(outer)) hidden('__RequestVerificationToken', tokenValue);
+    outer.method = 'POST';
+    // A form with the attach-file control keeps its multipart encoding (the files post with the page).
+    if (outer.enctype !== 'multipart/form-data') outer.enctype = 'application/x-www-form-urlencoded';
+    outer.action = target.href;
+    HTMLFormElement.prototype.submit.call(outer);
+  }
+  /* NOSONAR */ function appendSubmittedField(config, field, values) {
+    if (field.readOnly || controlDisabled(field)) return;
+    const value = controlValue(field);
+    if (value && typeof value === 'object' && value.lookup) {
+      const binding = value.entity ? field.bindings?.[value.entity] : null;
+      if (!value.value) {
+        if (config.operation === 'update' || field.bindAlways)
+          for (const entry of Object.values(field.bindings ?? {})) values[`${entry.navigation}@odata.bind`] = null;
+        return;
+      }
+      if (!binding) throw new Error(`The lookup navigation mapping is unresolved for ${field.name}.`);
+      values[`${binding.navigation}@odata.bind`] = `/${binding.entitySet}(${encodeURIComponent(value.value)})`;
+      return;
+    }
+    if (value === null && config.operation !== 'update') return;
+    values[field.name] = value;
+  }
+  function submittedFormValues(config) {
+    const values = {};
+    for (const field of config.fields ?? []) appendSubmittedField(config, field, values);
+    return values;
+  }
+  function handleNativeResponse(form, config, response, result) {
+    if (!response.ok) {
+      if (Array.isArray(result.error?.validationErrors) && result.error.validationErrors.length) {
+        restoreButtons();
+        showValidationErrors(form, result.error.validationErrors);
+        return;
+      }
+      if (result.postback?.type === 'error') {
+        handleNativePostbackError(form, config, result.postback);
+        return;
+      }
+      throw new Error(result.error?.message || result.Message || result.message || 'Save failed');
+    }
+    completeNativeSubmission(form, config, result);
+  }
+  function handleNativePostbackError(form, config, postback) {
+    const target = postbackTarget(form);
+    if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
+    sessionStorage.setItem(
+      `paqvilo-mirage:form-success:${target.pathname}${target.search}`,
+      JSON.stringify({
+        form: form.id,
+        error: postback.message,
+        errorMarkup: postback.markup,
+        controls: preservePostedControls(form),
+        insert: config.operation === 'create',
+      }),
+    );
+    if (target.href === location.href) location.reload();
+    else location.assign(target.href);
+  }
+  function completeNativeSubmission(form, config, result) {
+    const outcome = result.outcome ?? {};
+    const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
+    if (idInput && result.recordId) idInput.value = result.recordId;
+    form.dispatchEvent(new CustomEvent('sim:saved', { bubbles: true, detail: result }));
+    if (outcome.type === 'redirect' || outcome.type === 'step') {
+      location.assign(outcome.url);
+      return;
+    }
+    const message = outcome.message || 'Submission completed successfully.';
+    // Native success is a postback: the page or modal frame re-renders at the
+    // WebForms form's action (scripts may change it) with the message.
+    const target = postbackTarget(form);
+    // A form that stays visible re-renders with its posted values, like the platform postback.
+    const hideForm = outcome.hideForm !== false;
+    sessionStorage.setItem(
+      `paqvilo-mirage:form-success:${target.pathname}${target.search}`,
+      JSON.stringify({
+        id: result.recordId || '',
+        name: result.name ?? '',
+        message,
+        hideForm,
+        form: form.id,
+        ...(hideForm ? {} : { controls: preservePostedControls(form), insert: config.operation === 'create' }),
+      }),
+    );
+    if (target.href === location.href) location.reload();
+    else location.assign(target.href);
   }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
     try {
       if (config.transport === 'postback') {
-        const outer = serverForm(form);
-        if (!outer) throw new Error('Native postback requires its page form.');
-        const target = postbackTarget(form);
-        if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
-        // Files post with the page only through a multipart form (the attach-file control's form).
-        if (
-          outer.enctype !== 'multipart/form-data' &&
-          [...form.querySelectorAll('input[type="file"]')].some((input) => input.files?.length)
-        )
-          throw new Error('Native URLencoded file submission is not supported.');
-        const tokenValue = await postbackToken();
-        const hidden = (name, value) => {
-          const existing = [...outer.elements].filter((node) => node.name === name);
-          if (existing.length > 1) throw new Error('Ambiguous native postback control.');
-          const input = existing[0] ?? document.createElement('input');
-          input.type = 'hidden';
-          input.name = name;
-          input.value = value ?? '';
-          if (!existing.length) outer.append(input);
-        };
-        // A WebForms submit button (an auto-generated step's Next) is the submitter: it posts its
-        // own name=value pair with an empty __EVENTTARGET, as the browser would.
-        const submitter =
-          button?.type === 'submit' && button.name && (!eventTarget || eventTarget === button.name) ? button : null;
-        hidden('__EVENTTARGET', submitter ? '' : eventTarget || button?.name);
-        if (submitter) {
-          const control = document.createElement('input');
-          control.type = 'hidden';
-          control.name = submitter.name;
-          control.value = submitter.value;
-          outer.append(control);
-        }
-        hidden('__EVENTARGUMENT', eventArgument);
-        // A page whose __VIEWSTATE carries the anti-forgery key (lib/native-postback.mjs
-        // nativeViewStateKey) posts its own fields only, as native postbacks do.
-        if (!viewStateKey(outer)) hidden('__RequestVerificationToken', tokenValue);
-        outer.method = 'POST';
-        // A form with the attach-file control keeps its multipart encoding (the files post with the page).
-        if (outer.enctype !== 'multipart/form-data') outer.enctype = 'application/x-www-form-urlencoded';
-        outer.action = target.href;
-        HTMLFormElement.prototype.submit.call(outer);
+        const pending = prepareNativePostback(form);
+        const tokenValue = await pending.token;
+        completeNativePostback(pending, tokenValue, button, eventArgument, eventTarget);
         return;
       }
-      const values = {};
-      if (action === 'submit')
-        for (const field of config.fields ?? []) {
-          if (field.readOnly || controlDisabled(field)) continue;
-          const value = controlValue(field);
-          if (value && typeof value === 'object' && value.lookup) {
-            const binding = value.entity ? field.bindings?.[value.entity] : null;
-            if (!value.value) {
-              if (config.operation === 'update' || field.bindAlways)
-                for (const entry of Object.values(field.bindings ?? {}))
-                  values[`${entry.navigation}@odata.bind`] = null;
-              continue;
-            }
-            if (!binding) throw new Error(`The lookup navigation mapping is unresolved for ${field.name}.`);
-            values[`${binding.navigation}@odata.bind`] = `/${binding.entitySet}(${encodeURIComponent(value.value)})`;
-            continue;
-          }
-          if (value === null && config.operation !== 'update') continue;
-          values[field.name] = value;
-        }
+      const values = action === 'submit' ? submittedFormValues(config) : {};
       const attachments = [];
       if (action === 'submit')
         for (const input of form.querySelectorAll(
@@ -814,58 +925,7 @@
         }),
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (Array.isArray(result.error?.validationErrors) && result.error.validationErrors.length) {
-          restoreButtons();
-          showValidationErrors(form, result.error.validationErrors);
-          return;
-        }
-        if (result.postback?.type === 'error') {
-          const target = postbackTarget(form);
-          if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
-          sessionStorage.setItem(
-            `paqvilo-mirage:form-success:${target.pathname}${target.search}`,
-            JSON.stringify({
-              form: form.id,
-              error: result.postback.message,
-              errorMarkup: result.postback.markup,
-              controls: preservePostedControls(form),
-              insert: config.operation === 'create',
-            }),
-          );
-          if (target.href === location.href) location.reload();
-          else location.assign(target.href);
-          return;
-        }
-        throw new Error(result.error?.message || result.Message || result.message || 'Save failed');
-      }
-      const outcome = result.outcome ?? {};
-      const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
-      if (idInput && result.recordId) idInput.value = result.recordId;
-      form.dispatchEvent(new CustomEvent('sim:saved', { bubbles: true, detail: result }));
-      if (outcome.type === 'redirect' || outcome.type === 'step') {
-        location.assign(outcome.url);
-        return;
-      }
-      const message = outcome.message || 'Submission completed successfully.';
-      // Native success is a postback: the page or modal frame re-renders at the
-      // WebForms form's action (scripts may change it) with the message.
-      const target = postbackTarget(form);
-      // A form that stays visible re-renders with its posted values, like the platform postback.
-      const hideForm = outcome.hideForm !== false;
-      sessionStorage.setItem(
-        `paqvilo-mirage:form-success:${target.pathname}${target.search}`,
-        JSON.stringify({
-          id: result.recordId || '',
-          name: result.name ?? '',
-          message,
-          hideForm,
-          form: form.id,
-          ...(hideForm ? {} : { controls: preservePostedControls(form), insert: config.operation === 'create' }),
-        }),
-      );
-      if (target.href === location.href) location.reload();
-      else location.assign(target.href);
+      handleNativeResponse(form, config, response, result);
     } catch (error) {
       restoreButtons();
       showError(form, error.message);
@@ -907,7 +967,7 @@
   );
 
   // Native success state after the local postback reload.
-  document.addEventListener('DOMContentLoaded', () => {
+  function restoreNativeSuccess() {
     const key = `paqvilo-mirage:form-success:${location.pathname}${location.search}`;
     const saved = sessionStorage.getItem(key);
     if (!saved) return;
@@ -917,33 +977,43 @@
       const form = (state.form && document.getElementById(state.form)) || firstNativeForm();
       if (!form) return;
       if (state.error) {
-        restorePostedControls(form, state.controls);
-        if (state.insert) postbackInsertRender(form);
-        showSaveFailure(form, state.error, state.errorMarkup);
+        restoreNativeFailure(form, state);
         return;
       }
       showSuccess(form, state.message, state.hideForm);
-      if (state.controls) {
-        // The form stays visible: it re-renders with the posted values, still in insert mode.
-        restorePostedControls(form, state.controls);
-        if (state.insert) postbackInsertRender(form);
-      } else {
-        const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
-        if (idInput && state.id && !idInput.value) idInput.value = state.id;
-      }
+      restoreNativeSuccessControls(form, state);
       // Form.aspx and LiquidServerControl register this script after ItemSaved;
       // lookup create forms (?lookup=) post the created record instead.
-      const lookup =
-        /^\/_portal\/modal-form-template-path\//i.test(location.pathname) &&
-        new URLSearchParams(location.search).get('lookup');
-      w.parent.postMessage(
-        lookup ? JSON.stringify({ type: 'Success', name: state.name ?? '', id: state.id || null }) : 'Success',
-        '*',
-      );
+      postNativeSuccess(state);
     } catch (error) {
       console.error('Invalid saved form completion state', error);
     }
-  });
+  }
+  function restoreNativeFailure(form, state) {
+    restorePostedControls(form, state.controls);
+    if (state.insert) postbackInsertRender(form);
+    showSaveFailure(form, state.error, state.errorMarkup);
+  }
+  function restoreNativeSuccessControls(form, state) {
+    if (state.controls) {
+      // The form stays visible: it re-renders with the posted values, still in insert mode.
+      restorePostedControls(form, state.controls);
+      if (state.insert) postbackInsertRender(form);
+      return;
+    }
+    const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
+    if (idInput && state.id && !idInput.value) idInput.value = state.id;
+  }
+  function postNativeSuccess(state) {
+    const lookup =
+      /^\/_portal\/modal-form-template-path\//i.test(location.pathname) &&
+      new URLSearchParams(location.search).get('lookup');
+    /* NOSONAR: target origin is dynamic by contract */ w.parent.postMessage(
+      lookup ? JSON.stringify({ type: 'Success', name: state.name ?? '', id: state.id || null }) : 'Success',
+      '*',
+    );
+  }
+  document.addEventListener('DOMContentLoaded', restoreNativeSuccess);
 
   w.__portalSimulation = w.__portalSimulation || {};
   w.__portalSimulation.webForms = { submit: submitNativeForm };

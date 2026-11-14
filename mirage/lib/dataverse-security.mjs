@@ -1,8 +1,9 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security model: organization, business units, roles, privileges
 // and the depth-based checks the Dataverse layer runs before it calls the store.
-import { createHash } from 'node:crypto';
+import { hash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { countWork } from './work-counter.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { guidKey } from './dataverse-values.mjs';
@@ -55,6 +56,81 @@ const ROLE_NAMES = ['System Administrator', 'System Customizer', 'Basic User'];
 // except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (a system
 // administrator has BulkDelete by default; other users, System Customizer included, must be granted it).
 const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete']);
+
+// Under a bulk span (one span per bulk message or BulkDelete job; docs/design/tracing.md, D-R3-11) the per-row permission
+// decisions and commits are never one event each: the first of each type is one event (`permission` result 'evaluated',
+// `commit`; a first denial keeps its own deny event with the reason), and the running counts are the span's structured
+// attributes `permissions` { evaluated, allowed, denied, filtered, tables } and `commits` { count, failed, eventsStaged };
+// declarative `rule` and `business-rule` evaluations likewise ({ count, failed, tables, ids } as `rules`, `businessRules`).
+const bulkTallies = new WeakMap();
+/**
+ * Records one permission decision or commit (`type` 'permission' | 'commit', its event attributes and message) on span: an
+ * aggregate on a bulk span, else one event. Returns span.
+ */
+export function traceDecision(span, type, { attributes = {}, message } = {}) {
+  if (!span) return span;
+  if (span.kind !== 'bulk') return span.event(type, { message, attributes });
+  let tally = bulkTallies.get(span);
+  if (!tally) {
+    tally = {
+      permissions: { evaluated: 0, allowed: 0, denied: 0, filtered: 0, tables: [] },
+      first: new Set(),
+    };
+    bulkTallies.set(span, tally);
+  }
+  if (type === 'permission') return tracePermissionDecision(span, tally, attributes, message);
+  return traceAggregatedDecision(span, tally, type, attributes, message);
+}
+function tracePermissionDecision(span, tally, attributes, message) {
+  const counts = tally.permissions,
+    result = attributes.result;
+  counts.evaluated++;
+  if (result === 'allow') counts.allowed++;
+  else if (result === 'deny') counts.denied++;
+  else if (result === 'filtered') counts.filtered++;
+  if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+    counts.tables.push(attributes.table);
+  if (!tally.first.has('permission')) {
+    tally.first.add('permission');
+    span.event('permission', {
+      attributes: {
+        result: 'evaluated',
+        table: attributes.table,
+        operation: attributes.operation,
+        model: attributes.model,
+        aggregated: true,
+      },
+    });
+  }
+  if (result === 'deny' && !tally.first.has('deny')) {
+    tally.first.add('deny');
+    span.event('permission', { message, attributes });
+  }
+  return span.set({ permissions: counts });
+}
+function traceAggregatedDecision(span, tally, type, attributes, message) {
+  // A commit, a declarative rule or a business rule: { count, failed, tables, ids (the first ten records) } under the
+  // attribute TALLIED names (a commit also sums eventsStaged).
+  const counts = (tally[type] ??= {
+    count: 0,
+    failed: 0,
+    ...(type === 'commit' ? { eventsStaged: 0 } : { tables: [], ids: [] }),
+  });
+  counts.count++;
+  if (attributes.error || attributes.mode === 'error' || attributes.result === 'rejected') counts.failed++;
+  if (type === 'commit') counts.eventsStaged += Number(attributes.eventsStaged) || 0;
+  else {
+    if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+      counts.tables.push(attributes.table);
+    if (attributes.recordId != null && counts.ids.length < 10) counts.ids.push(String(attributes.recordId));
+  }
+  if (!tally.first.has(type)) {
+    tally.first.add(type);
+    span.event(type, { message, attributes: { ...attributes, aggregated: true } });
+  }
+  return span.set({ [TALLIED[type] ?? `${type}s`]: counts });
+}
+const TALLIED = { commit: 'commits', rule: 'rules', 'business-rule': 'businessRules' };
 const GLOBAL_PRIVILEGES = [
   'prvActOnBehalfOfAnotherUser',
   'prvBypassCustomPlugins',
@@ -75,6 +151,7 @@ const GLOBAL_PRIVILEGES = [
   'prvWritebackgroundoperation',
   'prvExportCustomization',
   'prvImportCustomization',
+  'prvSendAppNotification',
 ];
 const DEPTH_NAMES = ['Global', 'Deep', 'Local', 'Basic'];
 const DEFAULT_OTC = 10000;
@@ -256,15 +333,20 @@ const declaredOnly = (values, mapping) =>
   mapping?.fields
     ? Object.fromEntries(Object.entries(values).filter(([name]) => Object.hasOwn(mapping.fields, name)))
     : values;
+const namespaceBytes = new Map();
 /** RFC 4122 version 5 (SHA-1, name-based) GUID, lowercase. */
 export function uuidV5(namespace, name) {
-  const hex = String(namespace).replace(/[{}-]/g, '');
-  if (!/^[0-9a-f]{32}$/i.test(hex)) throw new DataError(`Invalid namespace GUID: ${namespace}`, 400, 'InvalidRequest');
-  const bytes = createHash('sha1')
-    .update(Buffer.from(hex, 'hex'))
-    .update(String(name), 'utf8')
-    .digest()
-    .subarray(0, 16);
+  let prefix = namespaceBytes.get(namespace);
+  if (!prefix) {
+    const hex = String(namespace).replace(/[{}-]/g, '');
+    if (!/^[0-9a-f]{32}$/i.test(hex))
+      throw new DataError(`Invalid namespace GUID: ${namespace}`, 400, 'InvalidRequest');
+    prefix = Buffer.from(hex, 'hex');
+    // A process sees a few namespaces (its organizations and fixed ones); the bound only caps memory.
+    if (typeof namespace === 'string' && namespaceBytes.size < 256) namespaceBytes.set(namespace, prefix);
+  }
+  // One-shot SHA-1 of the namespace bytes and the UTF-8 name: the same digest without a Hash object per id.
+  const bytes = hash('sha1', Buffer.concat([prefix, Buffer.from(String(name), 'utf8')]), 'buffer').subarray(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const h = bytes.toString('hex');
@@ -297,6 +379,18 @@ export function ownershipOf(logical, table, mapping) {
     ownershipKind(mapping?.ownership) ??
     (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : 'org')
   );
+}
+
+// A built-in table the standard reference declares business-owned. ownershipOf keeps 'org' for these (organizationid
+// and the metadata answer are org-level); grants scope their rows by business unit, as admissionRow describes.
+function businessOwned(logical) {
+  return Boolean(TABLE_DEFS[logical]) && standardTableDef(logical)?.ownershipType === 'BusinessOwned';
+}
+
+// The row as the grants test it. A business-owned row has no owner: its business unit is its own businessunitid, so
+// only the Global, Local and Deep levels admit it, by unit geometry. Other rows are tested as they are.
+function admissionRow(logical, row) {
+  return businessOwned(logical) ? { ...row, ownerid: null, owningbusinessunit: row.businessunitid ?? null } : row;
 }
 
 /** Dataverse OwnershipType name for metadata: the standard file's value for a standard table; else the ten security tables report BusinessOwned. */
@@ -343,6 +437,9 @@ const PLATFORM_NOUN = {
   teamtemplate: 'TeamTemplate',
   queueitem: 'QueueItem',
   environmentvariablevalue: 'EnvironmentVariableValue',
+  sdkmessageprocessingstepsecureconfig: 'SdkMessageProcessingStepSecureConfig',
+  plugintracelog: 'PluginTraceLog',
+  sharedworkspace: 'SharedWorkspace',
 };
 // Core-authored identity and platform state stays owned by the organization
 // even when a Solution/config supplied its mapping before bootstrap.
@@ -424,8 +521,9 @@ const PLATFORM_BASIC = {
 };
 // Everything else in PLATFORM_NOUN gets no Basic User grant: bulkdeleteoperation, bulkdeletefailure,
 // backgroundoperation, audit (its reads are the miscellaneous prvReadAuditSummary and prvReadRecordAuditHistory, administrators only),
-// the custom API tables, duplicaterule(condition), the field security tables, teamtemplate, queueitem and environmentvariablevalue
-// (organization depth for the administrators only; those depths are assumed).
+// the custom API tables, duplicaterule(condition), the field security tables, teamtemplate, queueitem, environmentvariablevalue
+// (organization depth for the administrators only; those depths are assumed), the secure configuration table (see ADMIN_ONLY_TABLES)
+// and the plug-in trace log, which the administrators and the customizer read (Learn: Tracing and logging).
 const PLATFORM_TABLES = new Set(Object.keys(PLATFORM_NOUN));
 
 function mappingFor(logical, def) {
@@ -678,9 +776,18 @@ export const SECURITY_LAYERS = Object.freeze({
 
 // A managed definition is a layer on the component's stack; it is applied unless the component was changed after its last
 // import (an unmanaged layer on top, activeOnTop), which stays. An unmanaged definition is applied the same way but adds no layer.
-function pushSecurityLayer(store, org, kind, id, name, managed, solutionid, body) {
+function pushSecurityLayer(store, org, kind, id, name, managed, { solutionid, body }) {
   const { apply, signature } = SECURITY_LAYERS[kind];
-  const layers = ((store.state.dataverse ??= {}).managedLayers ??= {});
+  let dataverse = store.state.dataverse;
+  if (dataverse == null) {
+    dataverse = {};
+    store.state.dataverse = dataverse;
+  }
+  let layers = dataverse.managedLayers;
+  if (layers == null) {
+    layers = {};
+    dataverse.managedLayers = layers;
+  }
   const record = (layers[key(uuidV5(org, `${kind}:${id}`))] ??= {
     kind,
     logical: id,
@@ -721,73 +828,64 @@ export function importSolutionSecurity(
     root = rootId(org);
   const diagnostics = [];
   const privileges = new Map(rowsOf(store, 'privilege').map((row) => [key(row.name), row]));
-  for (const role of securityRoles) {
-    const roleid = key(role.id ?? '') && GUID_RE.test(role.id) ? key(role.id) : roleIdOf(org, role.name);
-    insertMissing(rowsOf(store, 'role'), 'roleid', {
-      roleid,
-      name: role.name,
-      businessunitid: lookupRow(store, 'businessunit', root),
-      organizationid: lookupRow(store, 'organization', org),
-    });
-    const row = rowsOf(store, 'role').find((r) => sameId(r.roleid, roleid));
-    Object.assign(row, {
-      name: role.name,
-      ismanaged: role.managed === true,
-      ...(solutionId ? { solutionid: solutionId } : {}),
-    });
-    const grants = [];
-    for (const privilege of role.privileges ?? []) {
-      const found = privileges.get(key(privilege.name)),
-        mask = depthMaskOf(privilege.depth);
-      if (!found || mask == null) {
-        diagnostics.push({
-          code: 'SOLUTION_ROLE_PRIVILEGE_UNKNOWN',
-          severity: 'warning',
-          role: role.name,
-          privilege: privilege.name,
-          message: `Role ${role.name}: ${found ? `depth ${privilege.depth} is not Basic, Local, Deep or Global` : `privilege ${privilege.name} does not exist in this organization`}; it is not granted.`,
-        });
-        continue;
-      }
-      grants.push({ privilegeid: found.privilegeid, mask });
-    }
-    pushSecurityLayer(
-      store,
-      org,
-      'securityrole',
-      roleid,
-      role.name,
-      role.managed === true,
-      solutionId ?? role.solution ?? null,
-      grants,
-    );
-  }
+  for (const role of securityRoles) importSecurityRole(store, org, root, role, solutionId, privileges, diagnostics);
   const profileRows = rowsOf(store, 'fieldsecurityprofile');
-  for (const profile of fieldSecurityProfiles) {
-    const profileId =
-      profile.id && GUID_RE.test(profile.id)
-        ? key(profile.id)
-        : uuidV5(org, `fieldsecurityprofile:${key(profile.name)}`);
-    let row = profileRows.find((p) => sameId(p.fieldsecurityprofileid, profileId));
-    if (!row) profileRows.push((row = { fieldsecurityprofileid: profileId }));
-    Object.assign(row, {
-      name: profile.name,
-      ismanaged: profile.managed === true,
-      ...(solutionId ? { solutionid: solutionId } : {}),
-    });
-    // The definition replaces the profile's permissions, as a managed import replaces a role's privileges.
-    pushSecurityLayer(
-      store,
-      org,
-      'fieldsecurityprofile',
-      profileId,
-      profile.name,
-      profile.managed === true,
-      solutionId ?? profile.solution ?? null,
-      profile.permissions ?? [],
-    );
-  }
+  for (const profile of fieldSecurityProfiles) importSecurityProfile(store, org, solutionId, profileRows, profile);
   return diagnostics;
+}
+function importSecurityRole(store, org, root, role, solutionId, privileges, diagnostics) {
+  const roleid = key(role.id ?? '') && GUID_RE.test(role.id) ? key(role.id) : roleIdOf(org, role.name);
+  insertMissing(rowsOf(store, 'role'), 'roleid', {
+    roleid,
+    name: role.name,
+    businessunitid: lookupRow(store, 'businessunit', root),
+    organizationid: lookupRow(store, 'organization', org),
+  });
+  const row = rowsOf(store, 'role').find((r) => sameId(r.roleid, roleid));
+  Object.assign(row, {
+    name: role.name,
+    ismanaged: role.managed === true,
+    ...(solutionId ? { solutionid: solutionId } : {}),
+  });
+  const grants = [];
+  for (const privilege of role.privileges ?? []) {
+    const found = privileges.get(key(privilege.name)),
+      mask = depthMaskOf(privilege.depth);
+    if (!found || mask == null) {
+      diagnostics.push({
+        code: 'SOLUTION_ROLE_PRIVILEGE_UNKNOWN',
+        severity: 'warning',
+        role: role.name,
+        privilege: privilege.name,
+        message: `Role ${role.name}: ${found ? 'depth ' + privilege.depth + ' is not Basic, Local, Deep or Global' : 'privilege ' + privilege.name + ' does not exist in this organization'}; it is not granted.`,
+      });
+      continue;
+    }
+    grants.push({ privilegeid: found.privilegeid, mask });
+  }
+  pushSecurityLayer(store, org, 'securityrole', roleid, role.name, role.managed === true, {
+    solutionid: solutionId ?? role.solution ?? null,
+    body: grants,
+  });
+}
+function importSecurityProfile(store, org, solutionId, profileRows, profile) {
+  const profileId =
+    profile.id && GUID_RE.test(profile.id) ? key(profile.id) : uuidV5(org, `fieldsecurityprofile:${key(profile.name)}`);
+  let row = profileRows.find((p) => sameId(p.fieldsecurityprofileid, profileId));
+  if (!row) {
+    row = { fieldsecurityprofileid: profileId };
+    profileRows.push(row);
+  }
+  Object.assign(row, {
+    name: profile.name,
+    ismanaged: profile.managed === true,
+    ...(solutionId ? { solutionid: solutionId } : {}),
+  });
+  // The definition replaces the profile's permissions, as a managed import replaces a role's privileges.
+  pushSecurityLayer(store, org, 'fieldsecurityprofile', profileId, profile.name, profile.managed === true, {
+    solutionid: solutionId ?? profile.solution ?? null,
+    body: profile.permissions ?? [],
+  });
 }
 
 function applicationUser(store, settings, app) {
@@ -877,9 +975,13 @@ function tableInfo(store, schema) {
 
 // System Customizer sees only the rows it creates in account, contact and the activity tables: Basic there, Global elsewhere.
 const CUSTOMIZER_BASIC = new Set(['account', 'contact']);
+// The secure configuration table holds a step's secret text and the service endpoint table its keys: only system administrators
+// read or write them (Learn: Write a plug-in; ServiceEndpoint).
+const ADMIN_ONLY_TABLES = new Set(['sdkmessageprocessingstepsecureconfig', 'serviceendpoint']);
 /** Built-in role templates: admins Global on everything; Basic User Basic on user-owned, Global Read on org-owned. */
 function templateGrants(p) {
   if (!p.right && SYSTEM_ADMINISTRATOR_ONLY.has(p.name)) return [['System Administrator', DEPTH.Global]];
+  if (ADMIN_ONLY_TABLES.has(p.table)) return [['System Administrator', DEPTH.Global]];
   const customizer =
     p.right && (CUSTOMIZER_BASIC.has(p.table) || isActivityTable(p.table)) ? DEPTH.Basic : DEPTH.Global;
   const admins = [
@@ -993,8 +1095,14 @@ function seedSecurity(store, settings, schema) {
   grantPrivileges(store, org, privileges);
   // Solution roles and field security profiles (buildSolutionSchema securityRoles/fieldSecurityProfiles), before any user names them.
   const source = typeof schema === 'function' ? schema() : schema;
-  if (source?.securityRoles?.length || source?.fieldSecurityProfiles?.length)
-    (store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(store, org, source);
+  if (source?.securityRoles?.length || source?.fieldSecurityProfiles?.length) {
+    let dataverse = store.state.dataverse;
+    if (dataverse == null) {
+      dataverse = {};
+      store.state.dataverse = dataverse;
+    }
+    dataverse.securityDiagnostics = importSolutionSecurity(store, org, source);
+  }
   // SYSTEM runs internal reads that need no caller privilege (dataverse-security-messages.mjs), so it holds System Administrator.
   const systemUserId = addUser(
     store,
@@ -1029,7 +1137,7 @@ export function seedTablePrivileges(store, settings, logical, { schema } = {}) {
 
 /** Synchronous: the caller's transaction (createTable, the Solution import) grants them, so a table is never without them. */
 export function grantTablePrivileges(store, organizationId, logical, { schema } = {}) {
-  const [table] = tableInfo(store, schema).filter((t) => t.logical === logical);
+  const table = tableInfo(store, schema).find((t) => t.logical === logical);
   if (!table) throw new DataError(`${logical} is not a known table.`, 404, 'NotFound');
   const privileges = tablePrivilegesOf(table);
   withSeedIndexes(store, () => grantPrivileges(store, organizationId, privileges));
@@ -1038,7 +1146,7 @@ export function grantTablePrivileges(store, organizationId, logical, { schema } 
 
 /** Removes a table's privileges and the role grants on them. Call before its mapping is deleted (the names come from the mapping). */
 export function revokeTablePrivileges(store, organizationId, logical) {
-  const [table] = tableInfo(store, undefined).filter((t) => t.logical === logical);
+  const table = tableInfo(store, undefined).find((t) => t.logical === logical);
   if (!table) return;
   const ids = new Set(tablePrivilegesOf(table).map((p) => privilegeId(organizationId, p.name)));
   removeWhere(rowsOf(store, 'roleprivileges'), (g) => ids.has(key(refId(g.privilegeid))));
@@ -1095,45 +1203,187 @@ const shareOf = (store, target, principal) =>
  */
 // Share rows change through the store's row operations, so a share is an incremental (journaled) write
 // that advances only the principalobjectaccess revision: the security index keeps everything but its shares.
-export function grantAccess(store, { target, principal, mask }, { replace = false } = {}) {
-  return store.transact(
-    () => {
-      const existing = shareOf(store, target, principal);
-      if (existing) {
-        const rows = rowsOf(store, 'principalobjectaccess');
-        store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), {
-          accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask,
-        });
-        return existing;
-      }
-      const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
-      const row = {
-        principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
-        principalid: lookupRow(store, logical, principal.id),
-        objectid: String(target.id).toLowerCase(),
-        objecttypecode: target.logical,
-        accessrightsmask: mask,
-        inheritedaccessrightsmask: 0,
-      };
-      store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
-      return row;
-    },
-    { incremental: true },
-  );
+export function grantAccess(store, share, options) {
+  return store.transact(() => grantAccessNow(store, share, options), { incremental: true });
+}
+
+/** grantAccess inside the caller's own transaction (a plug-in's SDK GrantAccess/ModifyAccess, plugin-platform-messages.mjs). */
+export function grantAccessNow(store, { target, principal, mask }, { replace = false } = {}) {
+  const existing = shareOf(store, target, principal);
+  if (existing) {
+    const rows = rowsOf(store, 'principalobjectaccess');
+    store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), {
+      accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask,
+    });
+    cascadeShare(store, target, principal, 'share');
+    return existing;
+  }
+  const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
+  const row = {
+    principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
+    principalid: lookupRow(store, logical, principal.id),
+    objectid: String(target.id).toLowerCase(),
+    objecttypecode: target.logical,
+    accessrightsmask: mask,
+    inheritedaccessrightsmask: 0,
+  };
+  store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
+  cascadeShare(store, target, principal, 'share');
+  return row;
 }
 
 export const modifyAccess = (store, args) => grantAccess(store, args, { replace: true });
 
-export function revokeAccess(store, { target, principal }) {
-  return store.transact(
-    () => {
-      const rows = rowsOf(store, 'principalobjectaccess');
-      const index = rows.indexOf(shareOf(store, target, principal));
-      if (index >= 0) store.removeRow('principalobjectaccess', rows, index);
-      return index >= 0;
-    },
-    { incremental: true },
-  );
+export function revokeAccess(store, share) {
+  return store.transact(() => revokeAccessNow(store, share), { incremental: true });
+}
+
+/** revokeAccess inside the caller's own transaction. A share that also carries inherited access keeps that part. */
+export function revokeAccessNow(store, { target, principal }) {
+  const rows = rowsOf(store, 'principalobjectaccess');
+  const existing = shareOf(store, target, principal),
+    index = rows.indexOf(existing);
+  if (index >= 0) {
+    if (Number(existing.inheritedaccessrightsmask ?? 0))
+      store.mutateRow('principalobjectaccess', rows, index, { accessrightsmask: 0 });
+    else store.removeRow('principalobjectaccess', rows, index);
+    cascadeShare(store, target, principal, 'unshare');
+  }
+  return index >= 0;
+}
+
+// Cascaded access (Microsoft Learn "Configure table relationship cascading behavior"): the rows that reference a row
+// through a one-to-many relationship whose action cascades (Cascade: every child, Active: statecode 0, UserOwned: owned
+// by the parent's owner) inherit its access as principalobjectaccess.inheritedaccessrightsmask, beside any direct share.
+// Share and Unshare pass a principal's access on; Reparent gives a re-parented row the access of its new parent (its
+// owner and the principals it is shared with). The relationship rules allow one cascading parent per row.
+// ponytail: the children's own GrantAccess/RevokeAccess pipelines are not run (native cascade pipelines are uncaptured).
+const CASCADING = new Set(['Cascade', 'Active', 'UserOwned']);
+// The rights a reparent cascade carries (every AccessRights value but Create, Learn "About the reparent action").
+const INHERITABLE = Object.values(ACCESS_RIGHTS).reduce((mask, right) => mask | right, 0) & ~ACCESS_RIGHTS.Create;
+const effectiveShareMask = (row) =>
+  row ? Number(row.accessrightsmask ?? 0) | Number(row.inheritedaccessrightsmask ?? 0) : 0;
+
+/** The rows referencing `target` ({ logical, id }) through relationships whose `action` cascade applies. */
+function cascadedChildren(store, target, action) {
+  let mapping;
+  try {
+    mapping = store.resolveMapping(target.logical);
+  } catch {
+    return [];
+  }
+  const parent = store.tableRows(mapping.logicalName).find((row) => sameId(row[mapping.idColumn], target.id));
+  if (!parent) return [];
+  const children = [];
+  for (const reference of store.referencesTo(mapping.logicalName, { admin: true })) {
+    const behaviour = reference.cascade?.[action];
+    const linked = refId(parent[reference.targetColumn ?? mapping.idColumn]);
+    if (!CASCADING.has(behaviour) || linked == null) continue;
+    const childMapping = store.resolveMapping(reference.entity);
+    for (const child of store.tableRows(reference.entity)) {
+      if (!cascadedChildMatches(child, reference, mapping, linked, behaviour, parent)) continue;
+      children.push({ logical: childMapping.logicalName, id: child[childMapping.idColumn] });
+    }
+  }
+  return children;
+}
+function cascadedChildMatches(child, reference, mapping, linked, behaviour, parent) {
+  const link = child[reference.column];
+  if (link && typeof link === 'object' && link.logical_name && link.logical_name !== mapping.logicalName) return false;
+  if (refId(link) == null || !sameId(refId(link), linked)) return false;
+  if (behaviour === 'Active' && Number(child.statecode?.value ?? child.statecode ?? 0) !== 0) return false;
+  if (behaviour === 'UserOwned' && !sameId(refId(child.ownerid), refId(parent.ownerid))) return false;
+  return true;
+}
+
+/** Sets the access `principal` inherits on `target`; 0 removes it (and the row when no direct share remains). */
+function setInheritedAccess(store, target, principal, mask) {
+  const rows = rowsOf(store, 'principalobjectaccess');
+  const existing = shareOf(store, target, principal);
+  if (existing) {
+    if (Number(existing.inheritedaccessrightsmask ?? 0) === mask) return;
+    if (!mask && !Number(existing.accessrightsmask ?? 0))
+      store.removeRow('principalobjectaccess', rows, rows.indexOf(existing));
+    else store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), { inheritedaccessrightsmask: mask });
+    return;
+  }
+  if (!mask) return;
+  const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
+  store.insertRow('principalobjectaccess', rows, {
+    principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
+    principalid: lookupRow(store, logical, principal.id),
+    objectid: String(target.id).toLowerCase(),
+    objecttypecode: target.logical,
+    accessrightsmask: 0,
+    inheritedaccessrightsmask: mask,
+  });
+}
+
+/** Share/Unshare cascade: the children of `target` inherit what `principal` now holds on it, recursively. */
+function cascadeShare(store, target, principal, action, visited = new Set([key(target.id)])) {
+  const mask = effectiveShareMask(shareOf(store, target, principal));
+  for (const child of cascadedChildren(store, target, action)) {
+    if (visited.has(key(child.id))) continue;
+    visited.add(key(child.id));
+    setInheritedAccess(store, child, principal, mask);
+    cascadeShare(store, child, principal, action, visited);
+  }
+}
+
+/**
+ * Reparent cascade: `target` ({ logical, id }) now references `parent` ({ logical, id }, or null): its inherited access
+ * becomes the new parent's (the owner with the inheritable rights, each share at its effective mask), and its own
+ * reparent-cascading children follow it. Runs inside the caller's transaction.
+ */
+export function reparentAccess(store, target, parent, visited = new Set([key(target.id)])) {
+  const granted = new Map();
+  if (parent) collectParentAccess(store, parent, granted);
+  removeStaleInheritedAccess(store, target, granted);
+  applyInheritedAccess(store, target, granted);
+  for (const child of cascadedChildren(store, target, 'reparent')) {
+    if (visited.has(key(child.id))) continue;
+    visited.add(key(child.id));
+    reparentAccess(store, child, target, visited);
+  }
+}
+function collectParentAccess(store, parent, granted) {
+  const parentMapping = store.resolveMapping(parent.logical),
+    parentRow = store
+      .tableRows(parentMapping.logicalName)
+      .find((row) => sameId(row[parentMapping.idColumn], parent.id));
+  const owner = parentRow?.ownerid;
+  if (refId(owner) != null && ['systemuser', 'team'].includes(owner.logical_name ?? 'systemuser'))
+    granted.set(key(refId(owner)), {
+      principal: { id: refId(owner), logical_name: owner.logical_name ?? 'systemuser' },
+      mask: INHERITABLE,
+    });
+  for (const share of rowsOf(store, 'principalobjectaccess'))
+    if (sameId(share.objectid, parent.id) && key(share.objecttypecode) === key(parentMapping.logicalName)) {
+      const id = key(refId(share.principalid)),
+        mask = effectiveShareMask(share) | (granted.get(id)?.mask ?? 0);
+      granted.set(id, {
+        principal: { id: refId(share.principalid), logical_name: share.principalid?.logical_name ?? 'systemuser' },
+        mask,
+      });
+    }
+}
+function removeStaleInheritedAccess(store, target, granted) {
+  /* NOSONAR */ for (const share of [...rowsOf(store, 'principalobjectaccess')])
+    if (
+      sameId(share.objectid, target.id) &&
+      key(share.objecttypecode) === key(target.logical) &&
+      Number(share.inheritedaccessrightsmask ?? 0) &&
+      !granted.has(key(refId(share.principalid)))
+    )
+      setInheritedAccess(
+        store,
+        target,
+        { id: refId(share.principalid), logical_name: share.principalid?.logical_name ?? 'systemuser' },
+        0,
+      );
+}
+function applyInheritedAccess(store, target, granted) {
+  for (const { principal, mask } of granted.values()) setInheritedAccess(store, target, principal, mask);
 }
 
 // Derived indexes per store: the principal/role/privilege part is rebuilt only when one of its tables
@@ -1159,13 +1409,41 @@ const revisionOf = (store, tables) =>
     : store.dataRevision();
 
 function buildShares(store) {
-  const shares = new Map();
-  for (const s of store.tableRows('principalobjectaccess')) {
+  const shares = new Map(),
+    rows = store.tableRows('principalobjectaccess');
+  countWork(store, 'rowsVisited', rows.length);
+  for (const s of rows) {
     const k = key(s.objectid);
     if (!shares.has(k)) shares.set(k, []);
-    shares.get(k).push({ principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
+    // Inherited (cascaded) access counts beside the direct share.
+    shares.get(k).push({ principal: key(refId(s.principalid)), mask: effectiveShareMask(s) });
   }
   return shares;
+}
+
+// Privilege names compare by this key. The seeding writes some privileges under a second spelling (the lower-case table part of
+// the miscellaneous list), and the access check derives the camel-case one; both name the same privilege.
+const privilegeKey = (name) => String(name ?? '').toLowerCase();
+// Every seeded spelling of a privilege name, as the index holds them under the key.
+const spellingsOf = (idx, name) => idx.spellings.get(privilegeKey(name)) ?? [];
+
+// The privilege depths a principal holds, enumerated by seeded name. get and has take any spelling, so a derived name answers
+// whichever spelling the role was granted, with the deepest grant among that privilege's spellings.
+class PrivilegeDepths extends Map {
+  #folded = new Map();
+  constructor(entries = []) {
+    super(entries);
+    for (const [name, depth] of this) {
+      const k = privilegeKey(name);
+      this.#folded.set(k, Math.max(this.#folded.get(k) ?? depth, depth));
+    }
+  }
+  get(name) {
+    return this.#folded.get(privilegeKey(name));
+  }
+  has(name) {
+    return this.#folded.has(privilegeKey(name));
+  }
 }
 
 function buildIndex(store) {
@@ -1177,7 +1455,7 @@ function buildIndex(store) {
     byDomain: new Map(),
     roles: new Map(),
     privNames: new Map(),
-    privIds: new Map(),
+    spellings: new Map(),
     grants: new Map(),
     direct: new Map(),
     teams: new Map(),
@@ -1192,26 +1470,51 @@ function buildIndex(store) {
     if (!map.has(k)) map.set(k, []);
     map.get(k).push(v);
   };
+  indexUsers(store, idx);
+  indexTeamsAndRoles(store, idx);
+  indexPrivilegesAndGrants(store, idx, add);
+  indexDirectRolesAndMemberships(store, idx, add);
+  // Group teams (type 2 security or 3 office group) have members derived from the user's Entra group ids, not from teammembership rows.
+  indexGroupMemberships(store, idx, add);
+  for (const t of store.tableRows('teamroles')) add(idx.teamRoles, key(refId(t.teamid)), key(refId(t.roleid)));
+  indexBusinessUnitChildren(store, idx, add);
+  // Org settings (hierarchySecurity) live on the organization row.
+  const org = organizationRecord(store),
+    depth = Number(org?.hierarchysecuritydepth);
+  idx.hierarchy = {
+    enabled: org?.hierarchysecurityenabled === true,
+    depth: Number.isInteger(depth) && depth > 0 ? depth : DEFAULT_HIERARCHY_DEPTH,
+  };
+  return idx;
+}
+function indexUsers(store, idx) {
   for (const u of store.tableRows('systemuser')) {
     idx.users.set(key(u.systemuserid), u);
     if (u.azureactivedirectoryobjectid) idx.byOid.set(key(u.azureactivedirectoryobjectid), u);
     if (u.applicationid) idx.byApp.set(key(u.applicationid), u);
     if (u.domainname) idx.byDomain.set(key(u.domainname), u);
   }
+}
+function indexTeamsAndRoles(store, idx) {
   for (const t of store.tableRows('team')) idx.teamRows.set(key(t.teamid), t);
   for (const r of store.tableRows('role')) idx.roles.set(key(r.roleid), r);
+}
+function indexPrivilegesAndGrants(store, idx, add) {
   for (const p of store.tableRows('privilege')) {
     idx.privNames.set(key(p.privilegeid), p.name);
-    idx.privIds.set(p.name, p.privilegeid);
+    add(idx.spellings, privilegeKey(p.name), p.name);
   }
   for (const g of store.tableRows('roleprivileges'))
     add(idx.grants, key(refId(g.roleid)), {
       privilegeId: key(refId(g.privilegeid)),
       mask: Number(g.privilegedepthmask),
     });
+}
+function indexDirectRolesAndMemberships(store, idx, add) {
   for (const a of store.tableRows('systemuserroles')) add(idx.direct, key(refId(a.systemuserid)), key(refId(a.roleid)));
   for (const m of store.tableRows('teammembership')) add(idx.teams, key(refId(m.systemuserid)), key(refId(m.teamid)));
-  // Group teams (type 2 security or 3 office group) have members derived from the user's Entra group ids, not from teammembership rows.
+}
+/* NOSONAR */ function indexGroupMemberships(store, idx, add) {
   const groupTeams = new Map();
   for (const t of store.tableRows('team')) {
     if (Number(t.teamtype) >= 2 && t.azureactivedirectoryobjectid)
@@ -1224,18 +1527,11 @@ function buildIndex(store) {
       }
     }
   }
-  for (const t of store.tableRows('teamroles')) add(idx.teamRoles, key(refId(t.teamid)), key(refId(t.roleid)));
+}
+function indexBusinessUnitChildren(store, idx, add) {
   for (const b of store.tableRows('businessunit')) {
     if (refId(b.parentbusinessunitid)) add(idx.children, key(refId(b.parentbusinessunitid)), key(b.businessunitid));
   }
-  // Org settings (hierarchySecurity) live on the organization row.
-  const org = organizationRecord(store),
-    depth = Number(org?.hierarchysecuritydepth);
-  idx.hierarchy = {
-    enabled: org?.hierarchysecurityenabled === true,
-    depth: Number.isInteger(depth) && depth > 0 ? depth : DEFAULT_HIERARCHY_DEPTH,
-  };
-  return idx;
 }
 
 /** Rights shared with the user directly or through a team membership, as an AccessRights mask. */
@@ -1255,7 +1551,10 @@ function indexOf(store) {
   const core = revisionOf(store, CORE_TABLES),
     shares = revisionOf(store, SHARE_TABLES);
   let hit = indexes.get(store);
-  if (hit?.core !== core) indexes.set(store, (hit = { core, shares: null, idx: buildIndex(store) }));
+  if (hit?.core !== core) {
+    hit = { core, shares: null, idx: buildIndex(store) };
+    indexes.set(store, hit);
+  }
   if (hit.shares !== shares) {
     hit.idx.shares = buildShares(store);
     hit.shares = shares;
@@ -1316,7 +1615,14 @@ function privilegeMapOf(idx, uid) {
   const { direct, team } = grantsOf(idx, uid);
   const map = new Map(direct);
   for (const name of team.keys()) map.set(name, Math.max(map.get(name) ?? 0, DEPTH.Basic));
-  return map;
+  return new PrivilegeDepths(map);
+}
+
+function privilegeCountOf(idx, uid) {
+  const { direct, team } = grantsOf(idx, uid);
+  let count = direct.size;
+  for (const name of team.keys()) if (!direct.has(name)) count++;
+  return count;
 }
 
 function chainOf(idx, root) {
@@ -1392,12 +1698,14 @@ function grantsNamed(idx, user, name, { hierarchy = false } = {}) {
 function ownGrantsNamed(idx, user, name, hierarchy = false) {
   const uid = key(user.systemuserid),
     { direct, team } = grantsOf(idx, uid),
+    spellings = spellingsOf(idx, name),
     out = [];
-  if (direct.has(name)) {
-    const depth = direct.get(name);
+  const depths = spellings.filter((s) => direct.has(s)).map((s) => direct.get(s));
+  if (depths.length) {
+    const depth = Math.max(...depths);
     out.push({ depth, direct: true, admits: (row) => directAdmits(idx, user, depth, row) });
   }
-  for (const grant of team.get(name) ?? []) {
+  for (const grant of spellings.flatMap((s) => team.get(s) ?? [])) {
     out.push({ depth: grant.depth, direct: false, admits: (row) => teamAdmits(idx, grant, row) });
   }
   const manager = hierarchy ? managerGrant(idx, user, name) : null;
@@ -1413,8 +1721,8 @@ function managerGrant(idx, user, name) {
   const prefix = idx.hierarchy.enabled ? MANAGER_RIGHTS.find((p) => name.startsWith(p)) : undefined;
   if (!prefix) return null;
   const { direct, team } = grantsOf(idx, key(user.systemuserid)),
-    readName = `prvRead${name.slice(prefix.length)}`;
-  if (!direct.has(readName) && !team.has(readName)) return null;
+    readSpellings = spellingsOf(idx, `prvRead${name.slice(prefix.length)}`);
+  if (!readSpellings.some((s) => direct.has(s) || team.has(s))) return null;
   return { depth: DEPTH.Deep, direct: false, admits: (row) => managerAdmits(idx, user, prefix, row) };
 }
 
@@ -1442,16 +1750,20 @@ function walkTree(store, logical, link, startKey, up) {
   const rows = store.tableRows(logical),
     out = new Set();
   const parentOf = (row) => key(refId(row[link]));
-  if (up) {
-    let current = rows.find((r) => key(r[idColumn]) === startKey);
-    for (let n = 0; current && n < HIERARCHY_LIMIT; n++) {
-      const parent = parentOf(current);
-      if (!parent || out.has(parent)) break;
-      out.add(parent);
-      current = rows.find((r) => key(r[idColumn]) === parent);
-    }
-    return out;
+  if (up) return walkTreeUp(rows, idColumn, startKey, parentOf, out);
+  return walkTreeDown(rows, idColumn, startKey, parentOf, out);
+}
+function walkTreeUp(rows, idColumn, startKey, parentOf, out) {
+  let current = rows.find((r) => key(r[idColumn]) === startKey);
+  for (let n = 0; current && n < HIERARCHY_LIMIT; n++) {
+    const parent = parentOf(current);
+    if (!parent || out.has(parent)) break;
+    out.add(parent);
+    current = rows.find((r) => key(r[idColumn]) === parent);
   }
+  return out;
+}
+function walkTreeDown(rows, idColumn, startKey, parentOf, out) {
   let frontier = new Set(startKey ? [startKey] : []);
   for (let level = 0; frontier.size && level < HIERARCHY_LIMIT; level++) {
     const next = new Set();
@@ -1472,7 +1784,8 @@ function hierarchyLinkOf(store, logical) {
   if (logical === 'systemuser') return 'parentsystemuserid';
   // Both sides of a self relationship match: the many-to-one side (many false) holds the lookup column in from; the one-to-many side's to.
   const rel = Object.values(relationshipsOf(store, logical)).find((r) => r.hierarchical && r.entity === logical);
-  return rel ? (rel.many === false ? rel.from : rel.to) : null;
+  if (!rel) return null;
+  return rel.many === false ? rel.from : rel.to;
 }
 
 /**
@@ -1535,7 +1848,7 @@ function privilegeDenied(idx, settings, user, logical, name, schema) {
   const uid = key(user.systemuserid);
   return privilegeDeniedError(user, name, logical, {
     roleCount: rolesOf(idx, uid).size,
-    privilegeCount: privilegeMapOf(idx, uid).size,
+    privilegeCount: privilegeCountOf(idx, uid),
     objectTypeCode: settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC,
     displayName: schema?.displayName ?? logical,
   });
@@ -1624,11 +1937,12 @@ export function syncGroupMembership(store, user, groupIds = []) {
 /**
  * SetBusinessSystemUser: moves a user to a business unit. Removes the user's role assignments (the default
  * DoNotRemoveRolesOnChangeBusinessUnit = false) and, unless doNotMoveAllRecords, moves the business unit of the records the
- * user owns. A disabled business unit is refused (0x8004032d).
+ * user owns. A disabled business unit is refused (0x8004032d). systemColumns, a function of the mapping, supplies the
+ * audit columns of each moved row (the caller as modifiedby); without it the rows keep their audit columns.
  * ponytail: ReassignPrincipal (owned records reassigned to another principal), the root default team membership and the
  * manager reparenting of reports are not modelled.
  */
-export function setBusinessUnit(store, { userId, businessUnitId, doNotMoveAllRecords = false } = {}) {
+export function setBusinessUnit(store, { userId, businessUnitId, doNotMoveAllRecords = false, systemColumns } = {}) {
   return store.transact(() => {
     const user = rowOf(store, 'systemuser', userId),
       unit = rowOf(store, 'businessunit', businessUnitId);
@@ -1636,18 +1950,33 @@ export function setBusinessUnit(store, { userId, businessUnitId, doNotMoveAllRec
       throw new DataError('The business unit is disabled.', 400, 'InvalidRequest', { innerCode: '0x8004032d' });
     const uid = key(user.systemuserid),
       unitRef = lookupRow(store, 'businessunit', unit.businessunitid);
-    const roles = rowsOf(store, 'systemuserroles');
-    for (let i = roles.length - 1; i >= 0; i--) if (sameId(refId(roles[i].systemuserid), uid)) roles.splice(i, 1);
-    if (!doNotMoveAllRecords) {
-      for (const [logical, mapping] of Object.entries(store.state.mappings)) {
-        if (ownershipOf(logical, null, mapping) !== 'user') continue;
-        for (const row of store.state.tables[logical] ?? [])
-          if (sameId(refId(row.ownerid), uid)) row.owningbusinessunit = unitRef;
-      }
-    }
+    removeUserRoleAssignments(store, uid);
+    if (!doNotMoveAllRecords) moveUserOwnedRecords(store, uid, unitRef, systemColumns);
     user.businessunitid = unitRef;
     return { systemuserid: uid, businessUnitId: unitRef.id };
   });
+}
+function removeUserRoleAssignments(store, uid) {
+  const roles = rowsOf(store, 'systemuserroles');
+  for (let i = roles.length - 1; i >= 0; i--) if (sameId(refId(roles[i].systemuserid), uid)) roles.splice(i, 1);
+}
+// Each owned row is written through the store's update, so its version advances and the change is audited like any other write.
+// The platform writes the business unit as part of the change the caller already authorised, so the write runs as the platform
+// (admin), not under row security; the caller's audit columns, when given, are stamped on each row.
+function moveUserOwnedRecords(store, uid, unitRef, systemColumns) {
+  for (const [logical, mapping] of Object.entries(store.state.mappings)) {
+    if (ownershipOf(logical, null, mapping) !== 'user') continue;
+    for (const row of store.state.tables[logical] ?? []) {
+      if (sameId(refId(row.ownerid), uid))
+        store.updateRecord(
+          logical,
+          row[mapping.idColumn],
+          { owningbusinessunit: unitRef },
+          { admin: true },
+          { systemColumns },
+        );
+    }
+  }
 }
 
 /**
@@ -1659,7 +1988,12 @@ function parentRowOf(store, logical, row) {
   const find = (table, id) => {
     const idColumn =
       store.state.mappings[table]?.idColumn ?? standardTableDef(table)?.primaryIdAttribute ?? `${table}id`;
-    const hit = (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
+    // A row keyed by the id is found through the primary key index; the scan also finds a row by its activityid.
+    const mapping = store.state.mappings[table];
+    const keyed =
+      mapping && typeof id === 'string' ? store.primaryKeySubset({ ...mapping, logicalName: table }, [id]) : null;
+    const hit =
+      keyed?.[0] ?? (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
     return hit ? { logical: table, row: hit } : null;
   };
   if (logical === 'activityparty') {
@@ -1692,6 +2026,19 @@ export function tokenKind(claims = {}) {
   return 'delegated';
 }
 
+// Native trial n6-registration: a principal without privileges registering a step is refused naming prvReadSolution,
+// not prvCreateSdkMessageProcessingStep. operation:table -> [privilege, its table].
+const CHECKED_FIRST = { 'create:sdkmessageprocessingstep': ['prvReadSolution', 'solution'] };
+
+// The refusal a gate answers for a call with no identity: the Web API answers a request with no access token 401 Unauthorized
+// (reason missing). A null or undefined subject is refused here, never dereferenced.
+const unauthenticated = () =>
+  new DataError('The request carries no access token.', 401, 'Unauthorized', { reason: 'missing' });
+const requireSubject = (subject) => {
+  if (subject == null) throw unauthenticated();
+  return subject;
+};
+
 /** Principal and privilege checks for the Dataverse layer. Read-only apart from the cached index. */
 export function createPrincipals(store, settings = {}) {
   const idx = () => indexOf(store);
@@ -1716,14 +2063,21 @@ export function createPrincipals(store, settings = {}) {
       name = names[0];
     const owned = ownershipOf(logical, schema, m) === 'user';
     const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
-    if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
-    if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
+    if (!grants.length) {
+      // A privilege native checks before the table's own; it is named only when the request is refused anyway.
+      const [first, table] = CHECKED_FIRST[`${operation}:${logical}`] ?? [];
+      if (first && !grantsNamed(index, user, first).length) throw privilegeDenied(index, settings, user, table, first);
+      throw privilegeDenied(index, settings, user, logical, name, schema);
+    }
+    const business = businessOwned(logical);
+    if (!row || (ownershipOf(logical, schema, m) === 'org' && !business))
+      return { m, grants, depth: deepest(grants), privilege: name };
     const idColumn = m.idColumn ?? `${logical}id`;
-    const admitting = grants.filter((g) => g.admits(row));
-    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting) };
+    const admitting = grants.filter((g) => g.admits(admissionRow(logical, row)));
+    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting), privilege: name };
     if (!sharedWith(index, key(user.systemuserid), row, idColumn, OPERATION_RIGHT[operation] ?? operation))
       throw accessDenied(user, operation, row, idColumn, logical);
-    return { m, grants, depth: deepest(grants) };
+    return { m, grants, depth: deepest(grants), privilege: name };
   }
 
   return {
@@ -1743,15 +2097,18 @@ export function createPrincipals(store, settings = {}) {
       const index = idx();
       const appId = claims.appid ?? claims.azp,
         upn = claims.upn ?? claims.preferred_username;
-      const user =
-        tokenKind(claims) === 'delegated'
-          ? ((claims.oid ? index.byOid.get(key(claims.oid)) : upn ? index.byDomain.get(key(upn)) : null) ?? null)
-          : ((appId ? index.byApp.get(key(appId)) : null) ?? null);
+      let user;
+      if (tokenKind(claims) === 'delegated') {
+        if (claims.oid) user = index.byOid.get(key(claims.oid)) ?? null;
+        else if (upn) user = index.byDomain.get(key(upn)) ?? null;
+        else user = null;
+      } else user = appId ? (index.byApp.get(key(appId)) ?? null) : null;
       if (!user) return { user: null, reason: 'unknown' };
       return { user, reason: user.isdisabled === true ? 'disabled' : null };
     },
 
     roles(user) {
+      requireSubject(user);
       const index = idx();
       return [...rolesOf(index, uidOf(user))]
         .map((id) => index.roles.get(id))
@@ -1760,11 +2117,12 @@ export function createPrincipals(store, settings = {}) {
     },
 
     privileges(user) {
+      requireSubject(user);
       const map = privilegeMapOf(idx(), uidOf(user));
       if (!user.impersonator) return map;
       // Effective principal: a privilege counts only when the caller holds it too, at the lower depth.
       const callerMap = privilegeMapOf(idx(), uidOf(user.impersonator));
-      return new Map(
+      return new PrivilegeDepths(
         [...map]
           .filter(([name]) => callerMap.has(name))
           .map(([name, depth]) => [name, Math.min(depth, callerMap.get(name))]),
@@ -1786,19 +2144,37 @@ export function createPrincipals(store, settings = {}) {
      * assign with a team `target` also checks that the team can own records (an access team cannot).
      */
     authorize(options) {
-      const { depth } = gate(options.user, options.entity, options.operation, options);
-      if (options.operation === 'assign' && options.target?.logical_name === 'team')
-        assertTeamCanOwn(store, options.target.id);
+      requireSubject(options?.user);
+      // Tracing: the decision is an event on the current span (docs/design/tracing.md), never a span of its own.
+      // At level off the store is never asked for its current span (one property read).
+      const span = store.traces?.enabled ? store.traces.current() : null;
+      const decided = (result, facts) =>
+        traceDecision(span, 'permission', {
+          attributes: { table: options.entity, operation: options.operation, result, model: 'dataverse', ...facts },
+        });
+      let depth, privilege;
+      try {
+        ({ depth, privilege } = gate(options.user, options.entity, options.operation, options));
+        if (options.operation === 'assign' && options.target?.logical_name === 'team')
+          assertTeamCanOwn(store, options.target.id);
+      } catch (error) {
+        decided('deny', { depth: null, privilege: error.details?.privilege ?? null, code: error.code ?? null });
+        throw error;
+      }
+      decided('allow', { depth, privilege: privilege ?? null });
       return depth;
     },
 
     /** The user acting as `user` under `caller`: privileges and rows are the intersection of both users' (see grantsNamed). */
     effectivePrincipal(caller, user) {
+      requireSubject(caller);
+      requireSubject(user);
       return sameId(caller.systemuserid, user.systemuserid) ? user : { ...user, impersonator: caller };
     },
 
     /** null when no row filter is needed (Global direct depth or organization-owned table). */
     readFilter({ user, entity, mapping, schema } = {}) {
+      requireSubject(user);
       const { m, grants } = gate(user, entity, 'read', { mapping, schema, filter: true });
       if (FOLLOWS_PARENT.has(m.logicalName)) {
         // Each row is read if its parent row is; an orphan row is shown only to a Global direct grant (administrators).
@@ -1815,12 +2191,13 @@ export function createPrincipals(store, settings = {}) {
           return parent ? canRead(parent) : grants.some((g) => g.direct && g.depth >= DEPTH.Global);
         };
       }
-      if (ownershipOf(m.logicalName, schema, m) === 'org') return null;
+      if (ownershipOf(m.logicalName, schema, m) === 'org' && !businessOwned(m.logicalName)) return null;
       if (grants.some((g) => g.direct && g.depth >= DEPTH.Global)) return null;
       const index = idx(),
         uid = uidOf(user),
         idColumn = m.idColumn ?? `${m.logicalName}id`;
-      return (row) => grants.some((g) => g.admits(row)) || sharedWith(index, uid, row, idColumn, 'Read');
+      return (row) =>
+        grants.some((g) => g.admits(admissionRow(m.logicalName, row))) || sharedWith(index, uid, row, idColumn, 'Read');
     },
 
     /**
@@ -1829,6 +2206,7 @@ export function createPrincipals(store, settings = {}) {
      * the caller on create. These are written whether or not the mapping declares the columns.
      */
     systemColumns({ user, caller = null, mapping, schema, owner = null, create = true } = {}) {
+      requireSubject(user);
       const userRef = lookupRow(store, 'systemuser', user.systemuserid);
       const callerRef =
         caller && !sameId(caller.systemuserid, user.systemuserid)
@@ -1844,6 +2222,7 @@ export function createPrincipals(store, settings = {}) {
     },
 
     ownershipDefaults({ user, caller, mapping, schema } = {}) {
+      requireSubject(user);
       const ref = lookupRow(store, 'systemuser', user.systemuserid);
       const defaults = { createdby: ref, modifiedby: ref };
       if (onBehalf(user, caller)) defaults.createdonbehalfby = lookupRow(store, 'systemuser', caller.systemuserid);
@@ -1853,7 +2232,8 @@ export function createPrincipals(store, settings = {}) {
       return declaredOnly(defaults, mapping);
     },
 
-    modifiedBy({ user, caller }) {
+    modifiedBy({ user, caller } = {}) {
+      requireSubject(user);
       const values = { modifiedby: lookupRow(store, 'systemuser', user.systemuserid) };
       if (onBehalf(user, caller)) values.modifiedonbehalfby = lookupRow(store, 'systemuser', caller.systemuserid);
       return values;
@@ -1861,11 +2241,13 @@ export function createPrincipals(store, settings = {}) {
 
     // Direct roles only: the privilege cannot be inherited through a team.
     canImpersonate(user) {
+      requireSubject(user);
       return grantsOf(idx(), uidOf(user)).direct.has('prvActOnBehalfOfAnotherUser');
     },
 
     /** One entry per role-privilege grant: direct roles at their depth, team roles at Basic; de-duplicated by privilege, business unit and depth. */
     retrieveUserPrivileges(userId) {
+      requireSubject(userId);
       const index = idx(),
         uid = uidOf(userId),
         out = [],
@@ -1897,9 +2279,11 @@ export function createPrincipals(store, settings = {}) {
 
     /** Comma-separated AccessRights flags, or 'None'. Create is table-level and needs no row; shares count per right. */
     principalAccess({ user, entity, row, mapping, schema } = {}) {
+      requireSubject(user);
       const index = idx(),
         m = mapping ?? store.resolveMapping(entity),
         owned = ownershipOf(m.logicalName, schema, m) === 'user',
+        scoped = owned || businessOwned(m.logicalName),
         flags = [];
       const idColumn = m.idColumn ?? `${m.logicalName}id`,
         uid = uidOf(user);
@@ -1911,8 +2295,8 @@ export function createPrincipals(store, settings = {}) {
         if (
           right === 'Create' ||
           !row ||
-          !owned ||
-          grants.some((g) => g.admits(row)) ||
+          !scoped ||
+          grants.some((g) => g.admits(admissionRow(m.logicalName, row))) ||
           sharedWith(index, uid, row, idColumn, right)
         )
           flags.push(`${right}Access`);
@@ -1922,21 +2306,24 @@ export function createPrincipals(store, settings = {}) {
 
     /** Team subject: the team's own roles (teamroles, team depth) and shares to the team. No membership, no manager hierarchy. */
     teamAccess({ team, entity, row, mapping, schema } = {}) {
+      requireSubject(team);
       const index = idx(),
         m = mapping ?? store.resolveMapping(entity),
-        owned = ownershipOf(m.logicalName, schema, m) === 'user',
+        scoped = ownershipOf(m.logicalName, schema, m) === 'user' || businessOwned(m.logicalName),
         flags = [];
       const idColumn = m.idColumn ?? `${m.logicalName}id`,
         teamId = key(team.teamid),
         grants = teamGrants(index, teamId, new Map());
       for (const right of Object.keys(ACCESS_RIGHTS)) {
-        const list = grants.get(privilegeName(right, nounFor(m.logicalName, schema))) ?? [];
+        const list = spellingsOf(index, privilegeName(right, nounFor(m.logicalName, schema))).flatMap(
+          (s) => grants.get(s) ?? [],
+        );
         if (!list.length) continue;
         if (
           right === 'Create' ||
           !row ||
-          !owned ||
-          list.some((g) => teamAdmits(index, g, row)) ||
+          !scoped ||
+          list.some((g) => teamAdmits(index, g, admissionRow(m.logicalName, row))) ||
           sharedWith(index, teamId, row, idColumn, right)
         )
           flags.push(`${right}Access`);

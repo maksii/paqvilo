@@ -1,3 +1,4 @@
+// @test-kind contract: the administration routes register, list and edit Dataverse applications with the settings rules.
 // Simulated Dataverse API wired into the Mirage server: admin endpoints under /_sim/api/dataverse,
 // the token round trip and WhoAmI on the Dataverse origin, and isolation from the portal origin.
 import test from 'node:test';
@@ -13,13 +14,13 @@ import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { TDS, createMessageReader, encodePrelogin, writeMessage } from '../lib/dataverse-tds-framing.mjs';
 import { GRANT_TYPES } from '../lib/dataverse-settings.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '44444444-4444-4444-8444-444444444444';
 const OBJECT_ID = '33333333-3333-4333-8333-333333333333';
 
 async function start(t, options = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-server-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-server-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Dataverse server\n');
   const app = await createSimulator({ sourceDir: directory, watch: false, ...options });
@@ -84,6 +85,7 @@ test('enabled runtime serves Dataverse on its own origin, lists the seeded secur
   assert.equal((await portal.text()).includes('UserId'), false);
 });
 
+// @test-kind security: authorization material never appears in the request log
 test('a client-credentials token authenticates WhoAmI as the created application user, logged without authorization material', async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);
@@ -209,6 +211,7 @@ test('enabling Dataverse leaves the portal Web API answers for an unrelated tabl
   assert.deepEqual(answers[1], answers[0]);
 });
 
+// @test-kind security: Dataverse tables are exposed only as the portal's site settings and table permissions allow
 test("Dataverse tables follow the portal's site settings and table permissions", async (t) => {
   const ME = '00000000-0000-0000-0000-0000000000aa';
   const initial = (permissions) => ({
@@ -226,7 +229,7 @@ test("Dataverse tables follow the portal's site settings and table permissions",
     },
   });
   const portal = async (settings, permissions) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-gating-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-gating-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Gating\n');
     if (settings)
@@ -294,9 +297,10 @@ function httpsRequest(url, { ca, method = 'GET', headers = {}, body } = {}) {
   });
 }
 
+// The CA file's directory is removed with the fixture's directories, after the runtimes that use it have closed.
 async function certificatePath(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-tls-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-tls-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   return path.join(directory, 'dataverse-ca.pem');
 }
 
@@ -346,6 +350,7 @@ test('the https listener serves discovery, token and WhoAmI with the certificate
   await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`), TypeError);
 });
 
+// @test-kind security: secrets are hashed, never echoed and absent from the state export
 test("passwords are hashed, reported as passwordSet and never echoed; the state export keeps only each secret's hint and expiry", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
   await createApplication(admin);
@@ -499,8 +504,8 @@ test('the arc mode reports the IMDS origin without a header, and an unknown mode
 });
 
 test('Solution custom APIs are seeded into the customapi tables and re-seeded after a reset', async (t) => {
-  const solution = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-solution-'));
-  t.after(() => fs.rm(solution, { recursive: true, force: true }));
+  const solution = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-solution-'));
+  ownedFixture(t).remove(() => fs.rm(solution, { recursive: true, force: true }));
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.writeFile(
     path.join(solution, 'Other', 'Solution.xml'),
@@ -614,6 +619,65 @@ test('registration keeps grants, the client type and redirect URIs; PATCH edits 
   assert.deepEqual((await entryOf()).allowedGrants, ['client_credentials', GRANT_TYPES.on_behalf_of]);
 });
 
+test('single-page redirect URIs are listed, registered, edited and refused with the settings rules', async (t) => {
+  const SINGLE_PAGE = ['http://localhost:5173/callback'];
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  // A single-page registration needs a public client, and its URIs have no fragment and no wildcard.
+  for (const extra of [
+    { spaRedirectUris: SINGLE_PAGE },
+    { publicClient: true, spaRedirectUris: ['http://localhost:5173/callback#token'] },
+    { publicClient: true, spaRedirectUris: ['http://*.localhost:5173/callback'] },
+  ]) {
+    const refused = await admin('/dataverse/applications', {
+      method: 'POST',
+      body: { appId: APP_ID, displayName: 'Single page', ...extra },
+    });
+    assert.equal(refused.status, 400, JSON.stringify(extra));
+  }
+  const created = await admin('/dataverse/applications', {
+    method: 'POST',
+    body: { appId: APP_ID, displayName: 'Single page', publicClient: true, spaRedirectUris: SINGLE_PAGE },
+  });
+  assert.equal(created.status, 201);
+  const entryOf = async () => (await admin('/dataverse')).body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual((await entryOf()).spaRedirectUris, SINGLE_PAGE);
+
+  const badUri = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { spaRedirectUris: ['ftp://localhost:5173/callback'] },
+  });
+  assert.equal(badUri.status, 400);
+  assert.equal(badUri.body.error.message, 'spaRedirectUris[0] must be an http(s) URL.');
+  // Dropping the public client while single-page URIs remain is refused; clearing them in the same request is allowed.
+  const keptPublic = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { publicClient: false },
+  });
+  assert.equal(keptPublic.status, 400);
+  assert.equal(keptPublic.body.error.message, 'spaRedirectUris requires publicClient: true.');
+  const cleared = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { publicClient: false, spaRedirectUris: [] },
+  });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual((await entryOf()).spaRedirectUris, []);
+});
+
+test('an application declared in settings carries its single-page redirect URIs into the administration view', async (t) => {
+  const SINGLE_PAGE = ['http://localhost:5173/callback'];
+  const { admin } = await start(t, {
+    dataverse: {
+      enabled: true,
+      applications: [
+        { appId: APP_ID, displayName: 'Settings client', publicClient: true, spaRedirectUris: SINGLE_PAGE },
+      ],
+    },
+  });
+  const entry = (await admin('/dataverse')).body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(entry.spaRedirectUris, SINGLE_PAGE);
+});
+
+// @test-kind security: the admin payload never exposes a secret hash or salt
 test('the admin payload lists grant names, federated credentials and the Connect values, never a secret hash or salt', async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);
@@ -1046,7 +1110,7 @@ test("a classic workflow's run mode is listed and set through the admin route, a
   const token = (await clientCredentials(app.dataverse, created.secret)).body.access_token;
   // An activated on-demand classic workflow on systemuser (invented): it has no pack handler, so its default run is a placeholder.
   const WORKFLOW = 'bbbbbbbb-0000-0000-0000-000000000077';
-  app.store.transact(() => {
+  await app.store.transact(() => {
     (app.store.state.tables.workflow ??= []).push({
       workflowid: WORKFLOW,
       name: 'Invented admin run',
@@ -1072,7 +1136,7 @@ test("a classic workflow's run mode is listed and set through the admin route, a
   assert.equal(entry.override, null);
   assert.equal(entry.processMode, 'background');
 
-  // Runs ExecuteWorkflow and returns the job row once it has finished.
+  // Runs ExecuteWorkflow and returns its job row once the runtime has settled every committed job.
   async function run() {
     const response = await fetch(
       `${app.dataverse.origin}/api/data/v9.2/workflows(${WORKFLOW})/Microsoft.Dynamics.CRM.ExecuteWorkflow`,
@@ -1084,12 +1148,10 @@ test("a classic workflow's run mode is listed and set through the admin route, a
     );
     assert.equal(response.status, 200, await response.clone().text());
     const { asyncoperationid } = await response.json();
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const job = app.store.tableRows('asyncoperation').find((item) => item.asyncoperationid === asyncoperationid);
-      if (job?.statecode === 3) return job;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error('the job did not finish');
+    await app.settle();
+    const job = app.store.tableRows('asyncoperation').find((item) => item.asyncoperationid === asyncoperationid);
+    assert.equal(job?.statecode, 3, 'the settled job is Completed');
+    return job;
   }
   const patch = (body) => admin(`/dataverse/workflows/${WORKFLOW}`, { method: 'PATCH', body });
 

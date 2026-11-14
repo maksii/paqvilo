@@ -1,18 +1,26 @@
+// @test-kind contract: agent client argument mapping, deadlines and response handling designed by Paqvilo
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import agent, { agentRequest, listAgentSessions, readDiscovery } from '../lense/commands/agent.mjs';
+import { tempDir } from './fixture.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
+
+// Lense's own code: a test records only the timers it arms, not those of a fetch connection an earlier test opened.
+const LENSE = new URL('../lense/', import.meta.url).href;
 
 async function fixture(t, handler) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-agent-client-'));
+  const dir = await tempDir('pp-agent-client-');
   const server = http.createServer(handler);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
     await fs.rm(dir, { recursive: true, force: true });
@@ -32,6 +40,7 @@ async function fixture(t, handler) {
   return { dir, discovery, file };
 }
 
+// @test-kind security: the agent sends no credential to an external or credentialed endpoint
 test('agent discovery rejects external/credentialed/malformed endpoints before sending credentials', async (t) => {
   let requests = 0;
   const fx = await fixture(t, (_req, res) => {
@@ -52,6 +61,7 @@ test('agent discovery rejects external/credentialed/malformed endpoints before s
   assert.equal(requests, 0);
 });
 
+// @test-kind security: the agent never follows a redirect with its bearer token
 test('agent never follows redirects carrying its bearer token', async (t) => {
   let redirected = false;
   const fx = await fixture(t, (req, res) => {
@@ -65,6 +75,7 @@ test('agent never follows redirects carrying its bearer token', async (t) => {
   assert.equal(redirected, false);
 });
 
+// @test-kind security: discovery never prints a token
 test('session discovery probes identity, labels invalid files, and never prints tokens', async (t) => {
   const authorizations = [];
   const fx = await fixture(t, (req, res) => {
@@ -157,30 +168,42 @@ test('screenshot success reports catalogue-relative paths and preserves outside 
   }
 });
 
-test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code', async (t) => {
+test('agent minimum deadline sends the CLI --timeout to the server and missing sessions have a stable code', async (t) => {
+  const bodies = [];
   const fx = await fixture(t, (req, res) => {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      const value = JSON.parse(body);
-      assert.equal(value.timeoutMs, 1000);
-      setTimeout(
-        () =>
-          res
-            .writeHead(504, { 'content-type': 'application/json' })
-            .end(JSON.stringify({ error: { code: 'action_timeout', message: 'The browser navigation timed out' } })),
-        1050,
-      );
+      bodies.push(JSON.parse(body));
+      // The server answers at once: the mapping under test is the timeoutMs the client sends, not elapsed time.
+      res
+        .writeHead(504, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: { code: 'action_timeout', message: 'The browser navigation timed out' } }));
     });
   });
-  await assert.rejects(
-    agent(null, { session: fx.file, 'page-id': '1', path: '/slow', timeout: '2000' }, ['navigate']),
-    (error) => error.code === 'action_timeout' && error.status === 504,
+  const navigate = (timeout) => agent(null, { session: fx.file, 'page-id': '1', path: '/slow', timeout }, ['navigate']);
+  const actionTimeout = (error) => error.code === 'action_timeout' && error.status === 504;
+  // --timeout 2000 is the minimum: the server's action deadline is the --timeout the person gave.
+  await assert.rejects(navigate('2000'), actionTimeout);
+  assert.deepEqual(
+    bodies.map((value) => value.timeoutMs),
+    [2000],
   );
-  await assert.rejects(
-    agent(null, { session: fx.file, 'page-id': '1', path: '/slow', timeout: '150' }, ['navigate']),
-    (error) => error.code === 'invalid_argument',
+  await assert.rejects(navigate('10000'), actionTimeout);
+  assert.deepEqual(
+    bodies.map((value) => value.timeoutMs),
+    [2000, 10000],
   );
+  // Below the minimum the CLI refuses the argument before any request is sent.
+  await assert.rejects(navigate('150'), (error) => error.code === 'invalid_argument');
+  assert.equal(bodies.length, 2, 'a refused --timeout never reaches the server');
+  // The printed result of the CLI keeps the exit status and the action_timeout code.
+  const { code, output } = await runAgentNavigate(fx.file, ['--timeout', '120000']);
+  const printed = JSON.parse(output);
+  assert.equal(code, 1);
+  assert.equal(printed.error.code, 'action_timeout');
+  assert.equal(printed.error.status, 504);
+  assert.equal(bodies.length, 3);
   await fs.rm(fx.file);
   await assert.rejects(
     agent(null, { session: fx.file }, ['status']),
@@ -195,4 +218,153 @@ test('agent rejects JSON scalars and arrays instead of leaking client TypeErrors
     payload = body;
     await assert.rejects(agentRequest(fx.discovery, '/v1/session'), /invalid JSON: expected an object/);
   }
+});
+
+test('agent sessions bounds each probe by --timeout: a silent session is unreachable, an answering one reachable', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // A probe clears its deadline in its finally, once its reply is read. Before the tick, only the answering probe can
+  // clear one (the silent probe is still waiting for its deadline), so the first clear marks the answering probe done.
+  const clearMocked = globalThis.clearTimeout;
+  let deadlineCleared;
+  const answeringDone = new Promise((resolve) => {
+    deadlineCleared = resolve;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (...args) => {
+    if (calledFrom(LENSE, import.meta.url)) deadlineCleared();
+    return clearMocked(...args);
+  });
+  const root = await tempDir('pp-agent-sessions-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const silentEndpoint = 'http://127.0.0.1:4101';
+  const answeringEndpoint = 'http://127.0.0.1:4102';
+  const agents = path.join(root, '.paqvilo', 'agents');
+  await fs.mkdir(agents, { recursive: true });
+  for (const [id, endpoint] of [
+    ['silent-session', silentEndpoint],
+    ['answering-session', answeringEndpoint],
+  ]) {
+    const discovery = {
+      schemaVersion: 1,
+      id,
+      token: 'secret'.repeat(8),
+      endpoint,
+      site: 'fixture',
+      environment: 'local',
+      pid: process.pid,
+    };
+    await fs.writeFile(path.join(agents, `${id}.json`), JSON.stringify(discovery));
+  }
+  // Each probe arms its deadline before it calls fetch, so both fetch calls arriving means both deadlines are armed.
+  const arrived = Promise.withResolvers();
+  let probes = 0;
+  const fetchImpl = (url, { signal }) => {
+    probes += 1;
+    if (probes === 2) arrived.resolve();
+    if (url.startsWith(answeringEndpoint))
+      return Promise.resolve(new Response(JSON.stringify({ schemaVersion: 1, id: 'answering-session' })));
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const listing = listAgentSessions(path.join(root, '.paqvilo'), 2000, { fetchImpl });
+  await arrived.promise;
+  await answeringDone;
+  t.mock.timers.tick(2000);
+  const report = await listing;
+  assert.deepEqual(Object.fromEntries(report.sessions.map((session) => [session.id, session.reachable])), {
+    'silent-session': false,
+    'answering-session': true,
+  });
+  const config = path.join(root, 'paqvilo.config.yml');
+  await assert.rejects(
+    agent(null, { config, timeout: '150' }, ['sessions']),
+    (error) =>
+      error.code === 'invalid_argument' && /--timeout must be an integer between 2000 and 120000/.test(error.message),
+  );
+});
+
+// Runs the real CLI against the fixture session, as a person would, and returns its exit code and printed output.
+function runAgentNavigate(file, extraArgs) {
+  const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
+  const args = [cli, 'agent', 'navigate', '--session', file, '--page-id', '1', '--path', '/never', ...extraArgs];
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let output = '';
+    child.stdout.on('data', (chunk) => (output += chunk));
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, output }));
+  });
+}
+
+test('agent CLI sends its --timeout as the browser deadline and prints the server action_timeout', async (t) => {
+  const requests = [];
+  const fx = await fixture(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      requests.push({ url: req.url, body: JSON.parse(body) });
+      res
+        .writeHead(504, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: { code: 'action_timeout', message: 'The browser navigation timed out' } }));
+    });
+  });
+  const { code, output } = await runAgentNavigate(fx.file, ['--timeout', '10000']);
+  assert.deepEqual(requests, [{ url: '/v1/pages/1/navigate', body: { url: '/never', timeoutMs: 10000 } }]);
+  const printed = JSON.parse(output);
+  assert.equal(code, 1);
+  assert.equal(printed.action, 'navigate');
+  assert.equal(printed.error.code, 'action_timeout');
+  assert.equal(printed.error.status, 504);
+});
+
+// Runs one agent action through a transport that never answers. The mocked clock arms the client's own deadline and
+// the test ends the request by ticking it. Resolves once the transport was called, with the body sent, the delays
+// armed so far and the pending run.
+async function unansweredAction(t, file, args, positionals) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const mockedSetTimeout = globalThis.setTimeout;
+  const armed = [];
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
+    if (calledFrom(LENSE, import.meta.url)) armed.push(delay);
+    return mockedSetTimeout(callback, delay, ...rest);
+  });
+  const sent = Promise.withResolvers();
+  let body;
+  const fetchImpl = (_url, { body: payload, signal }) => {
+    body = JSON.parse(payload);
+    sent.resolve();
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const run = agent(null, { session: file, ...args }, positionals, { fetchImpl });
+  await sent.promise;
+  return { body, armed, run };
+}
+
+test('agent CLI reports request_timeout after its own abort when the server never answers', async (t) => {
+  const fx = await fixture(t, () => {});
+  const args = { 'page-id': '1', path: '/never', timeout: '2000' };
+  const { body, armed, run } = await unansweredAction(t, fx.file, args, ['navigate']);
+  assert.deepEqual(body, { url: '/never', timeoutMs: 2000 });
+  // The client's own deadline is the guard (30 s past --timeout); the message names both waits it is made of.
+  assert.deepEqual(armed, [32_000]);
+  t.mock.timers.tick(32_000);
+  await assert.rejects(
+    run,
+    (error) =>
+      error.code === 'request_timeout' &&
+      error.status === 504 &&
+      error.message ===
+        'The agent session did not answer within 32000 ms (--timeout 2000 ms plus the 30000 ms request hang guard)',
+  );
+});
+
+test('agent viewport sends its --timeout as the browser deadline and guards its own request with 30 s more', async (t) => {
+  const fx = await fixture(t, () => {});
+  const { body, armed, run } = await unansweredAction(t, fx.file, { 'page-id': '1', timeout: '10000' }, ['viewport']);
+  assert.deepEqual(body, { width: 1440, height: 900, timeoutMs: 10_000 });
+  assert.deepEqual(armed, [40_000]);
+  t.mock.timers.tick(40_000);
+  await assert.rejects(run, (error) => error.code === 'request_timeout' && error.status === 504);
 });

@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('permission source changes apply atomically and failed reload retains the applied grant ledger', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-permission-api-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-permission-api-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),

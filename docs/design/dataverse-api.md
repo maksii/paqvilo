@@ -62,7 +62,8 @@ administration endpoints.
 
 - `mirage/test/dataverse-*.test.mjs` cover the modules and HTTP behaviour with invented schemas over loopback. They run in
   `npm run validate`.
-- `mirage/test-sdk/` holds opt-in gates that drive real client libraries against the simulator (`toolkit-client`,
-  `dynamics-web-api`, `python-dataverse`, `webapi-samples`, `serviceclient`, `cert-auth`, `tds`). Run them with
-  `npm run test:sdk`; they are not part of `npm run validate` because they need .NET, Python or extra npm installs.
+- `mirage/test-sdk/` holds gates that drive real client libraries against the simulator (`toolkit-client`,
+  `dynamics-web-api`, `python-dataverse`, `webapi-samples`, `serviceclient`, `cert-auth`, `tds`). `npm run test:sdk`
+  runs them all. `npm run validate` runs `toolkit-client` in the Mirage unit lane and the locked .NET and npm clients
+  in the full Windows gate; `python-dataverse` and `webapi-samples` need installs outside the locked manifests.
   `mirage/test-sdk/harness.mjs` starts the API over an in-memory store with one application registration.

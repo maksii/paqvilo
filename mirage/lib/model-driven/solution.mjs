@@ -4,6 +4,10 @@ const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// FormXml flags are xs:boolean: both canonical words and numeric spellings are
+// valid. Missing flags retain their source defaults; invalid tokens stay off.
+const formBoolean = (value, fallback) =>
+  value === undefined ? fallback : ['true', '1'].includes(String(value).trim());
 const nodes = (root, name) => (root.name === name ? [root] : descendants(root, name));
 const title = (node, lcid) => {
   const titles = descendants(node, 'Title');
@@ -22,13 +26,13 @@ const titleLabels = (node) =>
 const tableNavigation = (value) => {
   if (!/^(?:\/)?main\.aspx\?/i.test(value ?? '')) return undefined;
   try {
-    const url = new URL(value, 'http://local.invalid/'),
+    const url = new URL(value, 'http://local.invalid/'), // NOSONAR: reserved or loopback placeholder host, not a real transport
       entity = url.searchParams.get('etn');
     if (
-      url.origin !== 'http://local.invalid' ||
+      /* NOSONAR */ url.origin !== 'http://local.invalid' ||
       url.pathname.toLowerCase() !== '/main.aspx' ||
       url.searchParams.get('pagetype') !== 'entitylist' ||
-      !/^[a-z][\w]*$/i.test(entity ?? '')
+      !/^[a-z]\w*$/i.test(entity ?? '')
     )
       return undefined;
     return {
@@ -72,7 +76,7 @@ function pageNavigation(attrs) {
   const url = String(attrs.Url ?? '');
   if (attrs.DefaultDashboard || /^\/?main\.aspx\?(?:.*&)?pagetype=dashboard(?:&|$)/i.test(url)) {
     // Assumed: a dashboard SubArea Url names its dashboard as main.aspx?pagetype=dashboard&id=<guid>.
-    const dashboard = id(attrs.DefaultDashboard ?? new URL(url, 'http://local.invalid/').searchParams.get('id'));
+    const dashboard = id(attrs.DefaultDashboard ?? new URL(url, 'http://local.invalid/').searchParams.get('id')); // NOSONAR: reserved or loopback placeholder host, not a real transport
     return {
       kind: 'dashboard',
       code: 'MD_NAV_DASHBOARD',
@@ -83,7 +87,7 @@ function pageNavigation(attrs) {
   }
   // Assumed: an exported custom-page SubArea carries main.aspx?pagetype=custom&name=<logical name> in Url.
   const custom = /^\/?main\.aspx\?(?:.*&)?pagetype=custom(?:&|$)/i.test(url)
-    ? new URL(url, 'http://local.invalid/').searchParams.get('name')
+    ? new URL(url, 'http://local.invalid/').searchParams.get('name') // NOSONAR: reserved or loopback placeholder host, not a real transport
     : null;
   if (custom !== null)
     return { kind: 'custom', code: 'MD_NAV_CUSTOM_PAGE', page: custom, ...customPageResolution(null, custom, null) };
@@ -128,7 +132,8 @@ export function parseSiteMap(root, { lcid = 1033 } = {}) {
               ...destination,
               supported: destination?.supported ?? Boolean(destination),
               reason:
-                destination?.reason ?? (destination ? undefined : 'This navigation type is not supported locally yet.'),
+                destination?.reason ??
+                (destination ? undefined : 'This navigation type is not available in the local host.'),
             };
           }),
       })),
@@ -210,16 +215,18 @@ export function parseDashboards(root, { lcid = 1033 } = {}) {
         },
         name: label(child(cell, 'labels'), lcid) ?? control.attrs.id ?? classid,
       };
-      if (classid !== SUBGRID_CLASS)
+      if (classid !== SUBGRID_CLASS) {
+        const controlName = DASHBOARD_CONTROL_KINDS[classid] ?? `Control ${classid}`;
         return [
           {
             ...base,
             kind: DASHBOARD_CONTROL_KINDS[classid] ?? 'control',
             classid,
             supported: false,
-            reason: `${DASHBOARD_CONTROL_KINDS[classid] ?? `Control ${classid}`} components are not rendered on local dashboards.`,
+            reason: `${controlName} components are not rendered on local dashboards.`,
           },
         ];
+      }
       const entity = parameter('TargetEntityType')?.toLowerCase(),
         chart = id(parameter('VisualizationId'));
       // Assumed: without ChartGridMode a component with a VisualizationId opens as its chart; All shows the chart and its list.
@@ -271,11 +278,10 @@ export const dashboardPage = (dashboard, tables) => ({
   components: (dashboard.components ?? []).map((component) => {
     if (component.kind !== 'grid') return component;
     const table = Object.hasOwn(tables, component.entity ?? '') ? tables[component.entity] : undefined;
-    const reason = !table
-      ? `The list table ${component.entity ?? ''} has no imported metadata or local mapping.`
-      : component.view && !(table.views ?? []).some((view) => view.id === component.view)
-        ? 'The list view is not imported for its table.'
-        : undefined;
+    let reason;
+    if (!table) reason = `The list table ${component.entity ?? ''} has no imported metadata or local mapping.`;
+    else if (component.view && !(table.views ?? []).some((view) => view.id === component.view))
+      reason = 'The list view is not imported for its table.';
     return { ...component, supported: !reason, ...(reason ? { reason } : {}) };
   }),
 });
@@ -296,42 +302,44 @@ export function embeddedAppComponents(root, { entity: enclosingEntity, lcid = 10
         )?.toLowerCase(),
       }))
     : [{ node: root, entity: enclosingEntity?.toLowerCase() }];
-  for (const { node, entity } of containers) {
-    if (!entity) continue;
-    for (const systemform of nodes(node, 'systemform')) {
-      const form = child(systemform, 'form');
-      if (!form) continue;
-      const type = childText(systemform, 'type');
-      forms.push({
-        id: id(childText(systemform, 'formid')),
-        entity,
-        name: label(child(systemform, 'LocalizedNames'), lcid) ?? '',
-        nameLabels: labelsOf(child(systemform, 'LocalizedNames')),
-        xml: serializeXml(form),
-        active: childText(systemform, 'FormActivationState') !== '0',
-        file,
-        ...(type !== undefined ? { systemFormType: Number(type) } : {}),
-      });
-    }
-    for (const view of nodes(node, 'savedquery')) {
-      const fetch = child(view, 'fetchxml'),
-        inline = child(fetch, 'fetch');
-      views.push({
-        id: id(childText(view, 'savedqueryid')),
-        entity,
-        name: label(child(view, 'LocalizedNames'), lcid) ?? '',
-        nameLabels: labelsOf(child(view, 'LocalizedNames')),
-        queryType: Number(childText(view, 'querytype')) || 0,
-        isDefault: childText(view, 'isdefault') === '1',
-        fetchXml: inline ? serializeXml(inline) : (fetch?.text.trim() ?? ''),
-        fields: descendants(child(view, 'layoutxml'), 'cell')
-          .filter((cell) => cell.attrs.ishidden !== '1')
-          .map((cell) => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 })),
-        file,
-      });
-    }
-  }
+  for (const container of containers) addEmbeddedComponents(container, forms, views, lcid, file);
   return { forms, views };
+}
+
+function addEmbeddedComponents({ node, entity }, forms, views, lcid, file) {
+  if (!entity) return;
+  for (const systemform of nodes(node, 'systemform')) {
+    const form = child(systemform, 'form');
+    if (!form) continue;
+    const type = childText(systemform, 'type');
+    forms.push({
+      id: id(childText(systemform, 'formid')),
+      entity,
+      name: label(child(systemform, 'LocalizedNames'), lcid) ?? '',
+      nameLabels: labelsOf(child(systemform, 'LocalizedNames')),
+      xml: serializeXml(form),
+      active: childText(systemform, 'FormActivationState') !== '0',
+      file,
+      ...(type !== undefined ? { systemFormType: Number(type) } : {}),
+    });
+  }
+  for (const view of nodes(node, 'savedquery')) {
+    const fetch = child(view, 'fetchxml'),
+      inline = child(fetch, 'fetch');
+    views.push({
+      id: id(childText(view, 'savedqueryid')),
+      entity,
+      name: label(child(view, 'LocalizedNames'), lcid) ?? '',
+      nameLabels: labelsOf(child(view, 'LocalizedNames')),
+      queryType: Number(childText(view, 'querytype')) || 0,
+      isDefault: childText(view, 'isdefault') === '1',
+      fetchXml: inline ? serializeXml(inline) : (fetch?.text.trim() ?? ''),
+      fields: descendants(child(view, 'layoutxml'), 'cell')
+        .filter((cell) => cell.attrs.ishidden !== '1')
+        .map((cell) => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 })),
+      file,
+    });
+  }
 }
 
 export function compileForm(form, fields, lcid = 1033) {
@@ -352,94 +360,17 @@ export function compileForm(form, fields, lcid = 1033) {
       })),
     ]),
   );
-  const pcfBinding = (control) => {
-    const candidates = bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [];
-    // Desktop metadata is preferred; phone/tablet bindings stay preserved in sourceControl.
-    const candidate =
-      candidates.find((entry) => entry.attributes.formFactor === '0') ??
-      candidates.find((entry) => entry.attributes.formFactor == null);
-    if (!candidate?.attributes.name) return undefined;
-    const node = parseSolutionXml(candidate.xml),
-      parameters = child(node, 'parameters');
-    // A dataset component binds <data-set name="…"> with its view and table; scalar properties stay field/value bindings.
-    return {
-      name: candidate.attributes.name,
-      ...(candidate.attributes.formFactor != null ? { formFactor: Number(candidate.attributes.formFactor) } : {}),
-      bindings: Object.fromEntries(
-        (parameters?.children ?? []).map((parameter) =>
-          parameter.name === 'data-set'
-            ? [
-                parameter.attrs.name,
-                {
-                  dataset: {
-                    view: id(childText(parameter, 'ViewId')) || undefined,
-                    entity: childText(parameter, 'TargetEntityType')?.toLowerCase(),
-                    relationship: childText(parameter, 'RelationshipName') || undefined,
-                  },
-                },
-              ]
-            : [
-                parameter.name,
-                String(parameter.attrs.type).toLowerCase() === 'bound'
-                  ? { field: parameter.text.trim() }
-                  : { value: parameter.text.trim() },
-              ],
-        ),
-      ),
-    };
-  };
-  const sourceControl = (control) => ({
-    id: control.attrs.id ?? null,
-    uniqueId: control.attrs.uniqueid ?? null,
-    ordinal: controlOrdinals.get(control),
-    classId: control.attrs.classid ?? null,
-    attributes: { ...control.attrs },
-    xml: serializeXml(control),
-    customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [],
-  });
   const sourceStructure = (node) => ({
     id: node.attrs.id ?? null,
     name: node.attrs.name ?? null,
     attributes: { ...node.attrs },
   });
-  const sectionColumns = (section) =>
-    /^[1-4]$/.test(section.attrs.columns ?? '')
-      ? Number(section.attrs.columns)
-      : /^1{2,4}$/.test(section.attrs.columns ?? '')
-        ? section.attrs.columns.length
-        : 1;
-  const layoutCells = (section) => {
-    const width = sectionColumns(section),
-      occupied = [],
-      result = [];
-    for (const [row, definition] of descendants(section, 'row').entries()) {
-      let column = 0;
-      for (const cell of definition.children.filter((node) => node.name === 'cell')) {
-        const colspan = Math.max(1, Math.min(Number(cell.attrs.colspan) || 1, width)),
-          rowspan = Math.max(1, Number(cell.attrs.rowspan) || 1);
-        while (Array.from({ length: colspan }, (_, offset) => (occupied[column + offset] ?? 0) > row).some(Boolean))
-          column++;
-        for (let offset = 0; offset < colspan; offset++) occupied[column + offset] = row + rowspan;
-        result.push({
-          cell,
-          position: {
-            row,
-            column,
-            colspan,
-            ...(cell.attrs.rowspan ? { rowspan } : {}),
-            showLabel: cell.attrs.showlabel !== 'false',
-          },
-        });
-        column += colspan;
-      }
-    }
-    return result;
-  };
-  const tabs = descendants(root, 'tab').map((tab) => ({
-    id: tab.attrs.name ?? tab.attrs.id,
+  // A tab with neither a name nor an id is addressed by its position in the form.
+  const tabs = descendants(root, 'tab').map((tab, index) => ({
+    id: tab.attrs.name ?? tab.attrs.id ?? `tab-${index}`,
     sourceStructure: sourceStructure(tab),
     label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
-    visible: tab.attrs.visible !== 'false',
+    visible: formBoolean(tab.attrs.visible, true),
     columnWidths: (child(tab, 'columns')?.children ?? [])
       .filter((column) => column.name === 'column')
       .map((column) => Number.parseFloat(column.attrs.width) || 100),
@@ -447,8 +378,8 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(section.attrs.name ? { name: section.attrs.name } : {}),
       sourceStructure: sourceStructure(section),
       label: label(child(section, 'labels'), lcid) ?? '',
-      showLabel: section.attrs.showlabel !== 'false',
-      visible: section.attrs.visible !== 'false',
+      showLabel: formBoolean(section.attrs.showlabel, true),
+      visible: formBoolean(section.attrs.visible, true),
       column: (child(tab, 'columns')?.children ?? []).findIndex((column) =>
         descendants(column, 'section').includes(section),
       ),
@@ -456,66 +387,9 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(Number(section.attrs.labelwidth) > 0 ? { labelWidth: Number(section.attrs.labelwidth) } : {}),
       ...(section.attrs.celllabelposition ? { labelPosition: section.attrs.celllabelposition.toLowerCase() } : {}),
       ...(section.attrs.celllabelalignment ? { labelAlignment: section.attrs.celllabelalignment.toLowerCase() } : {}),
-      fields: layoutCells(section).flatMap(({ cell, position }) => {
-        const control = child(cell, 'control');
-        if (!control) return [{ ...position, spacer: true, supported: true, visible: cell.attrs.visible !== 'false' }];
-        const name = control.attrs.datafieldname;
-        if (id(control.attrs.classid) === SUBGRID_CLASS) {
-          const parameter = (name) => descendants(control, name)[0]?.text.trim();
-          const datasetPcf =
-            custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id))
-              ? pcfBinding(control)
-              : undefined;
-          return [
-            {
-              ...position,
-              sourceControl: sourceControl(control),
-              label: label(child(cell, 'labels'), lcid) ?? control.attrs.id,
-              visible: cell.attrs.visible !== 'false',
-              ...(datasetPcf ? { pcf: datasetPcf } : {}),
-              supported: true,
-              subgrid: {
-                entity: parameter('TargetEntityType')?.toLowerCase(),
-                view: id(parameter('ViewId')),
-                relationship: parameter('RelationshipName'),
-                pageSize: Number(parameter('RecordsPerPage')) || 10,
-                searchEnabled: parameter('EnableQuickFind') === 'true',
-                viewPickerEnabled: parameter('EnableViewPicker') === 'true',
-                views: parameter('ViewIds')
-                  ?.split(',')
-                  .map((value) => id(value.trim()))
-                  .filter(Boolean),
-              },
-            },
-          ];
-        }
-        const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
-        const pcf = isCustom ? pcfBinding(control) : undefined;
-        const supported = Boolean(name && fields[name] && (!isCustom || pcf));
-        // Modern forms can export the text class ID for a state choice. The
-        // column's type and create/update permissions govern its behavior.
-        return [
-          {
-            ...position,
-            sourceControl: sourceControl(control),
-            name,
-            label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
-            visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false',
-            disabled: control.attrs.disabled === 'true',
-            ...(pcf ? { pcf } : {}),
-            supported,
-            ...(!supported
-              ? {
-                  reason: !name
-                    ? 'This control is not supported locally yet.'
-                    : !fields[name]
-                      ? 'Column metadata is unavailable.'
-                      : 'This custom control is not supported locally yet.',
-                }
-              : {}),
-          },
-        ];
-      }),
+      fields: layoutCells(section).flatMap((entry) =>
+        compileLayoutCell(entry, { custom, bindings, controlOrdinals, fields, lcid }),
+      ),
     })),
   }));
   // formContext attributes are the columns bound anywhere on this form (body, header, footer); others are absent.
@@ -536,8 +410,8 @@ export function compileForm(form, fields, lcid = 1033) {
           region,
           id: control.attrs.id ?? `${region}_${control.attrs.datafieldname?.toLowerCase()}`,
           name: control.attrs.datafieldname?.toLowerCase(),
-          sourceControl: sourceControl(control),
-          ...(pcfBinding(control) ? { pcf: pcfBinding(control) } : {}),
+          sourceControl: sourceControl(control, controlOrdinals, bindings),
+          ...(pcfBinding(control, bindings) ? { pcf: pcfBinding(control, bindings) } : {}),
         })),
     )
     .filter((control) => control.name && fields[control.name]);
@@ -555,12 +429,13 @@ export function compileForm(form, fields, lcid = 1033) {
     clientEvents: descendants(root, 'event').map((node) => ({
       name: String(node.attrs.name ?? '').toLowerCase(),
       attribute: node.attrs.attribute,
-      active: node.attrs.active !== 'false',
+      active: formBoolean(node.attrs.active, true),
       handlers: descendants(node, 'Handler').map((handler) => ({
+        ...(handler.attrs.handlerUniqueId !== undefined ? { handlerUniqueId: handler.attrs.handlerUniqueId } : {}),
         library: handler.attrs.libraryName,
         functionName: handler.attrs.functionName,
-        enabled: handler.attrs.enabled !== 'false',
-        passExecutionContext: handler.attrs.passExecutionContext === 'true',
+        enabled: formBoolean(handler.attrs.enabled, true),
+        passExecutionContext: formBoolean(handler.attrs.passExecutionContext, false),
         parameters: handler.attrs.parameters ?? '',
       })),
     })),
@@ -575,14 +450,154 @@ export function compileForm(form, fields, lcid = 1033) {
   };
 }
 
+function sectionColumns(section) {
+  if (/^[1-4]$/.test(section.attrs.columns ?? '')) return Number(section.attrs.columns);
+  if (/^1{2,4}$/.test(section.attrs.columns ?? '')) return section.attrs.columns.length;
+  return 1;
+}
+
+function pcfBinding(control, bindings) {
+  const candidates = bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [];
+  // Desktop metadata is preferred; phone/tablet bindings stay preserved in sourceControl.
+  const candidate =
+    candidates.find((entry) => entry.attributes.formFactor === '0') ??
+    candidates.find((entry) => entry.attributes.formFactor == null);
+  if (!candidate?.attributes.name) return undefined;
+  const node = parseSolutionXml(candidate.xml),
+    parameters = child(node, 'parameters');
+  // A dataset component binds <data-set name="…"> with its view and table; scalar properties stay field/value bindings.
+  return {
+    name: candidate.attributes.name,
+    ...(candidate.attributes.formFactor != null ? { formFactor: Number(candidate.attributes.formFactor) } : {}),
+    bindings: Object.fromEntries(
+      (parameters?.children ?? []).map((parameter) =>
+        parameter.name === 'data-set'
+          ? [
+              parameter.attrs.name,
+              {
+                dataset: {
+                  view: id(childText(parameter, 'ViewId')) || undefined,
+                  entity: childText(parameter, 'TargetEntityType')?.toLowerCase(),
+                  relationship: childText(parameter, 'RelationshipName') || undefined,
+                },
+              },
+            ]
+          : [
+              parameter.name,
+              String(parameter.attrs.type).toLowerCase() === 'bound'
+                ? { field: parameter.text.trim() }
+                : { value: parameter.text.trim() },
+            ],
+      ),
+    ),
+  };
+}
+
+function sourceControl(control, controlOrdinals, bindings) {
+  return {
+    id: control.attrs.id ?? null,
+    uniqueId: control.attrs.uniqueid ?? null,
+    ordinal: controlOrdinals.get(control),
+    classId: control.attrs.classid ?? null,
+    attributes: { ...control.attrs },
+    xml: serializeXml(control),
+    customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [],
+  };
+}
+
+function layoutCells(section) {
+  const width = sectionColumns(section),
+    occupied = [],
+    result = [];
+  for (const [row, definition] of descendants(section, 'row').entries()) {
+    let column = 0;
+    for (const cell of definition.children.filter((node) => node.name === 'cell')) {
+      const colspan = Math.max(1, Math.min(Number(cell.attrs.colspan) || 1, width)),
+        rowspan = Math.max(1, Number(cell.attrs.rowspan) || 1);
+      while (Array.from({ length: colspan }, (_, offset) => (occupied[column + offset] ?? 0) > row).some(Boolean))
+        column++;
+      for (let offset = 0; offset < colspan; offset++) occupied[column + offset] = row + rowspan;
+      result.push({
+        cell,
+        position: {
+          row,
+          column,
+          colspan,
+          ...(cell.attrs.rowspan ? { rowspan } : {}),
+          showLabel: formBoolean(cell.attrs.showlabel, true),
+        },
+      });
+      column += colspan;
+    }
+  }
+  return result;
+}
+
+/* NOSONAR */ function compileLayoutCell({ cell, position }, { custom, bindings, controlOrdinals, fields, lcid }) {
+  const control = child(cell, 'control');
+  if (!control) return [{ ...position, spacer: true, supported: true, visible: formBoolean(cell.attrs.visible, true) }];
+  const name = control.attrs.datafieldname;
+  if (id(control.attrs.classid) === SUBGRID_CLASS) {
+    const parameter = (name) => descendants(control, name)[0]?.text.trim();
+    const datasetPcf =
+      custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id))
+        ? pcfBinding(control, bindings)
+        : undefined;
+    return [
+      {
+        ...position,
+        sourceControl: sourceControl(control, controlOrdinals, bindings),
+        label: label(child(cell, 'labels'), lcid) ?? control.attrs.id,
+        visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
+        ...(datasetPcf ? { pcf: datasetPcf } : {}),
+        supported: true,
+        subgrid: {
+          entity: parameter('TargetEntityType')?.toLowerCase(),
+          view: id(parameter('ViewId')),
+          relationship: parameter('RelationshipName'),
+          pageSize: Number(parameter('RecordsPerPage')) || 10,
+          searchEnabled: parameter('EnableQuickFind') === 'true',
+          viewPickerEnabled: parameter('EnableViewPicker') === 'true',
+          views: parameter('ViewIds')
+            ?.split(',')
+            .map((value) => id(value.trim()))
+            .filter(Boolean),
+        },
+      },
+    ];
+  }
+  const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
+  const pcf = isCustom ? pcfBinding(control, bindings) : undefined;
+  const supported = Boolean(name && fields[name] && (!isCustom || pcf));
+  let unsupportedReason;
+  if (!supported) {
+    if (!name) unsupportedReason = 'This control is not available in the local host.';
+    else if (!fields[name]) unsupportedReason = 'Column metadata is unavailable.';
+    else unsupportedReason = 'This custom control is not available in the local host.';
+  }
+  return [
+    {
+      ...position,
+      sourceControl: sourceControl(control, controlOrdinals, bindings),
+      name,
+      label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
+      visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
+      disabled: formBoolean(control.attrs.disabled, false),
+      ...(pcf ? { pcf } : {}),
+      supported,
+      ...(!supported ? { reason: unsupportedReason } : {}),
+    },
+  ];
+}
+
 /** Exported classic ribbon commands. Unsupported actions/rules remain visible and disabled. */
-export function parseRibbonCommands(root) {
+export function parseRibbonCommands(root, { lcid = 1033 } = {}) {
   if (typeof root === 'string') root = parseSolutionXml(root);
   const definitions = new Map(nodes(root, 'CommandDefinition').map((node) => [node.attrs.Id, node]));
   const labels = new Map(
     nodes(root, 'LocLabel').map((node) => [
       node.attrs.Id,
-      descendants(node, 'Title').find((row) => row.attrs.languagecode === '1033')?.attrs.description ??
+      descendants(node, 'Title').find((row) => Number(row.attrs.languagecode) === Number(lcid))?.attrs.description ??
         descendants(node, 'Title')[0]?.attrs.description,
     ]),
   );
@@ -603,24 +618,23 @@ export function parseRibbonCommands(root) {
     .map((button) => {
       const definition = definitions.get(button.attrs.Command),
         actionNodes = child(definition, 'Actions')?.children ?? [];
-      const actions = actionNodes.map((action) => ({
-        type: action.name,
-        library: action.attrs.Library,
-        functionName: action.attrs.FunctionName,
-        parameters: action.children.map((parameter) => ({
-          kind:
-            parameter.name === 'CrmParameter'
-              ? 'crm'
-              : parameter.name === 'StringParameter'
-                ? 'string'
-                : parameter.name === 'IntParameter' || parameter.name === 'DecimalParameter'
-                  ? 'number'
-                  : parameter.name === 'BoolParameter'
-                    ? 'boolean'
-                    : 'unsupported',
-          value: parameter.attrs.Value,
-        })),
-      }));
+      const actions = actionNodes.map((action) => {
+        const parameters = action.children.map((parameter) => {
+          let kind;
+          if (parameter.name === 'CrmParameter') kind = 'crm';
+          else if (parameter.name === 'StringParameter') kind = 'string';
+          else if (parameter.name === 'IntParameter' || parameter.name === 'DecimalParameter') kind = 'number';
+          else if (parameter.name === 'BoolParameter') kind = 'boolean';
+          else kind = 'unsupported';
+          return { kind, value: parameter.attrs.Value };
+        });
+        return {
+          type: action.name,
+          library: action.attrs.Library,
+          functionName: action.attrs.FunctionName,
+          parameters,
+        };
+      });
       const displayRules = rules(definition, 'DisplayRules'),
         enableRules = rules(definition, 'EnableRules');
       const supportedRules = [...displayRules, ...enableRules].every((rule) =>
@@ -647,17 +661,16 @@ export function parseRibbonCommands(root) {
         supportedRules,
       );
       const rawLabel = button.attrs.LabelText ?? button.attrs.Id;
+      let locations;
+      if (/SubGrid/i.test(button.attrs.Id)) locations = [];
+      else if (/HomePageGrid/i.test(button.attrs.Id)) locations = ['grid'];
+      else if (/Form|MainTab/i.test(button.attrs.Id)) locations = ['form'];
+      else locations = ['form', 'grid'];
       return {
         id: button.attrs.Id,
         label: rawLabel.startsWith('$LocLabels:') ? (labels.get(rawLabel.slice(11)) ?? button.attrs.Id) : rawLabel,
         // Ribbon locations identify HomePageGrid, MainTab/Form or SubGrid; SubGrid is not hosted.
-        locations: /SubGrid/i.test(button.attrs.Id)
-          ? []
-          : /HomePageGrid/i.test(button.attrs.Id)
-            ? ['grid']
-            : /Form|MainTab/i.test(button.attrs.Id)
-              ? ['form']
-              : ['form', 'grid'],
+        locations,
         actions,
         displayRules,
         enableRules,
@@ -719,13 +732,19 @@ export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid
     [0, 1].includes(location) &&
     childText(root, 'isdisabled') !== '1',
   );
+  const locations = () => {
+    if (childText(root, 'hidden') === '1') return [];
+    if (location === 0) return ['form'];
+    if (location === 1) return ['grid'];
+    return [];
+  };
   return {
     entity: entity?.toLowerCase(),
     id: root.attrs.uniquename ?? childText(root, 'name'),
     nativeControlIds,
     ...(Number.isFinite(sequence) ? { sequence } : {}),
     label: label(labelNode, lcid) ?? labelNode?.attrs.default ?? childText(root, 'name'),
-    locations: childText(root, 'hidden') === '1' ? [] : location === 0 ? ['form'] : location === 1 ? ['grid'] : [],
+    locations: locations(),
     supported,
     reason: supported
       ? undefined

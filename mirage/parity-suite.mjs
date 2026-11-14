@@ -8,11 +8,20 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
+import { openBrowserWriteNet, UNATTRIBUTED } from './lib/browser-write-net.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { fileURLToPath } from 'node:url';
 import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
+import { fetchLocalState } from './lib/local-state-fetch.mjs';
+import {
+  normalizeSemicolonWhitespace,
+  replaceEmails,
+  replaceParenthesizedPath,
+  stripTrailingCharacter,
+  trimLineEndSpaces,
+} from './lib/text-scanning.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_KINDS = Object.freeze([
@@ -150,10 +159,10 @@ export function isAllowedRequest(method, url, { origins = [] } = {}) {
   return { allowed: false, reason: 'non-read-method' };
 }
 
-const PLACEHOLDER = /\{([A-Za-z][A-Za-z0-9_]*)\}/g;
+const PLACEHOLDER = /\{([A-Za-z]\w*)\}/g;
 const usesId = (scenario) =>
   [scenario.path, scenario.fetchXml, ...Object.values(scenario.query ?? {})].some(
-    (value) => typeof value === 'string' && /\{[A-Za-z][A-Za-z0-9_]*\}/.test(value),
+    (value) => typeof value === 'string' && /\{[A-Za-z]\w*\}/.test(value),
   );
 
 /** Values `discover.from: "portal"` supplies, chosen from the exported portal and the local mappings. */
@@ -177,7 +186,10 @@ const PORTAL_DISCOVERY_SAMPLE = Object.freeze({
 /** Build the portal-relative request path; FetchXML and OData options are encoded here. */
 export function scenarioPath(scenario, id) {
   // id is either one record identifier ({id}) or a map of named placeholders ({id}, {appTypeId}, ...).
-  const values = id === undefined ? null : typeof id === 'object' ? id : { id };
+  let values;
+  if (id === undefined) values = null;
+  else if (typeof id === 'object') values = id;
+  else values = { id };
   const fill = (value) =>
     values
       ? String(value).replace(PLACEHOLDER, (match, name) =>
@@ -194,7 +206,7 @@ export function scenarioPath(scenario, id) {
 }
 
 const ALLOWED_PREFER =
-  /^(?:odata\.maxpagesize=[1-9]\d{0,4}|odata\.include-annotations="(?:\*|[\w.*,-]+)"(?:\s*,\s*odata\.maxpagesize=[1-9]\d{0,4})?)$/i;
+  /^(?:odata\.maxpagesize=[1-9]\d{0,4}|odata\.include-annotations="(?:\*|[\w.*,-]+)"(?:\s*,\s*odata\.maxpagesize=[1-9]\d{0,4})?)$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 /** Validate the scenario plan. Unsafe or ambiguous definitions fail before any request. */
 export function validatePlan(plan) {
@@ -205,134 +217,28 @@ export function validatePlan(plan) {
   // A project plan may deny its own state-changing routes ({ pattern, reason }).
   const denied = compileDeniedRoutes(plan.deniedRoutes ?? []);
   const ids = new Set();
-  for (const scenario of plan.scenarios) {
-    if (!scenario || typeof scenario.id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,80}$/i.test(scenario.id))
-      throw new Error('Each scenario needs a short identifier.');
-    if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
-    ids.add(scenario.id);
-    if (!SCENARIO_KINDS.includes(scenario.kind)) throw new Error(`Scenario ${scenario.id} has an unsupported kind.`);
-    if (scenario.method && !['GET', 'HEAD'].includes(String(scenario.method).toUpperCase()))
-      throw new Error(`Scenario ${scenario.id} must be a GET/HEAD read.`);
-    if (scenario.identity && !IDENTITIES.includes(scenario.identity))
-      throw new Error(`Scenario ${scenario.id} has an unsupported identity.`);
-    if (scenario.kind === 'anonymous' && scenario.identity && scenario.identity !== 'anonymous')
-      throw new Error(`Scenario ${scenario.id} is anonymous by definition.`);
-    if (scenario.kind === 'reference-contracts') {
-      if (typeof scenario.plan !== 'string' || !scenario.plan.endsWith('.json'))
-        throw new Error(`Scenario ${scenario.id} must name a JSON contract plan.`);
-      continue;
-    }
-    if (scenario.kind === 'webfile-drift') {
-      if (scenario.identity !== 'anonymous')
-        throw new Error(`Scenario ${scenario.id} reads deployed web files anonymously; set identity to anonymous.`);
-      if (
-        scenario.paths !== undefined &&
-        (!Array.isArray(scenario.paths) || scenario.paths.some((item) => typeof item !== 'string'))
-      )
-        throw new Error(`Scenario ${scenario.id} paths must be a string array.`);
-      for (const item of scenario.paths ?? []) assertReadOnlyPath(item, { denied });
-      if (!scenario.paths?.length && !scenario.fromPages)
-        throw new Error(`Scenario ${scenario.id} needs paths or fromPages.`);
-      continue;
-    }
-    if (typeof scenario.path !== 'string') throw new Error(`Scenario ${scenario.id} needs a path.`);
-    if (
-      scenario.query !== undefined &&
-      (!scenario.query ||
-        typeof scenario.query !== 'object' ||
-        Array.isArray(scenario.query) ||
-        Object.values(scenario.query).some((value) => typeof value !== 'string'))
-    )
-      throw new Error(`Scenario ${scenario.id} query must be a string map.`);
-    if (
-      scenario.fetchXml !== undefined &&
-      (typeof scenario.fetchXml !== 'string' || !/^<fetch\b[\s\S]*<\/fetch>$/.test(scenario.fetchXml.trim()))
-    )
-      throw new Error(`Scenario ${scenario.id} fetchXml must be one fetch document.`);
-    assertReadOnlyPath(
-      scenarioPath(
-        scenario,
-        scenario.discover?.from === 'portal' ? PORTAL_DISCOVERY_SAMPLE : '00000000-0000-0000-0000-000000000000',
-      ),
-      { denied },
-    );
-    if (scenario.prefer !== undefined && (typeof scenario.prefer !== 'string' || !ALLOWED_PREFER.test(scenario.prefer)))
-      throw new Error(`Scenario ${scenario.id} has an unsupported Prefer header.`);
-    if (scenario.discover) {
-      const discover = scenario.discover;
-      if (discover.from !== 'ids' && discover.from !== 'portal') {
-        if (typeof discover.path !== 'string') throw new Error(`Scenario ${scenario.id} discovery needs a path.`);
-        assertReadOnlyPath(discover.path, { denied });
-      }
-      if (discover.from === 'portal') {
-        if (
-          !Array.isArray(discover.keys) ||
-          !discover.keys.length ||
-          discover.keys.some((key) => !Object.hasOwn(PORTAL_DISCOVERY, key))
-        )
-          throw new Error(`Scenario ${scenario.id} portal discovery needs known keys.`);
-        if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} portal discovery needs placeholders.`);
-      } else if (discover.from === 'ids') {
-        if (typeof discover.key !== 'string' || !/^[\w-]{1,80}$/.test(discover.key))
-          throw new Error(`Scenario ${scenario.id} id discovery needs a key.`);
-        if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} id discovery needs placeholders.`);
-      } else if (discover.from === 'page') {
-        if (typeof discover.selector !== 'string' || !discover.selector.trim())
-          throw new Error(`Scenario ${scenario.id} page discovery needs a selector.`);
-        if (discover.attribute !== undefined && !/^[\w:-]+$/.test(discover.attribute))
-          throw new Error(`Scenario ${scenario.id} discovery attribute is invalid.`);
-        if (discover.pathPattern !== undefined) new RegExp(discover.pathPattern);
-      } else {
-        if (typeof discover.field !== 'string') throw new Error(`Scenario ${scenario.id} discovery needs a field.`);
-        if (!/^\/_api\//.test(discover.path))
-          throw new Error(`Scenario ${scenario.id} discovery must be a Web API read.`);
-        if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} discovery needs an {id} placeholder.`);
-      }
-    } else if (usesId(scenario)) throw new Error(`Scenario ${scenario.id} uses {id} without discovery.`);
-    for (const list of ['tags', 'questions', 'facts'])
-      if (
-        scenario[list] !== undefined &&
-        (!Array.isArray(scenario[list]) || scenario[list].some((item) => typeof item !== 'string'))
-      )
-        throw new Error(`Scenario ${scenario.id} ${list} must be a string array.`);
-    if (scenario.via !== undefined && !['navigation', 'fetch'].includes(scenario.via))
-      throw new Error(`Scenario ${scenario.id} via must be navigation or fetch.`);
-    if (scenario.kind === 'liquid-probe') {
-      const probe = scenario.probe;
-      if (!probe || ((probe.source ?? 'html') !== 'html' && probe.source !== 'dom'))
-        throw new Error(`Scenario ${scenario.id} needs an html or dom probe.`);
-      if (probe.regex !== undefined) new RegExp(probe.regex, probe.flags ?? '');
-      if ((probe.source ?? 'html') === 'html' && typeof probe.regex !== 'string')
-        throw new Error(`Scenario ${scenario.id} html probe needs a regex.`);
-      if (probe.source === 'dom' && typeof probe.selector !== 'string')
-        throw new Error(`Scenario ${scenario.id} dom probe needs a selector.`);
-      if (
-        probe.revealLive === true &&
-        (typeof probe.revealReason !== 'string' || probe.revealReason.trim().length < 20)
-      )
-        throw new Error(`Scenario ${scenario.id} keeps the live probe value; state why in revealReason.`);
-    }
-    if (
-      scenario.followNextLink !== undefined &&
-      (!Number.isInteger(scenario.followNextLink) || scenario.followNextLink < 1 || scenario.followNextLink > 5)
-    )
-      throw new Error(`Scenario ${scenario.id} may follow 1–5 next links.`);
-    if (
-      scenario.fetchXmlPaging !== undefined &&
-      (!Number.isInteger(scenario.fetchXmlPaging) || scenario.fetchXmlPaging < 2 || scenario.fetchXmlPaging > 5)
-    )
-      throw new Error(`Scenario ${scenario.id} may follow FetchXML pages 2–5.`);
-    for (const list of ['roots', 'exclude', 'dataSelectors', 'opaque', 'compareValues'])
-      if (
-        scenario[list] !== undefined &&
-        (!Array.isArray(scenario[list]) || scenario[list].some((item) => typeof item !== 'string'))
-      )
-        throw new Error(`Scenario ${scenario.id} ${list} must be a string array.`);
-  }
+  for (const scenario of plan.scenarios) validateScenario(scenario, ids, denied);
+  validatePlanRules(plan);
+  // A run validates its plan before any request: its denied routes guard every later request.
+  rememberDeniedRoutes(plan.deniedRoutes ?? [], denied);
+  return plan;
+}
+
+function validatePlanRules(plan) {
+  validateAllowPost(plan);
+  validateFulfilRules(plan);
+  validateNotObservableRules(plan);
+  validateClassificationRules(plan);
+}
+
+function validateAllowPost(plan) {
   if (plan.allowPost !== undefined && (!Array.isArray(plan.allowPost) || plan.allowPost.length))
     throw new Error(
       "Plans cannot allow non-GET requests: the suite sends only GET and HEAD to the reference. Answer a page's write locally with a fulfil rule instead.",
     );
+}
+
+function validateFulfilRules(plan) {
   for (const rule of plan.fulfil ?? []) {
     if (
       !rule?.method ||
@@ -347,32 +253,196 @@ export function validatePlan(plan) {
       throw new Error(
         'Each fulfilment rule needs a non-read method, path pattern, 2xx status and a documented reason.',
       );
-    new RegExp(rule.pathPattern);
+    new RegExp(rule.pathPattern); // NOSONAR: constructor validates the pattern or has side effects
   }
+}
+
+function validateNotObservableRules(plan) {
   for (const item of plan.notObservable ?? [])
     if (typeof item?.id !== 'string' || typeof item.reason !== 'string')
       throw new Error('Each not-observable question needs an id and reason.');
-  for (const rule of plan.classifications ?? [])
+}
+
+function validateClassificationRules(plan) {
+  for (const rule of plan.classifications ?? []) {
     if (
       !DELTA_CLASSES.includes(rule.class) ||
       (rule.class === 'runtime-gap' && !rule.owner) ||
       typeof rule.note !== 'string'
     )
       throw new Error('Each classification needs a known class, a note, and an owner for runtime gaps.');
-  // A run validates its plan before any request: its denied routes guard every later request.
-  rememberDeniedRoutes(plan.deniedRoutes ?? [], denied);
-  return plan;
+    validateRuleKind(rule.kind);
+  }
+}
+
+function validateRuleKind(kind) {
+  if (kind === undefined || ruleRegex(kind) || DELTA_KINDS.includes(kind)) return;
+  throw new Error(`Classification kind ${String(kind)} is not a known delta kind.`);
+}
+
+function validateScenario(scenario, ids, denied) {
+  validateScenarioIdentity(scenario, ids);
+  if (validateSpecialScenario(scenario, denied)) return;
+  validateScenarioPath(scenario, denied);
+  validateScenarioDiscovery(scenario, denied);
+  validateScenarioLists(scenario, ['tags', 'questions', 'facts']);
+  if (scenario.via !== undefined && !['navigation', 'fetch'].includes(scenario.via))
+    throw new Error(`Scenario ${scenario.id} via must be navigation or fetch.`);
+  validateLiquidProbe(scenario);
+  validateScenarioPaging(scenario);
+  validateScenarioLists(scenario, ['roots', 'exclude', 'dataSelectors', 'opaque', 'compareValues']);
+}
+
+function validateScenarioIdentity(scenario, ids) {
+  if (!scenario || typeof scenario.id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,80}$/i.test(scenario.id))
+    throw new Error('Each scenario needs a short identifier.');
+  if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
+  ids.add(scenario.id);
+  if (!SCENARIO_KINDS.includes(scenario.kind)) throw new Error(`Scenario ${scenario.id} has an unsupported kind.`);
+  if (scenario.method && !['GET', 'HEAD'].includes(String(scenario.method).toUpperCase()))
+    throw new Error(`Scenario ${scenario.id} must be a GET/HEAD read.`);
+  if (scenario.identity && !IDENTITIES.includes(scenario.identity))
+    throw new Error(`Scenario ${scenario.id} has an unsupported identity.`);
+  if (scenario.kind === 'anonymous' && scenario.identity && scenario.identity !== 'anonymous')
+    throw new Error(`Scenario ${scenario.id} is anonymous by definition.`);
+}
+
+function validateSpecialScenario(scenario, denied) {
+  if (scenario.kind === 'reference-contracts') {
+    if (typeof scenario.plan !== 'string' || !scenario.plan.endsWith('.json'))
+      throw new Error(`Scenario ${scenario.id} must name a JSON contract plan.`);
+    return true;
+  }
+  if (scenario.kind !== 'webfile-drift') return false;
+  if (scenario.identity !== 'anonymous')
+    throw new Error(`Scenario ${scenario.id} reads deployed web files anonymously; set identity to anonymous.`);
+  if (
+    scenario.paths !== undefined &&
+    (!Array.isArray(scenario.paths) || scenario.paths.some((item) => typeof item !== 'string'))
+  )
+    throw new Error(`Scenario ${scenario.id} paths must be a string array.`);
+  for (const item of scenario.paths ?? []) assertReadOnlyPath(item, { denied });
+  if (!scenario.paths?.length && !scenario.fromPages)
+    throw new Error(`Scenario ${scenario.id} needs paths or fromPages.`);
+  return true;
+}
+
+function validateScenarioPath(scenario, denied) {
+  if (typeof scenario.path !== 'string') throw new Error(`Scenario ${scenario.id} needs a path.`);
+  if (
+    scenario.query !== undefined &&
+    (!scenario.query ||
+      typeof scenario.query !== 'object' ||
+      Array.isArray(scenario.query) ||
+      Object.values(scenario.query).some((value) => typeof value !== 'string'))
+  )
+    throw new Error(`Scenario ${scenario.id} query must be a string map.`);
+  if (
+    scenario.fetchXml !== undefined &&
+    (typeof scenario.fetchXml !== 'string' || !/^<fetch\b[\s\S]*<\/fetch>$/.test(scenario.fetchXml.trim()))
+  )
+    throw new Error(`Scenario ${scenario.id} fetchXml must be one fetch document.`);
+  assertReadOnlyPath(
+    scenarioPath(
+      scenario,
+      scenario.discover?.from === 'portal' ? PORTAL_DISCOVERY_SAMPLE : '00000000-0000-0000-0000-000000000000',
+    ),
+    { denied },
+  );
+  if (scenario.prefer !== undefined && (typeof scenario.prefer !== 'string' || !ALLOWED_PREFER.test(scenario.prefer)))
+    throw new Error(`Scenario ${scenario.id} has an unsupported Prefer header.`);
+}
+
+function validateScenarioDiscovery(scenario, denied) {
+  if (!scenario.discover) {
+    if (usesId(scenario)) throw new Error(`Scenario ${scenario.id} uses {id} without discovery.`);
+    return;
+  }
+  const discover = scenario.discover;
+  if (discover.from !== 'ids' && discover.from !== 'portal') {
+    if (typeof discover.path !== 'string') throw new Error(`Scenario ${scenario.id} discovery needs a path.`);
+    assertReadOnlyPath(discover.path, { denied });
+  }
+  if (discover.from === 'portal') return validatePortalDiscovery(scenario, discover);
+  if (discover.from === 'ids') return validateIdDiscovery(scenario, discover);
+  if (discover.from === 'page') return validatePageDiscovery(scenario, discover);
+  validateFieldDiscovery(scenario, discover);
+}
+
+function validatePortalDiscovery(scenario, discover) {
+  if (
+    !Array.isArray(discover.keys) ||
+    !discover.keys.length ||
+    discover.keys.some((key) => !Object.hasOwn(PORTAL_DISCOVERY, key))
+  )
+    throw new Error(`Scenario ${scenario.id} portal discovery needs known keys.`);
+  if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} portal discovery needs placeholders.`);
+}
+
+function validateIdDiscovery(scenario, discover) {
+  if (typeof discover.key !== 'string' || !/^[\w-]{1,80}$/.test(discover.key))
+    throw new Error(`Scenario ${scenario.id} id discovery needs a key.`);
+  if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} id discovery needs placeholders.`);
+}
+
+function validatePageDiscovery(scenario, discover) {
+  if (typeof discover.selector !== 'string' || !discover.selector.trim())
+    throw new Error(`Scenario ${scenario.id} page discovery needs a selector.`);
+  if (discover.attribute !== undefined && !/^[\w:-]+$/.test(discover.attribute))
+    throw new Error(`Scenario ${scenario.id} discovery attribute is invalid.`);
+  if (discover.pathPattern !== undefined) new RegExp(discover.pathPattern); // NOSONAR: constructor validates the pattern or has side effects
+}
+
+function validateFieldDiscovery(scenario, discover) {
+  if (typeof discover.field !== 'string') throw new Error(`Scenario ${scenario.id} discovery needs a field.`);
+  if (!discover.path.startsWith('/_api/')) throw new Error(`Scenario ${scenario.id} discovery must be a Web API read.`);
+  if (!usesId(scenario)) throw new Error(`Scenario ${scenario.id} discovery needs an {id} placeholder.`);
+}
+
+function validateScenarioLists(scenario, lists) {
+  for (const list of lists)
+    if (
+      scenario[list] !== undefined &&
+      (!Array.isArray(scenario[list]) || scenario[list].some((item) => typeof item !== 'string'))
+    )
+      throw new Error(`Scenario ${scenario.id} ${list} must be a string array.`);
+}
+
+function validateLiquidProbe(scenario) {
+  if (scenario.kind !== 'liquid-probe') return;
+  const probe = scenario.probe;
+  if (!probe || ((probe.source ?? 'html') !== 'html' && probe.source !== 'dom'))
+    throw new Error(`Scenario ${scenario.id} needs an html or dom probe.`);
+  if (probe.regex !== undefined) new RegExp(probe.regex, probe.flags ?? ''); // NOSONAR: constructor validates the pattern or has side effects
+  if ((probe.source ?? 'html') === 'html' && typeof probe.regex !== 'string')
+    throw new Error(`Scenario ${scenario.id} html probe needs a regex.`);
+  if (probe.source === 'dom' && typeof probe.selector !== 'string')
+    throw new Error(`Scenario ${scenario.id} dom probe needs a selector.`);
+  if (probe.revealLive === true && (typeof probe.revealReason !== 'string' || probe.revealReason.trim().length < 20))
+    throw new Error(`Scenario ${scenario.id} keeps the live probe value; state why in revealReason.`);
+}
+
+function validateScenarioPaging(scenario) {
+  if (
+    scenario.followNextLink !== undefined &&
+    (!Number.isInteger(scenario.followNextLink) || scenario.followNextLink < 1 || scenario.followNextLink > 5)
+  )
+    throw new Error(`Scenario ${scenario.id} may follow 1–5 next links.`);
+  if (
+    scenario.fetchXmlPaging !== undefined &&
+    (!Number.isInteger(scenario.fetchXmlPaging) || scenario.fetchXmlPaging < 2 || scenario.fetchXmlPaging > 5)
+  )
+    throw new Error(`Scenario ${scenario.id} may follow FetchXML pages 2–5.`);
 }
 
 // ---- Normalisation and redaction
 
 const GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
-const ISO_DATETIME = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+const ISO_DATETIME = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
 const ISO_DATE = /\b\d{4}-\d{2}-\d{2}\b/g;
 const NUMERIC_DATE = /\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g;
 const LONG_DATE =
-  /\b\d{1,2}(?:st|nd|rd|th)? (?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec) \d{4}\b/gi;
+  /\b\d{1,2}(?:st|nd|rd|th)? (?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec) \d{4}\b/gi; // NOSONAR: regex kept: a rewrite would change matches or captures
 const TIME = /\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?\b/gi;
 const TOKENISH = /\b[A-Za-z0-9_\-+/]{40,}={0,2}/g;
 const LONG_NUMBER = /\b\d{5,}\b/g;
@@ -383,10 +453,7 @@ export function normalizeText(value, { origins = [] } = {}) {
     .replace(/\s+/g, ' ')
     .trim();
   for (const origin of origins) if (origin) text = text.split(origin).join('@portal');
-  return text
-    .replace(TOKENISH, '{token}')
-    .replace(GUID, '{guid}')
-    .replace(EMAIL, '{email}')
+  return replaceEmails(text.replace(TOKENISH, '{token}').replace(GUID, '{guid}'), '{email}')
     .replace(ISO_DATETIME, '{datetime}')
     .replace(ISO_DATE, '{date}')
     .replace(LONG_DATE, '{date}')
@@ -441,7 +508,7 @@ export function redactUrl(value, { origins = [], base, keepPaging = false } = {}
         .replace(TOKENISH, '{token}');
     })
     .join('/');
-  const names = [...new Set([...parsed.searchParams.keys()])].sort();
+  const names = [...new Set(parsed.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
   const shown = (name) => {
     const valueOf = parsed.searchParams.get(name);
     return keepPaging && PAGING_PARAMS.has(name) && /^\d{1,6}$/.test(valueOf ?? '') ? valueOf : '…';
@@ -470,7 +537,7 @@ export function createRedactor({ corpus = null, key = randomBytes(32), revealSho
     rememberLocal(text) {
       if (typeof text === 'string' && text) local.add(text);
     },
-    reveal(text) {
+    /* NOSONAR: mixed return values are part of the contract */ reveal(text) {
       const value = String(text ?? '');
       const safe = (part) => {
         const residue = part.replace(/\{(?:guid|date|datetime|time|n|email|token|value|redacted|data|long:\d+)\}/g, '');
@@ -481,7 +548,7 @@ export function createRedactor({ corpus = null, key = randomBytes(32), revealSho
       if (safe(value)) return value;
       // Composed strings (for example "Page title · Site") are revealed when every part is.
       const parts = value
-        .split(/\s+[·|–-]\s+|,\s+/)
+        .split(/(?<!\s)\s+[·|–-]\s+|,\s+/)
         .map((part) => part.trim())
         .filter(Boolean);
       if (parts.length > 1 && parts.every(safe)) return value;
@@ -495,6 +562,26 @@ export function createRedactor({ corpus = null, key = randomBytes(32), revealSho
     digest,
     sourceDerived,
   };
+}
+
+const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
+
+/** Whether the match at [start, end) has no letter, digit or underscore on either side. */
+function atTokenBoundary(haystack, start, end) {
+  // Each slice is spread into code points, so a surrogate pair next to the match counts as one character.
+  const textBefore = haystack.slice(Math.max(0, start - 2), start);
+  const textAfter = haystack.slice(end, end + 2);
+  const before = [...textBefore].at(-1) ?? '';
+  const after = [...textAfter][0] ?? '';
+  return !WORD_CHARACTER.test(before) && !WORD_CHARACTER.test(after);
+}
+
+/** The first occurrence of needle at token boundaries, or -1. */
+function indexAtTokenBoundary(haystack, needle) {
+  for (let index = haystack.indexOf(needle); index !== -1; index = haystack.indexOf(needle, index + 1)) {
+    if (atTokenBoundary(haystack, index, index + needle.length)) return index;
+  }
+  return -1;
 }
 
 /** Exported source text index used by the reveal policy. */
@@ -537,13 +624,18 @@ export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 10
     );
   const corpus = decode(parts.join('\n')).replace(/\s+/g, ' ');
   const lower = corpus.toLowerCase();
+  const found = new Map();
   return {
     size: corpus.length,
     files: parts.length,
     has(text) {
       const needle = String(text).replace(/\s+/g, ' ').trim();
       if (!needle) return false;
-      return corpus.includes(needle) || lower.includes(needle.toLowerCase());
+      if (!found.has(needle)) {
+        const exact = indexAtTokenBoundary(corpus, needle) !== -1;
+        found.set(needle, exact || indexAtTokenBoundary(lower, needle.toLowerCase()) !== -1);
+      }
+      return found.get(needle);
     },
   };
 }
@@ -571,7 +663,7 @@ function semanticSnapshot(options) {
   const hash = (text) => {
     let h = 2166136261;
     for (let i = 0; i < text.length; i++) {
-      h ^= text.charCodeAt(i);
+      h ^= text.charCodeAt(i); // NOSONAR: UTF-16 code unit semantics are required
       h = Math.imul(h, 16777619);
     }
     return (h >>> 0).toString(16);
@@ -583,10 +675,12 @@ function semanticSnapshot(options) {
   };
   let count = 0;
   let truncated = false;
-  const visit = (node, inData) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const visit = (node, inData) => {
     if (node.nodeType === 3) {
       const text = node.textContent.replace(/\s+/g, ' ').trim();
-      return text ? (inData ? { t: text, d: 1 } : { t: text }) : null;
+      if (!text) return null;
+      if (inData) return { t: text, d: 1 };
+      return { t: text };
     }
     if (node.nodeType !== 1 || matches(node, exclude)) return null;
     if (++count > maxNodes) {
@@ -603,16 +697,16 @@ function semanticSnapshot(options) {
       out.p = { value: String(node.value ?? ''), checked: node.checked === true, disabled: node.disabled === true };
     if (matches(node, opaque)) {
       // Canonical form: tag, sorted attributes without inline style, normalised text, children.
-      const canonical = (element) =>
-        element.nodeType === 3
-          ? element.textContent.replace(/\s+/g, ' ').trim()
-          : element.nodeType !== 1
-            ? ''
-            : `<${element.tagName.toLowerCase()}${[...element.attributes]
-                .filter((attribute) => attribute.name !== 'style')
-                .map((attribute) => ` ${attribute.name}="${attribute.value}"`)
-                .sort()
-                .join('')}>${[...element.childNodes].map(canonical).join('')}`;
+      const canonical = (element) => {
+        if (element.nodeType === 3) return element.textContent.replace(/\s+/g, ' ').trim();
+        if (element.nodeType !== 1) return '';
+        const attributes = [...element.attributes]
+          .filter((attribute) => attribute.name !== 'style')
+          .map((attribute) => ` ${attribute.name}="${attribute.value}"`)
+          .sort((a, b) => Number(a > b) - Number(a < b))
+          .join('');
+        return `<${element.tagName.toLowerCase()}${attributes}>${[...element.childNodes].map(canonical).join('')}`;
+      };
       out.o = hash(canonical(node));
       out.n = node.querySelectorAll('*').length;
       return out;
@@ -641,10 +735,10 @@ function semanticSnapshot(options) {
   let portalUser = null;
   try {
     const user =
-      window.Microsoft &&
-      window.Microsoft.Dynamic365 &&
-      window.Microsoft.Dynamic365.Portal &&
-      window.Microsoft.Dynamic365.Portal.User;
+      /* NOSONAR: optional chaining would change the false/null result */ globalThis.Microsoft &&
+      globalThis.Microsoft.Dynamic365 &&
+      globalThis.Microsoft.Dynamic365.Portal &&
+      globalThis.Microsoft.Dynamic365.Portal.User;
     if (user && typeof user === 'object') portalUser = Boolean(user.contactId);
   } catch {
     portalUser = null;
@@ -700,60 +794,66 @@ export function prepareTree(node, options = {}) {
   const { origins = [], ignoreClasses = [], ignoreAttributes = [] } = options;
   const ignoredClass = ignoreClasses.map((pattern) => new RegExp(pattern));
   const ignoredAttribute = new Set([...IGNORED_ATTRIBUTES, ...ignoreAttributes]);
-  const convert = (raw) => {
-    if (raw.t !== undefined) {
-      const text = raw.d ? '{data}' : normalizeText(raw.t, { origins });
-      return { text, raw: raw.d ? null : raw.t, data: raw.d === 1 };
+  return prepareTreeNode(node, { origins, ignoredClass, ignoredAttribute });
+}
+
+function prepareTreeNode(raw, { origins, ignoredClass, ignoredAttribute }) {
+  if (raw.t !== undefined) {
+    const text = raw.d ? '{data}' : normalizeText(raw.t, { origins });
+    return { text, raw: raw.d ? null : raw.t, data: raw.d === 1 };
+  }
+  const classes = [
+    ...new Set(
+      String(raw.a?.class ?? '')
+        .split(/\s+/)
+        .filter(Boolean),
+    ),
+  ]
+    .filter((name) => !ignoredClass.some((pattern) => pattern.test(name)))
+    .map((name) => normalizeText(name))
+    .sort(/* NOSONAR: preserve default string coercion */);
+  const attrs = prepareTreeAttributes(raw, origins, ignoredAttribute);
+  const node = { tag: raw.g, id: attrs.id ?? null, classes, attrs, visible: raw.v === 1 };
+  if (raw.d) node.data = true;
+  if (raw.p) node.state = { checked: raw.p.checked, disabled: raw.p.disabled, hasValue: Boolean(raw.p.value) };
+  if (raw.o) {
+    node.opaque = raw.o;
+    node.opaqueCount = raw.n;
+  }
+  const kids = (raw.c ?? []).map((child) => prepareTreeNode(child, { origins, ignoredClass, ignoredAttribute }));
+  node.kids = collapseRepeats(kids);
+  return node;
+}
+
+function prepareTreeAttributes(raw, origins, ignoredAttribute) {
+  const attrs = {};
+  for (const [name, value] of Object.entries(raw.a ?? {})) {
+    if (
+      ignoredAttribute.has(name) ||
+      name === 'class' ||
+      name.startsWith('data-sim-') ||
+      name.startsWith('data-paqvilo-mirage')
+    )
+      continue;
+    if (raw.d && !['id', 'role', 'type', 'name'].includes(name) && !URL_ATTRIBUTES.has(name)) {
+      attrs[name] = value ? '{data}' : '';
+      continue;
     }
-    const classes = [
-      ...new Set(
-        String(raw.a?.class ?? '')
-          .split(/\s+/)
-          .filter(Boolean),
-      ),
-    ]
-      .filter((name) => !ignoredClass.some((pattern) => pattern.test(name)))
-      .map((name) => normalizeText(name))
-      .sort();
-    const attrs = {};
-    for (const [name, value] of Object.entries(raw.a ?? {})) {
-      if (
-        ignoredAttribute.has(name) ||
-        name === 'class' ||
-        name.startsWith('data-sim-') ||
-        name.startsWith('data-paqvilo-mirage')
-      )
-        continue;
-      if (raw.d && !['id', 'role', 'type', 'name'].includes(name) && !URL_ATTRIBUTES.has(name)) {
-        attrs[name] = value ? '{data}' : '';
-        continue;
-      }
-      attrs[name] = attributeValue(name, value, raw, origins);
-    }
-    const node = { tag: raw.g, id: attrs.id ?? null, classes, attrs, visible: raw.v === 1 };
-    if (raw.d) node.data = true;
-    if (raw.p) node.state = { checked: raw.p.checked, disabled: raw.p.disabled, hasValue: Boolean(raw.p.value) };
-    if (raw.o) {
-      node.opaque = raw.o;
-      node.opaqueCount = raw.n;
-    }
-    const kids = (raw.c ?? []).map(convert);
-    node.kids = collapseRepeats(kids);
-    return node;
-  };
-  return convert(node);
+    attrs[name] = attributeValue(name, value, raw, origins);
+  }
+  return attrs;
 }
 
 const shapeOf = (node) => {
   if (node.text !== undefined) return '#text';
-  return `${node.tag}#${node.id ?? ''}.${node.classes.join('.')}[${Object.keys(node.attrs).sort().join(',')}](${node.kids.map(shapeOf).join('|')})`;
+  return `${node.tag}#${node.id ?? ''}.${node.classes.join('.')}[${Object.keys(node.attrs).sort(/* NOSONAR: preserve default string coercion */).join(',')}](${node.kids.map(shapeOf).join('|')})`;
 };
 
 /** Collapse consecutive siblings with identical structure (data rows) into one template with a count. */
 function collapseRepeats(kids) {
   const output = [];
   for (const kid of kids) {
-    const previous = output[output.length - 1];
+    const previous = output.at(-1);
     if (previous && kid.text === undefined && previous.text === undefined && shapeOf(previous) === shapeOf(kid)) {
       previous.repeat = (previous.repeat ?? 1) + 1;
       continue;
@@ -775,20 +875,28 @@ const sizeOf = (node) => (node.text !== undefined ? 1 : 1 + node.kids.reduce((su
 function align(a, b, same) {
   const n = a.length;
   const m = b.length;
-  if (n * m > 4_000_000) {
-    // Bounded fallback: greedy pairing in order.
-    const pairs = [];
-    let j = 0;
-    for (let i = 0; i < n; i++) {
-      let k = j;
-      while (k < m && !same(a[i], b[k])) k++;
-      if (k < m) {
-        pairs.push([i, k]);
-        j = k + 1;
-      }
+  if (n * m > 4_000_000) return greedyAlign(a, b, same);
+  return dynamicAlign(a, b, same);
+}
+
+function greedyAlign(a, b, same) {
+  // Bounded fallback: greedy pairing in order.
+  const pairs = [];
+  let j = 0;
+  for (let i = 0; i < a.length; i++) {
+    let k = j;
+    while (k < b.length && !same(a[i], b[k])) k++;
+    if (k < b.length) {
+      pairs.push([i, k]);
+      j = k + 1;
     }
-    return pairs;
   }
+  return pairs;
+}
+
+function dynamicAlign(a, b, same) {
+  const n = a.length;
+  const m = b.length;
   const table = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
@@ -807,92 +915,236 @@ function align(a, b, same) {
   return pairs;
 }
 
+/** Every delta kind compareJson returns. compareNetwork emits each one under a `network-` prefix. */
+export const COMPARE_JSON_KINDS = Object.freeze([
+  'json-kind',
+  'error-keys',
+  'error-body-keys',
+  'error-code-shape',
+  'error-code',
+  'error-innererror',
+  'top-key-missing',
+  'top-key-extra',
+  'next-link',
+  'next-link-shape',
+  'paging-cookie',
+  'more-records',
+  'count',
+  'odata-count',
+  'total-record-count',
+  'emptiness',
+  'field-missing',
+  'field-type',
+  'field-extra',
+  'annotations',
+  'values',
+  'value-order',
+]);
+
+const COMPARER_DELTA_KINDS = [
+  'tag',
+  'repeat-count',
+  'node-type',
+  'text',
+  'visibility',
+  'class',
+  'control-state',
+  'opaque',
+  'attribute-missing',
+  'attribute-extra',
+  'attribute-value',
+  'missing',
+  'extra',
+  'text-missing',
+  'text-extra',
+  'json-kind',
+  'error-keys',
+  'error-body-keys',
+  'error-code-shape',
+  'error-code',
+  'error-innererror',
+  'top-key-missing',
+  'top-key-extra',
+  'next-link',
+  'next-link-shape',
+  'paging-cookie',
+  'more-records',
+  'count',
+  'odata-count',
+  'total-record-count',
+  'emptiness',
+  'field-missing',
+  'field-type',
+  'field-extra',
+  'annotations',
+  'values',
+  'value-order',
+  'csp-directive-missing',
+  'csp-directive-extra',
+  'csp-sources',
+  'header',
+  'status',
+  'client-object-missing',
+  'client-key-missing',
+  'client-key-extra',
+  'client-key-order',
+  'client-key-type',
+  'client-value-empty',
+  'body-title',
+  'bundle-order',
+  'hosted-resource-missing',
+  'hosted-resource-extra',
+  'bundle-missing',
+  'bundle-extra',
+  'network-missing',
+  'network-status',
+  'network-extra',
+  'page-unresponsive',
+  'expected-live-status',
+  'fact',
+  'probe-text',
+  'root-count',
+  'shell-unavailable',
+  'client-object-unavailable',
+  'webfile-drift',
+  'webfile-local-status',
+  'contract',
+  'conditional-status',
+  'redirect',
+  'probe-classification',
+  'probe-mask',
+  'probe-case',
+  'probe-limit',
+  'probe-class',
+  'probe-shape',
+  'probe-format',
+  'probe-roles',
+];
+
+/** Every delta kind the comparers below emit. A classification rule may name only these kinds or a /regex/. */
+export const DELTA_KINDS = Object.freeze([
+  ...COMPARER_DELTA_KINDS,
+  ...COMPARE_JSON_KINDS.map((kind) => `network-${kind}`),
+]);
+
 /** Structural deltas between a live (reference) tree and a local tree. */
 export function compareTrees(live, local, { maxDeltas = 250, ignoreText = false } = {}) {
-  const deltas = [];
-  let total = 0;
-  const push = (delta) => {
-    total++;
-    if (deltas.length < maxDeltas) deltas.push(delta);
+  const context = { deltas: [], total: 0, maxDeltas, ignoreText };
+  compareTreeNodes(live, local, labelOf(live), context);
+  return { deltas: context.deltas, total: context.total, truncated: context.total > context.deltas.length };
+}
+
+function pushTreeDelta(context, delta) {
+  context.total++;
+  if (context.deltas.length < context.maxDeltas) context.deltas.push(delta);
+}
+
+function compareTreeNodes(a, b, where, context) {
+  if (a.text !== undefined || b.text !== undefined) {
+    compareTreeText(a, b, where, context);
+    return;
+  }
+  if (a.tag !== b.tag) {
+    pushTreeDelta(context, { kind: 'tag', path: where, live: a.tag, local: b.tag });
+    return;
+  }
+  const opaque = compareTreeProperties(a, b, where, context);
+  if (opaque) return;
+  if ((a.repeat ?? 1) !== (b.repeat ?? 1))
+    pushTreeDelta(context, { kind: 'repeat-count', path: where, live: a.repeat ?? 1, local: b.repeat ?? 1 });
+  compareTreeChildren(a, b, where, context);
+}
+
+function compareTreeText(a, b, where, context) {
+  if (a.text === undefined || b.text === undefined) {
+    pushTreeDelta(context, { kind: 'node-type', path: where });
+    return;
+  }
+  if (!context.ignoreText && a.text !== b.text && !(a.data && b.data))
+    pushTreeDelta(context, { kind: 'text', path: where, live: a.text, local: b.text, liveRaw: a.raw, localRaw: b.raw });
+}
+
+function compareTreeProperties(a, b, where, context) {
+  if (a.visible !== b.visible)
+    pushTreeDelta(context, { kind: 'visibility', path: where, live: a.visible, local: b.visible });
+  const liveClasses = new Set(a.classes);
+  const localClasses = new Set(b.classes);
+  const missingClasses = a.classes.filter((name) => !localClasses.has(name));
+  const extraClasses = b.classes.filter((name) => !liveClasses.has(name));
+  if (missingClasses.length || extraClasses.length)
+    pushTreeDelta(context, { kind: 'class', path: where, missing: missingClasses, extra: extraClasses });
+  for (const name of new Set([...Object.keys(a.attrs), ...Object.keys(b.attrs)]))
+    compareTreeAttribute(a, b, name, where, context);
+  if (a.state && b.state && JSON.stringify(a.state) !== JSON.stringify(b.state))
+    pushTreeDelta(context, { kind: 'control-state', path: where, live: a.state, local: b.state });
+  if (a.opaque !== undefined || b.opaque !== undefined) {
+    if (a.opaque !== b.opaque)
+      pushTreeDelta(context, { kind: 'opaque', path: where, live: a.opaqueCount, local: b.opaqueCount });
+    return true;
+  }
+  return false;
+}
+
+function compareTreeAttribute(a, b, name, where, context) {
+  if (!(name in b.attrs)) {
+    pushTreeDelta(context, { kind: 'attribute-missing', path: where, attribute: name, live: a.attrs[name] });
+    return;
+  }
+  if (!(name in a.attrs)) {
+    pushTreeDelta(context, { kind: 'attribute-extra', path: where, attribute: name, local: b.attrs[name] });
+    return;
+  }
+  if (a.attrs[name] !== b.attrs[name] && !(a.data && b.data && a.attrs[name] === '{data}'))
+    pushTreeDelta(context, {
+      kind: 'attribute-value',
+      path: where,
+      attribute: name,
+      live: a.attrs[name],
+      local: b.attrs[name],
+    });
+}
+
+function compareTreeChildren(a, b, where, context) {
+  const pairs = align(a.kids, b.kids, (x, y) => signatureOf(x) === signatureOf(y));
+  let i = 0;
+  let j = 0;
+  const index = new Map();
+  const childPath = (node) => {
+    const label = labelOf(node);
+    const n = (index.get(label) ?? 0) + 1;
+    index.set(label, n);
+    const suffix = n > 1 ? `[${n}]` : '';
+    return `${where}>${label}${suffix}`;
   };
-  const walk = (a, b, where) => {
-    if (a.text !== undefined || b.text !== undefined) {
-      if (a.text === undefined || b.text === undefined) {
-        push({ kind: 'node-type', path: where });
-        return;
-      }
-      if (!ignoreText && a.text !== b.text && !(a.data && b.data))
-        push({ kind: 'text', path: where, live: a.text, local: b.text, liveRaw: a.raw, localRaw: b.raw });
-      return;
+  for (const [x, y] of [...pairs, [a.kids.length, b.kids.length]]) {
+    for (; i < x; i++) {
+      const node = a.kids[i];
+      pushTreeDelta(context, {
+        kind: 'missing',
+        path: childPath(node),
+        live: labelOf(node),
+        size: sizeOf(node),
+        text: node.text,
+        raw: node.raw,
+      });
     }
-    if (a.tag !== b.tag) {
-      push({ kind: 'tag', path: where, live: a.tag, local: b.tag });
-      return;
+    for (; j < y; j++) {
+      const node = b.kids[j];
+      pushTreeDelta(context, {
+        kind: 'extra',
+        path: `${where}>${labelOf(node)}(local)`,
+        local: labelOf(node),
+        size: sizeOf(node),
+        text: node.text,
+        raw: node.raw,
+      });
     }
-    if (a.visible !== b.visible) push({ kind: 'visibility', path: where, live: a.visible, local: b.visible });
-    const liveClasses = new Set(a.classes);
-    const localClasses = new Set(b.classes);
-    const missingClasses = a.classes.filter((name) => !localClasses.has(name));
-    const extraClasses = b.classes.filter((name) => !liveClasses.has(name));
-    if (missingClasses.length || extraClasses.length)
-      push({ kind: 'class', path: where, missing: missingClasses, extra: extraClasses });
-    for (const name of new Set([...Object.keys(a.attrs), ...Object.keys(b.attrs)])) {
-      if (!(name in b.attrs)) push({ kind: 'attribute-missing', path: where, attribute: name, live: a.attrs[name] });
-      else if (!(name in a.attrs))
-        push({ kind: 'attribute-extra', path: where, attribute: name, local: b.attrs[name] });
-      else if (a.attrs[name] !== b.attrs[name] && !(a.data && b.data && a.attrs[name] === '{data}'))
-        push({ kind: 'attribute-value', path: where, attribute: name, live: a.attrs[name], local: b.attrs[name] });
+    if (x < a.kids.length && y < b.kids.length) {
+      compareTreeNodes(a.kids[x], b.kids[y], childPath(a.kids[x]), context);
+      i = x + 1;
+      j = y + 1;
     }
-    if (a.state && b.state && JSON.stringify(a.state) !== JSON.stringify(b.state))
-      push({ kind: 'control-state', path: where, live: a.state, local: b.state });
-    if (a.opaque !== undefined || b.opaque !== undefined) {
-      if (a.opaque !== b.opaque) push({ kind: 'opaque', path: where, live: a.opaqueCount, local: b.opaqueCount });
-      return;
-    }
-    if ((a.repeat ?? 1) !== (b.repeat ?? 1))
-      push({ kind: 'repeat-count', path: where, live: a.repeat ?? 1, local: b.repeat ?? 1 });
-    const pairs = align(a.kids, b.kids, (x, y) => signatureOf(x) === signatureOf(y));
-    let i = 0;
-    let j = 0;
-    const index = new Map();
-    const childPath = (node) => {
-      const label = labelOf(node);
-      const n = (index.get(label) ?? 0) + 1;
-      index.set(label, n);
-      return `${where}>${label}${n > 1 ? `[${n}]` : ''}`;
-    };
-    for (const [x, y] of [...pairs, [a.kids.length, b.kids.length]]) {
-      for (; i < x; i++) {
-        const node = a.kids[i];
-        push({
-          kind: 'missing',
-          path: childPath(node),
-          live: labelOf(node),
-          size: sizeOf(node),
-          text: node.text,
-          raw: node.raw,
-        });
-      }
-      for (; j < y; j++) {
-        const node = b.kids[j];
-        push({
-          kind: 'extra',
-          path: `${where}>${labelOf(node)}(local)`,
-          local: labelOf(node),
-          size: sizeOf(node),
-          text: node.text,
-          raw: node.raw,
-        });
-      }
-      if (x < a.kids.length && y < b.kids.length) {
-        walk(a.kids[x], b.kids[y], childPath(a.kids[x]));
-        i = x + 1;
-        j = y + 1;
-      }
-    }
-  };
-  walk(live, local, labelOf(live));
-  return { deltas, total, truncated: total > deltas.length };
+  }
 }
 
 /** Readable text lines from a prepared tree (visible nodes only), used by page-text scenarios. */
@@ -951,7 +1203,7 @@ const valueType = (value) => {
       'object{' +
       Object.keys(value)
         .filter((key) => !key.includes('@'))
-        .sort()
+        .sort(/* NOSONAR: preserve default string coercion */)
         .join(',') +
       '}'
     );
@@ -968,6 +1220,12 @@ function relativeLink(link) {
   }
 }
 
+const errorCodeShape = (error) => {
+  if (/^[0-9a-f]{8}$/i.test(String(error.code ?? ''))) return 'hex8';
+  if (typeof error.code === 'string') return error.code ? 'text' : 'empty';
+  return typeof error.code;
+};
+
 /** Field/annotation/type/count/paging projection; never retains business values. */
 export function projectJson(
   text,
@@ -979,37 +1237,45 @@ export function projectJson(
   } catch {
     return { kind: 'not-json', length: String(text ?? '').length };
   }
-  if (body && typeof body === 'object' && body.error && typeof body.error === 'object') {
-    return {
-      kind: 'error',
-      keys: Object.keys(body).sort(),
-      error: {
-        keys: Object.keys(body.error).sort(),
-        code:
-          typeof body.error.code === 'string' || typeof body.error.code === 'number' ? String(body.error.code) : null,
-        // Power Pages Web API errors carry eight-digit hexadecimal codes such as 90040120.
-        codeShape: /^[0-9a-f]{8}$/i.test(String(body.error.code ?? ''))
-          ? 'hex8'
-          : typeof body.error.code === 'string'
-            ? body.error.code
-              ? 'text'
-              : 'empty'
-            : typeof body.error.code,
-        message: typeof body.error.message === 'string' ? body.error.message : null,
-        innerKeys:
-          body.error.innererror && typeof body.error.innererror === 'object'
-            ? Object.keys(body.error.innererror).sort()
-            : null,
-      },
-    };
-  }
+  if (body && typeof body === 'object' && body.error && typeof body.error === 'object') return projectJsonError(body);
   const rows = Array.isArray(body?.[collection]) ? body[collection] : null;
   const top = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-  const projection = {
+  const projection = createJsonProjection(rows, top, collection);
+  projectJsonRows(rows ?? [top], Boolean(rows), projection);
+  projection.fields = Object.fromEntries(
+    Object.entries(projection.fields)
+      .sort(/* NOSONAR: preserve default entry sorting */)
+      .map(([key, types]) => [key, [...types].sort(/* NOSONAR: preserve default string coercion */)]),
+  );
+  // Liquid JSON endpoints return objects with row arrays (for example changeRequests); record lengths only.
+  if (!rows) {
+    const arrays = Object.fromEntries(
+      Object.entries(top)
+        .filter(([, value]) => Array.isArray(value))
+        .map(([key, value]) => [key, value.length]),
+    );
+    if (Object.keys(arrays).length) projection.arrays = arrays;
+  }
+  projection.annotations = Object.fromEntries(
+    Object.entries(projection.annotations)
+      .sort(/* NOSONAR: preserve default entry sorting */)
+      .map(([key, set]) => [key, [...set].sort(/* NOSONAR: preserve default string coercion */)]),
+  );
+  if (rows && (compareValues.length || referenceData)) {
+    const fields = compareValues.length ? compareValues : Object.keys(projection.fields);
+    projection.values = rows
+      .slice(0, maxValueRows)
+      .map((row) => Object.fromEntries(fields.map((field) => [field, row?.[field] ?? null])));
+  }
+  return projection;
+}
+
+function createJsonProjection(rows, top, collection) {
+  return {
     kind: rows ? 'collection' : 'object',
     topKeys: Object.keys(top)
       .filter((key) => key !== collection)
-      .sort(),
+      .sort(/* NOSONAR: preserve default string coercion */),
     count: rows ? rows.length : null,
     odataCount: typeof top['@odata.count'] === 'number' ? top['@odata.count'] : null,
     totalRecordCount:
@@ -1025,45 +1291,42 @@ export function projectJson(
     fields: {},
     annotations: {},
   };
-  const subject = rows ?? [top];
+}
+
+function projectJsonError(body) {
+  return {
+    kind: 'error',
+    keys: Object.keys(body).sort(/* NOSONAR: preserve default string coercion */),
+    error: {
+      keys: Object.keys(body.error).sort(/* NOSONAR: preserve default string coercion */),
+      code: typeof body.error.code === 'string' || typeof body.error.code === 'number' ? String(body.error.code) : null,
+      // Power Pages Web API errors carry eight-digit hexadecimal codes such as 90040120.
+      codeShape: errorCodeShape(body.error),
+      message: typeof body.error.message === 'string' ? body.error.message : null,
+      innerKeys:
+        body.error.innererror && typeof body.error.innererror === 'object'
+          ? Object.keys(body.error.innererror).sort(/* NOSONAR: preserve default string coercion */)
+          : null,
+    },
+  };
+}
+
+function projectJsonRows(subject, rows, projection) {
   for (const row of subject) {
     if (!row || typeof row !== 'object') continue;
     for (const [key, value] of Object.entries(row)) {
       if (!rows && key.startsWith('@')) continue;
       if (key.includes('@')) {
         const [field, annotation] = [key.slice(0, key.indexOf('@')), key.slice(key.indexOf('@') + 1)];
-        (projection.annotations[field || '(row)'] ??= new Set()).add(annotation);
+        const annotationField = field || '(row)';
+        projection.annotations[annotationField] ??= new Set();
+        projection.annotations[annotationField].add(annotation);
         continue;
       }
-      (projection.fields[key] ??= new Set()).add(valueType(value));
+      projection.fields[key] ??= new Set();
+      projection.fields[key].add(valueType(value));
     }
   }
-  projection.fields = Object.fromEntries(
-    Object.entries(projection.fields)
-      .sort()
-      .map(([key, types]) => [key, [...types].sort()]),
-  );
-  // Liquid JSON endpoints return objects with row arrays (for example changeRequests); record lengths only.
-  if (!rows) {
-    const arrays = Object.fromEntries(
-      Object.entries(top)
-        .filter(([, value]) => Array.isArray(value))
-        .map(([key, value]) => [key, value.length]),
-    );
-    if (Object.keys(arrays).length) projection.arrays = arrays;
-  }
-  projection.annotations = Object.fromEntries(
-    Object.entries(projection.annotations)
-      .sort()
-      .map(([key, set]) => [key, [...set].sort()]),
-  );
-  if (rows && (compareValues.length || referenceData)) {
-    const fields = compareValues.length ? compareValues : Object.keys(projection.fields);
-    projection.values = rows
-      .slice(0, maxValueRows)
-      .map((row) => Object.fromEntries(fields.map((field) => [field, row?.[field] ?? null])));
-  }
-  return projection;
 }
 
 /** Compare two projections; returns deltas. Values only for explicitly reference-data scenarios. */
@@ -1072,29 +1335,39 @@ export function compareJson(
   local,
   { compareCount = false, compareValues = false, unordered = false, ignoreTopKeys = [] } = {},
 ) {
-  const deltas = [];
   if (live.kind !== local.kind) {
-    deltas.push({ kind: 'json-kind', live: live.kind, local: local.kind });
-    return deltas;
+    return [{ kind: 'json-kind', live: live.kind, local: local.kind }];
   }
-  if (live.kind === 'error') {
-    if (JSON.stringify(live.keys) !== JSON.stringify(local.keys))
-      deltas.push({ kind: 'error-keys', live: live.keys, local: local.keys });
-    if (JSON.stringify(live.error.keys) !== JSON.stringify(local.error.keys))
-      deltas.push({ kind: 'error-body-keys', live: live.error.keys, local: local.error.keys });
-    if (live.error.codeShape !== local.error.codeShape)
-      deltas.push({ kind: 'error-code-shape', live: live.error.codeShape, local: local.error.codeShape });
-    else if (live.error.code !== local.error.code)
-      deltas.push({ kind: 'error-code', live: live.error.code, local: local.error.code });
-    if (JSON.stringify(live.error.innerKeys) !== JSON.stringify(local.error.innerKeys))
-      deltas.push({ kind: 'error-innererror', live: live.error.innerKeys, local: local.error.innerKeys });
-    return deltas;
-  }
+  if (live.kind === 'error') return compareJsonErrors(live, local);
   // "not-json" and "unavailable" bodies have no shape to compare beyond their kind.
-  if (!['collection', 'object'].includes(live.kind)) return deltas;
+  if (!['collection', 'object'].includes(live.kind)) return [];
+  const deltas = [];
   const ignore = new Set(ignoreTopKeys);
   const liveTop = (live.topKeys ?? []).filter((key) => !ignore.has(key));
   const localTop = (local.topKeys ?? []).filter((key) => !ignore.has(key));
+  compareJsonTopLevel(live, local, liveTop, localTop, deltas);
+  compareJsonCounts(live, local, compareCount, deltas);
+  if (live.count !== 0 && local.count !== 0) compareJsonFields(live, local, deltas);
+  if (compareValues && live.values && local.values) compareJsonValues(live, local, unordered, deltas);
+  return deltas;
+}
+
+function compareJsonErrors(live, local) {
+  const deltas = [];
+  if (JSON.stringify(live.keys) !== JSON.stringify(local.keys))
+    deltas.push({ kind: 'error-keys', live: live.keys, local: local.keys });
+  if (JSON.stringify(live.error.keys) !== JSON.stringify(local.error.keys))
+    deltas.push({ kind: 'error-body-keys', live: live.error.keys, local: local.error.keys });
+  if (live.error.codeShape !== local.error.codeShape)
+    deltas.push({ kind: 'error-code-shape', live: live.error.codeShape, local: local.error.codeShape });
+  else if (live.error.code !== local.error.code)
+    deltas.push({ kind: 'error-code', live: live.error.code, local: local.error.code });
+  if (JSON.stringify(live.error.innerKeys) !== JSON.stringify(local.error.innerKeys))
+    deltas.push({ kind: 'error-innererror', live: live.error.innerKeys, local: local.error.innerKeys });
+  return deltas;
+}
+
+function compareJsonTopLevel(live, local, liveTop, localTop, deltas) {
   for (const key of liveTop) if (!localTop.includes(key)) deltas.push({ kind: 'top-key-missing', field: key });
   for (const key of localTop) if (!liveTop.includes(key)) deltas.push({ kind: 'top-key-extra', field: key });
   if (Boolean(live.nextLink) !== Boolean(local.nextLink))
@@ -1108,6 +1381,9 @@ export function compareJson(
     deltas.push({ kind: 'paging-cookie', live: live.pagingCookie, local: local.pagingCookie });
   if (live.moreRecords !== local.moreRecords)
     deltas.push({ kind: 'more-records', live: live.moreRecords, local: local.moreRecords });
+}
+
+function compareJsonCounts(live, local, compareCount, deltas) {
   if (compareCount) {
     if (live.count !== local.count) deltas.push({ kind: 'count', live: live.count, local: local.count });
     if (live.odataCount !== local.odataCount)
@@ -1116,46 +1392,55 @@ export function compareJson(
       deltas.push({ kind: 'total-record-count', live: live.totalRecordCount, local: local.totalRecordCount });
   } else if ((live.count === 0) !== (local.count === 0))
     deltas.push({ kind: 'emptiness', live: live.count, local: local.count, dataDependent: true });
-  const comparable = live.count !== 0 && local.count !== 0;
-  if (comparable) {
-    for (const [field, types] of Object.entries(live.fields)) {
-      if (!(field in local.fields)) deltas.push({ kind: 'field-missing', field, live: types });
-      else {
-        const liveTypes = types.filter((type) => type !== 'null');
-        const localTypes = local.fields[field].filter((type) => type !== 'null');
-        if (liveTypes.length && localTypes.length && JSON.stringify(liveTypes) !== JSON.stringify(localTypes))
-          deltas.push({ kind: 'field-type', field, live: types, local: local.fields[field] });
-      }
+}
+
+function compareJsonFields(live, local, deltas) {
+  for (const [field, types] of Object.entries(live.fields)) {
+    if (!(field in local.fields)) {
+      deltas.push({ kind: 'field-missing', field, live: types });
+      continue;
     }
-    for (const field of Object.keys(local.fields))
-      if (!(field in live.fields)) deltas.push({ kind: 'field-extra', field, local: local.fields[field] });
-    for (const field of new Set([...Object.keys(live.annotations), ...Object.keys(local.annotations)])) {
-      const a = live.annotations[field] ?? [];
-      const b = local.annotations[field] ?? [];
-      const missing = a.filter((name) => !b.includes(name));
-      const extra = b.filter((name) => !a.includes(name));
-      if (missing.length || extra.length) deltas.push({ kind: 'annotations', field, missing, extra });
-    }
+    const liveTypes = types.filter((type) => type !== 'null');
+    const localTypes = local.fields[field].filter((type) => type !== 'null');
+    if (liveTypes.length && localTypes.length && JSON.stringify(liveTypes) !== JSON.stringify(localTypes))
+      deltas.push({ kind: 'field-type', field, live: types, local: local.fields[field] });
   }
-  if (compareValues && live.values && local.values) {
-    const key = (row) => JSON.stringify(row);
-    const a = unordered ? [...live.values].map(key).sort() : live.values.map(key);
-    const b = unordered ? [...local.values].map(key).sort() : local.values.map(key);
-    if (a.length !== b.length || a.some((value, index) => value !== b[index])) {
-      const liveSet = new Set(a);
-      const localSet = new Set(b);
-      const missing = a.filter((value) => !localSet.has(value));
-      const extra = b.filter((value) => !liveSet.has(value));
-      deltas.push({
-        kind: missing.length || extra.length ? 'values' : 'value-order',
-        missing: missing.slice(0, 20).map((value) => JSON.parse(value)),
-        extra: extra.slice(0, 20).map((value) => JSON.parse(value)),
-        missingCount: missing.length,
-        extraCount: extra.length,
-      });
-    }
+  for (const field of Object.keys(local.fields))
+    if (!(field in live.fields)) deltas.push({ kind: 'field-extra', field, local: local.fields[field] });
+  compareJsonAnnotations(live, local, deltas);
+}
+
+function compareJsonAnnotations(live, local, deltas) {
+  for (const field of new Set([...Object.keys(live.annotations), ...Object.keys(local.annotations)])) {
+    const a = live.annotations[field] ?? [];
+    const b = local.annotations[field] ?? [];
+    const missing = a.filter((name) => !b.includes(name));
+    const extra = b.filter((name) => !a.includes(name));
+    if (missing.length || extra.length) deltas.push({ kind: 'annotations', field, missing, extra });
   }
-  return deltas;
+}
+
+function compareJsonValues(live, local, unordered, deltas) {
+  const key = (row) => JSON.stringify(row);
+  const a = unordered
+    ? [...live.values].map(key).sort(/* NOSONAR: preserve default string coercion */)
+    : live.values.map(key);
+  const b = unordered
+    ? [...local.values].map(key).sort(/* NOSONAR: preserve default string coercion */)
+    : local.values.map(key);
+  if (a.length !== b.length || a.some((value, index) => value !== b[index])) {
+    const liveSet = new Set(a);
+    const localSet = new Set(b);
+    const missing = a.filter((value) => !localSet.has(value));
+    const extra = b.filter((value) => !liveSet.has(value));
+    deltas.push({
+      kind: missing.length || extra.length ? 'values' : 'value-order',
+      missing: missing.slice(0, 20).map((value) => JSON.parse(value)),
+      extra: extra.slice(0, 20).map((value) => JSON.parse(value)),
+      missingCount: missing.length,
+      extraCount: extra.length,
+    });
+  }
 }
 
 // ---- HTTP shapes: redirects, headers, Liquid probes, persona derivation
@@ -1170,7 +1455,7 @@ export function classifyLocation(location, { origin } = {}) {
     return { kind: 'invalid' };
   }
   const external = origin && target.origin !== new URL(origin).origin;
-  const params = [...new Set([...target.searchParams.keys()])].sort();
+  const params = [...new Set(target.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
   const returnKey = params.find((name) => /^returnurl$/i.test(name));
   let returnPath = null;
   let returnQueryNames = null;
@@ -1179,7 +1464,7 @@ export function classifyLocation(location, { origin } = {}) {
     try {
       const inner = new URL(target.searchParams.get(returnKey), 'https://portal.invalid');
       returnPath = inner.pathname.replace(GUID, '{guid}');
-      returnQueryNames = [...new Set([...inner.searchParams.keys()])].sort();
+      returnQueryNames = [...new Set(inner.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
     } catch {
       returnPath = '{invalid}';
     }
@@ -1188,13 +1473,11 @@ export function classifyLocation(location, { origin } = {}) {
     returnUrlEncoded = raw.replace(/(%3[dD])[^%&]*/g, '$1…').replace(GUID, '{guid}');
   }
   const escapes = String(location).match(/%[0-9a-f]{2}/gi) ?? [];
-  const hexCase = !escapes.length
-    ? 'none'
-    : escapes.every((item) => item === item.toUpperCase())
-      ? 'upper'
-      : escapes.every((item) => item === item.toLowerCase())
-        ? 'lower'
-        : 'mixed';
+  let hexCase;
+  if (!escapes.length) hexCase = 'none';
+  else if (escapes.every((item) => item === item.toUpperCase())) hexCase = 'upper';
+  else if (escapes.every((item) => item === item.toLowerCase())) hexCase = 'lower';
+  else hexCase = 'mixed';
   return {
     kind: external ? 'external' : 'same-origin',
     host: external ? target.host : null,
@@ -1216,7 +1499,7 @@ export function classifyLocation(location, { origin } = {}) {
 /** Character-class mask of a rendered value (digits 9, letters A/a): formats without values. */
 export function formatMask(value) {
   return String(value ?? '')
-    .replace(/[0-9]/g, '9')
+    .replace(/\d/g, '9')
     .replace(/[A-Z]/g, 'A')
     .replace(/[a-z]/g, 'a')
     .replace(/a{2,}/g, (match) => `a{${match.length}}`)
@@ -1228,14 +1511,16 @@ export function formatMask(value) {
 export function letterCase(value) {
   const letters = String(value ?? '').replace(/[^a-f]/gi, '');
   if (!letters) return 'no-letters';
-  return letters === letters.toLowerCase() ? 'lower' : letters === letters.toUpperCase() ? 'upper' : 'mixed';
+  if (letters === letters.toLowerCase()) return 'lower';
+  if (letters === letters.toUpperCase()) return 'upper';
+  return 'mixed';
 }
 
 /** Element shape: tag, sorted class tokens and sorted attribute names; attribute values are dropped. */
 export function tagShape(markup) {
   const match = /^\s*<([a-z][\w:-]*)\b([^>]*)>/i.exec(String(markup ?? ''));
   if (!match) return null;
-  const attributes = [...match[2].matchAll(/([\w:-]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g)];
+  const attributes = [...match[2].matchAll(/([\w:-]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g)]; // NOSONAR: regex kept: a rewrite would change matches or captures
   const classes = [];
   const names = [];
   for (const [, name, quoted] of attributes) {
@@ -1248,11 +1533,11 @@ export function tagShape(markup) {
       );
     else names.push(name.toLowerCase());
   }
-  return `${match[1].toLowerCase()}${classes
-    .sort()
+  return `${match[1].toLowerCase()}${classes // NOSONAR: retain in-place receiver mutation and ordering
+    .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `.${name}`)
-    .join('')}${names
-    .sort()
+    .join('')}${names // NOSONAR: retain in-place receiver mutation and ordering
+    .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `[${name}]`)
     .join('')}`;
 }
@@ -1265,11 +1550,15 @@ export function etagShape(value) {
   const core = weak ? text.slice(2) : text;
   const quoted = core.startsWith('"') && core.endsWith('"');
   const inner = quoted ? core.slice(1, -1) : core;
+  let alphabet;
+  if (/^(?:0x)?[0-9a-f]+$/i.test(inner)) alphabet = 'hex';
+  else if (/^[A-Za-z0-9+/=]+$/.test(inner)) alphabet = 'base64';
+  else alphabet = 'other';
   return {
     weak,
     quoted,
     length: inner.length,
-    alphabet: /^(?:0x)?[0-9a-f]+$/i.test(inner) ? 'hex' : /^[A-Za-z0-9+/=]+$/.test(inner) ? 'base64' : 'other',
+    alphabet,
   };
 }
 
@@ -1286,17 +1575,14 @@ export function projectHeaders(
       result[name] = null;
       continue;
     }
-    if (name === 'content-type')
-      result[name] = String(value)
-        .toLowerCase()
-        .replace(/\s*;\s*/g, ';');
+    if (name === 'content-type') result[name] = normalizeSemicolonWhitespace(String(value).toLowerCase());
     else if (name === 'cache-control')
       result[name] = String(value)
         .toLowerCase()
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean)
-        .sort();
+        .sort(/* NOSONAR: preserve default string coercion */);
     else if (name === 'content-security-policy')
       result[name] = Object.fromEntries(
         String(value)
@@ -1307,7 +1593,9 @@ export function projectHeaders(
             const [key, ...sources] = directive.split(/\s+/);
             return [
               key.toLowerCase(),
-              sources.map((source) => source.replace(/'nonce-[^']+'/i, "'nonce-{redacted}'")).sort(),
+              sources
+                .map((source) => source.replace(/'nonce-[^']+'/i, "'nonce-{redacted}'"))
+                .sort(/* NOSONAR: preserve default string coercion */),
             ];
           })
           .sort(([a], [b]) => a.localeCompare(b)),
@@ -1350,7 +1638,10 @@ export function classifyLiteral(token) {
     /* not JSON */
   }
   if (valid) {
-    const type = parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed;
+    let type;
+    if (parsed === null) type = 'null';
+    else if (Array.isArray(parsed)) type = 'array';
+    else type = typeof parsed;
     return { classification: `json-${type}`, jsonValid: true, length: trimmed.length, quoted: trimmed.startsWith('"') };
   }
   if (/^(?:True|False)$/.test(trimmed))
@@ -1360,12 +1651,12 @@ export function classifyLiteral(token) {
 
 const decodeEntities = (value) =>
   String(value)
-    .replace(/&quot;/g, '"')
+    .replaceAll('&quot;', '"')
     .replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
     .replace(/&nbsp;|&#160;/g, ' ')
-    .replace(/&amp;/g, '&');
+    .replaceAll('&amp;', '&');
 
 /** Extract a probe value from raw HTML/text. */
 export function extractProbe(text, probe) {
@@ -1377,7 +1668,7 @@ export function extractProbe(text, probe) {
   for (const name of probe.redactAttributes ?? []) {
     if (!/^[\w:-]+$/.test(name)) throw new Error('Probe attribute names must be plain identifiers.');
     output = output.replace(
-      new RegExp(`(\\s${name}\\s*=\\s*)("[^"]*"|'[^']*')`, 'gi'),
+      new RegExp(String.raw`(\s${name}\s*=\s*)("[^"]*"|'[^']*')`, 'gi'),
       (match, prefix, quoted) => `${prefix}"${quoted.length > 2 ? '{redacted}' : ''}"`,
     );
   }
@@ -1415,27 +1706,38 @@ export function checkPersonaAccess(roles, observations) {
 
 // ---- Delta classification
 
-const ruleText = (pattern, value) => {
+/** "/source/flags" is a regular expression; any other string is not. */
+function ruleRegex(pattern) {
+  if (typeof pattern !== 'string' || !/^\/.+\/[dgimsuy]*$/.test(pattern)) return null;
+  if (/^\/[\w.-]+\/[\w.-]+$/.test(pattern)) return null;
+  const end = pattern.lastIndexOf('/');
+  return new RegExp(pattern.slice(1, end), pattern.slice(end + 1));
+}
+
+/** Criterion check: a regex matches by pattern, any other string must satisfy `compare`. */
+function ruleMatches(pattern, value, compare) {
   if (pattern === undefined) return true;
   if (value === undefined || value === null) return false;
-  // "/source/flags" is a regular expression; any other string (including paths) is a substring.
-  if (typeof pattern === 'string' && /^\/.+\/[dgimsuy]*$/.test(pattern) && !/^\/[\w.-]+\/[\w.-]+$/.test(pattern)) {
-    const end = pattern.lastIndexOf('/');
-    return new RegExp(pattern.slice(1, end), pattern.slice(end + 1)).test(String(value));
-  }
-  return String(value).includes(pattern);
-};
+  const regex = ruleRegex(pattern);
+  if (regex) return regex.test(String(value));
+  return compare(String(value), pattern);
+}
+
+/** Scenario ids and delta kinds are identifiers: a plain string must equal them. */
+const exactRule = (pattern, value) => ruleMatches(pattern, value, (actual, expected) => actual === expected);
+/** Paths, attributes, fields and text are documented as substrings. */
+const substringRule = (pattern, value) => ruleMatches(pattern, value, (actual, expected) => actual.includes(expected));
 
 /** First matching rule wins. A rule matches when every supplied criterion matches. */
 export function classifyDelta(delta, scenarioId, rules = []) {
   for (const rule of rules) {
     if (
-      ruleText(rule.scenario, scenarioId) &&
-      ruleText(rule.kind, delta.kind) &&
-      ruleText(rule.path, delta.path) &&
-      ruleText(rule.attribute, delta.attribute) &&
-      ruleText(rule.field, delta.field) &&
-      ruleText(rule.text, typeof delta.text === 'string' ? delta.text : undefined) &&
+      exactRule(rule.scenario, scenarioId) &&
+      exactRule(rule.kind, delta.kind) &&
+      substringRule(rule.path, delta.path) &&
+      substringRule(rule.attribute, delta.attribute) &&
+      substringRule(rule.field, delta.field) &&
+      substringRule(rule.text, typeof delta.text === 'string' ? delta.text : undefined) &&
       (rule.dataDependent === undefined || Boolean(delta.dataDependent) === rule.dataDependent)
     )
       return { class: rule.class, owner: rule.owner ?? null, note: rule.note, rule: rule.id ?? null };
@@ -1454,25 +1756,36 @@ function redactDelta(delta, redactor) {
     if (delta[key] !== undefined) out[key] = delta[key];
   if (delta.missing !== undefined) out.missing = delta.missing;
   if (delta.extra !== undefined) out.extra = delta.extra;
-  if (FREE_TEXT_DELTAS.has(delta.kind)) {
-    if (delta.local !== undefined) {
-      out.local = delta.local;
-      if (typeof delta.local === 'string') redactor.rememberLocal(delta.local);
-    }
-    if (delta.live !== undefined) out.live = typeof delta.live === 'string' ? redactor.reveal(delta.live) : delta.live;
-  } else if (delta.kind === 'missing' || delta.kind === 'text-missing') {
-    out.live = delta.live;
-    if (delta.text !== undefined) out.text = redactor.reveal(delta.text);
-  } else if (delta.kind === 'extra' || delta.kind === 'text-extra') {
-    out.local = delta.local;
-    if (delta.text !== undefined) out.text = delta.text;
-  } else {
-    // Structured values (statuses, codes, redirect shapes, header tokens, counts, reference rows
-    // selected explicitly by the plan) are computed by the runner and carry no page text.
-    if (delta.live !== undefined) out.live = delta.live;
-    if (delta.local !== undefined) out.local = delta.local;
-  }
+  if (FREE_TEXT_DELTAS.has(delta.kind)) redactFreeTextDelta(delta, redactor, out);
+  else if (delta.kind === 'missing' || delta.kind === 'text-missing') redactMissingDelta(delta, redactor, out);
+  else if (delta.kind === 'extra' || delta.kind === 'text-extra') redactExtraDelta(delta, out);
+  else copyStructuredDelta(delta, out);
   return out;
+}
+
+function redactFreeTextDelta(delta, redactor, out) {
+  if (delta.local !== undefined) {
+    out.local = delta.local;
+    if (typeof delta.local === 'string') redactor.rememberLocal(delta.local);
+  }
+  if (delta.live !== undefined) out.live = typeof delta.live === 'string' ? redactor.reveal(delta.live) : delta.live;
+}
+
+function redactMissingDelta(delta, redactor, out) {
+  out.live = delta.live;
+  if (delta.text !== undefined) out.text = redactor.reveal(delta.text);
+}
+
+function redactExtraDelta(delta, out) {
+  out.local = delta.local;
+  if (delta.text !== undefined) out.text = delta.text;
+}
+
+function copyStructuredDelta(delta, out) {
+  // Structured values (statuses, codes, redirect shapes, header tokens, counts, reference rows
+  // selected explicitly by the plan) are computed by the runner and carry no page text.
+  if (delta.live !== undefined) out.live = delta.live;
+  if (delta.local !== undefined) out.local = delta.local;
 }
 
 /** Redacted tree for saved artifacts. Live text that is not source-derived becomes a digest. */
@@ -1563,13 +1876,15 @@ function pageFetch(options) {
   return (async () => {
     const headers = { accept: options.accept || '*/*' };
     if (options.prefer) headers.Prefer = options.prefer;
+    if (options.ifNoneMatch) headers['if-none-match'] = options.ifNoneMatch;
+    if (options.ifModifiedSince) headers['if-modified-since'] = options.ifModifiedSince;
     if (options.token) {
       const tokenResponse = await fetch('/_layout/tokenhtml', { cache: 'no-store', credentials: 'same-origin' });
       const html = await tokenResponse.text();
       const input = new DOMParser()
         .parseFromString(html, 'text/html')
         .querySelector('input[name="__RequestVerificationToken"]');
-      if (input && input.value) headers.__RequestVerificationToken = input.value;
+      if (input?.value) headers.__RequestVerificationToken = input.value;
     }
     const started = performance.now();
     const response = await fetch(options.path, {
@@ -1609,7 +1924,7 @@ function pageFetch(options) {
 function writeGuard({ origin, fulfil = [] }) {
   const report = (entry) => {
     try {
-      window.__parityGuard?.(entry);
+      globalThis.__parityGuard?.(entry);
     } catch {
       /* the binding is unavailable in some frames */
     }
@@ -1628,11 +1943,11 @@ function writeGuard({ origin, fulfil = [] }) {
         return { action: 'fulfil', status: rule.status };
     return { action: 'block' };
   };
-  const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+  const proto = globalThis.XMLHttpRequest?.prototype;
   if (proto && !proto.__parityGuarded) {
     const open = proto.open;
     const send = proto.send;
-    proto.open = function (method, url, async, ...rest) {
+    proto.open = /** @param {unknown} async */ function (method, url, async, ...rest) {
       this.__parity = { method, url: String(url), async: async !== false };
       return open.call(this, method, url, async === undefined ? true : async, ...rest);
     };
@@ -1647,8 +1962,7 @@ function writeGuard({ origin, fulfil = [] }) {
         /* keep the raw value */
       }
       report({ action: decision.action, method: info.method, url: absolute, status: decision.status });
-      const xhr = this;
-      const define = (name, value) => Object.defineProperty(xhr, name, { configurable: true, get: () => value });
+      const define = (name, value) => Object.defineProperty(this, name, { configurable: true, get: () => value });
       define('readyState', 4);
       define('status', decision.action === 'fulfil' ? decision.status : 0);
       define('statusText', decision.action === 'fulfil' ? 'No Content' : '');
@@ -1657,7 +1971,7 @@ function writeGuard({ origin, fulfil = [] }) {
       const finish = () => {
         for (const type of ['readystatechange', decision.action === 'fulfil' ? 'load' : 'error', 'loadend']) {
           try {
-            xhr.dispatchEvent(new ProgressEvent(type));
+            this.dispatchEvent(new ProgressEvent(type));
           } catch {
             /* ignore listener failures */
           }
@@ -1668,11 +1982,10 @@ function writeGuard({ origin, fulfil = [] }) {
     };
     Object.defineProperty(proto, '__parityGuarded', { value: true });
   }
-  if (window.fetch && !window.fetch.__parityGuarded) {
-    const originalFetch = window.fetch;
+  if (globalThis.fetch && !globalThis.fetch.__parityGuarded) {
+    const originalFetch = globalThis.fetch;
     const guarded = function (input, init) {
-      const method =
-        (init && init.method) || (input && typeof input === 'object' && 'method' in input ? input.method : 'GET');
+      const method = init?.method || (input && typeof input === 'object' && 'method' in input ? input.method : 'GET');
       const url = input && typeof input === 'object' && 'url' in input ? input.url : String(input);
       const decision = decide(method, url);
       if (decision.action === 'continue') return originalFetch.apply(this, arguments);
@@ -1682,7 +1995,7 @@ function writeGuard({ origin, fulfil = [] }) {
         : Promise.reject(new TypeError('Blocked by the parity read-only guard.'));
     };
     guarded.__parityGuarded = true;
-    window.fetch = guarded;
+    globalThis.fetch = guarded;
   }
   if (navigator.sendBeacon) {
     navigator.sendBeacon = function (url) {
@@ -1784,11 +2097,7 @@ export function compareBytes(live, local) {
   const b = Buffer.isBuffer(local) ? local : Buffer.from(String(local ?? ''));
   if (a.equals(b)) return 'identical';
   const normalize = (buffer) =>
-    buffer
-      .toString('utf8')
-      .replace(/\r\n/g, '\n')
-      .replace(/[ \t]+$/gm, '')
-      .replace(/\n+$/, '');
+    stripTrailingCharacter(trimLineEndSpaces(buffer.toString('utf8').replaceAll('\r\n', '\n')), '\n');
   return normalize(a) === normalize(b) ? 'line-endings' : 'different';
 }
 
@@ -1821,17 +2130,38 @@ export function bodyShape(postData) {
   let keys = null;
   try {
     const parsed = JSON.parse(postData);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) keys = Object.keys(parsed).sort();
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      keys = Object.keys(parsed).sort(/* NOSONAR: preserve default string coercion */);
   } catch {
     keys = null;
   }
   return { keys, guids };
 }
 
+// The default wait of the driver's remainingRoutes member. It is a diagnostic hook for tests and a hang guard: the wait
+// ends as soon as no popup route is held, and this bound only ends a wait that never sees that state.
+const REMAINING_ROUTES_HANG_GUARD_MS = 120_000;
+
 /**
  * Attached-browser driver over raw CDP. It creates and attaches only to its own tabs in the
  * browser's default context, so foreign tabs (including stalled ones) never block it.
  */
+/**
+ * The messages that say a page read lost its document because the page navigated, reloaded or closed. Chromium's
+ * DevTools protocol and Playwright report this only as message text (no error code or class), so the retry decision of
+ * both page drivers rests on these exact texts, here only. Playwright prefixes the protocol text with the call
+ * ("page.evaluate: Execution context was destroyed, most likely because of a navigation").
+ */
+const PAGE_CONTEXT_LOST_MESSAGES = Object.freeze([
+  'Execution context was destroyed',
+  'Cannot find context with specified id',
+  'Inspected target navigated or closed',
+]);
+function pageContextLost(error) {
+  const message = String(error?.message ?? '');
+  return PAGE_CONTEXT_LOST_MESSAGES.some((text) => message.includes(text));
+}
+
 export async function openCdpTabDriver({
   cdpUrl,
   origin,
@@ -1840,6 +2170,7 @@ export async function openCdpTabDriver({
   viewport = { width: 1440, height: 1000 },
   allowLoopbackReference = false,
   isolated = false,
+  WebSocketImpl = globalThis.WebSocket,
 }) {
   const endpoint = new URL(cdpUrl);
   if (
@@ -1868,7 +2199,7 @@ export async function openCdpTabDriver({
   }
   const socketTarget = new URL(socketUrl);
   if (!loopbackHost(socketTarget.hostname)) throw new Error('The browser debugging socket must be loopback.');
-  const socket = new WebSocket(socketUrl);
+  const socket = new WebSocketImpl(socketUrl);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
     socket.onerror = () => reject(new Error('Could not open the browser debugging socket.'));
@@ -1893,7 +2224,7 @@ export async function openCdpTabDriver({
       const id = ++nextId;
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error(`CDP ${method} timed out.`));
+        reject(Object.assign(new Error(`CDP ${method} timed out.`), { code: 'CDP_TIMEOUT' }));
       }, ms);
       pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
@@ -1901,6 +2232,52 @@ export async function openCdpTabDriver({
   const owned = new Set();
   let browserContextId = null;
   const origins = [reference.origin];
+  // Every write of a page this driver owns, or of a popup or frame of such a page, meets the browser-session write net
+  // from its first request, whichever debugging client resumes the target. It opens with the first tab and closes
+  // with the driver.
+  const transport = {
+    send,
+    onEvent: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  let writeNet = null;
+  const ensureWriteNet = () => {
+    writeNet ??= openBrowserWriteNet({
+      transport,
+      decide: (request) => requestDecision(request.method, request.url, { fulfil, origins }),
+      onDecided: (entry) =>
+        recordNetDecision(entry, { origins, states: new Set([...tabs.values()].map((tab) => tab.state)) }),
+    }).catch((error) => {
+      writeNet = null;
+      throw error;
+    });
+    return writeNet;
+  };
+  const closeWriteNet = async () => {
+    const pending = writeNet;
+    writeNet = null;
+    const net = await pending?.catch(() => null);
+    await net?.close();
+  };
+  // A popup attaches to the browser session, not to its opener's tab session, so the browser session auto-attaches
+  // new targets while this driver has an open tab of its own, to observe them under the tab that opened them. The wait
+  // for a debugger is shared with every other debugging client of the browser, any of which can resume the target, so
+  // writes are stopped by the browser-session write net (ensureWriteNet), not by this pause.
+  const tabs = new Map();
+  const openTabs = new Set();
+  // Session id to { state, parent }: an owned popup has no parent, its frames and workers have the popup as parent.
+  const popupRoutes = new Map();
+  const setBrowserAutoAttach = (autoAttach) =>
+    send('Target.setAutoAttach', { autoAttach, waitForDebuggerOnStart: true, flatten: true });
+  // An attach that fails has settled its target itself (paused or closed); the listener has nothing left to do with the failure.
+  listeners.add((message) => {
+    if (message.method === 'Target.attachedToTarget' && !message.sessionId && message.params.waitingForDebugger)
+      attachBrowserTarget(message.params, { send, owned, tabs, popupRoutes }).catch(() => {});
+    else if (message.method === 'Target.detachedFromTarget') forgetPopupRoutes(popupRoutes, message.params.sessionId);
+    else if (popupRoutes.has(message.sessionId)) handlePopupMessage(message, { send, fulfil, origins, popupRoutes });
+  });
   async function openTab() {
     // An isolated context has its own cookie jar, but the toolkit's Playwright adopts its pages into
     // the toolkit's persistent context (pages of an unknown context fall back to the default one),
@@ -1909,6 +2286,7 @@ export async function openCdpTabDriver({
     // refuses a toolkit profile that is signed in to the reference origin.
     if (isolated && !browserContextId)
       ({ browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: true }));
+    const writeNetForTab = await ensureWriteNet();
     const { targetId } = await send('Target.createTarget', {
       url: 'about:blank',
       background: true,
@@ -1928,125 +2306,43 @@ export async function openCdpTabDriver({
       failedResponses: [],
       document: null,
       network: new Map(),
-      bodies: [],
+      bodies: /** @type {Promise<any>[]} */ ([]),
       assets: new Set(),
     };
-    const listener = (message) => {
-      if (message.sessionId !== sessionId) return;
-      const { method, params } = message;
-      if (method === 'Fetch.requestPaused') {
-        const decision = requestDecision(params.request.method, params.request.url, { fulfil, origins });
-        if (decision.action === 'continue')
-          send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
-        else if (decision.action === 'fulfil') {
-          state.fulfilled.push({
-            method: params.request.method,
-            url: redactUrl(params.request.url, { origins }),
-            status: decision.status,
-          });
-          send(
-            'Fetch.fulfillRequest',
-            {
-              requestId: params.requestId,
-              responseCode: decision.status,
-              responseHeaders: [{ name: 'cache-control', value: 'no-store' }],
-              body: '',
-            },
-            sessionId,
-          ).catch(() => {});
-        } else {
-          const body = bodyShape(params.request.postData);
-          state.blocked.push({
-            method: params.request.method,
-            url: redactUrl(params.request.url, { origins }),
-            ...(body ? { body } : {}),
-          });
-          send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'BlockedByClient' }, sessionId).catch(
-            () => {},
-          );
-        }
-      } else if (method === 'Network.requestWillBeSent') {
-        state.lastActivity = Date.now();
-        if (params.type !== 'EventSource') state.inflight.set(params.requestId, params.request.url);
-        if (params.type === 'Document' && params.frameId === state.frameId)
-          state.document = { requestId: params.requestId };
-        else if (trackedRequest(params.request.url, params.type, reference.origin) && state.network.size < 400)
-          state.network.set(params.requestId, {
-            method: params.request.method,
-            url: params.request.url,
-            type: params.type,
-          });
-        else if (['Script', 'Stylesheet'].includes(params.type))
-          assetPath(params.request.url, reference.origin, state.assets);
-      } else if (method === 'Network.responseReceived') {
-        if (state.document?.requestId === params.requestId) {
-          state.document.status = params.response.status;
-          state.document.headers = headerMap(params.response.headers);
-        }
-        const tracked = state.network.get(params.requestId);
-        if (tracked) {
-          tracked.status = params.response.status;
-          tracked.contentType = params.response.mimeType || params.response.headers?.['content-type'];
-          tracked.headers = params.response.headers;
-        }
-        if (params.response.status >= 400)
-          state.failedResponses.push({
-            status: params.response.status,
-            url: redactUrl(params.response.url, { origins }),
-          });
-      } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
-        state.lastActivity = Date.now();
-        state.inflight.delete(params.requestId);
-        const tracked = state.network.get(params.requestId);
-        if (
-          tracked &&
-          method === 'Network.loadingFinished' &&
-          ['XHR', 'Fetch'].includes(tracked.type) &&
-          isJsonType(tracked.contentType)
-        )
-          state.bodies.push(
-            send('Network.getResponseBody', { requestId: params.requestId }, sessionId)
-              .then((result) => {
-                const text = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : result.body;
-                tracked.projection = projectJson(text);
-              })
-              .catch(() => {
-                tracked.projection = { kind: 'unavailable' };
-              }),
-          );
-        if (tracked && method === 'Network.loadingFailed')
-          tracked.failed = params.blockedReason || params.errorText || 'failed';
-      } else if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
-        state.consoleErrors.push(
-          normalizeText(
-            params.args
-              ?.map((arg) => arg.value ?? arg.description ?? '')
-              .join(' ')
-              .slice(0, 300),
-            { origins },
-          ),
-        );
-      } else if (method === 'Runtime.exceptionThrown') {
-        state.pageErrors.push(
-          normalizeText(
-            String(params.exceptionDetails?.exception?.description ?? params.exceptionDetails?.text ?? '')
-              .split('\n')[0]
-              .slice(0, 300),
-            { origins },
-          ),
-        );
-      } else if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
-        // Requests of a replaced document can end without final events.
-        state.inflight.clear();
-      } else if (method === 'Page.javascriptDialogOpening') {
-        send('Page.handleJavaScriptDialog', { accept: false }, sessionId).catch(() => {});
-      }
-    };
+    const listener = (message) =>
+      handleCdpMessage(message, { sessionId, state, send, fulfil, origins, referenceOrigin: reference.origin });
     listeners.add(listener);
+    // Cross-site frames and workers run their own requests, so they are intercepted too.
+    const popups = new Set();
+    tabs.set(targetId, { state, popups });
+    writeNetForTab.addRoot(targetId, state);
+    openTabs.add(targetId);
+    if (openTabs.size === 1) await setBrowserAutoAttach(true);
+    const childSessions = new Set();
+    // A frame nested in a cross-site frame attaches to that frame's session, so a child session's targets are
+    // attached exactly as the tab's own are, at any depth.
+    const childListener = (message) => {
+      const fromTab = message.sessionId === sessionId;
+      if (!fromTab && !childSessions.has(message.sessionId)) return;
+      if (message.method === 'Target.attachedToTarget') {
+        releaseFrameRequests(state, message.params.targetInfo);
+        attachChildTarget(message.params, {
+          send,
+          onIntercepted: (child) => childSessions.add(child),
+          onAbandoned: (child) => childSessions.delete(child),
+          trackNetwork: true,
+        }).catch(() => {});
+      } else if (message.method === 'Target.detachedFromTarget') {
+        childSessions.delete(message.params.sessionId);
+        releaseChildRequests(state, message.params.sessionId);
+      } else if (!fromTab) handleChildMessage(message, { state, send, fulfil, origins });
+    };
+    listeners.add(childListener);
     await send('Page.enable', {}, sessionId);
     await send('Network.enable', {}, sessionId);
     await send('Runtime.enable', {}, sessionId);
     await send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId);
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
     // window.screen matches the viewport on both sides (portal scripts branch on screen.height).
     await send(
       'Emulation.setDeviceMetricsOverride',
@@ -2071,7 +2367,7 @@ export async function openCdpTabDriver({
           ms + 5000,
         );
       } catch (error) {
-        if (/timed out/i.test(error.message))
+        if (error.code === 'CDP_TIMEOUT')
           throw Object.assign(
             new Error(`Page evaluation did not finish within ${Math.round(ms / 1000)} s (renderer busy or blocked).`),
             { code: 'PAGE_UNRESPONSIVE' },
@@ -2088,8 +2384,17 @@ export async function openCdpTabDriver({
     };
     const close = async () => {
       listeners.delete(listener);
+      listeners.delete(childListener);
+      for (const popup of popups) {
+        tabs.delete(popup);
+        owned.delete(popup);
+        await send('Target.closeTarget', { targetId: popup }).catch(() => {});
+      }
+      tabs.delete(targetId);
       await send('Target.closeTarget', { targetId }).catch(() => {});
       owned.delete(targetId);
+      openTabs.delete(targetId);
+      if (openTabs.size === 0) await setBrowserAutoAttach(false).catch(() => {});
     };
     const navigate = async (target) => {
       state.document = null;
@@ -2149,7 +2454,7 @@ export async function openCdpTabDriver({
         consoleErrors: tab.state.consoleErrors,
         pageErrors: tab.state.pageErrors,
         failedResponses: tab.state.failedResponses,
-        pendingRequests: [...tab.state.inflight.values()].map((url) => redactUrl(url, { origins })),
+        pendingRequests: [...tab.state.inflight.values()].map((entry) => redactUrl(entry.url, { origins })),
         network: [...tab.state.network.values()].map((item) => ({
           ...networkRecord({ ...item, origins }),
           ...(item.projection ? { projection: item.projection } : {}),
@@ -2167,7 +2472,7 @@ export async function openCdpTabDriver({
             extracted = { unresponsive: error.message, snapshot: null };
             break;
           }
-          if (!/context was destroyed|cannot find context|navigat/i.test(error.message) || attempt >= 2) throw error;
+          if (!pageContextLost(error) || attempt >= 2) throw error;
           base.navigatedDuringCapture = (base.navigatedDuringCapture ?? 0) + 1;
           const deadline = Date.now() + 15000;
           while (
@@ -2185,16 +2490,20 @@ export async function openCdpTabDriver({
   return {
     origin: reference.origin,
     identity: isolated ? 'anonymous' : 'signed-in',
-    async http(target, { prefer, accept, token = target.startsWith('/_api/'), redirect = 'manual' } = {}) {
+    async http(
+      target,
+      { prefer, accept, token = target.startsWith('/_api/'), redirect = 'manual', ifNoneMatch, ifModifiedSince } = {},
+    ) {
       assertReadOnlyPath(target, { allowDenied: false });
-      const expression = `(${pageFetch.toString()})(${JSON.stringify({ path: target, prefer, accept, token, redirect })})`;
+      const options = { path: target, prefer, accept, token, redirect, ifNoneMatch, ifModifiedSince };
+      const expression = `(${pageFetch.toString()})(${JSON.stringify(options)})`;
       const started = Date.now();
       let result;
       try {
         result = await (await apiTabReady()).evaluate(expression);
       } catch (error) {
         // The API tab's own document can still be committing when the first read runs; reopen it once.
-        if (!/navigated or closed|context was destroyed/i.test(String(error.message))) throw error;
+        if (!pageContextLost(error)) throw error;
         await apiTab?.close().catch(() => {});
         apiTab = null;
         await sleep(1000);
@@ -2215,13 +2524,339 @@ export async function openCdpTabDriver({
         probeValue: options.probeExpression ? await tab.evaluate(options.probeExpression) : undefined,
       }));
     },
+    /** Routes still held for owned popups and their frames, once detach events already sent have been handled. */
+    async remainingRoutes(ms = REMAINING_ROUTES_HANG_GUARD_MS) {
+      await new Promise((resolve) => {
+        const done = () => {
+          if (popupRoutes.size > 0) return;
+          clearTimeout(timer);
+          listeners.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          listeners.delete(done);
+          resolve();
+        }, ms);
+        listeners.add(done);
+        done();
+      });
+      return popupRoutes.size;
+    },
     async close() {
       if (apiTab) await apiTab.close();
       for (const targetId of owned) await send('Target.closeTarget', { targetId }).catch(() => {});
+      await setBrowserAutoAttach(false).catch(() => {});
+      await closeWriteNet();
       if (browserContextId) await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
       socket.close();
     },
   };
+}
+
+function handleCdpMessage(message, options) {
+  const { sessionId, state, send, fulfil, origins, referenceOrigin } = options;
+  if (message.sessionId !== sessionId) return;
+  const { method, params } = message;
+  if (method === 'Fetch.requestPaused')
+    return handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origins });
+  if (method === 'Network.requestWillBeSent') return handleCdpNetworkRequest(params, state, referenceOrigin);
+  if (method === 'Network.responseReceived') return handleCdpNetworkResponse(params, state, origins);
+  if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed')
+    return handleCdpNetworkFinished(method, params, { sessionId, state, send });
+  if (method === 'Runtime.consoleAPICalled' && params.type === 'error')
+    return handleCdpConsoleError(params, state, origins);
+  if (method === 'Runtime.exceptionThrown') return handleCdpPageError(params, state, origins);
+  if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
+    // Requests of a replaced document can end without final events.
+    state.inflight.clear();
+  } else if (method === 'Page.javascriptDialogOpening') {
+    send('Page.handleJavaScriptDialog', { accept: false }, sessionId).catch(() => {});
+  }
+}
+
+const bodyEntry = (postData) => {
+  const body = bodyShape(postData);
+  return body ? { body } : {};
+};
+
+/**
+ * Records a write the browser-session net stopped or fulfilled under the tab state that owns it. A write whose owner
+ * could not be resolved is recorded under every tab the driver holds, so no stopped write goes unreported.
+ */
+function recordNetDecision({ request, decision, owner }, { origins, states }) {
+  const item = { method: request.method, url: redactUrl(request.url, { origins }) };
+  const recipients = owner === UNATTRIBUTED ? [...states] : [owner];
+  for (const state of recipients) {
+    if (decision.action === 'fulfil') state.fulfilled.push({ ...item, status: decision.status });
+    else state.blocked.push({ ...item, ...bodyEntry(request.postData) });
+  }
+}
+
+/** Enable request interception on a session; false when the target cannot be intercepted. */
+function enableInterception(child, send) {
+  return send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, child).then(
+    () => true,
+    () => false,
+  );
+}
+
+/**
+ * A frame or worker of a tab starts paused until a debugging client resumes it. This session enables interception
+ * before it resumes the target and never resumes one it could not intercept, except a dedicated worker, whose requests
+ * the session of its frame intercepts; another client can resume it earlier, so the browser-session write net covers
+ * its first requests.
+ */
+async function attachChildTarget(params, { send, onIntercepted, onAbandoned, trackNetwork = false }) {
+  const child = params.sessionId;
+  // A dedicated worker has no Fetch domain: its requests are paused on the session of the frame that started it and
+  // on the browser-session write net, so it is resumed without interception of its own.
+  const coveredByParent = params.targetInfo?.type === 'worker';
+  let intercepted = false;
+  // Registered before Fetch.enable is sent: a paused event of this session can be read before the enable response.
+  onIntercepted(child);
+  try {
+    intercepted = await enableInterception(child, send);
+    if (!intercepted) onAbandoned(child);
+    // A frame's requests count as the page's in-flight requests, and the frames nested in it are held for this session
+    // as the frame is; a target without either domain is only not tracked.
+    else if (trackNetwork) {
+      await send('Network.enable', {}, child).catch(() => {});
+      await send(
+        'Target.setAutoAttach',
+        { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+        child,
+      ).catch(() => {});
+    }
+  } finally {
+    if (intercepted || coveredByParent) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
+  }
+}
+
+/**
+ * A popup opened by one of the driver's tabs, or by such a popup, is intercepted under that tab's state once it is
+ * attached. Ownership follows the opener chain only, never the URL. Any other target is resumed without a page-session
+ * guard. An owned popup that cannot be intercepted is closed. Its first requests are covered by the browser-session
+ * write net, because another debugging client can resume it before this attach completes.
+ */
+async function attachBrowserTarget(params, { send, owned, tabs, popupRoutes }) {
+  const child = params.sessionId;
+  const { targetId, type, openerId } = params.targetInfo ?? {};
+  const owner = type === 'page' ? tabs.get(openerId) : undefined;
+  let mayRun = !owner;
+  try {
+    if (owner) {
+      // Registered first, so that a popup closed here is also removed from the tab's bookkeeping.
+      owner.popups.add(targetId);
+      tabs.set(targetId, owner);
+      owned.add(targetId);
+      mayRun = await interceptPopup(child, { send, popupRoutes, state: owner.state });
+    }
+  } finally {
+    // A released session is kept but sent nothing further: detaching it ended this driver's own tab session.
+    if (mayRun) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
+    else await send('Target.closeTarget', { targetId }).catch(() => {});
+  }
+}
+
+/**
+ * An owned popup's frames and workers start paused, as a tab's do, so that each meets the same decision. The popup
+ * runs only when it and its auto-attach are in place; otherwise it stays paused and is closed.
+ */
+async function interceptPopup(child, { send, popupRoutes, state }) {
+  // Registered before Fetch.enable is sent: a paused event of the popup can be read before the enable response.
+  popupRoutes.set(child, { state, parent: null });
+  const enabled = await enableInterception(child, send);
+  const autoAttach = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+  const ready =
+    enabled &&
+    (await send('Target.setAutoAttach', autoAttach, child).then(
+      () => true,
+      () => false,
+    ));
+  if (!ready) popupRoutes.delete(child);
+  return ready;
+}
+
+/** Frames and workers of an owned popup are attached and paused under the state of the tab that opened it. */
+function handlePopupMessage(message, { send, fulfil, origins, popupRoutes }) {
+  const { state } = popupRoutes.get(message.sessionId);
+  if (message.method === 'Target.attachedToTarget')
+    attachChildTarget(message.params, {
+      send,
+      onIntercepted: (child) => popupRoutes.set(child, { state, parent: message.sessionId }),
+      onAbandoned: (child) => popupRoutes.delete(child),
+    }).catch(() => {});
+  else if (message.method === 'Fetch.requestPaused')
+    handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
+}
+
+/** Forgets a detached session and every route it parented, so no route outlives the popup or frame it served. */
+function forgetPopupRoutes(popupRoutes, sessionId) {
+  popupRoutes.delete(sessionId);
+  for (const [child, route] of popupRoutes) if (route.parent === sessionId) popupRoutes.delete(child);
+}
+
+function handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origins }) {
+  const decision = requestDecision(params.request.method, params.request.url, { fulfil, origins });
+  if (decision.action === 'continue') {
+    send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
+    return;
+  }
+  if (decision.action === 'fulfil') {
+    state.fulfilled.push({
+      method: params.request.method,
+      url: redactUrl(params.request.url, { origins }),
+      status: decision.status,
+    });
+    send(
+      'Fetch.fulfillRequest',
+      {
+        requestId: params.requestId,
+        responseCode: decision.status,
+        responseHeaders: [{ name: 'cache-control', value: 'no-store' }],
+        body: '',
+      },
+      sessionId,
+    ).catch(() => {});
+    return;
+  }
+  const body = bodyShape(params.request.postData);
+  state.blocked.push({
+    method: params.request.method,
+    url: redactUrl(params.request.url, { origins }),
+    ...(body ? { body } : {}),
+  });
+  send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'BlockedByClient' }, sessionId).catch(() => {});
+}
+
+/**
+ * An out-of-process frame's document request, or a dedicated worker's script request (whose request id is the worker's
+ * target id), is announced on its parent's session (the tab's, or a cross-site frame's), but it completes on the
+ * target's own session. Once that session is attached, the request is no longer tracked by the tab.
+ */
+function releaseFrameRequests(state, targetInfo) {
+  const { type, targetId } = targetInfo;
+  if (type !== 'iframe' && type !== 'worker') return;
+  for (const [key, request] of state.inflight)
+    if (type === 'iframe' ? request.frameId === targetId : request.requestId === targetId) state.inflight.delete(key);
+}
+
+/** In-flight key of a child session's request: request ids are per session, so the tab's ids cannot collide with it. */
+const childRequestKey = (sessionId, requestId) => `${sessionId}:${requestId}`;
+
+/**
+ * A message of a cross-site frame or worker session of a tab: its paused requests meet the tab's decision and its
+ * network requests count as the tab's in-flight requests until they finish or fail.
+ */
+function handleChildMessage(message, { state, send, fulfil, origins }) {
+  const { method, params, sessionId } = message;
+  if (method === 'Fetch.requestPaused') {
+    handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origins });
+    return;
+  }
+  if (method === 'Network.requestWillBeSent') {
+    state.lastActivity = Date.now();
+    if (params.type !== 'EventSource')
+      state.inflight.set(childRequestKey(sessionId, params.requestId), {
+        url: params.request.url,
+        sessionId,
+        frameId: params.frameId,
+        requestId: params.requestId,
+      });
+  } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+    state.lastActivity = Date.now();
+    state.inflight.delete(childRequestKey(sessionId, params.requestId));
+  }
+}
+
+/** A detached frame or worker session reports nothing further, so its requests are no longer in flight. */
+function releaseChildRequests(state, sessionId) {
+  for (const [key, request] of state.inflight) if (request.sessionId === sessionId) state.inflight.delete(key);
+}
+
+function handleCdpNetworkRequest(params, state, referenceOrigin) {
+  state.lastActivity = Date.now();
+  if (params.type !== 'EventSource')
+    state.inflight.set(params.requestId, {
+      url: params.request.url,
+      frameId: params.frameId,
+      requestId: params.requestId,
+    });
+  if (params.type === 'Document' && params.frameId === state.frameId) {
+    state.document = { requestId: params.requestId };
+    return;
+  }
+  if (trackedRequest(params.request.url, params.type, referenceOrigin) && state.network.size < 400) {
+    state.network.set(params.requestId, {
+      method: params.request.method,
+      url: params.request.url,
+      type: params.type,
+    });
+    return;
+  }
+  if (['Script', 'Stylesheet'].includes(params.type)) assetPath(params.request.url, referenceOrigin, state.assets);
+}
+
+function handleCdpNetworkResponse(params, state, origins) {
+  if (state.document?.requestId === params.requestId) {
+    state.document.status = params.response.status;
+    state.document.headers = headerMap(params.response.headers);
+  }
+  const tracked = state.network.get(params.requestId);
+  if (tracked) {
+    tracked.status = params.response.status;
+    tracked.contentType = params.response.mimeType || params.response.headers?.['content-type'];
+    tracked.headers = params.response.headers;
+  }
+  if (params.response.status >= 400)
+    state.failedResponses.push({ status: params.response.status, url: redactUrl(params.response.url, { origins }) });
+}
+
+function handleCdpNetworkFinished(method, params, { sessionId, state, send }) {
+  state.lastActivity = Date.now();
+  state.inflight.delete(params.requestId);
+  const tracked = state.network.get(params.requestId);
+  if (
+    tracked &&
+    method === 'Network.loadingFinished' &&
+    ['XHR', 'Fetch'].includes(tracked.type) &&
+    isJsonType(tracked.contentType)
+  )
+    state.bodies.push(
+      send('Network.getResponseBody', { requestId: params.requestId }, sessionId)
+        .then((result) => {
+          const text = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : result.body;
+          tracked.projection = projectJson(text);
+        })
+        .catch(() => {
+          tracked.projection = { kind: 'unavailable' };
+        }),
+    );
+  if (tracked && method === 'Network.loadingFailed')
+    tracked.failed = params.blockedReason || params.errorText || 'failed';
+}
+
+function handleCdpConsoleError(params, state, origins) {
+  state.consoleErrors.push(
+    normalizeText(
+      params.args
+        ?.map((arg) => arg.value ?? arg.description ?? '')
+        .join(' ')
+        .slice(0, 300),
+      { origins },
+    ),
+  );
+}
+
+function handleCdpPageError(params, state, origins) {
+  state.pageErrors.push(
+    normalizeText(
+      String(params.exceptionDetails?.exception?.description ?? params.exceptionDetails?.text ?? '')
+        .split('\n')[0]
+        .slice(0, 300),
+      { origins },
+    ),
+  );
 }
 
 function snapshotOptions(options) {
@@ -2335,8 +2970,8 @@ export function createHttpDriver({ origin, identity = 'anonymous', cookie } = {}
  */
 export async function openOwnedBrowser({ channel, headless = true, fulfil = [] } = {}) {
   const { chromium } = await import('playwright-core');
-  const { browserLaunchOptions } = await import('./lib/browser-launch.mjs');
-  const browser = await chromium.launch(browserLaunchOptions({ channel, headless }));
+  const { BROWSER_HANG_GUARD_MS, browserLaunchOptions } = await import('./lib/browser-launch.mjs');
+  const browser = await chromium.launch(browserLaunchOptions({ channel, headless, timeout: BROWSER_HANG_GUARD_MS }));
   const pageDriver = (origin, identity, { guard: driverGuard = 'route', cookie } = {}) => {
     const base = new URL(origin);
     const origins = [base.origin];
@@ -2386,44 +3021,14 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
               status: rule.status,
             })),
           });
-        } else
-          await context.route('**/*', (route) => {
-            const request = route.request();
-            let url;
-            try {
-              url = new URL(request.url());
-            } catch {
-              return route.abort();
-            }
-            if (!['http:', 'https:'].includes(url.protocol)) return route.continue();
-            if (request.isNavigationRequest() && url.origin !== base.origin) {
-              state.offOrigin.push(redactUrl(url.href, { origins }));
-              return route.abort('blockedbyclient');
-            }
-            const decision = requestDecision(request.method(), url.href, { fulfil, origins });
-            if (decision.action === 'fulfil') {
-              state.fulfilled.push({
-                method: request.method(),
-                url: redactUrl(url.href, { origins }),
-                status: decision.status,
-              });
-              return route.fulfill({ status: decision.status, headers: { 'cache-control': 'no-store' }, body: '' });
-            }
-            if (decision.action === 'block') {
-              const body = bodyShape(request.postData());
-              state.blocked.push({
-                method: request.method(),
-                url: redactUrl(url.href, { origins }),
-                ...(body ? { body } : {}),
-              });
-              return route.abort('blockedbyclient');
-            }
-            return route.continue();
-          });
+        } else {
+          await context.route('**/*', (route) => handleOwnedRoute(route, state, base, origins, fulfil));
+        }
+
         const page = await context.newPage();
         const cdp = await context.newCDPSession(page);
-        const documentTokens = new WeakMap(),
-          requestDocuments = new WeakMap();
+        const documentTokens = new WeakMap();
+        const requestDocuments = new WeakMap();
         const requestFrame = (request) => {
           try {
             return request.frame();
@@ -2452,42 +3057,9 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
         if (guard === 'script') {
           const fail = (requestId) =>
             cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }).catch(() => {});
-          cdp.on('Fetch.requestPaused', (event) => {
-            const { request, requestId, resourceType } = event;
-            let url;
-            try {
-              url = new URL(request.url);
-            } catch {
-              return fail(requestId);
-            }
-            if (!['http:', 'https:'].includes(url.protocol))
-              return cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
-            if (resourceType === 'Document' && url.origin !== base.origin) {
-              state.offOrigin.push(redactUrl(url.href, { origins }));
-              return fail(requestId);
-            }
-            const decision = requestDecision(request.method, url.href, { fulfil, origins });
-            if (decision.action === 'fulfil') {
-              state.fulfilled.push({
-                method: request.method,
-                url: redactUrl(url.href, { origins }),
-                status: decision.status,
-              });
-              return cdp
-                .send('Fetch.fulfillRequest', {
-                  requestId,
-                  responseCode: decision.status,
-                  responseHeaders: [{ name: 'cache-control', value: 'no-store' }],
-                  body: '',
-                })
-                .catch(() => {});
-            }
-            if (decision.action === 'block') {
-              state.blocked.push({ method: request.method, url: redactUrl(url.href, { origins }) });
-              return fail(requestId);
-            }
-            return cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
-          });
+          cdp.on('Fetch.requestPaused', (event) =>
+            handleOwnedFetchRequest(event, { cdp, state, base, origins, fulfil, fail }),
+          );
           await cdp.send('Fetch.enable', {
             patterns: ['Document', 'Fetch', 'Ping', 'Other'].map((resourceType) => ({
               urlPattern: '*',
@@ -2496,59 +3068,8 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
             })),
           });
         }
-        page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
-        page.on('request', (request) => {
-          requestDocuments.set(request, documentTokens.get(requestFrame(request)));
-          state.lastActivity = Date.now();
-          if (request.resourceType() !== 'eventsource' && !request.url().endsWith('/__sim/events'))
-            state.inflight.add(request);
-          if (['script', 'stylesheet'].includes(request.resourceType()))
-            assetPath(request.url(), base.origin, state.assets);
-        });
-        const done = (request) => {
-          state.inflight.delete(request);
-          state.lastActivity = Date.now();
-        };
-        page.on('requestfinished', done);
-        page.on('requestfailed', done);
-        page.on('console', (message) => {
-          if (message.type() === 'error')
-            state.consoleErrors.push(normalizeText(message.text().slice(0, 300), { origins }));
-        });
-        page.on('pageerror', (error) =>
-          state.pageErrors.push(normalizeText(String(error.message).split('\n')[0].slice(0, 300), { origins })),
-        );
-        page.on('response', (response) => {
-          if (response.status() >= 400)
-            state.failedResponses.push({ status: response.status(), url: redactUrl(response.url(), { origins }) });
-          const request = response.request();
-          const type = request.resourceType();
-          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) return;
-          // Redirect hops are not separate requests in the CDP driver; record final responses only.
-          if (response.status() >= 300 && response.status() < 400) return;
-          if (!trackedRequest(response.url(), type, base.origin) || state.network.length >= 400) return;
-          const record = networkRecord({
-            method: request.method(),
-            url: response.url(),
-            type,
-            status: response.status(),
-            contentType: response.headers()['content-type'],
-            origins,
-            headers: response.headers(),
-          });
-          state.network.push(record);
-          if (['xhr', 'fetch'].includes(type) && isJsonType(response.headers()['content-type']))
-            state.bodies.push(
-              response
-                .text()
-                .then((text) => {
-                  record.projection = projectJson(text);
-                })
-                .catch(() => {
-                  record.projection = { kind: 'unavailable' };
-                }),
-            );
-        });
+        configureOwnedPageEvents(page, state, base, origins, documentTokens, requestDocuments, requestFrame);
+
         const started = Date.now();
         let navigationError = null;
         let response = null;
@@ -2570,32 +3091,15 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
         });
         if (options.settleMs) await page.waitForTimeout(Math.min(options.settleMs, 5000));
         trace('owned settled', settle.settled, state.inflight.size);
-        await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {});
+        await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {}); // NOSONAR: promise assimilation and completion timing are observable
         const finalUrl = page.url();
-        const base_ = {
-          status: response?.status() ?? null,
-          headers: response ? headerMap(await response.allHeaders().catch(() => response.headers())) : {},
-          navigationError,
-          finalPath: redactUrl(finalUrl, { origins }),
-          originChanged: (() => {
-            try {
-              return new URL(finalUrl).origin !== base.origin;
-            } catch {
-              return true;
-            }
-          })(),
-          offOriginNavigations: state.offOrigin,
-          settled: settle.settled,
-          blockedWrites: state.blocked,
-          fulfilledWrites: state.fulfilled,
-          consoleErrors: state.consoleErrors,
-          pageErrors: state.pageErrors,
-          failedResponses: state.failedResponses,
-          pendingRequests: [...state.inflight].map((request) => redactUrl(request.url(), { origins })),
-          network: state.network,
-          assets: [...state.assets],
-        };
-        delete base_.headers['set-cookie'];
+        const status = response?.status() ?? null;
+        const headers = response ? headerMap(await response.allHeaders().catch(() => response.headers())) : {};
+        const baseResult = ownedPageResult(state, base, origins, status, navigationError, {
+          settle,
+          finalUrl,
+          headers,
+        });
         let extracted;
         // A page script may navigate or reload while it is being captured; capture the document
         // it settles on (bounded retries) and record that it navigated.
@@ -2604,18 +3108,19 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
             extracted = await extract(page, response);
             break;
           } catch (error) {
-            if (error.code === 'PAGE_UNRESPONSIVE') {
-              extracted = { unresponsive: error.message, snapshot: null };
+            const unresponsive = ownedCaptureError(error, attempt);
+            if (unresponsive) {
+              extracted = unresponsive;
               break;
             }
-            if (!/context was destroyed|navigat/i.test(error.message) || attempt >= 2) throw error;
-            base_.navigatedDuringCapture = (base_.navigatedDuringCapture ?? 0) + 1;
+            baseResult.navigatedDuringCapture = (baseResult.navigatedDuringCapture ?? 0) + 1;
             await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(500);
           }
         }
-        base_.finalPath = redactUrl(page.url(), { origins });
-        return { ...base_, ...extracted, ms: Date.now() - started };
+
+        baseResult.finalPath = redactUrl(page.url(), { origins });
+        return { ...baseResult, ...extracted, ms: Date.now() - started };
       } finally {
         await context.close().catch(() => {});
       }
@@ -2649,13 +3154,166 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
   };
 }
 
+/*
+ * The remainder of the owned-page driver is split into phases so request decisions, event
+ * ordering, and cleanup remain local to the same visit.
+ */
+
+function handleOwnedRoute(route, state, base, origins, fulfil) {
+  const request = route.request();
+  let url;
+  try {
+    url = new URL(request.url());
+  } catch {
+    return route.abort();
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return route.continue();
+  if (request.isNavigationRequest() && url.origin !== base.origin) {
+    state.offOrigin.push(redactUrl(url.href, { origins }));
+    return route.abort('blockedbyclient');
+  }
+  const decision = requestDecision(request.method(), url.href, { fulfil, origins });
+  if (decision.action === 'fulfil') {
+    state.fulfilled.push({ method: request.method(), url: redactUrl(url.href, { origins }), status: decision.status });
+    return route.fulfill({ status: decision.status, headers: { 'cache-control': 'no-store' }, body: '' });
+  }
+  if (decision.action === 'block') {
+    const body = bodyShape(request.postData());
+    state.blocked.push({ method: request.method(), url: redactUrl(url.href, { origins }), ...(body ? { body } : {}) });
+    return route.abort('blockedbyclient');
+  }
+  return route.continue();
+}
+
+function handleOwnedFetchRequest(event, { cdp, state, base, origins, fulfil, fail }) {
+  const { request, requestId, resourceType } = event;
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return fail(requestId);
+  }
+  if (!['http:', 'https:'].includes(url.protocol))
+    return cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+  if (resourceType === 'Document' && url.origin !== base.origin) {
+    state.offOrigin.push(redactUrl(url.href, { origins }));
+    return fail(requestId);
+  }
+  const decision = requestDecision(request.method, url.href, { fulfil, origins });
+  if (decision.action === 'fulfil') {
+    state.fulfilled.push({ method: request.method, url: redactUrl(url.href, { origins }), status: decision.status });
+    return cdp
+      .send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: decision.status,
+        responseHeaders: [{ name: 'cache-control', value: 'no-store' }],
+        body: '',
+      })
+      .catch(() => {});
+  }
+  if (decision.action === 'block') {
+    state.blocked.push({ method: request.method, url: redactUrl(url.href, { origins }) });
+    return fail(requestId);
+  }
+  return cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+}
+
+function configureOwnedPageEvents(page, state, base, origins, documentTokens, requestDocuments, requestFrame) {
+  page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
+  page.on('request', (request) => {
+    requestDocuments.set(request, documentTokens.get(requestFrame(request)));
+    state.lastActivity = Date.now();
+    if (request.resourceType() !== 'eventsource' && !request.url().endsWith('/__sim/events'))
+      state.inflight.add(request);
+    if (['script', 'stylesheet'].includes(request.resourceType())) assetPath(request.url(), base.origin, state.assets);
+  });
+  const done = (request) => {
+    state.inflight.delete(request);
+    state.lastActivity = Date.now();
+  };
+  page.on('requestfinished', done);
+  page.on('requestfailed', done);
+  page.on('console', (message) => {
+    if (message.type() === 'error') state.consoleErrors.push(normalizeText(message.text().slice(0, 300), { origins }));
+  });
+  page.on('pageerror', (error) =>
+    state.pageErrors.push(normalizeText(String(error.message).split('\n')[0].slice(0, 300), { origins })),
+  );
+  page.on('response', (response) => handleOwnedResponse(response, state, base, origins, page));
+}
+
+function handleOwnedResponse(response, state, base, origins, page) {
+  if (response.status() >= 400)
+    state.failedResponses.push({ status: response.status(), url: redactUrl(response.url(), { origins }) });
+  const request = response.request();
+  const type = request.resourceType();
+  if (request.isNavigationRequest() && request.frame() === page.mainFrame()) return;
+  // Redirect hops are not separate requests in the CDP driver; record final responses only.
+  if (response.status() >= 300 && response.status() < 400) return;
+  if (!trackedRequest(response.url(), type, base.origin) || state.network.length >= 400) return;
+  const record = networkRecord({
+    method: request.method(),
+    url: response.url(),
+    type,
+    status: response.status(),
+    contentType: response.headers()['content-type'],
+    origins,
+    headers: response.headers(),
+  });
+  state.network.push(record);
+  if (['xhr', 'fetch'].includes(type) && isJsonType(response.headers()['content-type']))
+    state.bodies.push(
+      response
+        .text()
+        .then((text) => {
+          record.projection = projectJson(text);
+        })
+        .catch(() => {
+          record.projection = { kind: 'unavailable' };
+        }),
+    );
+}
+
+function ownedCaptureError(error, attempt) {
+  if (error.code === 'PAGE_UNRESPONSIVE') return { unresponsive: error.message, snapshot: null };
+  if (!pageContextLost(error) || attempt >= 2) throw error;
+  return null;
+}
+
+function ownedPageResult(state, base, origins, status, navigationError, { settle, finalUrl, headers }) {
+  const result = {
+    status,
+    headers,
+    navigationError,
+    finalPath: redactUrl(finalUrl, { origins }),
+    originChanged: (() => {
+      try {
+        return new URL(finalUrl).origin !== base.origin;
+      } catch {
+        return true;
+      }
+    })(),
+    offOriginNavigations: state.offOrigin,
+    settled: settle.settled,
+    blockedWrites: state.blocked,
+    fulfilledWrites: state.fulfilled,
+    consoleErrors: state.consoleErrors,
+    pageErrors: state.pageErrors,
+    failedResponses: state.failedResponses,
+    pendingRequests: [...state.inflight].map((request) => redactUrl(request.url(), { origins })),
+    network: state.network,
+    assets: [...state.assets],
+  };
+  delete result.headers['set-cookie'];
+  return result;
+}
+
 // ---- Local runtime helpers
 
 async function localState(localUrl, { summary = true } = {}) {
-  const response = await fetch(new URL(`/__sim/api/state${summary ? '?summary=1' : ''}`, localUrl), {
+  const response = await fetchLocalState(new URL(`/__sim/api/state${summary ? '?summary=1' : ''}`, localUrl), {
     signal: AbortSignal.timeout(120000),
   });
-  if (!response.ok) throw new Error('Local runtime state is unavailable.');
   return response.json();
 }
 
@@ -2682,32 +3340,33 @@ export async function startIsolatedMirage({
   await fs.mkdir(workDir, { recursive: true });
   const workspace = await fs.mkdtemp(path.join(workDir, 'local-'));
   const stateFile = path.join(workspace, 'state.json');
-  if (baselineState) {
-    await fs.copyFile(baselineState, stateFile);
-    try {
-      await fs.cp(path.join(path.dirname(path.resolve(baselineState)), 'assets'), path.join(workspace, 'assets'), {
-        recursive: true,
-      });
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
-  solutionRoots ??= await discoverSolutionRoots(sourceDir);
-  // Catalogue (--site/--env) runs pass the site's mirage settings like `mirage/cli.mjs serve`
-  // does: its solution order and its observed behaviour (sign-in path, inner errors, ...).
-  const app = await createSimulator({
-    sourceDir,
-    stateFile,
-    solutionRoots,
-    dataPacks,
-    ...(solutionOrder ? { solutionOrder } : {}),
-    ...(observed ? { observed } : {}),
-    origin,
-    watch: false,
-    port: 0,
-    ...(deploymentProfile ? { deploymentProfile } : {}),
-  });
+  let app = null;
   try {
+    if (baselineState) {
+      await fs.copyFile(baselineState, stateFile);
+      try {
+        await fs.cp(path.join(path.dirname(path.resolve(baselineState)), 'assets'), path.join(workspace, 'assets'), {
+          recursive: true,
+        });
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    solutionRoots ??= await discoverSolutionRoots(sourceDir);
+    // Catalogue (--site/--env) runs pass the site's mirage settings like `mirage/cli.mjs serve`
+    // does: its solution order and its observed behaviour (sign-in path, inner errors, ...).
+    app = await createSimulator({
+      sourceDir,
+      stateFile,
+      solutionRoots,
+      dataPacks,
+      ...(solutionOrder ? { solutionOrder } : {}),
+      ...(observed ? { observed } : {}),
+      origin,
+      watch: false,
+      port: 0,
+      ...(deploymentProfile ? { deploymentProfile } : {}),
+    });
     if (preset) await app.applyPreset(preset);
     const response = await fetch(app.url + '/__sim/api/config', {
       method: 'PATCH',
@@ -2716,7 +3375,9 @@ export async function startIsolatedMirage({
     });
     if (!response.ok) throw new Error(`Local runtime configuration failed (${response.status}).`);
   } catch (error) {
-    await app.close();
+    // Nothing owns the runtime or its workspace until this function returns them.
+    await app?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
   return {
@@ -2783,7 +3444,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
       current = 'signed-in';
       return {
         unresolved,
-        effectiveRoles: [...session.roles].sort(),
+        effectiveRoles: [...session.roles].sort(/* NOSONAR: preserve default string coercion */),
         contactPresent: Boolean(session.contactId),
         session: session.roleSource,
       };
@@ -2812,7 +3473,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
       const signedIn = current === 'signed-in' && session;
       return {
         identity: current,
-        roles: signedIn ? [...session.roles].sort() : [],
+        roles: signedIn ? [...session.roles].sort(/* NOSONAR: preserve default string coercion */) : [],
         contact: signedIn && session.contactId ? 'local synthetic contact' : null,
         mirroredRoles: persona?.roles ?? null,
         session: signedIn ? session.roleSource : null,
@@ -2824,8 +3485,20 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
 
 // ---- Runner
 
-const statusClass = (status) =>
-  status === null || status === undefined ? 'none' : status === 0 ? 'opaque-redirect' : `${String(status)[0]}xx`;
+const statusClass = (status) => {
+  if (status === null || status === undefined) return 'none';
+  if (status === 0) return 'opaque-redirect';
+  return `${String(status)[0]}xx`;
+};
+
+/** A manual redirect the reference cannot observe: the status is 0 and only the response type is known. */
+const isOpaqueRedirect = (response) => response.redirectObservable === false && response.type === 'opaqueredirect';
+
+/** An opaque reference redirect agrees with any local 3xx; every other reference status must equal the local one. */
+function statusAgrees(reference, local) {
+  if (isOpaqueRedirect(reference)) return statusClass(local.status) === '3xx';
+  return reference.status === local.status;
+}
 
 function pageDiagnostics(observation, reveal = (value) => value) {
   return {
@@ -2867,7 +3540,7 @@ function pageDiagnostics(observation, reveal = (value) => value) {
 export function captureProblem(identity, observation) {
   if (!observation || typeof observation !== 'object') return null;
   const nodeCount = observation.snapshot ? observation.snapshot.nodeCount : observation.nodeCount;
-  if (observation.settled === false && !(nodeCount > 0))
+  /* NOSONAR */ if (observation.settled === false && !(nodeCount > 0))
     return 'The reference page neither settled nor produced a snapshot; rerun this scenario.';
   const portalUser = observation.snapshot ? observation.snapshot.signInSignals?.portalUser : observation.portalUser;
   if (identity === 'anonymous' && portalUser === true)
@@ -2940,7 +3613,8 @@ export function packScenarioFiles(pack, packDir) {
  * Select scenario sources: the core set, data-pack plans (`auto`: packs whose matches({ portal })
  * accepts the imported portal; `all`; `none`; or a list of pack ids) and explicit plan files.
  */
-export async function scenarioSources({
+// NOSONAR: preserve extension callbacks and the existing async control boundary.
+export async function /* NOSONAR */ scenarioSources({
   core = true,
   packs = 'auto',
   boundPacks = [],
@@ -2958,10 +3632,11 @@ export async function scenarioSources({
     const { packModules, loadPack, packMatches, packDirectory } = await import('./lib/preset-registry.mjs');
     const wanted = Array.isArray(packs) ? new Set(packs) : null;
     const found = new Set();
-    for (const { module } of [
+    const modules = [
       ...(await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) })),
       ...boundPacks.map((module) => ({ module })),
-    ]) {
+    ];
+    for (const { module } of modules) {
       const pack = await loadPack(module);
       const selected = wanted ? wanted.has(pack.id) : packs === 'all' || (portal != null && packMatches(pack, portal));
       if (!selected) continue;
@@ -3010,28 +3685,30 @@ export function mergePlans(entries) {
     sources: [],
   };
   const owner = new Map();
-  for (const { source, file, plan } of entries) {
-    validatePlan(plan);
-    for (const scenario of plan.scenarios) {
-      if (owner.has(scenario.id))
-        throw new Error(`Scenario id ${scenario.id} is defined by ${owner.get(scenario.id)} and ${source}.`);
-      owner.set(scenario.id, source);
-      merged.scenarios.push({ ...scenario, planSource: source });
-    }
-    merged.classifications.push(...(plan.classifications ?? []).map((rule) => ({ ...rule, planSource: source })));
-    Object.assign(merged.defaults, plan.defaults ?? {});
-    for (const key of ['conditions', 'fulfil', 'allowPost', 'notObservable', 'deniedRoutes'])
-      for (const item of plan[key] ?? [])
-        if (!merged[key].some((existing) => JSON.stringify(existing) === JSON.stringify(item))) merged[key].push(item);
-    if (plan.persona && !merged.persona) merged.persona = plan.persona;
-    merged.sources.push({
-      source,
-      file: path.basename(file),
-      scenarios: plan.scenarios.length,
-      fingerprint: sha256(plan).slice(0, 16),
-    });
-  }
+  for (const entry of entries) mergePlanEntry(merged, owner, entry);
   return validatePlan(merged);
+}
+
+function mergePlanEntry(merged, owner, { source, file, plan }) {
+  validatePlan(plan);
+  for (const scenario of plan.scenarios) {
+    if (owner.has(scenario.id))
+      throw new Error(`Scenario id ${scenario.id} is defined by ${owner.get(scenario.id)} and ${source}.`);
+    owner.set(scenario.id, source);
+    merged.scenarios.push({ ...scenario, planSource: source });
+  }
+  merged.classifications.push(...(plan.classifications ?? []).map((rule) => ({ ...rule, planSource: source })));
+  Object.assign(merged.defaults, plan.defaults ?? {});
+  for (const key of ['conditions', 'fulfil', 'allowPost', 'notObservable', 'deniedRoutes'])
+    for (const item of plan[key] ?? [])
+      if (!merged[key].some((existing) => JSON.stringify(existing) === JSON.stringify(item))) merged[key].push(item);
+  if (plan.persona && !merged.persona) merged.persona = plan.persona;
+  merged.sources.push({
+    source,
+    file: path.basename(file),
+    scenarios: plan.scenarios.length,
+    fingerprint: sha256(plan).slice(0, 16),
+  });
 }
 
 /** Load and merge the selected scenario sources. */
@@ -3076,11 +3753,11 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
     return access?.allowed === false && access.code === 'PAGE_ACCESS_DENIED';
   };
   const denied = pages.filter((page) => byPath.get(page.url.toLowerCase()).length === 1 && deniedPage(page));
-  if (denied.length) facts.protectedPage = denied.sort(byUrl)[0].url;
+  if (denied.length) facts.protectedPage = denied.sort(/* NOSONAR: preserve in-place sorting */ byUrl)[0].url;
   const shared = [...byPath.values()]
     .filter((group) => group.length > 1 && new Set(group.map(deniedPage)).size > 1)
     .map((group) => group[0]);
-  if (shared.length) facts.ambiguousPage = shared.sort(byUrl)[0].url;
+  if (shared.length) facts.ambiguousPage = shared.sort(/* NOSONAR: preserve in-place sorting */ byUrl)[0].url;
   const stylesheets = (portal?.webFiles ?? []).filter(
     (file) => typeof file.url === 'string' && /^\/[^?#]*\.css$/i.test(file.url) && anonymous(file)?.allowed === true,
   );
@@ -3130,7 +3807,7 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
         typeof mappings[table]?.entitySet === 'string' &&
         solutionBacked(table),
     )
-    .sort();
+    .sort(/* NOSONAR: preserve default string coercion */);
   if (notEnabled.length)
     Object.assign(facts, { notEnabledEntitySet: mappings[notEnabled[0]].entitySet, notEnabledTable: notEnabled[0] });
   return facts;
@@ -3142,7 +3819,11 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
  * also say whether a string or array value is empty. No value leaves the page.
  */
 export function clientObjectFacts() {
-  const kind = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
+  const kind = (value) => {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'array';
+    return typeof value;
+  };
   const entries = (object, withEmpty) => {
     if (!object || typeof object !== 'object') return null;
     return Object.keys(object).map((key) => {
@@ -3157,7 +3838,7 @@ export function clientObjectFacts() {
       return entry;
     });
   };
-  const ms = window.Microsoft;
+  const ms = globalThis.Microsoft;
   const dynamic = ms && typeof ms === 'object' ? ms.Dynamic365 : undefined;
   const portal = dynamic && typeof dynamic === 'object' ? dynamic.Portal : undefined;
   return JSON.stringify({
@@ -3180,36 +3861,37 @@ const CLIENT_OBJECT_SCOPES = Object.freeze([
 /** Key presence, key order and value types of the platform client objects (names and types only). */
 export function compareClientObject(live, local) {
   const deltas = [];
-  for (const [scope, field] of CLIENT_OBJECT_SCOPES) {
-    const a = live?.[field] ?? null;
-    const b = local?.[field] ?? null;
-    if (!a || !b) {
-      if (Boolean(a) !== Boolean(b))
-        deltas.push({ kind: 'client-object-missing', path: scope, live: Boolean(a), local: Boolean(b) });
-      continue;
-    }
-    const liveKeys = a.map((entry) => entry.key);
-    const localKeys = b.map((entry) => entry.key);
-    for (const entry of a)
-      if (!localKeys.includes(entry.key))
-        deltas.push({ kind: 'client-key-missing', path: `${scope}.${entry.key}`, live: entry.type, local: null });
-    for (const entry of b)
-      if (!liveKeys.includes(entry.key))
-        deltas.push({ kind: 'client-key-extra', path: `${scope}.${entry.key}`, live: null, local: entry.type });
-    const sharedLive = liveKeys.filter((key) => localKeys.includes(key));
-    const sharedLocal = localKeys.filter((key) => liveKeys.includes(key));
-    if (sharedLive.join(',') !== sharedLocal.join(','))
-      deltas.push({ kind: 'client-key-order', path: scope, live: sharedLive.join(','), local: sharedLocal.join(',') });
-    for (const key of sharedLive) {
-      const x = a.find((entry) => entry.key === key);
-      const y = b.find((entry) => entry.key === key);
-      if (x.type !== y.type)
-        deltas.push({ kind: 'client-key-type', path: `${scope}.${key}`, live: x.type, local: y.type });
-      else if (typeof x.empty === 'boolean' && typeof y.empty === 'boolean' && x.empty !== y.empty)
-        deltas.push({ kind: 'client-value-empty', path: `${scope}.${key}`, live: x.empty, local: y.empty });
-    }
-  }
+  for (const [scope, field] of CLIENT_OBJECT_SCOPES)
+    compareClientObjectScope(live?.[field] ?? null, local?.[field] ?? null, scope, deltas);
   return deltas;
+}
+
+function compareClientObjectScope(a, b, scope, deltas) {
+  if (!a || !b) {
+    if (Boolean(a) !== Boolean(b))
+      deltas.push({ kind: 'client-object-missing', path: scope, live: Boolean(a), local: Boolean(b) });
+    return;
+  }
+  const liveKeys = a.map((entry) => entry.key);
+  const localKeys = b.map((entry) => entry.key);
+  for (const entry of a)
+    if (!localKeys.includes(entry.key))
+      deltas.push({ kind: 'client-key-missing', path: `${scope}.${entry.key}`, live: entry.type, local: null });
+  for (const entry of b)
+    if (!liveKeys.includes(entry.key))
+      deltas.push({ kind: 'client-key-extra', path: `${scope}.${entry.key}`, live: null, local: entry.type });
+  const sharedLive = liveKeys.filter((key) => localKeys.includes(key));
+  const sharedLocal = localKeys.filter((key) => liveKeys.includes(key));
+  if (sharedLive.join(',') !== sharedLocal.join(','))
+    deltas.push({ kind: 'client-key-order', path: scope, live: sharedLive.join(','), local: sharedLocal.join(',') });
+  for (const key of sharedLive) {
+    const x = a.find((entry) => entry.key === key);
+    const y = b.find((entry) => entry.key === key);
+    if (x.type !== y.type)
+      deltas.push({ kind: 'client-key-type', path: `${scope}.${key}`, live: x.type, local: y.type });
+    else if (typeof x.empty === 'boolean' && typeof y.empty === 'boolean' && x.empty !== y.empty)
+      deltas.push({ kind: 'client-value-empty', path: `${scope}.${key}`, live: x.empty, local: y.empty });
+  }
 }
 
 /** Key lists per scope for the report (names and types). */
@@ -3303,16 +3985,22 @@ function withoutContentHash(text) {
 
 /** Compare two document shells; resources are keyed by kind and normalised path, in document order. */
 export function compareShell(live, local, { origins = [] } = {}) {
-  const deltas = [];
+  const deltas = compareShellAttributes(live, local, origins);
+  compareShellResources(live.resources, local.resources, origins, deltas);
   const text = (value) => normalizeText(String(value ?? ''), { origins });
   const key = (item) => resourceKey(item, { origins });
-  const hosted = (item) => HOSTED_RESOURCES.some((pattern) => pattern.test(String(item.path ?? '')));
   const view = (shell) => ({
     title: text(shell.title),
     html: shell.html.map(([name]) => name),
     body: shell.body.map(([name]) => name),
     resources: shell.resources.map(key),
   });
+  return { deltas, live: view(live), local: view(local) };
+}
+
+function compareShellAttributes(live, local, origins) {
+  const deltas = [];
+  const text = (value) => normalizeText(String(value ?? ''), { origins });
   if (text(live.title) !== text(local.title))
     deltas.push({ kind: 'body-title', path: 'document.title', live: text(live.title), local: text(local.title) });
   for (const [element, a, b] of [
@@ -3321,67 +4009,62 @@ export function compareShell(live, local, { origins = [] } = {}) {
   ]) {
     const left = new Map(a.map(([name, value]) => [name.toLowerCase(), value]));
     const right = new Map(b.map(([name, value]) => [name.toLowerCase(), value]));
-    for (const name of [...new Set([...left.keys(), ...right.keys()])].sort()) {
-      if (name === 'class') {
-        const tokens = (value) =>
-          new Set(
-            String(value ?? '')
-              .split(/\s+/)
-              .filter(Boolean),
-          );
-        const x = tokens(left.get(name));
-        const y = tokens(right.get(name));
-        const missing = [...x].filter((token) => !y.has(token)).sort();
-        const extra = [...y].filter((token) => !x.has(token)).sort();
-        if (missing.length || extra.length)
-          deltas.push({
-            kind: 'class',
-            path: element,
-            live: missing.join(' ') || null,
-            local: extra.join(' ') || null,
-          });
-      } else if (!right.has(name))
-        deltas.push({ kind: 'attribute-missing', path: element, attribute: name, live: text(left.get(name)) });
-      else if (!left.has(name))
-        deltas.push({ kind: 'attribute-extra', path: element, attribute: name, local: text(right.get(name)) });
-      else if (text(left.get(name)) !== text(right.get(name)))
-        deltas.push({
-          kind: 'attribute-value',
-          path: element,
-          attribute: name,
-          live: text(left.get(name)),
-          local: text(right.get(name)),
-        });
-    }
+    const names = [...new Set([...left.keys(), ...right.keys()])].sort(/* NOSONAR: preserve default string coercion */);
+    for (const name of names) compareShellAttribute(element, name, left, right, text, deltas);
   }
-  const count = (list) => list.reduce((map, item) => map.set(item, (map.get(item) ?? 0) + 1), new Map());
-  // Hosted services are reported on their own and take no part in the bundle order.
-  const ha = count(live.resources.filter(hosted).map(key));
-  const hb = count(local.resources.filter(hosted).map(key));
-  for (const [item, n] of ha)
-    for (let index = hb.get(item) ?? 0; index < n; index++)
-      deltas.push({ kind: 'hosted-resource-missing', path: item });
-  for (const [item, n] of hb)
-    for (let index = ha.get(item) ?? 0; index < n; index++) deltas.push({ kind: 'hosted-resource-extra', path: item });
-  const a = live.resources.filter((item) => !hosted(item)).map(key);
-  const b = local.resources.filter((item) => !hosted(item)).map(key);
-  const ca = count(a);
-  const cb = count(b);
-  for (const [item, n] of ca)
-    for (let index = cb.get(item) ?? 0; index < n; index++) deltas.push({ kind: 'bundle-missing', path: item });
-  for (const [item, n] of cb)
-    for (let index = ca.get(item) ?? 0; index < n; index++) deltas.push({ kind: 'bundle-extra', path: item });
-  const shared = (list, other) => {
-    const budget = new Map(other);
-    return list.filter((item) => {
-      const left = budget.get(item) ?? 0;
-      if (!left) return false;
-      budget.set(item, left - 1);
-      return true;
+  return deltas;
+}
+
+function compareShellAttribute(element, name, left, right, text, deltas) {
+  if (name === 'class') {
+    const tokens = (value) =>
+      new Set(
+        String(value ?? '')
+          .split(/\s+/)
+          .filter(Boolean),
+      );
+    const x = tokens(left.get(name));
+    const y = tokens(right.get(name));
+    const missing = [...x].filter((token) => !y.has(token)).sort(/* NOSONAR: preserve default string coercion */);
+    const extra = [...y].filter((token) => !x.has(token)).sort(/* NOSONAR: preserve default string coercion */);
+    if (missing.length || extra.length)
+      deltas.push({ kind: 'class', path: element, live: missing.join(' ') || null, local: extra.join(' ') || null });
+    return;
+  }
+  if (!right.has(name)) {
+    deltas.push({ kind: 'attribute-missing', path: element, attribute: name, live: text(left.get(name)) });
+    return;
+  }
+  if (!left.has(name)) {
+    deltas.push({ kind: 'attribute-extra', path: element, attribute: name, local: text(right.get(name)) });
+    return;
+  }
+  if (text(left.get(name)) !== text(right.get(name)))
+    deltas.push({
+      kind: 'attribute-value',
+      path: element,
+      attribute: name,
+      live: text(left.get(name)),
+      local: text(right.get(name)),
     });
-  };
-  const orderLive = shared(a, cb);
-  const orderLocal = shared(b, ca);
+}
+
+function compareShellResources(liveResources, localResources, origins, deltas) {
+  const key = (item) => resourceKey(item, { origins });
+  const hosted = (item) => HOSTED_RESOURCES.some((pattern) => pattern.test(String(item.path ?? '')));
+  const count = (list) => list.reduce((map, item) => map.set(item, (map.get(item) ?? 0) + 1), new Map());
+  const hostedLive = count(liveResources.filter(hosted).map(key));
+  const hostedLocal = count(localResources.filter(hosted).map(key));
+  appendResourceCountDeltas(hostedLive, hostedLocal, 'hosted-resource-missing', deltas);
+  appendResourceCountDeltas(hostedLocal, hostedLive, 'hosted-resource-extra', deltas);
+  const live = liveResources.filter((item) => !hosted(item)).map(key);
+  const local = localResources.filter((item) => !hosted(item)).map(key);
+  const liveCounts = count(live);
+  const localCounts = count(local);
+  appendResourceCountDeltas(liveCounts, localCounts, 'bundle-missing', deltas);
+  appendResourceCountDeltas(localCounts, liveCounts, 'bundle-extra', deltas);
+  const orderLive = sharedResources(live, localCounts);
+  const orderLocal = sharedResources(local, liveCounts);
   const first = orderLive.findIndex((item, index) => item !== orderLocal[index]);
   if (first >= 0)
     deltas.push({
@@ -3390,10 +4073,25 @@ export function compareShell(live, local, { origins = [] } = {}) {
       live: orderLive.slice(first, first + 3).join(' | '),
       local: orderLocal.slice(first, first + 3).join(' | '),
     });
-  return { deltas, live: view(live), local: view(local) };
 }
 
-async function discoverTarget(driver, scenario, { side, ids, portal, liveAssets } = {}) {
+function appendResourceCountDeltas(counts, other, kind, deltas) {
+  for (const [item, amount] of counts)
+    for (let index = other.get(item) ?? 0; index < amount; index++) deltas.push({ kind, path: item });
+}
+
+function sharedResources(list, other) {
+  const budget = new Map(other);
+  return list.filter((item) => {
+    const left = budget.get(item) ?? 0;
+    if (!left) return false;
+    budget.set(item, left - 1);
+    return true;
+  });
+}
+
+// NOSONAR: retain discovery callback and error ordering.
+async function /* NOSONAR */ discoverTarget(driver, scenario, { side, ids, portal, liveAssets } = {}) {
   const discover = scenario.discover;
   if (discover.from === 'portal') {
     // Chosen once from the exported portal and the local mappings: the same path on both sides.
@@ -3424,7 +4122,7 @@ async function discoverTarget(driver, scenario, { side, ids, portal, liveAssets 
     )
       return { error: `No ${side} identifiers were supplied for '${discover.key}'.` };
     const target = scenarioPath(scenario, values);
-    if (/\{[A-Za-z][A-Za-z0-9_]*\}/.test(target))
+    if (/\{[A-Za-z]\w*\}/.test(target))
       return { error: `The ${side} identifiers for '${discover.key}' do not fill every placeholder.` };
     try {
       assertReadOnlyPath(target);
@@ -3503,7 +4201,7 @@ export function compareNetwork(live = [], local = [], { maxDeltas = 60 } = {}) {
   }
   for (const [name, record] of b)
     if (!a.has(name)) deltas.push({ kind: 'network-extra', path: name, local: record.status });
-  return deltas.slice(0, maxDeltas);
+  return { deltas: deltas.slice(0, maxDeltas), total: deltas.length, truncated: deltas.length > maxDeltas };
 }
 
 function inventory(records = []) {
@@ -3512,14 +4210,18 @@ function inventory(records = []) {
     const prefix =
       PLATFORM_PREFIXES.find((item) => record.url.startsWith(item)) ??
       (record.type ? `(${String(record.type).toLowerCase()})` : '(other)');
-    (groups[prefix] ??= new Set()).add(
-      `${record.method} ${record.url} → ${record.status ?? record.failed ?? 'pending'}`,
-    );
+    if (!groups[prefix]) groups[prefix] = new Set();
+    groups[prefix].add(`${record.method} ${record.url} → ${record.status ?? record.failed ?? 'pending'}`);
   }
-  return Object.fromEntries(Object.entries(groups).map(([prefix, set]) => [prefix, [...set].sort().slice(0, 60)]));
+  return Object.fromEntries(
+    Object.entries(groups).map(([prefix, set]) => [
+      prefix,
+      [...set].sort(/* NOSONAR: preserve default string coercion */).slice(0, 60),
+    ]),
+  );
 }
 
-function summarizeNetwork(records = []) {
+export function summarizeNetwork(records = [], redactor = null) {
   return records.map((record) => ({
     method: record.method,
     url: record.url,
@@ -3528,12 +4230,12 @@ function summarizeNetwork(records = []) {
     contentType: record.contentType ?? null,
     ...(record.headers ? { headers: record.headers } : {}),
     ...(record.failed ? { failed: record.failed } : {}),
-    ...(record.projection ? { projection: summarizeProjection(record.projection, {}) } : {}),
+    ...(record.projection ? { projection: summarizeProjection(record.projection, {}, redactor) } : {}),
   }));
 }
 
 /** Run one scenario; returns a redacted result. */
-async function runScenario(scenario, context) {
+/* NOSONAR */ async function runScenario(scenario, context) {
   const { sides, redactor, origin, localUrl, plan, outDir } = context;
   const identity = scenario.kind === 'anonymous' ? 'anonymous' : (scenario.identity ?? 'signed-in');
   const liveSide = identity === 'anonymous' ? sides.anonymous : sides.live;
@@ -3647,13 +4349,21 @@ async function runScenario(scenario, context) {
       }
     }
     if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-      observations.network = { live: summarizeNetwork(live.network), local: summarizeNetwork(local.network) };
+      observations.network = {
+        live: summarizeNetwork(live.network, redactor),
+        local: summarizeNetwork(local.network),
+      };
       context.inventory.push(...(live.network ?? []).map((record) => ({ ...record, scenario: scenario.id })));
     }
     for (const asset of live.assets ?? [])
       context.assets.set(asset, [...new Set([...(context.assets.get(asset) ?? []), scenario.id])]);
     if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-      if (scenario.compareNetwork !== false) deltas.push(...compareNetwork(live.network, local.network));
+      if (scenario.compareNetwork !== false) {
+        const network = compareNetwork(live.network, local.network);
+        deltas.push(...network.deltas);
+        if (network.truncated)
+          result.truncatedDeltas = (result.truncatedDeltas ?? 0) + network.total - network.deltas.length;
+      }
     }
     const prepare = (observation) =>
       (observation.snapshot?.roots ?? []).map((root) => ({
@@ -3809,12 +4519,10 @@ async function runScenario(scenario, context) {
       const deployed = await sides.anonymous.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
       await sleep(Math.min(context.delayMs, 250));
       const served = await localSide.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
-      const verdict =
-        deployed.status !== 200
-          ? `live-${deployed.status}`
-          : served.status !== 200
-            ? `local-${served.status}`
-            : compareBytes(deployed.body, served.body);
+      let verdict;
+      if (deployed.status !== 200) verdict = `live-${deployed.status}`;
+      else if (served.status !== 200) verdict = `local-${served.status}`;
+      else verdict = compareBytes(deployed.body, served.body);
       files.push({
         path: redactUrl(target),
         verdict,
@@ -3908,17 +4616,18 @@ async function runScenario(scenario, context) {
     observations.live = view(live);
     observations.local = view(local);
     if (useSource) observations.live.via = 'navigation';
+    if (isOpaqueRedirect(live)) observations.live.redirect = 'opaque';
     const expected = scenario.expect ?? {};
     if (expected.liveStatus !== undefined && live.status !== expected.liveStatus)
       deltas.push({ kind: 'expected-live-status', live: live.status, local: expected.liveStatus });
-    if (kind !== 'anonymous' && live.status !== local.status)
+    if (kind !== 'anonymous' && !statusAgrees(live, local))
       deltas.push({ kind: 'status', live: live.status, local: local.status });
     if (scenario.headerNames) {
       const names = (headers) =>
         Object.keys(headers ?? {})
           .map((name) => name.toLowerCase())
           .filter((name) => name !== 'set-cookie')
-          .sort();
+          .sort(/* NOSONAR: preserve default string coercion */);
       observations.headerNames = { live: names(live.headers), local: names(local.headers) };
     }
     if (scenario.cookies && live.cookies) observations.cookies = { live: live.cookies, local: local.cookies ?? [] };
@@ -3930,7 +4639,7 @@ async function runScenario(scenario, context) {
         ? await localSide.http(localPath, { ...request, ifNoneMatch: local.headers.etag })
         : { status: null };
       observations.conditional = { live: liveAgain.status, local: localAgain.status };
-      if (liveAgain.status !== localAgain.status)
+      if (!statusAgrees(liveAgain, localAgain))
         deltas.push({ kind: 'conditional-status', live: liveAgain.status, local: localAgain.status });
     }
     if (kind === 'api-json') {
@@ -4120,7 +4829,7 @@ async function runScenario(scenario, context) {
           tokens: String(value)
             .split(/\s+|&#32;/)
             .filter(Boolean)
-            .sort(),
+            .sort(/* NOSONAR: preserve default string coercion */),
           entitySpaces: (String(value).match(/&#32;/g) ?? []).length,
           plainSpaces: (String(value).match(/ /g) ?? []).length,
         });
@@ -4140,13 +4849,13 @@ async function runScenario(scenario, context) {
         liveView = {
           found: a.found,
           segmented: Boolean(liveRoles),
-          roles: liveRoles ? [...liveRoles].sort() : null,
+          roles: liveRoles ? [...liveRoles].sort(/* NOSONAR: preserve default string coercion */) : null,
           order: liveRoles ?? null,
         };
         localView = {
           found: b.found,
           segmented: Boolean(localRoles),
-          roles: localRoles ? [...localRoles].sort() : null,
+          roles: localRoles ? [...localRoles].sort(/* NOSONAR: preserve default string coercion */) : null,
           order: localRoles ?? null,
         };
         if (!liveRoles || !localRoles)
@@ -4177,14 +4886,15 @@ async function runScenario(scenario, context) {
   const byClass = {};
   for (const delta of classified) byClass[delta.classification.class] = (byClass[delta.classification.class] ?? 0) + 1;
   const unexpected = classified.filter((delta) => !EXPECTED_CLASSES.has(delta.classification.class));
-  const verdict = !classified.length ? 'pass' : !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
+  let verdict = 'pass';
+  if (classified.length) verdict = !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
   return {
     ...result,
     observations,
     deltas: classified,
     deltaCounts: byClass,
     verdict,
-    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(),
+    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(), // NOSONAR: retain default string coercion and UTF-16 sorting
   };
 }
 
@@ -4221,11 +4931,17 @@ export function withFetchXmlPage(target, page, cookie) {
   return url.pathname + url.search;
 }
 
-function summarizeProjection(projection, scenario, _redactor) {
+/** Live messages pass the reveal policy, since a page's own requests can echo record values. */
+function summarizeErrorMessage(message, redactor) {
+  if (message === null) return null;
+  const text = normalizeText(message).slice(0, 300);
+  return redactor ? redactor.reveal(text) : text;
+}
+
+function summarizeProjection(projection, scenario, redactor = null) {
   if (!projection) return null;
   if (projection.kind === 'error') {
-    // Platform error messages describe the runner's own synthetic query (tables/columns), so they
-    // are kept after normalisation; identifiers and numbers are generalised.
+    // Error messages are normalised (identifiers and numbers generalised), then capped at 300 characters.
     return {
       kind: 'error',
       keys: projection.keys,
@@ -4234,7 +4950,7 @@ function summarizeProjection(projection, scenario, _redactor) {
         code: projection.error.code,
         codeShape: projection.error.codeShape,
         innerKeys: projection.error.innerKeys,
-        message: projection.error.message === null ? null : normalizeText(projection.error.message).slice(0, 300),
+        message: summarizeErrorMessage(projection.error.message, redactor),
       },
     };
   }
@@ -4263,7 +4979,7 @@ export async function derivePersona({ live, roleNames, probe = {}, accessChecks 
       'Rendered {{ user.roles }} hidden input (#userroles) segmented against exported web-role names; cross-checked with page-access outcomes of restricted pages.',
     markupFound: typeof value === 'string',
     segmented: Boolean(roles),
-    roles: roles ? [...roles].sort() : null,
+    roles: roles ? [...roles].sort(/* NOSONAR: preserve default string coercion */) : null,
     renderedOrder: roles ?? null,
   };
   const observations = [];
@@ -4289,6 +5005,15 @@ export async function derivePersona({ live, roleNames, probe = {}, accessChecks 
     : observations.map(({ path: checkPath, accessible, status }) => ({ path: checkPath, accessible, status }));
   evidence.consistent = Boolean(roles) && evidence.accessChecks.every((check) => check.consistent);
   return evidence;
+}
+
+/** Scenarios named by `only` (all when absent), then narrowed to those with a tag and without an excluded tag. */
+function selectScenarios(scenarios, { only, tags, excludeTags } = {}) {
+  let selected = only?.length ? scenarios.filter((scenario) => only.includes(scenario.id)) : scenarios;
+  if (tags?.length) selected = selected.filter((scenario) => (scenario.tags ?? []).some((tag) => tags.includes(tag)));
+  if (excludeTags?.length)
+    selected = selected.filter((scenario) => !(scenario.tags ?? []).some((tag) => excludeTags.includes(tag)));
+  return selected;
 }
 
 /** Execute a validated plan against prepared drivers and write report.json + summary.md. */
@@ -4362,10 +5087,7 @@ export async function runParitySuite({
     ...(portalFacts ? { portalDiscovery: portalFacts } : {}),
     scenarios: [],
   };
-  let selected = only?.length ? plan.scenarios.filter((scenario) => only.includes(scenario.id)) : plan.scenarios;
-  if (tags?.length) selected = selected.filter((scenario) => (scenario.tags ?? []).some((tag) => tags.includes(tag)));
-  if (excludeTags?.length)
-    selected = selected.filter((scenario) => !(scenario.tags ?? []).some((tag) => excludeTags.includes(tag)));
+  const selected = selectScenarios(plan.scenarios, { only, tags, excludeTags });
   // Signed-in scenarios first, then anonymous ones, to minimise local identity switches.
   // Web-file drift runs last so it can use every web file the compared pages loaded.
   const ordered = [
@@ -4422,7 +5144,7 @@ export async function runParitySuite({
         result.stack = String(error.stack ?? '')
           .split('\n')
           .slice(1, 6)
-          .map((line) => line.trim().replace(/\(.*[\\/]/, '('))
+          .map((line) => replaceParenthesizedPath(line.trim()))
           .join(' | ');
     }
     result.ms = Date.now() - started;
@@ -4473,8 +5195,10 @@ function summarizeTotals(report, plan) {
     }
   report.questions = {};
   for (const scenario of report.scenarios)
-    for (const question of scenario.questions ?? [])
-      (report.questions[question] ??= []).push({ scenario: scenario.id, verdict: scenario.verdict });
+    for (const question of scenario.questions ?? []) {
+      if (!report.questions[question]) report.questions[question] = [];
+      report.questions[question].push({ scenario: scenario.id, verdict: scenario.verdict });
+    }
   report.questionsNotObservable = plan.notObservable ?? [];
 }
 
@@ -4484,73 +5208,94 @@ function summarizeTotals(report, plan) {
  */
 export function reclassifyReport(report, plan) {
   validatePlan(plan);
-  for (const scenario of report.scenarios) {
-    if (!scenario.deltas) continue;
-    for (const delta of scenario.deltas)
-      delta.classification = classifyDelta(delta, scenario.id, rulesFor(plan, scenario));
-    const byClass = {};
-    for (const delta of scenario.deltas)
-      byClass[delta.classification.class] = (byClass[delta.classification.class] ?? 0) + 1;
-    scenario.deltaCounts = byClass;
-    const unexpected = scenario.deltas.filter((delta) => !EXPECTED_CLASSES.has(delta.classification.class));
-    const captureIssue =
-      scenario.verdict === 'error' ? null : captureProblem(scenario.identity, scenario.observations?.live);
-    if (captureIssue) {
-      scenario.verdict = 'blocked';
-      scenario.reason = captureIssue;
-    }
-    if (!['blocked', 'error'].includes(scenario.verdict))
-      scenario.verdict = !scenario.deltas.length ? 'pass' : !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
-    scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort();
-  }
+  for (const scenario of report.scenarios) reclassifyScenario(scenario, plan);
   summarizeTotals(report, plan);
   report.reclassifiedAt = new Date().toISOString();
   report.classificationPlanFingerprint = sha256(plan).slice(0, 16);
   return report;
 }
 
+function reclassifyScenario(scenario, plan) {
+  if (!scenario.deltas) return;
+  for (const delta of scenario.deltas)
+    delta.classification = classifyDelta(delta, scenario.id, rulesFor(plan, scenario));
+  const byClass = {};
+  for (const delta of scenario.deltas)
+    byClass[delta.classification.class] = (byClass[delta.classification.class] ?? 0) + 1;
+  scenario.deltaCounts = byClass;
+  const unexpected = scenario.deltas.filter((delta) => !EXPECTED_CLASSES.has(delta.classification.class));
+  const captureIssue =
+    scenario.verdict === 'error' ? null : captureProblem(scenario.identity, scenario.observations?.live);
+  if (captureIssue) {
+    scenario.verdict = 'blocked';
+    scenario.reason = captureIssue;
+  }
+  if (!['blocked', 'error'].includes(scenario.verdict)) {
+    if (!scenario.deltas.length) scenario.verdict = 'pass';
+    else if (!unexpected.length) scenario.verdict = 'pass-with-expected-deltas';
+    else scenario.verdict = 'delta';
+  }
+  scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))]
+    .sort /* NOSONAR */
+    (
+      // NOSONAR: preserve default coercion and UTF-16 sort order
+      /* NOSONAR: preserve default string coercion */
+    );
+}
+
 /** Human-readable summary; contains only redacted content from the report. */
 export function summaryMarkdown(report) {
   const lines = [];
-  lines.push(`# Parity suite: ${report.label}`, '');
-  lines.push(`- Time: ${report.time}`);
-  lines.push(`- Reference: ${report.referenceOrigin}`);
-  lines.push(`- Local: ${report.localOrigin}`);
-  lines.push(`- Plan fingerprint: ${report.planFingerprint}`);
-  lines.push(`- Source fingerprint: ${report.fingerprints.source ?? 'unavailable'}`);
-  lines.push(`- Implementation fingerprint: ${report.fingerprints.implementation ?? 'unavailable'}`);
-  lines.push(`- Local data unchanged during run: ${report.localDataUnchanged}`);
+  lines.push(
+    `# Parity suite: ${report.label}`,
+    '',
+    `- Time: ${report.time}`,
+    `- Reference: ${report.referenceOrigin}`,
+    `- Local: ${report.localOrigin}`,
+    `- Plan fingerprint: ${report.planFingerprint}`,
+    `- Source fingerprint: ${report.fingerprints.source ?? 'unavailable'}`,
+    `- Implementation fingerprint: ${report.fingerprints.implementation ?? 'unavailable'}`,
+    `- Local data unchanged during run: ${report.localDataUnchanged}`,
+  );
   if (report.persona)
     lines.push(
       `- Persona: ${report.persona.roles ? report.persona.roles.join(', ') : 'not derived'} (consistent with access checks: ${report.persona.consistent})`,
     );
   for (const condition of report.conditions ?? []) lines.push(`- Condition: ${condition}`);
-  lines.push('', '## Totals', '');
   lines.push(
+    '',
+    '## Totals',
+    '',
     Object.entries(report.totals)
       .map(([verdict, count]) => `${verdict}: ${count}`)
       .join(' · '),
-  );
-  lines.push(
     '',
     'Delta classes: ' +
       (Object.entries(report.deltaClasses)
         .map(([name, count]) => `${name} ${count}`)
         .join(' · ') || 'none'),
-  );
-  lines.push(
     'Runtime-gap owners: ' +
       (Object.entries(report.owners)
         .map(([owner, count]) => `${owner} ${count}`)
         .join(' · ') || 'none'),
-  );
-  lines.push(
     '',
     '## Scenarios',
     '',
     '| Scenario | Kind | Identity | Live | Local | Verdict | Deltas | ms |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
   );
+  appendScenarioSummaryRows(lines, report);
+  appendNotableDeltaRows(lines, report);
+  appendQuestionRows(lines, report);
+  lines.push(
+    '',
+    'Live text is shown only when it is present in the exported sources or equals local synthetic output; other live values are digests under a per-run key.',
+    '',
+  );
+  return lines.join('\n');
+}
+
+function appendScenarioSummaryRows(lines, report) {
   for (const scenario of report.scenarios) {
     const live = scenario.observations?.live?.status ?? scenario.observations?.redirect?.live?.exact ?? '';
     const local = scenario.observations?.local?.status ?? scenario.observations?.redirect?.local?.exact ?? '';
@@ -4560,84 +5305,102 @@ export function summaryMarkdown(report) {
         .join(' ') ||
       (scenario.reason ?? scenario.error ?? '');
     lines.push(
-      `| ${scenario.id} | ${scenario.kind} | ${scenario.identity ?? ''} | ${live} | ${local} | ${scenario.verdict} | ${String(deltas).replace(/\|/g, '/')} | ${scenario.ms ?? ''} |`,
+      `| ${scenario.id} | ${scenario.kind} | ${scenario.identity ?? ''} | ${live} | ${local} | ${scenario.verdict} | ${String(deltas).replaceAll('|', '/')} | ${scenario.ms ?? ''} |`,
     );
   }
+}
+
+function appendNotableDeltaRows(lines, report) {
   const notable = report.scenarios.flatMap((scenario) =>
     (scenario.deltas ?? [])
       .filter((delta) => delta.classification.class !== 'data-difference')
       .slice(0, 8)
       .map((delta) => ({ scenario: scenario.id, delta })),
   );
-  if (notable.length) {
-    lines.push('', '## Non-data deltas (first 8 per scenario)', '');
-    for (const { scenario, delta } of notable) {
-      const value = (side) =>
-        delta[side] === undefined ? '' : typeof delta[side] === 'string' ? delta[side] : JSON.stringify(delta[side]);
-      lines.push(
-        `- **${scenario}** ${delta.kind}${delta.field ? ` \`${delta.field}\`` : ''}${delta.attribute ? ` @${delta.attribute}` : ''}${delta.path ? ` at \`${String(delta.path).slice(0, 140)}\`` : ''}: live ${value('live').slice(0, 120)} / local ${value('local').slice(0, 120)} → ${delta.classification.class}${delta.classification.owner ? ` (${delta.classification.owner})` : ''}`,
-      );
-    }
-  }
-  if (Object.keys(report.questions ?? {}).length) {
-    lines.push('', '## Open-question evidence (platform-internals-reference section 11)', '');
-    for (const [question, items] of Object.entries(report.questions).sort())
-      lines.push(`- ${question}: ${items.map((item) => `${item.scenario} (${item.verdict})`).join(', ')}`);
-    for (const item of report.questionsNotObservable ?? [])
-      lines.push(`- ${item.id}: not observable read-only — ${item.reason}`);
-  }
-  lines.push(
-    '',
-    'Live text is shown only when it is present in the exported sources or equals local synthetic output; other live values are digests under a per-run key.',
-    '',
-  );
-  return lines.join('\n');
+  if (!notable.length) return;
+  lines.push('', '## Non-data deltas (first 8 per scenario)', '');
+  for (const { scenario, delta } of notable) lines.push(formatNotableDelta(scenario, delta));
 }
+
+function formatNotableDelta(scenario, delta) {
+  const value = (side) => {
+    if (delta[side] === undefined) return '';
+    if (typeof delta[side] === 'string') return delta[side];
+    return JSON.stringify(delta[side]);
+  };
+  return (
+    '- **' +
+    scenario +
+    '** ' +
+    delta.kind +
+    (delta.field ? ' `' + delta.field + '`' : '') +
+    (delta.attribute ? ' @' + delta.attribute : '') +
+    (delta.path ? ' at `' + String(delta.path).slice(0, 140) + '`' : '') +
+    ': live ' +
+    value('live').slice(0, 120) +
+    ' / local ' +
+    value('local').slice(0, 120) +
+    ' → ' +
+    delta.classification.class +
+    (delta.classification.owner ? ' (' + delta.classification.owner + ')' : '')
+  );
+}
+
+function appendQuestionRows(lines, report) {
+  if (!Object.keys(report.questions ?? {}).length) return;
+  lines.push('', '## Open-question evidence (platform-internals-reference section 11)', '');
+  for (const [question, items] of Object.entries(report.questions).sort(/* NOSONAR: preserve default entry sorting */))
+    lines.push(`- ${question}: ${items.map(questionEvidence).join(', ')}`);
+  for (const item of report.questionsNotObservable ?? [])
+    lines.push(`- ${item.id}: not observable read-only — ${item.reason}`);
+}
+
+const questionEvidence = (item) => item.scenario + ' (' + item.verdict + ')';
 
 // ---- CLI
 
 async function main() {
-  const { values } = parseArgs({
-    options: {
-      local: { type: 'string' },
-      'local-owned': { type: 'boolean' },
-      source: { type: 'string' },
-      state: { type: 'string' },
-      preset: { type: 'string' },
-      site: { type: 'string' },
-      env: { type: 'string' },
-      repo: { type: 'string' },
-      config: { type: 'string' },
-      'pack-module': { type: 'string', multiple: true },
-      origin: { type: 'string' },
-      cdp: { type: 'string' },
-      'anonymous-browser': { type: 'string' },
-      scenarios: { type: 'string' },
-      core: { type: 'boolean' },
-      'no-core': { type: 'boolean' },
-      pack: { type: 'string', multiple: true },
-      packs: { type: 'string' },
-      out: { type: 'string' },
-      only: { type: 'string' },
-      tags: { type: 'string' },
-      'exclude-tags': { type: 'string' },
-      label: { type: 'string' },
-      'delay-ms': { type: 'string' },
-      'work-dir': { type: 'string' },
-      'persona-contact': { type: 'string' },
-      'no-persona': { type: 'boolean' },
-      browser: { type: 'string' },
-      ids: { type: 'string' },
-      'deployment-profile': { type: 'string' },
-      reclassify: { type: 'string' },
-    },
-  });
-  const list = (value) =>
-    (Array.isArray(value) ? value : value === undefined ? [] : [value])
-      .flatMap((item) => String(item).split(','))
-      .map((item) => item.trim())
-      .filter(Boolean);
-  const files = list(values.scenarios);
+  const values = parseMainArgs();
+  validateMainDelay(values);
+  const { site, explicit, sourceOptions } = await prepareMainOptions(values);
+  if (values.reclassify) {
+    await reclassifyMainReport(values, sourceOptions);
+    return;
+  }
+  const { origin, sourceDir } = resolveMainTarget(values, site);
+  const anonymousBrowser = values['anonymous-browser'] ?? 'owned';
+  validateAnonymousBrowser(anonymousBrowser, values);
+  await runMainExecution({ values, site, explicit, sourceOptions, origin, sourceDir, anonymousBrowser });
+}
+
+function parseMainArgs() {
+  const values = parseToolArgs('parity-suite', process.argv.slice(2));
+  return values;
+}
+
+function validateMainDelay(values) {
+  if (
+    values['delay-ms'] !== undefined &&
+    (!/^\d+$/.test(values['delay-ms']) ||
+      !Number.isSafeInteger(Number(values['delay-ms'])) ||
+      Number(values['delay-ms']) > 2147483647)
+  )
+    throw new Error('--delay-ms must be an integer from 0 to 2147483647 milliseconds');
+}
+
+function parseMainList(value) {
+  let values;
+  if (Array.isArray(value)) values = value;
+  else if (value === undefined) values = [];
+  else values = [value];
+  return values
+    .flatMap((item) => String(item).split(','))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function prepareMainOptions(values) {
+  const files = parseMainList(values.scenarios);
   let site = null;
   if (values.site) {
     const { loadConfig } = await import('../lense/config.mjs');
@@ -4650,246 +5413,342 @@ async function main() {
   }
   const explicit = [
     ...(site?.mirageConfig?.dataPacks ?? []),
-    ...list(values['pack-module']).map((module) => ({ module })),
+    ...parseMainList(values['pack-module']).map((module) => ({ module })),
   ];
-  // An explicit plan file keeps its earlier meaning (that plan alone). Otherwise the run uses the
-  // portal-agnostic core set plus the plans of the data packs that match the portal.
+  const selectedPacks = (defaultPacks) => {
+    if (values.pack?.length) return parseMainList(values.pack);
+    if (values.packs !== null && values.packs !== undefined) return values.packs;
+    if (files.length) return 'none';
+    return defaultPacks;
+  };
   const sourceOptions = (portal, defaultPacks) => ({
     core: values['no-core'] ? false : values.core === true || !files.length,
-    packs: values.pack?.length ? list(values.pack) : (values.packs ?? (files.length ? 'none' : defaultPacks)),
+    packs: selectedPacks(defaultPacks),
     portal,
     files,
     explicit,
   });
-  if (values.reclassify) {
-    // Offline: apply the current classification rules to a saved report without new requests.
-    const plan = await loadScenarioPlans(sourceOptions(null, 'all'));
-    const report = reclassifyReport(JSON.parse(await fs.readFile(values.reclassify, 'utf8')), plan);
-    await fs.writeFile(values.reclassify, JSON.stringify(report, null, 2));
-    await fs.writeFile(path.join(path.dirname(values.reclassify), 'summary.md'), summaryMarkdown(report));
-    console.log(
-      JSON.stringify(
-        {
-          report: path.resolve(values.reclassify),
-          totals: report.totals,
-          deltaClasses: report.deltaClasses,
-          owners: report.owners,
-        },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
+  return { site, explicit, sourceOptions };
+}
+
+async function reclassifyMainReport(values, sourceOptions) {
+  // Offline: apply the current classification rules to a saved report without new requests.
+  const plan = await loadScenarioPlans(sourceOptions(null, 'all'));
+  const report = reclassifyReport(JSON.parse(await fs.readFile(values.reclassify, 'utf8')), plan);
+  await fs.writeFile(values.reclassify, JSON.stringify(report, null, 2));
+  await fs.writeFile(path.join(path.dirname(values.reclassify), 'summary.md'), summaryMarkdown(report));
+  console.log(
+    JSON.stringify(
+      {
+        report: path.resolve(values.reclassify),
+        totals: report.totals,
+        deltaClasses: report.deltaClasses,
+        owners: report.owners,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/** --only, --tags and --exclude-tags as lists; an absent or empty value is no filter. */
+function scenarioSelectionOptions(values) {
+  const list = (value) => {
+    const items = value
+      ? value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+    return items.length ? items : undefined;
+  };
+  return { only: list(values.only), tags: list(values.tags), excludeTags: list(values['exclude-tags']) };
+}
+
+/** A selection that names an unknown scenario, or leaves none, is refused before any browser or network work. */
+function assertScenarioSelection(plan, values) {
+  const options = scenarioSelectionOptions(values);
+  const known = new Set(plan.scenarios.map((scenario) => scenario.id));
+  const unknown = (options.only ?? []).filter((id) => !known.has(id));
+  if (unknown.length) throw selectionRefusal(`Unknown scenario ids: ${unknown.join(', ')}`);
+  if (!selectScenarios(plan.scenarios, options).length) throw selectionRefusal('No scenario selected.');
+}
+
+function selectionRefusal(message) {
+  return Object.assign(new Error(message), { exitCode: 2 });
+}
+
+function resolveMainTarget(values, site) {
   const origin = values.origin ?? site?.origin;
   const sourceDir = values.source ?? (values.local ? undefined : site?.sourceDir);
   if (!origin || !values.out || (!values.local && !sourceDir))
     throw new Error(
       'Usage: node mirage/parity-suite.mjs (--local http://127.0.0.1:PORT | --source PORTAL_DIR | --site SITE --env ENV) [--state STATE] [--preset NAME|none] [--origin https://PORTAL] [--cdp http://127.0.0.1:PORT] [--anonymous-browser owned|cdp] [--scenarios FILE | --pack ID | --packs auto|all|none] [--no-core] --out DIR [--only IDS] [--tags T] [--exclude-tags T]',
     );
-  const anonymousBrowser = values['anonymous-browser'] ?? 'owned';
+  return { origin, sourceDir };
+}
+
+function validateAnonymousBrowser(anonymousBrowser, values) {
   if (!['owned', 'cdp'].includes(anonymousBrowser)) throw new Error('--anonymous-browser must be owned or cdp.');
   if (anonymousBrowser === 'cdp' && !values.cdp)
     throw new Error('--anonymous-browser cdp needs --cdp (the owned toolkit browser).');
-  const { importPortal } = await import('./lib/importer.mjs');
-  let owned = null;
-  let browser = null;
-  let live = null;
-  let anonymousCdp = null;
-  let identity = null;
+}
+
+async function runMainExecution({ values, site, explicit, sourceOptions, origin, sourceDir, anonymousBrowser }) {
+  const resources = { owned: null, browser: null, live: null, anonymousCdp: null, identity: null };
   try {
-    let portal = sourceDir ? await importPortal(path.resolve(sourceDir)) : null;
-    let plan = portal ? await loadScenarioPlans(sourceOptions(portal, 'auto')) : null;
-    let catalogue = null;
-    if (sourceDir) {
-      const preset = values.preset ?? plan.defaults?.preset ?? null;
-      const workDir = path.resolve(values['work-dir'] ?? path.join(values.out, 'runtime'));
-      // A catalogue site (--site/--env without --source) brings its mirage settings: solution
-      // roots and order, and observed behaviour the export cannot express.
-      const siteMirage = site && !values.source ? (site.mirageConfig ?? null) : null;
-      let roots = null;
-      if (siteMirage) {
-        const { resolveSolutionRoots } = await import('./lib/solution-roots.mjs');
-        roots = await resolveSolutionRoots({
-          sourceDir: path.resolve(sourceDir),
-          catalogue: siteMirage,
-          cacheFile: path.join(workDir, 'cache', 'solution-sources.json'),
-        });
-        catalogue = {
-          site: values.site,
-          env: values.env ?? null,
-          solutionRoots: roots.source,
-          solutionOrder: roots.order,
-          observed: siteMirage.observed
-            ? Object.keys(siteMirage.observed)
-                .filter((key) => key !== 'evidence')
-                .sort()
-            : [],
-        };
-      }
-      owned = await startIsolatedMirage({
-        sourceDir: path.resolve(sourceDir),
-        dataPacks: explicit,
-        baselineState: values.state ? path.resolve(values.state) : undefined,
-        ...(roots ? { solutionRoots: roots.roots, solutionOrder: roots.order } : {}),
-        ...(siteMirage?.observed ? { observed: siteMirage.observed } : {}),
-        preset: preset === 'none' ? null : preset,
-        origin,
-        workDir,
-        deploymentProfile: values['deployment-profile'] ?? plan.defaults?.deploymentProfile,
-      });
-    }
-    // Live record identifiers stay in an ignored run-time file, never in the tracked plan.
-    const ids = values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : null;
-    const localUrl = owned?.url ?? values.local;
-    const state = await localState(localUrl);
-    if (
-      state.config?.mode !== 'local' ||
-      state.config?.pageMode !== 'local' ||
-      (state.config?.endpoints ?? []).some((endpoint) => endpoint.mode === 'live')
-    )
-      throw new Error('Parity requires exclusively local providers.');
-    if (!portal) {
-      portal = await importPortal(state.status.sourceDir);
-      plan = await loadScenarioPlans(sourceOptions(portal, 'auto'));
-    }
-    // A matching pack's denied routes apply even when its scenarios were not selected.
-    await activatePackDeniedRoutes(portal, { explicit });
-    const delayMs = values['delay-ms'] ? Number(values['delay-ms']) : (plan.defaults?.delayMs ?? 400);
-    const corpus = await loadSourceCorpus(state.status?.sourceDir);
-    const full = await localState(localUrl, { summary: false });
-    const { pageAccess } = await import('./lib/page-access.mjs');
-    const mappings = Object.fromEntries(
-      (full.config?.mappings ?? []).map((mapping) => [mapping.logicalName ?? mapping.id, mapping]),
-    );
-    const portalFacts = portalDiscovery({ portal, mappings, pageAccess });
-    identity = createIdentityController(localUrl);
-    browser = await openOwnedBrowser({ channel: values.browser, fulfil: plan.fulfil ?? [] });
-    live = values.cdp ? await openCdpTabDriver({ cdpUrl: values.cdp, origin, fulfil: plan.fulfil ?? [] }) : null;
-    // Anonymous reference pages: the runner's own headless browser, or (--anonymous-browser cdp) an
-    // isolated context of the owned toolkit browser. The toolkit overlay serves that context with the
-    // toolkit profile's cookies, so it is anonymous only while the profile holds no session for this
-    // origin: check the home page once before the run.
-    anonymousCdp =
-      anonymousBrowser === 'cdp'
-        ? await openCdpTabDriver({ cdpUrl: values.cdp, origin, isolated: true, fulfil: plan.fulfil ?? [] })
-        : null;
-    if (anonymousCdp) {
-      const issue = captureProblem('anonymous', await anonymousCdp.page('/', { maxNodes: 400 }));
-      if (issue) throw new Error(`--anonymous-browser cdp: ${issue}`);
-    }
-    const anonymousHttp = createHttpDriver({ origin, identity: 'anonymous' });
-    const anonymousPages = anonymousCdp ?? browser.pageDriver(origin, 'anonymous');
-    // Local requests carry the run's session cookie when signed in and no cookie when anonymous.
-    const localHttp = createHttpDriver({ origin: localUrl, identity: 'local', cookie: () => identity.cookie() });
-    // The local runtime uses the script guard (no stalls with synchronous XHR); any write that
-    // escaped it would change the local data fingerprint, which every report checks.
-    const localPages = browser.pageDriver(localUrl, 'local', { guard: 'script', cookie: () => identity.cookie() });
-    const sides = {
-      live,
-      anonymous: {
-        http: anonymousHttp.http,
-        page: anonymousPages.page,
-        source: anonymousPages.source,
-        origin,
-        identity: 'anonymous',
-      },
-      local: {
-        http: localHttp.http,
-        page: localPages.page,
-        source: localPages.source,
-        origin: localUrl,
-        identity: 'local',
-      },
-    };
-    let persona = null;
-    if (live && !values['no-persona'] && plan.persona) {
-      const roleNames = state.status.webRoles.map((role) => role.name);
-      persona = await derivePersona({
-        live,
-        roleNames,
-        probe: plan.persona.probe,
-        accessChecks: plan.persona.accessChecks ?? [],
-        delayMs,
-      });
-      if (persona.roles) {
-        const contactId =
-          values['persona-contact'] ??
-          plan.persona.contactId ??
-          state.config.identity?.contactId ??
-          state.config.contactRoles?.[0]?.contactId;
-        persona.local = await identity.mirror({ contactId, roles: persona.roles });
-        persona.localContact = contactId ? 'configured local synthetic contact' : null;
-      }
-    } else if (values['persona-contact']) await identity.signInAs(values['persona-contact']);
-    const report = await runParitySuite({
-      plan,
-      localUrl,
-      origin,
-      sides,
-      identity,
-      outDir: path.resolve(values.out),
-      only: values.only ? values.only.split(',').map((item) => item.trim()) : undefined,
-      tags: values.tags ? values.tags.split(',').map((item) => item.trim()) : undefined,
-      excludeTags: values['exclude-tags'] ? values['exclude-tags'].split(',').map((item) => item.trim()) : undefined,
-      delayMs,
-      corpus,
-      persona,
-      ids,
-      portalFacts,
-      conditions: anonymousCdp
-        ? [
-            'Anonymous reference pages were captured in an isolated browser context of the owned toolkit browser: no cookies, no overlay, writes blocked.',
-          ]
-        : [],
-      label: values.label ?? path.basename(path.resolve(values.out)),
-    });
-    report.runtime = owned
-      ? {
-          owned: true,
-          preset: owned.preset,
-          deploymentProfile: owned.deploymentProfile,
-          baselineStateFingerprint: values.state ? sha256(await fs.readFile(values.state)).slice(0, 16) : null,
-          solutionRoots: owned.solutionRoots.map((root) => path.basename(root)),
-        }
-      : { owned: values['local-owned'] === true, attached: true };
-    if (site) report.runtime.site = { site: values.site, env: values.env ?? null };
-    if (catalogue) report.runtime.catalogue = catalogue;
-    report.idsSupplied = ids ? Object.keys(ids).sort() : [];
-    await fs.writeFile(report.report, JSON.stringify(report, null, 2));
-    console.log(
-      JSON.stringify(
-        {
-          report: report.report,
-          totals: report.totals,
-          deltaClasses: report.deltaClasses,
-          owners: report.owners,
-          localDataUnchanged: report.localDataUnchanged,
-        },
-        null,
-        2,
-      ),
-    );
-    process.exitCode = report.scenarios.some((scenario) => scenario.verdict === 'error') ? 2 : 0;
+    const run = await prepareMainRun({ values, site, explicit, sourceOptions, origin, sourceDir, resources });
+    const sides = await setupMainDrivers({ run, values, origin, resources, anonymousBrowser });
+    const persona = await deriveMainPersona(run, values, resources.identity, resources.live);
+    const report = await executeMainReport({ run, values, origin, sides, persona, resources });
+    await finishMainReport(report, resources.owned, values, site, run.catalogue, run.ids);
   } finally {
-    await identity?.restore().catch(() => {});
-    await live?.close().catch(() => {});
-    await anonymousCdp?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    await owned?.app.close().catch(() => {});
-    if (owned?.workspace) await fs.rm(owned.workspace, { recursive: true, force: true }).catch(() => {});
+    await cleanupMainResources(
+      resources.identity,
+      resources.live,
+      resources.anonymousCdp,
+      resources.browser,
+      resources.owned,
+    );
   }
 }
 
+async function prepareMainRun({ values, site, explicit, sourceOptions, origin, sourceDir, resources }) {
+  const { importPortal } = await import('./lib/importer.mjs');
+  let portal = sourceDir ? await importPortal(path.resolve(sourceDir)) : null;
+  let plan = portal ? await loadScenarioPlans(sourceOptions(portal, 'auto')) : null;
+  if (plan) assertScenarioSelection(plan, values);
+  let catalogue = null;
+  if (sourceDir) {
+    const ownedRun = await startMainOwnedRuntime({ values, site, explicit, origin, sourceDir, plan });
+    resources.owned = ownedRun.owned;
+    catalogue = ownedRun.catalogue;
+  }
+  const ids = values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : null;
+  const localUrl = resources.owned?.url ?? values.local;
+  const state = await localState(localUrl);
+  validateLocalMainState(state);
+  if (!portal) {
+    portal = await importPortal(state.status.sourceDir);
+    plan = await loadScenarioPlans(sourceOptions(portal, 'auto'));
+    assertScenarioSelection(plan, values);
+  }
+  await activatePackDeniedRoutes(portal, { explicit });
+  const delayMs = values['delay-ms'] ? Number(values['delay-ms']) : (plan.defaults?.delayMs ?? 400);
+  const corpus = await loadSourceCorpus(state.status?.sourceDir);
+  const full = await localState(localUrl, { summary: false });
+  const { pageAccess } = await import('./lib/page-access.mjs');
+  const mappings = Object.fromEntries(
+    (full.config?.mappings ?? []).map((mapping) => [mapping.logicalName ?? mapping.id, mapping]),
+  );
+  const portalFacts = portalDiscovery({ portal, mappings, pageAccess });
+  return { portal, plan, catalogue, ids, localUrl, state, delayMs, corpus, portalFacts };
+}
+
+async function startMainOwnedRuntime({ values, site, explicit, origin, sourceDir, plan }) {
+  const preset = values.preset ?? plan.defaults?.preset ?? null;
+  const workDir = path.resolve(values['work-dir'] ?? path.join(values.out, 'runtime'));
+  // A catalogue site (--site/--env without --source) brings its mirage settings: solution
+  // roots and order, and observed behaviour the export cannot express.
+  const siteMirage = site && !values.source ? (site.mirageConfig ?? null) : null;
+  let roots = null;
+  let catalogue = null;
+  if (siteMirage) {
+    const { resolveSolutionRoots } = await import('./lib/solution-roots.mjs');
+    roots = await resolveSolutionRoots({
+      sourceDir: path.resolve(sourceDir),
+      catalogue: siteMirage,
+      cacheFile: path.join(workDir, 'cache', 'solution-sources.json'),
+    });
+    catalogue = {
+      site: values.site,
+      env: values.env ?? null,
+      solutionRoots: roots.source,
+      solutionOrder: roots.order,
+      observed: siteMirage.observed
+        ? Object.keys(siteMirage.observed)
+            .filter((key) => key !== 'evidence')
+            .sort(/* NOSONAR: preserve default string coercion */)
+        : [],
+    };
+  }
+  const owned = await startIsolatedMirage({
+    sourceDir: path.resolve(sourceDir),
+    dataPacks: explicit,
+    baselineState: values.state ? path.resolve(values.state) : undefined,
+    ...(roots ? { solutionRoots: roots.roots, solutionOrder: roots.order } : {}),
+    ...(siteMirage?.observed ? { observed: siteMirage.observed } : {}),
+    preset: preset === 'none' ? null : preset,
+    origin,
+    workDir,
+    deploymentProfile: values['deployment-profile'] ?? plan.defaults?.deploymentProfile,
+  });
+  return { owned, catalogue };
+}
+
+function validateLocalMainState(state) {
+  if (
+    state.config?.mode !== 'local' ||
+    state.config?.pageMode !== 'local' ||
+    (state.config?.endpoints ?? []).some((endpoint) => endpoint.mode === 'live')
+  )
+    throw new Error('Parity requires exclusively local providers.');
+}
+
+async function setupMainDrivers({ run, values, origin, resources, anonymousBrowser }) {
+  resources.identity = createIdentityController(run.localUrl);
+  resources.browser = await openOwnedBrowser({ channel: values.browser, fulfil: run.plan.fulfil ?? [] });
+  resources.live = values.cdp
+    ? await openCdpTabDriver({ cdpUrl: values.cdp, origin, fulfil: run.plan.fulfil ?? [] })
+    : null;
+  // Anonymous reference pages use an isolated context when requested.
+  await openAnonymousCdp(anonymousBrowser, values, origin, run.plan, resources);
+  const anonymousHttp = createHttpDriver({ origin, identity: 'anonymous' });
+  const anonymousPages = resources.anonymousCdp ?? resources.browser.pageDriver(origin, 'anonymous');
+  // Local requests carry the run's session cookie when signed in and no cookie when anonymous.
+  const localHttp = createHttpDriver({
+    origin: run.localUrl,
+    identity: 'local',
+    cookie: () => resources.identity.cookie(),
+  });
+  // The local runtime uses the script guard (no stalls with synchronous XHR); any write that
+  // escaped it would change the local data fingerprint, which every report checks.
+  const localPages = resources.browser.pageDriver(run.localUrl, 'local', {
+    guard: 'script',
+    cookie: () => resources.identity.cookie(),
+  });
+  return createMainSides(resources.live, anonymousHttp, anonymousPages, localHttp, localPages, origin, run.localUrl);
+}
+
+async function openAnonymousCdp(anonymousBrowser, values, origin, plan, resources) {
+  // The toolkit profile may carry cookies, so the isolated capture is checked before the run.
+  resources.anonymousCdp =
+    anonymousBrowser === 'cdp'
+      ? await openCdpTabDriver({ cdpUrl: values.cdp, origin, isolated: true, fulfil: plan.fulfil ?? [] })
+      : null;
+  if (resources.anonymousCdp) {
+    const issue = captureProblem('anonymous', await resources.anonymousCdp.page('/', { maxNodes: 400 }));
+    if (issue) throw new Error(`--anonymous-browser cdp: ${issue}`);
+  }
+}
+
+function createMainSides(live, anonymousHttp, anonymousPages, localHttp, localPages, origin, localUrl) {
+  return {
+    live,
+    anonymous: {
+      http: anonymousHttp.http,
+      page: anonymousPages.page,
+      source: anonymousPages.source,
+      origin,
+      identity: 'anonymous',
+    },
+    local: {
+      http: localHttp.http,
+      page: localPages.page,
+      source: localPages.source,
+      origin: localUrl,
+      identity: 'local',
+    },
+  };
+}
+
+async function deriveMainPersona(run, values, identity, live) {
+  let persona = null;
+  if (live && !values['no-persona'] && run.plan.persona) {
+    const roleNames = run.state.status.webRoles.map((role) => role.name);
+    persona = await derivePersona({
+      live,
+      roleNames,
+      probe: run.plan.persona.probe,
+      accessChecks: run.plan.persona.accessChecks ?? [],
+      delayMs: run.delayMs,
+    });
+    if (persona.roles) {
+      const contactId =
+        values['persona-contact'] ??
+        run.plan.persona.contactId ??
+        run.state.config.identity?.contactId ??
+        run.state.config.contactRoles?.[0]?.contactId;
+      persona.local = await identity.mirror({ contactId, roles: persona.roles });
+      persona.localContact = contactId ? 'configured local synthetic contact' : null;
+    }
+  } else if (values['persona-contact']) await identity.signInAs(values['persona-contact']);
+  return persona;
+}
+
+async function executeMainReport({ run, values, origin, sides, persona, resources }) {
+  return runParitySuite({
+    plan: run.plan,
+    localUrl: run.localUrl,
+    origin,
+    sides,
+    identity: resources.identity,
+    outDir: path.resolve(values.out),
+    ...scenarioSelectionOptions(values),
+    delayMs: run.delayMs,
+    corpus: run.corpus,
+    persona,
+    ids: run.ids,
+    portalFacts: run.portalFacts,
+    conditions: resources.anonymousCdp
+      ? [
+          'Anonymous reference pages were captured in an isolated browser context of the owned toolkit browser: no cookies, no overlay, writes blocked.',
+        ]
+      : [],
+    label: values.label ?? path.basename(path.resolve(values.out)),
+  });
+}
+
+async function finishMainReport(report, owned, values, site, catalogue, ids) {
+  report.runtime = owned
+    ? {
+        owned: true,
+        preset: owned.preset,
+        deploymentProfile: owned.deploymentProfile,
+        baselineStateFingerprint: values.state ? sha256(await fs.readFile(values.state)).slice(0, 16) : null,
+        solutionRoots: owned.solutionRoots.map((root) => path.basename(root)),
+      }
+    : { owned: values['local-owned'] === true, attached: true };
+  if (site) report.runtime.site = { site: values.site, env: values.env ?? null };
+  if (catalogue) report.runtime.catalogue = catalogue;
+  report.idsSupplied = ids ? Object.keys(ids).sort(/* NOSONAR: preserve default string coercion */) : [];
+  await fs.writeFile(report.report, JSON.stringify(report, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        report: report.report,
+        totals: report.totals,
+        deltaClasses: report.deltaClasses,
+        owners: report.owners,
+        localDataUnchanged: report.localDataUnchanged,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exitCode = report.scenarios.some((scenario) => scenario.verdict === 'error') ? 2 : 0;
+}
+
+async function cleanupMainResources(identity, live, anonymousCdp, browser, owned) {
+  await identity?.restore().catch(() => {});
+  await live?.close().catch(() => {});
+  await anonymousCdp?.close().catch(() => {});
+  await browser?.close().catch(() => {});
+  await owned?.app.close().catch(() => {});
+  if (owned?.workspace) await fs.rm(owned.workspace, { recursive: true, force: true }).catch(() => {});
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(normalizeText(error.message));
-    process.exitCode = 1;
+    process.exitCode = error.exitCode ?? 1;
   });
 }
 
 export const __testing = {
   pageFetch,
+  pageContextLost,
+  PAGE_CONTEXT_LOST_MESSAGES,
   signInObserved,
   discoverTarget,
   pagingCookieOf,

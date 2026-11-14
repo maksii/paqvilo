@@ -9,9 +9,10 @@ import { campaignStopRequested } from '../portal-harness/native-campaign.mjs';
 import { withNativeCampaignWorkerLease } from '../portal-harness/native-campaign.mjs';
 import { nativeAssemblyIdentityMatches } from '../portal-harness/native-campaign.mjs';
 import { nativeCampaignContinuationPolicy } from '../portal-harness/native-campaign.mjs';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 test('unfinished shared-boundary collection and unknown policies cannot skip supported per-page checks', () => {
   assert.equal(nativeCampaignContinuationPolicy(), 'per-page');
   assert.throws(() => nativeCampaignContinuationPolicy('mask-window'), /not implemented/);
@@ -33,7 +34,7 @@ test('native CLR identity matches exact installed assembly fields without invent
   assert.equal(nativeAssemblyIdentityMatches(null, expected), false);
 });
 test('native actor worker lock rejects concurrent and stale ownership before executing work', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-worker-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-worker-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const siteId = '10000000-0000-0000-0000-000000000001',
     contactId = '10000000-0000-0000-0000-000000000002',
@@ -69,7 +70,7 @@ test('native actor worker lock rejects concurrent and stale ownership before exe
   );
 });
 test('native actor worker lock releases its own file on failure and preserves changed ownership', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-worker-failure-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-worker-failure-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const siteId = '10000000-0000-0000-0000-000000000003',
     contactId = '10000000-0000-0000-0000-000000000004',
@@ -91,7 +92,7 @@ test('native actor worker lock releases its own file on failure and preserves ch
   assert.deepEqual(JSON.parse(await readFile(workerLock, 'utf8')), { owner: 'other' });
 });
 test('campaign stop control is explicit and never consumes or rewrites its request', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-stop-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-stop-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'stop');
   assert.equal(await campaignStopRequested(), false);

@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 // DotLiquid-compatible Liquid engine with Power Pages semantics.
 //
 // Power Pages renders Liquid with DotLiquid (SyntaxCompatibility.DotLiquid20) plus portal
@@ -37,35 +38,75 @@ export { LiquidError, LiquidSyntaxError };
 
 // ---- DotLiquid regular expressions (Liquid.cs), translated to JavaScript.
 // .NET \w is Unicode-aware; the u-flag classes below reproduce it.
-const WC = '\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}';
+const WC = String.raw`\p{L}\p{Mn}\p{Nd}\p{Pc}`;
 const QS = `"[^"]*"|'[^']*'`;
-const QF = `${QS}|(?:[^\\s,|'"]|${QS})+`;
-const QAF = `${QS}|(?:[^\\s|'"]|${QS})+`;
-const VARIABLE_SIGNATURE = `\\(?[${WC}\\-.[\\]]\\)?`;
+const QF = String.raw`${QS}|(?:[^\s,|'"]|${QS})+`;
+const QAF = String.raw`${QS}|(?:[^\s|'"]|${QS})+`;
+const VARIABLE_SIGNATURE = String.raw`\(?[${WC}\-.[\]]\)?`;
 const re = (source, flags = 'u') => new RegExp(source, flags);
-const TAG_ATTRIBUTES = re(`([${WC}]+)\\s*:\\s*(${QF})`, 'gu');
-const VARIABLE_PARSER = re(`\\[[^\\]]+\\]|[${WC}\\-]+\\??`, 'gu');
-const FULL_TOKEN = re(`^\\{%\\s*([${WC}]+)\\s*(.*)?%\\}$`);
+const TAG_ATTRIBUTES = re(String.raw`([${WC}]+)\s*:\s*(${QF})`, 'gu');
+const VARIABLE_NAME = re(String.raw`[${WC}\-]+\??`, 'uy');
+const FULL_TOKEN = re(String.raw`^\{%\s*([${WC}]+)\s*(.*)?%\}$`);
 const CONTENT_OF_VARIABLE = /^\{\{(.*)\}\}$/u;
-const QUOTED_ASSIGN_FRAGMENT = re(`\\s*(${QAF})(.*)`);
+const QUOTED_ASSIGN_FRAGMENT = re(String.raw`\s*(${QAF})(.*)`);
 const FILTER_SEPARATOR = /\|\s*(.*)/u;
-const FILTER_PARSER = re(`(?:\\s+|${QF}|,)+`, 'gu');
-const FILTER_ARG = re(`(?::|,)\\s*(${QF})`, 'gu');
-const FILTER_NAME = re(`\\s*([${WC}]+)`);
+const FILTER_PARSER = re(String.raw`(?:\s+|${QF}|,)+`, 'gu');
+const FILTER_ARG = re(String.raw`(?::|,)\s*(${QF})`, 'gu');
+const FILTER_NAME = re(String.raw`\s*([${WC}]+)`);
 const SINGLE_QUOTED = /^'(.*)'$/;
 const DOUBLE_QUOTED = /^"(.*)"$/;
 const INTEGER = /^([+-]?\d+)$/;
-const RANGE = /^\((\S+)\.\.(\S+)\)$/;
+function rangeParts(value) {
+  const text = String(value);
+  const end = text.length;
+  if (!text.startsWith('(') || text[end - 1] !== ')') return null;
+  const inner = text.slice(1, end - 1);
+  if (/\s/.test(inner)) return null;
+  const separator = inner.lastIndexOf('..', inner.length - 3);
+  return separator >= 1 ? [undefined, inner.slice(0, separator), inner.slice(separator + 2)] : null;
+}
 const NUMERIC = /^([+-]?\d[\d.|,]+)$/;
-const IF_SYNTAX = re(`(${QF})\\s*([=!<>a-zA-Z_]+)?\\s*(${QF})?`);
+const IF_SYNTAX = re(String.raw`(${QF})\s*([=!<>a-zA-Z_]+)?\s*(${QF})?`);
 const IF_EXPRESSIONS = re(
-  `(?:\\b(?:\\s?and\\s?|\\s?or\\s?)\\b|(?:\\s*(?!\\b(?:\\s?and\\s?|\\s?or\\s?)\\b)(?:${QF}|\\S+)\\s*)+)`,
+  String.raw`(?:\b(?:\s?and\s?|\s?or\s?)\b|(?:\s*(?!\b(?:\s?and\s?|\s?or\s?)\b)(?:${QF}|\S+)\s*)+)`,
   'gu',
 );
 const scan = (text, regex) => {
   regex.lastIndex = 0;
   return [...String(text).matchAll(regex)].map((m) => (m.length === 2 ? m[1] : m[0]));
 };
+// The first ']' at or after a position, searched at most once per text: an unclosed '[' costs no rescan.
+function closingBracketFinder(text) {
+  let found = -2;
+  return (from) => {
+    if (found === -2 || (found !== -1 && found < from)) found = text.indexOf(']', from);
+    return found;
+  };
+}
+/** The segments of a variable path: `[...]` with at least one character inside, or a name run with an optional `?`. */
+export function variableSegments(markup) {
+  const text = String(markup),
+    closeAt = closingBracketFinder(text),
+    segments = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] === '[') {
+      const close = closeAt(cursor + 1);
+      if (close > cursor + 1) {
+        segments.push(text.slice(cursor, close + 1));
+        cursor = close + 1;
+      } else cursor++;
+      continue;
+    }
+    VARIABLE_NAME.lastIndex = cursor;
+    const name = VARIABLE_NAME.exec(text);
+    if (name) {
+      segments.push(name[0]);
+      cursor = VARIABLE_NAME.lastIndex;
+    } else cursor++;
+  }
+  return segments;
+}
 /** Tokenizer.GetAttributes: `name: value` pairs anywhere in a tag's markup. */
 export function tagAttributes(markup) {
   const attributes = new Map();
@@ -73,8 +114,8 @@ export function tagAttributes(markup) {
     attributes.set(m[1].toLowerCase(), { key: m[1], value: m[2] });
   return attributes;
 }
-const TAG_END_TEXT = '(?-mix:\\%\\})';
-const VARIABLE_END_TEXT = '(?-mix:\\}\\})';
+const TAG_END_TEXT = String.raw`(?-mix:\%\})`;
+const VARIABLE_END_TEXT = String.raw`(?-mix:\}\})`;
 
 // ---- Runtime value model
 /** DotLiquid Hash: ordered, case-insensitive (OrdinalIgnoreCase naming convention). */
@@ -177,19 +218,7 @@ export async function lookupMember(object, part, context) {
     const key = String(part instanceof NetDecimal ? part.toString() : part);
     return object.has(key) ? { found: true, value: object.get(key) } : { found: false };
   }
-  if (Array.isArray(object)) {
-    if (!isNumber(part) || !Number.isInteger(Number(part))) return { found: false };
-    let index = Number(part);
-    if (
-      context?.engine.runtimeCompatibility === 'observed' &&
-      object.length &&
-      object.every((value) => typeof value === 'string') &&
-      (index < 0 || index >= object.length)
-    )
-      throw new LiquidError('Index was outside the bounds of the array.', 'System.IndexOutOfRangeException');
-    if (index < 0) index += object.length;
-    return index >= 0 && index < object.length ? { found: true, value: object[index] } : { found: false };
-  }
+  if (Array.isArray(object)) return lookupArrayMember(object, part, context);
   if (
     typeof object !== 'object' ||
     isDate(object) ||
@@ -200,6 +229,24 @@ export async function lookupMember(object, part, context) {
     return { found: false };
   const key = part instanceof NetDecimal ? part.toString() : String(part);
   if (typeof object.liquidGet === 'function') return { found: true, value: await object.liquidGet(key, context) };
+  return lookupPlainObjectMember(object, key, context);
+}
+
+function lookupArrayMember(object, part, context) {
+  if (!isNumber(part) || !Number.isInteger(Number(part))) return { found: false };
+  let index = Number(part);
+  if (
+    context?.engine.runtimeCompatibility === 'observed' &&
+    object.length &&
+    object.every((value) => typeof value === 'string') &&
+    (index < 0 || index >= object.length)
+  )
+    throw new LiquidError('Index was outside the bounds of the array.', 'System.IndexOutOfRangeException');
+  if (index < 0) index += object.length;
+  return index >= 0 && index < object.length ? { found: true, value: object[index] } : { found: false };
+}
+
+function lookupPlainObjectMember(object, key, context) {
   const hidden = object[LIQUID_HIDDEN];
   const properties = object[LIQUID_PROPERTIES];
   let property;
@@ -252,25 +299,49 @@ export function formatOutput(value) {
 // ---- Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // Scan the whole-template shorthands without overlapping dot/whitespace regex
 // repetitions. Preserve the optional single whitespace and final-newline rules.
-function shorthandBody(text, literal) {
-  let start = literal ? 3 : 1;
+function shorthandBody(text, literal, stats) {
+  const end = shorthandEnd(text);
+  // The delimiter checks read at most this many characters at the two ends of the template.
+  if (stats) stats.shorthand += SHORTHAND_DELIMITER_READS;
+  if (literal) return literalShorthand(text, end, stats);
+  return commentShorthand(text, end, stats);
+}
+const SHORTHAND_DELIMITER_READS = 8;
+
+function shorthandEnd(text) {
   let end = text.length;
   if (text.endsWith('\r\n')) end -= 2;
   else if (/[\n\r\u2028\u2029]/.test(text[end - 1] ?? '')) end--;
-  const space = (index) => /\s/.test(text[index] ?? '');
-  if (literal) {
-    if (!text.startsWith('{{{') || text.slice(end - 3, end) !== '}}}') return null;
-    end -= 3;
-  } else {
-    if (text[0] !== '{' || text[end - 1] !== '}') return null;
-    if (space(start)) start++;
-    if (text[start++] !== '#') return null;
-    end--;
-    if (space(end - 1)) end--;
-    if (text[--end] !== '#') return null;
-  }
-  if (space(start)) start++;
+  return end;
+}
+
+function literalShorthand(text, end, stats) {
+  const start = 3;
+  if (!text.startsWith('{{{') || text.slice(end - 3, end) !== '}}}') return null;
+  end -= 3;
+  return shorthandText(text, start, end, stats);
+}
+
+function commentShorthand(text, end, stats) {
+  let start = 1;
+  if (text[0] !== '{' || text[end - 1] !== '}') return null;
+  if (isShorthandSpace(text, start)) start++;
+  if (text[start++] !== '#') return null;
+  end--;
+  if (isShorthandSpace(text, end - 1)) end--;
+  if (text[--end] !== '#') return null;
+  return shorthandText(text, start, end, stats);
+}
+
+function isShorthandSpace(text, index) {
+  return /\s/.test(text[index] ?? '');
+}
+
+function shorthandText(text, start, end, stats) {
+  if (isShorthandSpace(text, start)) start++;
   if (start > end) return null;
+  // Trimming and the line-break test read the body once each.
+  if (stats) stats.shorthand += 2 * (end - start);
   const body = text.slice(start, end).trimEnd();
   return /[\n\r\u2028\u2029]/.test(body) ? null : body;
 }
@@ -281,21 +352,32 @@ function parsedNode(list, node, span) {
   listLocations.get(list)[list.length] = span;
   list.push(node);
 }
-export function tokenize(source, rawTags = new Set()) {
+/**
+ * `stats`, when a caller passes one, gets `shorthand`: the characters the whole-template shorthand checks read, and
+ * `positions`: the characters the whitespace-control and token scans step over (tests use them to bound the work).
+ */
+export function tokenize(source, rawTags = new Set(), stats = undefined) {
   if (source == null || source === '') return [];
   // Comment/literal shorthands only apply when they span the whole template.
   let text = String(source);
   let offsets = Array.from({ length: text.length }, (_, i) => i);
-  const literal = shorthandBody(text, true);
+  const literal = shorthandBody(text, true, stats);
   if (literal !== null) {
     text = `{% literal %}${literal}{% endliteral %}`;
     offsets = null;
   }
-  const comment = shorthandBody(text, false);
+  const comment = shorthandBody(text, false, stats);
   if (comment !== null) {
     text = `{% comment %}${comment}{% endcomment %}`;
     offsets = null;
   }
+  const normalized = trailingWhitespaceText(text, offsets);
+  // The whitespace-control pattern starts with a literal '-', so it reads each character once.
+  if (stats) stats.positions += text.length;
+  return tokenizeTokens(normalized.text, rawTags, normalized.offsets, stats);
+}
+
+function trailingWhitespaceText(text, offsets) {
   // Trailing whitespace control: one newline or one run of spaces/tabs, never both.
   const pieces = [],
     mapped = [];
@@ -312,6 +394,10 @@ export function tokenize(source, rawTags = new Set()) {
   if (offsets) for (let i = previous; i < offsets.length; i++) mapped.push(offsets[i]);
   text = pieces.join('');
   offsets = offsets ? mapped : null;
+  return { text, offsets };
+}
+
+function tokenizeTokens(text, rawTags, offsets, stats) {
   const tokens = [];
   const spans = [];
   const add = (token, from, to) => {
@@ -324,55 +410,14 @@ export function tokenize(source, rawTags = new Set()) {
   for (;;) {
     start.lastIndex = position;
     match = start.exec(text);
+    if (stats) stats.positions += (match ? match.index : text.length) - position;
     if (!match) break;
-    if (match.index > position) {
-      let literal = text.slice(position, match.index);
-      // Leading whitespace control: spaces and tabs only (DotLiquid20).
-      if (match[2]) literal = literal.replace(/[\t ]+$/, '');
-      if (literal !== '') add(literal, position, position + literal.length);
-    }
+    appendLeadingLiteral(text, match, position, add);
     const isTag = match[1] === '{%';
-    let token = match[1];
-    let i = match.index + match[0].length;
-    let closed = false;
-    while (i < text.length) {
-      const ch = text[i++];
-      token += ch;
-      if (ch === "'" || ch === '"') {
-        const end = text.indexOf(ch, i);
-        if (end < 0) {
-          token += text.slice(i);
-          i = text.length;
-          break;
-        }
-        token += text.slice(i, end + 1);
-        i = end + 1;
-      } else if ((isTag ? ch === '%' : ch === '}') && text[i] === '}') {
-        token += '}';
-        i++;
-        closed = true;
-        break;
-      }
-    }
-    if (!closed)
-      throw new LiquidSyntaxError(
-        isTag
-          ? `Tag '${token}' was not properly terminated with regexp: ${TAG_END_TEXT}`
-          : `Variable '${token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
-      );
-    add(token, match.index, i);
-    position = i;
-    if (isTag) {
-      const name = re(`^\\{%\\s*([${WC}]+)`).exec(token)?.[1];
-      if (name && rawTags.has(name)) {
-        const end = new RegExp(`\\{%-?\\s*end${name}\\s*-?%\\}`, 'g');
-        end.lastIndex = position;
-        const found = end.exec(text);
-        if (!found) throw new LiquidSyntaxError(`${name} tag was never closed`);
-        if (found.index > position) add(text.slice(position, found.index), position, found.index);
-        position = found.index;
-      }
-    }
+    const scanned = scanDelimitedToken(text, match.index, match[0].length, match[1], isTag, stats);
+    add(scanned.token, match.index, scanned.position);
+    position = scanned.position;
+    if (isTag) position = consumeTagBody(text, scanned.token, position, rawTags, add);
   }
   if (position < text.length) add(text.slice(position), position, text.length);
   const metadata = { spans, cursor: 0, current: null };
@@ -384,6 +429,64 @@ export function tokenize(source, rawTags = new Set()) {
     },
   });
   return tokens;
+}
+
+function stripTrailingSpacesAndTabs(value) {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === ' ' || value[end - 1] === '\t')) end--;
+  return value.slice(0, end);
+}
+
+function appendLeadingLiteral(text, match, position, add) {
+  if (match.index <= position) return;
+  let literal = text.slice(position, match.index);
+  // Leading whitespace control: spaces and tabs only (DotLiquid20).
+  if (match[2]) literal = stripTrailingSpacesAndTabs(literal);
+  if (literal !== '') add(literal, position, position + literal.length);
+}
+
+function consumeTagBody(text, token, position, rawTags, add) {
+  const name = re(String.raw`^\{%\s*([${WC}]+)`).exec(token)?.[1];
+  return name && rawTags.has(name) ? consumeRawTag(text, name, position, add) : position;
+}
+
+function scanDelimitedToken(text, start, openingLength, opening, isTag, stats) {
+  let token = opening;
+  let position = start + openingLength;
+  while (position < text.length) {
+    const ch = text[position++];
+    token += ch;
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, position);
+      if (end < 0) {
+        token += text.slice(position);
+        position = text.length;
+        break;
+      }
+      token += text.slice(position, end + 1);
+      position = end + 1;
+    } else if ((isTag ? ch === '%' : ch === '}') && text[position] === '}') {
+      token += '}';
+      position++;
+      if (stats) stats.positions += position - start;
+      return { token, position };
+    }
+  }
+  if (stats) stats.positions += position - start;
+  throw new LiquidSyntaxError(
+    isTag
+      ? `Tag '${token}' was not properly terminated with regexp: ${TAG_END_TEXT}`
+      : `Variable '${token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
+  );
+}
+
+function consumeRawTag(text, name, position, add) {
+  const end = new RegExp(String.raw`\{%-?\s*end${name}\s*-?%\}`, 'g');
+  end.lastIndex = position;
+  const found = end.exec(text);
+  if (!found) throw new LiquidSyntaxError(`${name} tag was never closed`);
+  if (found.index > position) add(text.slice(position, found.index), position, found.index);
+  return found.index;
 }
 
 // ---- Variables and filters
@@ -456,20 +559,21 @@ export class Variable {
 }
 
 // ---- Conditions (DotLiquid Condition.cs)
-function equalVariables(left, right) {
+function equalVariables(left, right, clock) {
   if (left instanceof LiquidSymbol) return left.test(right);
   if (right instanceof LiquidSymbol) return right.test(left);
-  return safeTypeInsensitiveEqual(left, right);
+  return safeTypeInsensitiveEqual(left, right, { clock });
 }
+// Each operator takes the engine clock third: time-only strings convert to a date on its day.
 export const OPERATORS = {
-  '==': (l, r) => equalVariables(l, r),
-  '!=': (l, r) => !equalVariables(l, r),
-  '<>': (l, r) => !equalVariables(l, r),
-  '<': (l, r) => l != null && r != null && netCompare(l, r) === -1,
-  '>': (l, r) => l != null && r != null && netCompare(l, r) === 1,
-  '<=': (l, r) => l != null && r != null && netCompare(l, r) <= 0,
-  '>=': (l, r) => l != null && r != null && netCompare(l, r) >= 0,
-  contains: (l, r) => {
+  '==': (l, r, clock) => equalVariables(l, r, clock),
+  '!=': (l, r, clock) => !equalVariables(l, r, clock),
+  '<>': (l, r, clock) => !equalVariables(l, r, clock),
+  '<': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) === -1,
+  '>': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) === 1,
+  '<=': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) <= 0,
+  '>=': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) >= 0,
+  contains: (l, r, clock) => {
     if (typeof l === 'string' && r != null) {
       if (typeof r !== 'string')
         throw new LiquidError(
@@ -478,15 +582,15 @@ export const OPERATORS = {
         );
       return l.includes(r);
     }
-    return isEnumerable(l) && toList(l).some((item) => backCompatEqual(item, r));
+    return isEnumerable(l) && toList(l).some((item) => backCompatEqual(item, r, { clock }));
   },
-  startswith: (l, r) =>
+  startswith: (l, r, clock) =>
     Array.isArray(l)
-      ? equalVariables(l[0] ?? null, r)
+      ? equalVariables(l[0] ?? null, r, clock)
       : typeof l === 'string' && typeof r === 'string' && l.startsWith(r),
-  endswith: (l, r) =>
+  endswith: (l, r, clock) =>
     Array.isArray(l)
-      ? equalVariables(l.at(-1) ?? null, r)
+      ? equalVariables(l.at(-1) ?? null, r, clock)
       : typeof l === 'string' && typeof r === 'string' && l.endsWith(r),
   haskey: (l, r) => r != null && l instanceof LiquidHash && l.has(r),
   hasvalue: (l, r) => l instanceof LiquidHash && [...l.entries()].some(([, v]) => v === r),
@@ -510,7 +614,7 @@ class Condition {
       const right = await context.resolve(this.right);
       const op = OPERATORS[this.operator] ?? OPERATORS[this.operator.toLowerCase()];
       if (!op) throw new LiquidError(`Unknown operator ${this.operator}`, 'DotLiquid.Exceptions.ArgumentException');
-      result = op(left, right);
+      result = op(left, right, context.engine.clock);
     }
     if (this.relation === 'or') return result || (await this.child.evaluate(context));
     if (this.relation === 'and') return result && (await this.child.evaluate(context));
@@ -530,7 +634,7 @@ const conditionFrom = (match, preserveParentheses = false) =>
   new Condition(
     preserveParentheses ? match[1] : match[1].replace(/^\(+/, ''),
     match[2] ?? '',
-    preserveParentheses ? (match[3] ?? '') : (match[3] ?? '').replace(/\)+$/, ''),
+    preserveParentheses ? (match[3] ?? '') : stripTrailingCharacter(match[3] ?? '', ')'),
   );
 /** If.PushBlock: expressions are grouped right-to-left; there are no parentheses. */
 function parseCondition(markup, preserveParentheses = false) {
@@ -662,7 +766,10 @@ export class LiquidContext {
     return { found: false, value: null };
   }
   /** Context.Resolve: literals, ranges, numbers and variable paths. */
-  async resolve(key, notifyNotFound = true) {
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async resolve(
+    key,
+    notifyNotFound = true,
+  ) {
     switch (key) {
       case undefined:
       case null:
@@ -687,7 +794,7 @@ export class LiquidContext {
       const m = DOUBLE_QUOTED.exec(key);
       if (m) return m[1];
     } else if (first === '(') {
-      const m = RANGE.exec(key);
+      const m = rangeParts(key);
       if (m) {
         const from = toInt32(await this.resolve(m[1]));
         const to = toInt32(await this.resolve(m[2]));
@@ -710,19 +817,22 @@ export class LiquidContext {
       if (m) {
         const text = m[1];
         if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text);
-        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replace(/,/g, ''));
-        const parsed = Number(text.replace(/,/g, ''));
+        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replaceAll(',', ''));
+        const parsed = Number(text.replaceAll(',', ''));
         if (Number.isFinite(parsed)) return parsed;
         throw new LiquidError('Input string was not in a correct format.', 'System.FormatException');
       }
     }
     return this.variable(key, notifyNotFound);
   }
-  async variable(markup, notifyNotFound) {
-    const parts = scan(markup, VARIABLE_PARSER);
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async variable(
+    markup,
+    notifyNotFound,
+  ) {
+    const parts = variableSegments(markup);
+    if (parts.length === 0) return null;
     let first = parts[0];
-    if (first === undefined) return null;
-    if (first[0] === '[') {
+    if (first.startsWith('[')) {
       // Context.TryGetVariable calls Resolve(...).ToString(): a root bracket that resolves to nil throws.
       const resolved = await this.resolve(first.slice(1, -1));
       if (resolved == null)
@@ -737,7 +847,7 @@ export class LiquidContext {
     let object = found.value ?? null;
     for (let i = 1; i < parts.length; i++) {
       const raw = parts[i];
-      const bracketed = raw[0] === '[';
+      const bracketed = raw.startsWith('[');
       const part = bracketed ? await this.resolve(raw.slice(1, -1)) : raw;
       if (object instanceof KeyValuePair) {
         const numeric = isNumber(part) ? Number(part) : null;
@@ -846,9 +956,15 @@ export class Tag {
     this.markup = markup ?? '';
     this.parse(tokens);
   }
-  parse() {}
-  async render() {}
-  assertTagRules() {}
+  parse() {
+    // Intentionally empty: base tags may have no parse-time work.
+  }
+  async render() {
+    // Intentionally empty: base tags may have no render-time output.
+  }
+  assertTagRules() {
+    // Intentionally empty: base tags may have no additional tag rules.
+  }
 }
 export class Block extends Tag {
   get blockDelimiter() {
@@ -860,35 +976,13 @@ export class Block extends Tag {
     while (tokens.length) {
       const token = tokens.shift();
       const span = tokenLocations.get(tokens)?.current ?? null;
-      if (token.startsWith('{%')) {
-        const full = FULL_TOKEN.exec(token);
-        if (!full)
-          throw new LiquidSyntaxError(
-            `Tag '${this.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${TAG_END_TEXT}`,
-          );
-        const [, name, args = ''] = full;
-        if (name === this.blockDelimiter) {
-          this.endTag();
-          return;
-        }
-        const tag = this.engine.createTag(name);
-        if (tag) {
-          tag.initialize(this.engine, name, args, tokens);
-          parsedNode(this.nodeList, tag, span);
-          tag.assertTagRules(this.nodeList);
-        } else this.unknownTag(name, args, tokens);
-      } else if (token.startsWith('{{')) {
-        const content = CONTENT_OF_VARIABLE.exec(token);
-        if (!content)
-          throw new LiquidSyntaxError(
-            `Variable '${this.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
-          );
-        parsedNode(this.nodeList, new Variable(content[1]), span);
-      } else if (token !== '') parsedNode(this.nodeList, token, span);
+      if (parseBlockToken(this, token, tokens, span)) return;
     }
     this.assertMissingDelimitation();
   }
-  endTag() {}
+  endTag() {
+    // Intentionally empty: the base block has no end-tag side effect.
+  }
   unknownTag(tag) {
     if (tag === 'else') throw new LiquidSyntaxError(`${this.tagName ?? ''} tag does not expect else tag`);
     if (tag === 'end')
@@ -903,6 +997,41 @@ export class Block extends Tag {
   async render(context, out) {
     await renderAll(this.nodeList, context, out);
   }
+}
+
+function parseBlockToken(block, token, tokens, span) {
+  if (token.startsWith('{%')) return parseTagToken(block, token, tokens, span);
+  if (token.startsWith('{{')) {
+    const content = CONTENT_OF_VARIABLE.exec(token);
+    if (!content)
+      throw new LiquidSyntaxError(
+        `Variable '${block.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
+      );
+    parsedNode(block.nodeList, new Variable(content[1]), span);
+  } else if (token !== '') parsedNode(block.nodeList, token, span);
+  return false;
+}
+
+function parseTagToken(block, token, tokens, span) {
+  const full = FULL_TOKEN.exec(token);
+  if (!full)
+    throw new LiquidSyntaxError(
+      `Tag '${block.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${TAG_END_TEXT}`,
+    );
+  const [, name, args = ''] = full;
+  if (name === block.blockDelimiter) {
+    block.endTag();
+    return true;
+  }
+  const tag = block.engine.createTag(name);
+  if (!tag) {
+    block.unknownTag(name, args, tokens);
+    return false;
+  }
+  tag.initialize(block.engine, name, args, tokens);
+  parsedNode(block.nodeList, tag, span);
+  tag.assertTagRules(block.nodeList);
+  return false;
 }
 /**
  * Failures of the simulator rather than of the portal: live bridge errors (code LIVE_BRIDGE),
@@ -950,7 +1079,9 @@ export class Document extends Block {
   get blockDelimiter() {
     return '';
   }
-  assertMissingDelimitation() {}
+  assertMissingDelimitation() {
+    // Intentionally empty: a document is not required to have a closing delimiter.
+  }
   async render(context, out) {
     try {
       await renderAll(this.nodeList, context, out);
@@ -971,7 +1102,7 @@ export class RawBlock extends Block {
     while (tokens.length) {
       const token = tokens.shift();
       const full = FULL_TOKEN.exec(token);
-      if (full && full[1] === this.blockDelimiter) return;
+      if (full?.[1] === this.blockDelimiter) return;
       parsedNode(this.nodeList, token, tokenLocations.get(tokens)?.current ?? null);
     }
     this.assertMissingDelimitation();
@@ -1011,15 +1142,17 @@ class RawTag extends RawBlock {
   }
 }
 class CommentTag extends RawBlock {
-  async render() {}
+  async render() {
+    // Intentionally empty: comment contents are not rendered.
+  }
 }
 class LiteralTag extends Block {
-  parse(tokens) {
+  /* NOSONAR: identical bodies capture different state */ parse(tokens) {
     this.nodeList = [];
     while (tokens.length) {
       const token = tokens.shift();
       const full = FULL_TOKEN.exec(token);
-      if (full && full[1] === this.blockDelimiter) return;
+      if (full?.[1] === this.blockDelimiter) return;
       parsedNode(this.nodeList, token, tokenLocations.get(tokens)?.current ?? null);
     }
     this.assertMissingDelimitation();
@@ -1028,20 +1161,61 @@ class LiteralTag extends Block {
     await renderAll(this.nodeList, context, out);
   }
 }
-const ASSIGN_SYNTAX = re(`((?:${VARIABLE_SIGNATURE})+)\\s*=\\s*(.*)\\s*`);
+const NAME_CHARACTER = re(String.raw`^[${WC}\-.[\]]$`);
+const ASSIGN_VALUE = re(String.raw`\s*(.*)`, 'uy');
+// The code point that ends at `end`, and where it starts (a surrogate pair stays whole).
+function characterBefore(text, end) {
+  const paired = end >= 2 && /[\uD800-\uDBFF]/.test(text[end - 2]) && /[\uDC00-\uDFFF]/.test(text[end - 1]);
+  const start = paired ? end - 2 : end - 1;
+  return { character: text.slice(start, end), start };
+}
+const characterAt = (text, index) => (index < text.length ? String.fromCodePoint(text.codePointAt(index)) : '');
+// The name run that the unanchored assign pattern pairs with the '=' at `equals`, as { start, end }, or null.
+// Read back from the '=': a name character, a '(' that opens a name character, or a ')' closing one.
+function assignName(text, equals) {
+  let end = equals;
+  while (end > 0 && /\s/.test(text[end - 1])) end--;
+  let cursor = end,
+    first = -1;
+  while (cursor > 0) {
+    const { character, start } = characterBefore(text, cursor);
+    if (NAME_CHARACTER.test(character) || (character === '(' && NAME_CHARACTER.test(characterAt(text, cursor))))
+      first = start;
+    else if (character !== ')' || start === 0 || !NAME_CHARACTER.test(characterBefore(text, start).character)) break;
+    cursor = start;
+  }
+  return first < 0 ? null : { start: first, end };
+}
+/** The name and value that `((?:SIG)+)\s*=\s*(.*)` finds: the first '=' that has a name before it, or null. */
+export function assignParts(markup) {
+  const text = String(markup ?? '');
+  for (let equals = text.indexOf('='); equals >= 0; equals = text.indexOf('=', equals + 1)) {
+    const name = assignName(text, equals);
+    if (name) {
+      ASSIGN_VALUE.lastIndex = equals + 1;
+      return { name: text.slice(name.start, name.end), value: ASSIGN_VALUE.exec(text)[1] };
+    }
+  }
+  return null;
+}
 class AssignTag extends Tag {
   parse() {
-    const m = ASSIGN_SYNTAX.exec(this.markup);
-    if (!m) throw new LiquidSyntaxError("Syntax Error in 'assign' tag - Valid syntax: assign [var] = [source]");
-    this.to = m[1];
-    this.from = new Variable(m[2]);
+    const found = assignParts(this.markup);
+    if (!found) throw new LiquidSyntaxError("Syntax Error in 'assign' tag - Valid syntax: assign [var] = [source]");
+    this.to = found.name;
+    this.from = new Variable(found.value);
   }
   async render(context) {
     const encoded =
       context.engine.runtimeCompatibility === 'observed' &&
       !this.from.filters.length &&
       context.isEncodedVariable(this.from.name);
-    context.assignGlobal(this.to, await this.from.evaluate(context));
+    const value = await this.from.evaluate(context);
+    if (context.engine.runtimeCompatibility === 'observed' && this.from.name === 'blank' && !this.from.filters.length)
+      throw new LiquidSyntaxError(
+        "Object 'DotLiquid.Util.Symbol' is invalid because it is neither a built-in type nor implements ILiquidizable",
+      );
+    context.assignGlobal(this.to, value);
     const fragment = !this.from.filters.length ? context.variableFragments?.get(this.from) : null;
     if (fragment) setBindingFragment(context.outerScope, this.to, fragment);
     if (encoded) context.markEncodedAssignment(this.to);
@@ -1049,7 +1223,7 @@ class AssignTag extends Tag {
 }
 const WORD = re(`([${WC}]+)`);
 // Capture names: Liquid.VariableSegmentRegex, \A\s*(?<Variable>[\w\-]+)\s*\Z (master).
-const CAPTURE_SYNTAX = re(`^\\s*([${WC}\\-]+)\\s*$`);
+const CAPTURE_SYNTAX = re(String.raw`^\s*([${WC}\-]+)\s*$`);
 class CaptureTag extends Block {
   parse(tokens) {
     const m = CAPTURE_SYNTAX.exec(this.markup);
@@ -1108,7 +1282,7 @@ class UnlessTag extends IfTag {
   }
 }
 const CASE_SYNTAX = re(`(${QF})`);
-const WHEN_SYNTAX = re(`(${QF})(?:(?:\\s+or\\s+|\\s*,\\s*)((?:${QF})[\\s\\S]*))?`);
+const WHEN_SYNTAX = re(String.raw`(${QF})(?:(?:\s+or\s+|\s*,\s*)((?:${QF})[\s\S]*))?`);
 class CaseTag extends Block {
   parse(tokens) {
     const m = CASE_SYNTAX.exec(this.markup);
@@ -1172,7 +1346,7 @@ class LegacyKeyValueDrop extends LiquidDrop {
     return key === undefined ? null : this.value[key];
   }
 }
-const FOR_SYNTAX = re(`([${WC}]+)\\s+in\\s+((?:${QF})+)\\s*(reversed)?`);
+const FOR_SYNTAX = re(String.raw`([${WC}]+)\s+in\s+((?:${QF})+)\s*(reversed)?`);
 class ForTag extends Block {
   parse(tokens) {
     const m = FOR_SYNTAX.exec(this.markup);
@@ -1204,11 +1378,13 @@ class ForTag extends Block {
     }
     const register = registerOf(context, 'for');
     const offset = this.attributes.get('offset');
-    const from = offset
-      ? offset.value === 'continue'
-        ? toInt32(register.get(this.name) ?? 0)
-        : toInt32(await context.resolve(offset.value))
-      : 0;
+    let from = 0;
+    if (offset) {
+      from =
+        offset.value === 'continue'
+          ? toInt32(register.get(this.name) ?? 0)
+          : toInt32(await context.resolve(offset.value));
+    }
     const limitAttribute = this.attributes.get('limit');
     const limit = limitAttribute ? toInt32(await context.resolve(limitAttribute.value)) : null;
     const to = limit != null ? limit + from : null;
@@ -1270,15 +1446,15 @@ class ContinueTag extends Tag {
     throw new ContinueInterrupt();
   }
 }
-const CYCLE_NAMED = re(`^(${QF})\\s*:\\s*([\\s\\S]*)`);
+const CYCLE_NAMED = re(String.raw`^(${QF})\s*:\s*([\s\S]*)`);
 const CYCLE_SIMPLE = re(`^(?:${QF})+`);
-const CYCLE_FRAGMENT = re(`\\s*(${QF})\\s*`);
+const CYCLE_FRAGMENT = re(String.raw`\s*(${QF})\s*`);
 class CycleTag extends Tag {
   parse() {
     const fragments = (text) =>
       text.split(',').map((part) => {
         const m = CYCLE_FRAGMENT.exec(part);
-        return m && m[1] ? m[1] : null;
+        return m?.[1] ? m[1] : null;
       });
     const named = CYCLE_NAMED.exec(this.markup);
     if (named) {
@@ -1315,7 +1491,7 @@ class IfChangedTag extends Block {
     });
   }
 }
-const COUNTER_SYNTAX = re(`^\\s*([${WC}\\-]+)\\s*$`);
+const COUNTER_SYNTAX = re(String.raw`^\s*([${WC}\-]+)\s*$`);
 class CounterTag extends Tag {
   parse() {
     const m = COUNTER_SYNTAX.exec(this.markup);
@@ -1334,7 +1510,7 @@ class CounterTag extends Tag {
     }
   }
 }
-const TABLEROW_SYNTAX = re(`([${WC}]+)\\s+in\\s+((?:${VARIABLE_SIGNATURE})+)`);
+const TABLEROW_SYNTAX = re(String.raw`([${WC}]+)\s+in\s+((?:${VARIABLE_SIGNATURE})+)`);
 class TableRowTag extends Block {
   parse(tokens) {
     const m = TABLEROW_SYNTAX.exec(this.markup);
@@ -1397,7 +1573,7 @@ class TableRowTag extends Block {
     out.push('</tr>\r\n');
   }
 }
-const INCLUDE_SYNTAX = re(`((?:${QF})+)(\\s+(?:with|for)\\s+((?:${QF})+))?`);
+const INCLUDE_SYNTAX = re(String.raw`((?:${QF})+)(\s+(?:with|for)\s+((?:${QF})+))?`);
 class IncludeTag extends Tag {
   parse() {
     const m = INCLUDE_SYNTAX.exec(this.markup);
@@ -1509,7 +1685,9 @@ class ExtendsTag extends Block {
     this.templateName = m[1];
     super.parse(tokens);
   }
-  assertMissingDelimitation() {}
+  assertMissingDelimitation() {
+    // Intentionally empty: an extending template may end without a closing delimiter.
+  }
   assertTagRules(rootNodeList) {
     if (!(rootNodeList[0] instanceof ExtendsTag))
       throw new LiquidSyntaxError("Liquid Error - 'extends' must be the first tag in an extending template");
@@ -1655,7 +1833,8 @@ export class LiquidEngine {
   /** Resolve an include/extends name expression and parse the referenced template. */
   async loadTemplate(context, nameMarkup) {
     const name = await context.resolve(nameMarkup);
-    const resolvedName = name == null ? null : typeof name === 'string' ? name : formatItem(name);
+    let resolvedName = null;
+    if (name != null) resolvedName = typeof name === 'string' ? name : formatItem(name);
     const source = await this.loadTemplateSource(resolvedName, context);
     const sourceRef = this.templateSourceRef?.(resolvedName, context);
     return this.prepareTemplate ? this.prepareTemplate(source, sourceRef) : this.parse(source, sourceRef);

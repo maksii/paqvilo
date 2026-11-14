@@ -38,7 +38,7 @@ export function observeReadAborts() {
         readyState: this.readyState,
         stack: new Error('Authored XHR abort').stack,
       };
-      window.__simObserveReadAbort?.(observation).catch(() => {});
+      globalThis.__simObserveReadAbort?.(observation).catch(() => {});
     }
     return abort.apply(this, args);
   };
@@ -68,7 +68,7 @@ export function reconcileIntentionalReadAbort(failure, { resources, cdpRecords, 
   const url = new URL(failure.url, origin);
   if (url.origin !== origin || url.pathname.startsWith('/__sim/')) return null;
   const resource = resources.find((row) => String(row.order) === failure.requestKey);
-  if (!resource || resource.type !== 'xhr' || resource.finished !== false) return null;
+  if (resource?.type !== 'xhr' || resource.finished !== false) return null;
   const fullPath = comparablePath(url.pathname + url.search);
   const cancelled = cdpRecords.filter(
     (row) =>

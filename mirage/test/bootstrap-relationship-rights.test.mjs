@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { initialState } from '../lib/bootstrap.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const G = (n) => '77777777-7777-4777-8777-' + String(n).padStart(12, '0');
 function portal(append, appendTo) {
   const grant = (entity, flags) => ({
@@ -44,7 +45,7 @@ test('bootstrap preserves explicit relationship rights without granting false or
   }
 });
 test('bootstrapped grants authorize real HTTP lookup creation and preserve each denial boundary', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-rights-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-rights-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
   await fs.writeFile(

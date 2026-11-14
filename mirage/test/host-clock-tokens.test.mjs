@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { fixedClock, signInHeaders } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CONTACT = 'c3000000-0000-4000-8000-000000000071';
 const START = Date.parse('2030-06-01T12:00:00.000Z');
 
 test('the portal implicit grant token is dated by the organization clock', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'host-clock-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-clock-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: 8c3d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e71\nadx_name: Invented Clock',

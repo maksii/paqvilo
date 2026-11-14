@@ -1,6 +1,7 @@
 import { parseKeySegment } from './data.mjs';
 import { DataError } from './data-error.mjs';
 import { dataverseReaderMessage } from './dataverse-reader-details.mjs';
+import { appendObservedDataverseErrorTemplate } from './dataverse-error-templates.mjs';
 import { annotationMatcher } from './webapi-handler.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 
@@ -13,10 +14,11 @@ const SOAP_PATH = '/XRMServices/2011/Organization.svc/web';
 const DISCOVERY = /^\/api\/discovery\/v2\.0\/Instances(?:\((.*)\))?$/;
 const DATA_PATH = /^\/api\/data\/(v[\d.]+)(?:\/(.*))?$/;
 // Same key grammar as webapi-handler.mjs (not exported there).
-const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
+const KEY = "((?:'(?:[^']|'')*'|[^()'/])*)";
 const SEGMENT = new RegExp(String.raw`^([^()]+)(?:\(${KEY}\))?$`);
 const IDENT = /^[A-Za-z_]\w*$/;
-const FUNCTION_NAME = /^(?:Microsoft\.Dynamics\.CRM\.)?[A-Z][A-Za-z]+$/;
+// Built-in names are capitalised; publisher-prefixed custom names (Pub_Fn) may contain underscores.
+const FUNCTION_NAME = /^(?:Microsoft\.Dynamics\.CRM\.)?[A-Z]\w*$/;
 const CRM_NAME = /^Microsoft\.Dynamics\.CRM\.([A-Za-z_]\w*)$/;
 const RELATIONSHIP_CAST = /^Microsoft\.Dynamics\.CRM\.((?:OneToMany|ManyToMany)RelationshipMetadata)$/;
 const OPTION_SET_SEGMENTS = new Set(['OptionSet', 'GlobalOptionSet']);
@@ -156,10 +158,11 @@ function keyProblem(text) {
   return null;
 }
 
-function metadata(parts, unknown) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function metadata(parts, unknown) {
   const [head, second, third] = parts;
   if (head.args === '' || second?.args === '') return unknown;
-  if (head.args !== undefined && keyProblem(head.args)) return invalid(keyProblem(head.args));
+  const headProblem = head.args === undefined ? null : keyProblem(head.args);
+  if (headProblem) return invalid(headProblem);
   // RelationshipDefinitions[(key)]/Microsoft.Dynamics.CRM.(OneToMany|ManyToMany)RelationshipMetadata
   const relationship = parts.length === 2 && second.args === undefined ? RELATIONSHIP_CAST.exec(second.name) : null;
   if (head.name === 'RelationshipDefinitions' && relationship) {
@@ -182,7 +185,8 @@ function metadata(parts, unknown) {
   };
   if (parts.length === 1) return result;
   if (!METADATA_SEGMENTS.has(second.name)) return unknown;
-  if (second.args !== undefined && keyProblem(second.args)) return invalid(keyProblem(second.args));
+  const segmentProblem = second.args === undefined ? null : keyProblem(second.args);
+  if (segmentProblem) return invalid(segmentProblem);
   result.segment = second.name;
   result.segmentKey = second.args ?? null;
   if (parts.length === 2) return result;
@@ -192,7 +196,7 @@ function metadata(parts, unknown) {
   const option = parts[3];
   if (
     parts.length === 4 &&
-    result.segment === 'Attributes' &&
+    second.name === 'Attributes' &&
     second.args !== undefined &&
     cast &&
     third.args === undefined &&
@@ -209,60 +213,78 @@ function withCandidate(route, name, params) {
   return Object.defineProperty(route, 'candidate', { value: { name, params }, enumerable: false });
 }
 
-function resource(rest, path) {
-  if (rest === '') return { kind: 'service' };
-  const unknown = { kind: 'unknown', message: `No HTTP resource was found that matches the request URI '${path}'.` };
-  const parts = splitTop(rest, '/').map(segment);
-  if (parts.some((part) => part === null)) return unknown;
-  const [head, second, third] = parts;
-  const count = parts.length;
-  if (METADATA_SETS.has(head.name)) return metadata(parts, unknown);
+function singleResource(head) {
+  if (head.args === undefined) return withCandidate({ kind: 'collection', set: head.name }, head.name, '');
+  return withCandidate({ kind: 'entity', set: head.name, key: head.args }, head.name, head.args);
+}
+
+function twoSegmentResource(head, second, unknown) {
+  const set = head.name;
+  const key = head.args;
+  const bound = CRM_NAME.exec(second.name);
+  if (bound)
+    return {
+      kind: second.args === undefined ? 'boundAction' : 'boundFunction',
+      set,
+      key: key ?? null,
+      name: bound[1],
+      params: second.args,
+    };
+  if (second.name === '$count' && second.args === undefined && key === undefined) return { kind: 'count', set };
+  if (key === undefined && IDENT.test(second.name) && second.args === undefined) return invalid(QUERY_SYNTAX);
+  if (key === undefined || !IDENT.test(second.name) || second.args === '') return unknown;
+  if (second.args === undefined) return { kind: 'property', set, key, segment: second.name };
+  const problem = keyProblem(second.args);
+  if (problem) return invalid(problem);
+  return { kind: 'member', set, key, segment: second.name, segmentKey: second.args };
+}
+
+function threeSegmentResource(head, second, third, unknown) {
+  const set = head.name;
+  const key = head.args;
+  if (key === undefined || !IDENT.test(second.name) || third.args !== undefined) return unknown;
+  if (second.args === undefined) {
+    if (third.name === '$value') return { kind: 'value', set, key, segment: second.name };
+    if (third.name === '$count') return { kind: 'navigationCount', set, key, segment: second.name };
+    if (third.name === '$ref') return { kind: 'ref', set, key, segment: second.name };
+  }
+  if (third.name === '$ref' && second.args !== '' && !keyProblem(second.args))
+    return { kind: 'navigationRef', set, key, segment: second.name, targetKey: second.args };
+  return unknown;
+}
+
+function singleSpecialResource(head, count) {
   if (count === 1 && head.args === undefined && head.name === '$metadata') return { kind: 'metadata' };
   if (count === 1 && head.args === undefined && head.name === '$batch') return { kind: 'batch' };
   if (count === 1 && FUNCTION_NAME.test(head.name)) {
     return { kind: 'function', name: head.name.replace(/^Microsoft\.Dynamics\.CRM\./, ''), params: head.args };
   }
+  if (count === 1 && head.args === '' && IDENT.test(head.name))
+    return withCandidate({ kind: 'function', name: head.name, params: '' }, head.name, '');
+  return null;
+}
+
+function resource(rest, path) {
+  if (rest === '') return { kind: 'service' };
+  const unknown = { kind: 'unknown', message: `No HTTP resource was found that matches the request URI '${path}'.` };
+  const parts = splitTop(rest, '/').map(segment);
+  if (parts.includes(null)) return unknown;
+  const [head, second, third] = parts;
+  const count = parts.length;
+  if (METADATA_SETS.has(head.name)) return metadata(parts, unknown);
+  const special = singleSpecialResource(head, count);
+  if (special) return special;
   if (!IDENT.test(head.name)) return unknown;
   // One segment may also name an operation: the router resolves `candidate` against the registry before treating it as a set.
-  if (count === 1 && head.args === '')
-    return withCandidate({ kind: 'function', name: head.name, params: '' }, head.name, '');
   if (head.args === '') return unknown;
-  const set = head.name;
   const key = head.args;
-  if (key !== undefined && keyProblem(key)) return invalid(keyProblem(key));
-  if (count === 1) {
-    if (key === undefined) return withCandidate({ kind: 'collection', set }, set, '');
-    return withCandidate({ kind: 'entity', set, key }, set, key);
-  }
-  if (count === 2) {
-    const bound = CRM_NAME.exec(second.name);
-    if (bound) {
-      return {
-        kind: second.args === undefined ? 'boundAction' : 'boundFunction',
-        set,
-        key: key ?? null,
-        name: bound[1],
-        params: second.args,
-      };
-    }
-    if (second.name === '$count' && second.args === undefined && key === undefined) return { kind: 'count', set };
-    // A plain segment after a set with no key is a query-syntax error (400 0x80060888), not a missing resource.
-    if (key === undefined && IDENT.test(second.name) && second.args === undefined) return invalid(QUERY_SYNTAX);
-    if (key === undefined || !IDENT.test(second.name) || second.args === '') return unknown;
-    if (second.args === undefined) return { kind: 'property', set, key, segment: second.name };
-    if (keyProblem(second.args)) return invalid(keyProblem(second.args));
-    return { kind: 'member', set, key, segment: second.name, segmentKey: second.args };
-  }
-  if (count === 3) {
-    if (key === undefined || !IDENT.test(second.name) || third.args !== undefined) return unknown;
-    if (third.name === '$value' && second.args === undefined) return { kind: 'value', set, key, segment: second.name };
-    if (third.name === '$count' && second.args === undefined)
-      return { kind: 'navigationCount', set, key, segment: second.name };
-    if (third.name === '$ref' && second.args === undefined) return { kind: 'ref', set, key, segment: second.name };
-    if (third.name === '$ref' && second.args !== '' && !keyProblem(second.args)) {
-      return { kind: 'navigationRef', set, key, segment: second.name, targetKey: second.args };
-    }
-  }
+  const problem = key ? keyProblem(key) : null;
+  // A single segment may name an operation: the route keeps its candidate, and the router runs that operation if one is registered.
+  if (problem && count === 1) return withCandidate(invalid(problem), head.name, key);
+  if (problem) return invalid(problem);
+  if (count === 1) return singleResource(head);
+  if (count === 2) return twoSegmentResource(head, second, unknown);
+  if (count === 3) return threeSegmentResource(head, second, third, unknown);
   return unknown;
 }
 
@@ -333,7 +355,7 @@ function parseJson(text) {
     return JSON.parse(text);
   } catch {
     try {
-      return JSON.parse(text.replace(/'/g, '"'));
+      return JSON.parse(text.replaceAll("'", '"'));
     } catch {
       return text;
     }
@@ -348,9 +370,9 @@ function literal(raw) {
   if (text === 'null') return null;
   if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
   const quoted = /^'((?:[^']|'')*)'$/.exec(text);
-  if (quoted) return quoted[1].replace(/''/g, "'");
+  if (quoted) return quoted[1].replaceAll("''", "'");
   const enumMember = /^[A-Za-z_][\w.]*'((?:[^']|'')*)'$/.exec(text);
-  if (enumMember) return enumMember[1].replace(/''/g, "'");
+  if (enumMember) return enumMember[1].replaceAll("''", "'");
   if (/^[[{]/.test(text)) return parseJson(text);
   return text;
 }
@@ -388,7 +410,7 @@ function preferMalformed(text) {
       return {
         preference: nameAt(start),
         position: i,
-        detail: "the escape character '\\' is not inside a quoted-string",
+        detail: String.raw`the escape character '\' is not inside a quoted-string`,
       };
     else if (ch === ',' || ch === ';') start = i + 1;
   }
@@ -410,40 +432,52 @@ export function parsePrefer(header) {
   let returnSeen = false;
   for (const [, name, quoted, bare] of text.matchAll(/([A-Za-z][\w.-]*)(?:\s*=\s*(?:"([^"]*)"|([^,;\s"]*)))?/g)) {
     const value = (quoted ?? bare ?? '').trim();
-    switch (name.toLowerCase()) {
-      case 'odata.include-annotations': {
-        const names = value
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean);
-        prefer.annotations = names.length === 1 && names[0] === '*' ? '*' : names.length ? names : null;
-        break;
-      }
-      case 'odata.maxpagesize':
-        // 0 pages with the default size but is echoed in Preference-Applied; anything that is not a 32-bit integer is refused by the collection read (405).
-        if (!/^\d+$/.test(value) || Number(value) > 2147483647) prefer.maxPageSizeInvalid = value;
-        else if (Number(value) > 0) prefer.maxPageSize = Number(value);
-        else prefer.maxPageSizeZero = true;
-        break;
-      case 'return':
-        // A conflicting duplicate does not override the first return preference.
-        if (!returnSeen) prefer.representation = value.toLowerCase() === 'representation';
-        returnSeen = true;
-        break;
-      case 'odata.continue-on-error':
-        prefer.continueOnError = true;
-        break;
-      case 'odata.track-changes':
-        prefer.trackChanges = true;
-        break;
-      case 'respond-async':
-        prefer.respondAsync = true;
-        break;
-    }
+    applyPreference(
+      prefer,
+      name.toLowerCase(),
+      value,
+      () => returnSeen,
+      (value) => (returnSeen = value),
+    );
   }
   const malformed = preferMalformed(text);
   if (malformed) prefer.malformed = { ...malformed, raw: text };
   return prefer;
+}
+
+function applyPreference(prefer, name, value, getReturnSeen, setReturnSeen) {
+  switch (name) {
+    case 'odata.include-annotations': {
+      const names = value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (names.length === 1 && names[0] === '*') prefer.annotations = '*';
+      else if (names.length) prefer.annotations = names;
+      else prefer.annotations = null;
+      break;
+    }
+    case 'odata.maxpagesize':
+      // 0 pages with the default size but is echoed in Preference-Applied; anything that is not a 32-bit integer is refused by the collection read (405).
+      if (!/^\d+$/.test(value) || Number(value) > 2147483647) prefer.maxPageSizeInvalid = value;
+      else if (Number(value) > 0) prefer.maxPageSize = Number(value);
+      else prefer.maxPageSizeZero = true;
+      break;
+    case 'return':
+      // A conflicting duplicate does not override the first return preference.
+      if (!getReturnSeen()) prefer.representation = value.toLowerCase() === 'representation';
+      setReturnSeen(true);
+      break;
+    case 'odata.continue-on-error':
+      prefer.continueOnError = true;
+      break;
+    case 'odata.track-changes':
+      prefer.trackChanges = true;
+      break;
+    case 'respond-async':
+      prefer.respondAsync = true;
+      break;
+  }
 }
 
 /** 400 envelope for a malformed Prefer header (from parsePrefer(...).malformed). */
@@ -479,8 +513,8 @@ export function preferenceApplied(prefer = {}, { paged = false, tracked = false 
 /** Header-safe: encodeURI leaves ' = , ( ) as they are, and # and ? would end the path, so they are encoded too. */
 export function entityUrl(origin, version, set, keyText) {
   const key = encodeURI(String(keyText ?? '').toWellFormed())
-    .replace(/#/g, '%23')
-    .replace(/\?/g, '%3F');
+    .replaceAll('#', '%23')
+    .replaceAll('?', '%3F');
   return `${origin}/api/data/${version}/${set}(${key})`;
 }
 
@@ -532,8 +566,9 @@ export function skipTokenQueryValue(token) {
 export function decodeSkipToken(text) {
   let raw = String(text ?? '').trim();
   if (!raw.startsWith('<')) {
-    raw = decode(raw);
-    if (raw === null) return null;
+    const decoded = decode(raw);
+    if (!decoded) return null;
+    raw = decoded;
   }
   const outer = /<cookie\s+pagenumber="(\d+)"\s+pagingcookie="([^"]*)"/.exec(raw);
   if (!outer) return null;
@@ -651,40 +686,36 @@ function cdsErrorAnnotations(prefer, { code, status, method, logical, requestId,
 }
 
 /** Store error -> { status, body, headers }. Dataverse innerCode wins, then the store code, then the status. */
-export function dataverseError(error, { prefer, logical, requestId, origin, tenantId, id, method } = {}) {
+export function dataverseError(
+  error,
+  { prefer, logical, requestId, origin, tenantId, id, method, errorStacks, errorTemplates, attributeErrorContext } = {},
+) {
   const details = error?.details ?? {};
-  if (error?.code === 'Unauthorized') {
-    const invalidToken =
-      details.reason === 'invalid_token'
-        ? 'error="invalid_token", error_description="Error during token validation!", '
-        : '';
-    return {
-      status: 401,
-      body: null,
-      headers: {
-        ...baseHeaders(requestId),
-        'WWW-Authenticate': `Bearer ${invalidToken}authorization_uri="${origin}/${tenantId}/oauth2/authorize", resource_id="${origin}/"`,
-      },
-    };
-  }
+  if (error?.code === 'Unauthorized') return unauthorizedDataverseError(details, requestId, origin, tenantId);
   // A duplicate of an entity (alternate) key carries its own Dataverse code and message whatever the inner code says.
   const keyViolation = error?.code === 'DuplicateRecord' && details.keyName != null && details.columns != null;
   const [status, code] = keyViolation ? [412, '0x80060892'] : resolveError(error);
-  let message = dataverseReaderMessage(error) ?? error?.message ?? 'An unexpected error occurred.';
+  const initialMessage = dataverseReaderMessage(error) ?? error?.message ?? 'An unexpected error occurred.';
   const recordId = id ?? details.id;
-  // A 500 that names its Dataverse code (innerCode, for example 0x0) keeps its message; an internal exception does not.
-  if (status === 500 && typeof details.innerCode !== 'string') message = 'An unexpected error occurred.';
-  else if (keyViolation) {
-    const columns = [details.columns].flat().join(', ');
-    message = `Entity Key ${details.keyName} violated. A record with the same value for ${columns} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`;
-  } else if (code === '0x80040217' && logical && recordId != null)
-    message = `Entity '${logical}' With Id = ${recordId} Does Not Exist`;
-  else if (code === '0x80040217')
-    message = message.replace(NOT_FOUND_WORDING, "Entity '$1' With Id = $2 Does Not Exist");
-  else if (code === '0x80040239' && (details.failedDateConversion || details.dateTimeBelowMinimum)) {
-    message = `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`;
-  } else if (code === '0x8006088a' && details.segment)
-    message = `Resource not found for the segment '${details.segment}'.`;
+  let formatted = dataverseErrorMessage(initialMessage, details, { status, code, keyViolation, logical, recordId });
+  if (
+    error?.code === 'InvalidFetchXml' &&
+    code === '0x80041103' &&
+    attributeErrorContext?.entity === details.entity &&
+    details.attribute
+  ) {
+    const { organizationIndex, metadataId, entity } = attributeErrorContext;
+    formatted += `orgIndex: ${organizationIndex}, id: ${metadataId}, logicalName: ${entity}`;
+  }
+  const message =
+    code === '0x80048d19'
+      ? appendObservedDataverseErrorTemplate(formatted, {
+          mode: errorStacks,
+          templates: errorTemplates,
+          method,
+          target: details.dataverseReaderTarget ?? 'record',
+        })
+      : formatted;
   // code and message come first, then the annotations; orderAnnotations must leave this object alone.
   const body = {
     error: {
@@ -695,6 +726,42 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   };
   Object.defineProperty(body.error, KEEP_ORDER, { value: true });
   // Native sends nosniff on errors from the entity engine, not on payload-reader (0x80048d19) or route-resolution errors.
+  const headers = dataverseErrorHeaders(details, { code, status, requestId });
+  return { status, body, headers };
+}
+
+function unauthorizedDataverseError(details, requestId, origin, tenantId) {
+  const invalidToken =
+    details.reason === 'invalid_token'
+      ? 'error="invalid_token", error_description="Error during token validation!", '
+      : '';
+  return {
+    status: 401,
+    body: null,
+    headers: {
+      ...baseHeaders(requestId),
+      'WWW-Authenticate': `Bearer ${invalidToken}authorization_uri="${origin}/${tenantId}/oauth2/authorize", resource_id="${origin}/"`,
+    },
+  };
+}
+
+function dataverseErrorMessage(message, details, { status, code, keyViolation, logical, recordId }) {
+  // A 500 that names its Dataverse code (innerCode, for example 0x0) keeps its message; an internal exception does not.
+  if (status === 500 && typeof details.innerCode !== 'string') return 'An unexpected error occurred.';
+  if (keyViolation) {
+    const columns = [details.columns].flat().join(', ');
+    return `Entity Key ${details.keyName} violated. A record with the same value for ${columns} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`;
+  }
+  if (code === '0x80040217' && logical && recordId != null)
+    return `Entity '${logical}' With Id = ${recordId} Does Not Exist`;
+  if (code === '0x80040217') return message.replace(NOT_FOUND_WORDING, "Entity '$1' With Id = $2 Does Not Exist");
+  if (code === '0x80040239' && (details.failedDateConversion || details.dateTimeBelowMinimum))
+    return `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`;
+  if (code === '0x8006088a' && details.segment) return `Resource not found for the segment '${details.segment}'.`;
+  return message;
+}
+
+function dataverseErrorHeaders(details, { code, status, requestId }) {
   const headers = { ...baseHeaders(requestId), 'Content-Type': details.contentType ?? JSON_CONTENT_TYPE };
   if (code !== '0x80048d19' && !details.route) headers['x-content-type-options'] = 'nosniff';
   // Native repeats the request id on an engine error (two REQ_ID lines); a route-level error carries one.
@@ -702,7 +769,7 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   if (status === 429) headers['Retry-After'] = String(details.retryAfter ?? 300);
   // A keyed 405 names the methods its resource answers; the default Allow list is the collection one.
   if (details.allow) headers.Allow = details.allow;
-  return { status, body, headers };
+  return headers;
 }
 
 function resolveError(error) {

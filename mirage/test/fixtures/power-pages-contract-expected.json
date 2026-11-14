@@ -1,0 +1,262 @@
+[
+  {
+    "id": "filter-batch",
+    "output": "[c:a][b:a]"
+  },
+  {
+    "id": "filter-concat",
+    "output": "c:a:b:a:x:y|c:a:b:a:z"
+  },
+  {
+    "id": "filter-first",
+    "output": "c|c"
+  },
+  {
+    "id": "filter-join",
+    "output": "c:a:b:a"
+  },
+  {
+    "id": "filter-last",
+    "output": "a|a"
+  },
+  {
+    "id": "filter-random",
+    "output": "member"
+  },
+  {
+    "id": "filter-shuffle",
+    "output": "4|a:a:b:c"
+  },
+  {
+    "id": "filter-size",
+    "output": "4|4"
+  },
+  {
+    "id": "filter-skip",
+    "output": "b:a"
+  },
+  {
+    "id": "filter-take",
+    "output": "c:a"
+  },
+  {
+    "id": "filter-date",
+    "output": "2024-01-31 10:20:30"
+  },
+  {
+    "id": "filter-date_add_days",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_add_hours",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_add_minutes",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_add_months",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_add_seconds",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_add_years",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_to_iso8601",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-date_to_rfc822",
+    "output": "Liquid error: Invalid cast from 'System.String' to 'System.Nullable`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'."
+  },
+  {
+    "id": "filter-escape",
+    "output": "&lt;b&gt;&quot;quoted&quot; &amp; value&lt;/b&gt;"
+  },
+  {
+    "id": "filter-xml_escape",
+    "output": "&lt;b&gt;&quot;quoted&quot; &amp; value&lt;/b&gt;"
+  },
+  {
+    "id": "filter-html_safe_escape",
+    "output": "<b>label</b><img src=\"x\">"
+  },
+  {
+    "id": "filter-url_escape",
+    "output": "a+b%2B%26%2F%3F"
+  },
+  {
+    "id": "filter-current_sort",
+    "output": "DESC|"
+  },
+  {
+    "id": "filter-reverse_sort",
+    "output": "DESC|ASC|[]"
+  },
+  {
+    "id": "filter-ceil",
+    "output": "5"
+  },
+  {
+    "id": "filter-floor",
+    "output": "4"
+  },
+  {
+    "id": "filter-divided_by",
+    "output": "3"
+  },
+  {
+    "id": "filter-minus",
+    "output": "8.9"
+  },
+  {
+    "id": "filter-modulo",
+    "output": "2"
+  },
+  {
+    "id": "filter-plus",
+    "output": "11.1"
+  },
+  {
+    "id": "filter-round",
+    "output": "2"
+  },
+  {
+    "id": "filter-times",
+    "output": "22"
+  },
+  {
+    "id": "filter-append",
+    "output": "probe.js"
+  },
+  {
+    "id": "filter-capitalize",
+    "output": "Capitalize Me"
+  },
+  {
+    "id": "filter-downcase",
+    "output": "mixed case"
+  },
+  {
+    "id": "filter-prepend",
+    "output": "prefix-probe"
+  },
+  {
+    "id": "filter-remove",
+    "output": "-"
+  },
+  {
+    "id": "filter-remove_first",
+    "output": "-ab"
+  },
+  {
+    "id": "filter-replace",
+    "output": "xy-xy"
+  },
+  {
+    "id": "filter-replace_first",
+    "output": "xy-ab"
+  },
+  {
+    "id": "filter-split",
+    "output": "a:b:c"
+  },
+  {
+    "id": "filter-strip_html",
+    "output": "bold value"
+  },
+  {
+    "id": "filter-truncate",
+    "output": "abcde..."
+  },
+  {
+    "id": "filter-truncate_words",
+    "output": "one two..."
+  },
+  {
+    "id": "filter-upcase",
+    "output": "MIXED CASE"
+  },
+  {
+    "id": "filter-newline_to_br",
+    "output": "first<br>\nsecond<br>\n<br>\nthird & fourth"
+  },
+  {
+    "id": "filter-strip_newlines",
+    "output": "firstsecondthird & fourth"
+  },
+  {
+    "id": "filter-text_to_html",
+    "output": "<p>first<br>second</p><p>third &amp; fourth</p>"
+  },
+  {
+    "id": "filter-boolean",
+    "output": "true|[]"
+  },
+  {
+    "id": "filter-decimal",
+    "output": "3.14|[]"
+  },
+  {
+    "id": "filter-integer",
+    "output": "10|[]"
+  },
+  {
+    "id": "filter-string",
+    "output": "12.5|[not-a-value]"
+  },
+  {
+    "id": "filter-base",
+    "output": "https://example.test:8443"
+  },
+  {
+    "id": "filter-host",
+    "output": "example.test"
+  },
+  {
+    "id": "filter-path",
+    "output": "/path"
+  },
+  {
+    "id": "filter-path_and_query",
+    "output": "/path?existing=one%23fragment"
+  },
+  {
+    "id": "filter-port",
+    "output": "8443"
+  },
+  {
+    "id": "filter-scheme",
+    "output": "https"
+  },
+  {
+    "id": "filter-add_query",
+    "output": "https://example.test:8443/path?existing=two%20%26%20three#fragment"
+  },
+  {
+    "id": "filter-remove_query",
+    "output": "https://example.test:8443/path#fragment"
+  },
+  {
+    "id": "filter-default",
+    "output": "[fallback]|[]|[false]"
+  },
+  {
+    "id": "filter-file_size",
+    "output": "2 KB|9.54 MB"
+  },
+  {
+    "id": "filter-h",
+    "output": "&lt;b&gt;value &amp; text&lt;/b&gt;"
+  },
+  {
+    "id": "filter-liquid",
+    "output": "inner"
+  }
+]

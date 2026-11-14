@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -7,7 +8,7 @@ import { resolveInspectionEvidence } from '../lense/inspection-evidence.mjs';
 
 test('actual portal node joins use rendered component scope and never navigation defaults, page forms or values', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const html =
     '<form id="form" data-formid="form-a" data-entityname="sample_entry"><label id="caption" for="title">Title</label><input id="title" name="title" value="PRIVATE_VALUE"><button id="submit">Save</button><div id="child" data-formid="form-b" data-entityname="sample_child"><input id="other" name="title"></div></form><input id="outside" name="title"><iframe id="frame"></iframe>';
@@ -88,6 +89,39 @@ test('actual portal node joins use rendered component scope and never navigation
     'exact',
     'native wrapper IDs and direct child layout resolve nonhex export IDs',
   );
+  await page
+    .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
+    .evaluate((node) =>
+      node.setAttribute(
+        'data-form-layout',
+        JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: 'sample_entry' }),
+      ),
+    );
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'exact',
+    'a native empty layout ID cannot erase the independently observed basic-form wrapper',
+  );
+  await page
+    .locator('#EntityFormControl_forma_EntityFormView')
+    .evaluate((node) => node.setAttribute('data-formid', '00000000-0000-0000-0000-000000000000'));
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'unavailable',
+    'an explicit unknown component ID remains a boundary',
+  );
+  await page.locator('#EntityFormControl_forma_EntityFormView').evaluate((node) => {
+    node.removeAttribute('data-formid');
+    node.id = 'EntityFormControl_EntityFormView';
+  });
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'unavailable',
+    'a generic wrapper and empty layout ID cannot invent a basic-form identity',
+  );
+  await page.locator('#EntityFormControl_EntityFormView').evaluate((node) => {
+    node.id = 'EntityFormControl_forma_EntityFormView';
+  });
   await page
     .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
     .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
@@ -187,7 +221,7 @@ test('actual portal node joins use rendered component scope and never navigation
 
 test('typed advanced wrappers and modal form hierarchy preserve exact configuration while progress chrome stays enclosing', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.route('http://127.0.0.1:11889/**', (route) =>
     route.fulfill({

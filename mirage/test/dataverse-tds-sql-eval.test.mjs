@@ -1,6 +1,9 @@
+// @test-kind unproven: Local SQL models; only inputs replayed from parity/cases/tds-sql have SQL Server results.
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { executeBatch } from '../lib/dataverse-tds-sql-eval.mjs';
+import { splitBatches } from '../lib/dataverse-tds-sql-lexer.mjs';
 
 // Schema and rows: contoso_widget and contoso_part.
 
@@ -508,8 +511,8 @@ const semanticCases = [
     [['3.500000']],
   ],
   ['int overflow is 8115', 'SELECT 2147483647 + 1 AS d', { error: 8115 }],
-  ['bigint overflow is 8115', 'SELECT 9223372036854775807 + 1 AS d', { error: 8115 }],
-  ['bigint product in range', 'SELECT 2147483647 * 4294967296 AS d', [['9223372032559808512n']]],
+  ['bigint literal plus one is a decimal', 'SELECT 9223372036854775807 + 1 AS d', [['9223372036854775808']]],
+  ['bigint product in range', 'SELECT 2147483647 * 4294967296 AS d', [['9223372032559808512']]],
   [
     'decimal overflow is 8115',
     "SELECT CAST('99999999999999999999999999999999999999' AS decimal(38,0)) * 10 AS d",
@@ -521,13 +524,13 @@ const semanticCases = [
   ['non-numeric string in arithmetic is 245', "SELECT 'x' + 1 AS d", { error: 245 }],
   ['string with a fraction against int is 245', "SELECT '2.5' * 2 AS d", { error: 245 }],
   ['string against decimal converts to decimal', "SELECT '2.5' * 2.0 AS d", [['5.00']]],
-  ['string compares with int', "SELECT 1 = '1' AS d", [[true]]],
-  ['string compares with decimal', "SELECT 2.5 = '2.50' AS d", [[true]]],
-  ['non-numeric string compared with int is 245', "SELECT 'abc' = 1 AS d", { error: 245 }],
+  ['string compares with int', "SELECT 1 = '1' AS d", { error: 102 }],
+  ['string compares with decimal', "SELECT 2.5 = '2.50' AS d", { error: 102 }],
+  ['non-numeric string compared with int is 156', "SELECT 'abc' = 1 AS d", { error: 156 }],
   [
-    'malformed date string compared with datetime is 241',
+    'malformed date string compared with datetime is 156',
     "SELECT '2020-13-01' = CAST('2020-01-01' AS datetime) AS d",
-    { error: 241 },
+    { error: 156 },
   ],
   // 3. Declared types
   ['DECLARE int converts the string', "DECLARE @n int = '5'; SELECT @n AS n", [[5]]],
@@ -566,10 +569,10 @@ const semanticCases = [
   ['datetime plus days past 9999 is 517', "DECLARE @d datetime = '9999-12-31'; SELECT @d + 1 AS d", { error: 517 }],
   ['datetime times int is 8117', "DECLARE @d datetime = '2020-01-01'; SELECT @d * 2 AS d", { error: 8117 }],
   ['datetime plus datetime is 206', "DECLARE @d datetime = '2020-01-01'; SELECT @d + @d AS d", { error: 206 }],
-  ['binary literal equals the int it encodes', 'SELECT 0x0102 = 258 AS d', [[true]]],
+  ['binary literal compared with the int it encodes is 102', 'SELECT 0x0102 = 258 AS d', { error: 102 }],
   ["CAST binary to int reads two's complement", 'SELECT CAST(0xFFFFFFFF AS int) AS d', [[-1]]],
   ['odd-length binary literal pads with a zero', 'SELECT CAST(0x1 AS int) AS d', [[1]]],
-  ['binary arithmetic is 402', 'SELECT 0x41 + 1 AS d', { error: 402 }],
+  ['binary arithmetic yields an int', 'SELECT 0x41 + 1 AS d', [[66]]],
   // 6. DISTINCT and ORDER BY
   [
     'DISTINCT with ORDER BY a column outside the list is 145',
@@ -654,6 +657,27 @@ test('GO with a repeat count runs the batch that many times', async () => {
   assert.deepEqual([rowsOf(result, 0), rowsOf(result, 1), result.resultSets.length], [[[1]], [[1]], 2]);
 });
 
+// @test-kind security: a GO repeat count must stay bounded so one batch cannot exhaust the simulator process.
+test('GO with a repeat count above 1000 is rejected by the lexer', async () => {
+  await assert.rejects(run('SELECT 1 AS one\nGO 1000000000'), {
+    name: 'TdsSqlError',
+    number: 102,
+    message: 'GO accepts a repeat count up to 1000.',
+  });
+});
+
+// @test-kind security: the 1000 limit is the upper bound of an accepted repeat count, so the bound itself must parse.
+test('GO with a repeat count of 1000 is accepted by the lexer', () => {
+  assert.equal(splitBatches('SELECT 1 AS one\nGO 1000')[0].repeat, 1000);
+});
+
+// @test-kind security: a repeated batch must observe its abort signal, since its statements never yield to timers.
+test('an abort during a GO repeat stops the batch before its later runs', async () => {
+  const controller = new AbortController();
+  setImmediate(() => controller.abort());
+  await assert.rejects(run('SELECT 1 AS one\nGO 1000', { signal: controller.signal }), { number: 3617 });
+});
+
 test('sp_executesql parameters are visible', async () => {
   const result = await run('SELECT @p1 AS v', { params: { '@p1': 7 } });
   assert.deepEqual(rowsOf(result), [[7]]);
@@ -732,6 +756,77 @@ test('abort during a scan stops the row loop', async () => {
     executeBatch('SELECT p.contoso_partid AS id FROM contoso_part p', { catalog, scan, signal: controller.signal }),
     { number: 3617 },
   );
+});
+
+const partRows = (count) => Array.from({ length: count }, (_, i) => ({ contoso_partid: `P${i}` }));
+
+// @test-kind contract: an abort raised by a timer must reach a cross join, so the join yields to the event loop.
+test('a timer abort cancels a large cross join', async (t) => {
+  const controller = new AbortController();
+  const { scan, calls } = makeScan({ contoso_part: partRows(600) });
+  const originalSetImmediate = globalThis.setImmediate;
+  let yields = 0;
+  let scansBeforeAbort = 0;
+  // The evaluator's own yield is the second event-loop turn: abort there, then let the yield continue.
+  t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
+    yields += 1;
+    if (yields === 2) {
+      scansBeforeAbort = calls.contoso_part ?? 0;
+      controller.abort();
+    }
+    return originalSetImmediate(callback, ...args);
+  });
+  await assert.rejects(
+    executeBatch('SELECT a.contoso_partid AS x FROM contoso_part a CROSS JOIN contoso_part b', {
+      catalog,
+      scan,
+      now: NOW,
+      signal: controller.signal,
+    }),
+    { number: 3617 },
+  );
+  assert.ok(yields >= 2, `the join yielded ${yields} times`);
+  assert.ok(scansBeforeAbort >= 1, 'the join scanned its tables before the abort');
+});
+
+// @test-kind contract: a cross join whose intermediate rows exceed the statement's tuple budget is refused.
+test('a cross join over the tuple budget raises a resource error', async () => {
+  const { scan } = makeScan({ contoso_part: partRows(200) });
+  await assert.rejects(
+    executeBatch('SELECT a.contoso_partid AS x FROM contoso_part a CROSS JOIN contoso_part b', {
+      catalog,
+      scan,
+      now: NOW,
+      tupleBudget: 10000,
+    }),
+    { number: 40000, message: 'The statement exceeded its budget of 10000 intermediate rows.' },
+  );
+});
+
+// @test-kind contract: a cross join within the tuple budget returns the same rows as an unbudgeted run.
+test('a cross join within the tuple budget returns every row', async () => {
+  const result = await run(
+    'SELECT w.contoso_name AS n, p.contoso_partid AS id FROM contoso_widget w CROSS JOIN contoso_part p',
+    { tupleBudget: 10000 },
+  );
+  assert.deepEqual(rowsOf(result), [
+    ['Bolt', 'P1'],
+    ['Bolt', 'P2'],
+    ['Bolt', 'P3'],
+    ['Bolt', 'P4'],
+    ['Nut', 'P1'],
+    ['Nut', 'P2'],
+    ['Nut', 'P3'],
+    ['Nut', 'P4'],
+    ['Gear', 'P1'],
+    ['Gear', 'P2'],
+    ['Gear', 'P3'],
+    ['Gear', 'P4'],
+    ['bolt pack', 'P1'],
+    ['bolt pack', 'P2'],
+    ['bolt pack', 'P3'],
+    ['bolt pack', 'P4'],
+  ]);
 });
 
 // ---- Aggregates, GROUP BY and HAVING. Expected values follow SQL Server.
@@ -939,6 +1034,37 @@ test('aggregate result columns carry SQL Server types', async () => {
   assert.deepEqual([mn.type, mn.length], ['nvarchar', 100]);
 });
 
+// @test-kind contract: SUM of money is money(19,4) by SQL Server typing, so a finer source value is rounded, not widened.
+test('SUM of money with a finer source value stays money with scale 4', async () => {
+  const sourced = [
+    { ...widgets[0], contoso_price: { decimal: '2.5000' } },
+    { ...widgets[0], contoso_price: 1e-7 },
+  ];
+  const result = await run('SELECT SUM(w.contoso_price) AS s FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  const [s] = result.resultSets[0].columns;
+  assert.deepEqual([s.type, s.precision, s.scale], ['money', 19, 4]);
+  assert.deepEqual(rowsOf(result), [['2.5000']]);
+});
+
+test('a text value longer than its declared length widens the result column', async () => {
+  const sourced = [{ ...widgets[0], contoso_name: 'n'.repeat(150) }];
+  const result = await run('SELECT w.contoso_name AS n FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  assert.equal(result.resultSets[0].columns[0].length, 150);
+  assert.deepEqual(rowsOf(result), [['n'.repeat(150)]]);
+});
+
+test('a text value longer than 4000 characters makes the result column nvarchar(max)', async () => {
+  const sourced = [{ ...widgets[0], contoso_name: 'n'.repeat(4001) }];
+  const result = await run('SELECT w.contoso_name AS n FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  assert.equal(result.resultSets[0].columns[0].length, 'max');
+});
+
 test('zero-row aggregate columns keep their static types', async () => {
   const result = await run(
     'SELECT SUM(w.contoso_quantity) AS s, MAX(w.contoso_name) AS m FROM contoso_widget w WHERE 1 = 0',
@@ -1044,7 +1170,7 @@ const orderedCases = [
   [
     'CAST text to varbinary and back to nvarchar',
     "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s",
-    [['ab']],
+    [['扡']],
   ],
   ['binary bytes read as a big-endian int', 'SELECT CONVERT(int, CAST(0x00000102 AS binary(4))) AS n', [[258]]],
   ['DECLAREd binary pads a short literal', 'DECLARE @x binary(4) = 0x01; SELECT CAST(@x AS int) AS n', [[16777216]]],

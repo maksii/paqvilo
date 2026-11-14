@@ -1,3 +1,5 @@
+// @test-kind contract: Paqvilo's local Canvas inventory HTTP routes report explicit host capability levels, diagnostics and route/method ownership without starting an app.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertNoElements } from './assert-markup.mjs';
@@ -27,7 +29,7 @@ async function server(t, apps) {
     }
   });
   await new Promise((resolve) => instance.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => instance.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => instance.close(resolve)));
   return { url: `http://127.0.0.1:${instance.address().port}`, diagnostics };
 }
 
@@ -37,6 +39,7 @@ const sharedHeaders = (response) => {
   assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
 };
 
+// @test-kind contract+security: the toolkit's inventory-only page explicitly reports its unsupported runtime boundary and serves no executable script under hardened local headers.
 test('canvas page of a host without the runtime shows the inventory, its banner and hardened headers', async (t) => {
   const { url, diagnostics } = await server(t, [
     {
@@ -69,6 +72,7 @@ test('canvas page of a host without the runtime shows the inventory, its banner 
   );
 });
 
+// CANVAS_HOST_NOT_IMPLEMENTED deduplication is a local diagnostic policy, not a native Canvas lifecycle guarantee.
 test('canvas page reports its diagnostic once per app, not per page view', async (t) => {
   const { url, diagnostics } = await server(t, [
     { uniqueName: 'fx_inventedcanvas', source: source('Invented Canvas') },
@@ -92,6 +96,7 @@ test('canvas page reports its diagnostic once per app, not per page view', async
   );
 });
 
+// The asserted Paqvilo capability levels are served from an inert runtime stub; its session function must never execute here.
 test('canvas list and inventory API answer inventory without the runtime and behaviour with it', async (t) => {
   const { url } = await server(t, [{ uniqueName: 'fx_inventedcanvas', source: source('Invented Canvas') }]);
   const list = await fetch(url + '/_apps/canvas/', { headers: { accept: 'application/json' } });
@@ -127,7 +132,7 @@ test('canvas list and inventory API answer inventory without the runtime and beh
     }
   });
   await new Promise((resolve) => instance.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => instance.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => instance.close(resolve)));
   const hostedList = await (
     await fetch(`http://127.0.0.1:${instance.address().port}/_apps/canvas/`, {
       headers: { accept: 'application/json' },
@@ -135,7 +140,7 @@ test('canvas list and inventory API answer inventory without the runtime and beh
   ).json();
   assert.deepEqual(
     [hostedList.level, hostedList.reason, hostedList.apps[0].level],
-    ['behaviour', 'CANVAS_NOT_RENDERED', 'behaviour'],
+    ['behaviour', 'CANVAS_RENDERING_BASELINE', 'behaviour'],
   );
   const htmlList = await fetch(url + '/_apps/canvas/');
   assert.match(await htmlList.text(), /href="\/_apps\/canvas\/fx_inventedcanvas"/);
@@ -148,6 +153,7 @@ test('canvas list and inventory API answer inventory without the runtime and beh
   assert.deepEqual(body.formulas, source('x').formulas);
 });
 
+// Unknown local routes and unsupported methods retain the toolkit's explicit JSON error and Allow policy.
 test('canvas handler answers 404 for unknown apps and 405 for writes', async (t) => {
   const { url } = await server(t, [{ uniqueName: 'fx_inventedcanvas', source: source('Invented Canvas') }]);
   for (const path of [
@@ -165,6 +171,7 @@ test('canvas handler answers 404 for unknown apps and 405 for writes', async (t)
   assert.equal(post.headers.get('allow'), 'GET');
 });
 
+// The local multiplexer owns only its Canvas route prefix and preserves the surrounding host's 418 response.
 test('canvas handler leaves other paths to the host', async (t) => {
   const { url } = await server(t, []);
   for (const path of [
@@ -181,6 +188,7 @@ test('canvas handler leaves other paths to the host', async (t) => {
   }
 });
 
+// @test-kind security: invented untrusted app labels cannot introduce elements or scripts into the local inventory HTML.
 test('canvas handler escapes app values in HTML', async (t) => {
   const name = '<script>alert("fx")</script>';
   const { url } = await server(t, [

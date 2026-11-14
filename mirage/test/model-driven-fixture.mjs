@@ -2,11 +2,18 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
-export async function modelDrivenFixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+/**
+ * Writes the invented model-driven project and starts its simulator. `defer: true` only writes the project, for
+ * tests that edit sources before the first start. Every simulator started through `start` closes before the
+ * project directory is removed.
+ */
+export async function modelDrivenFixture(t, { defer = false, ...options } = {}) {
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const sourceDir = path.join(root, 'portal'),
     solutionDir = path.join(root, 'solution');
   const files = {
@@ -55,8 +62,8 @@ export async function modelDrivenFixture(t, options = {}) {
     await fs.writeFile(file, content);
   }
   const stateFile = path.join(root, 'state.json');
-  const start = (extra) =>
-    createSimulator({
+  const start = async (extra) => {
+    const started = await createSimulator({
       sourceDir,
       solutionRoots: [solutionDir],
       stateFile,
@@ -90,8 +97,11 @@ export async function modelDrivenFixture(t, options = {}) {
       ...options,
       ...extra,
     });
+    ownedFixture(t).add(() => started.close());
+    return started;
+  };
+  if (defer) return { root, sourceDir, solutionDir, stateFile, start };
   const sim = await start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   return { sim, origin, root, sourceDir, solutionDir, stateFile, start };
 }

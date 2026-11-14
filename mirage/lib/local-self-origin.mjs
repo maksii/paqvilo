@@ -1,9 +1,9 @@
 /** Native portals omit default ports; local exported scripts may do the same. */
 export function clientLocalSelfOriginRuntime() {
-  return `
+  return String.raw`
     const localSelfUrl=value=>{
       if(typeof value!=='string'||typeof location==='undefined'||!location.port||!['127.0.0.1','localhost','[::1]'].includes(location.hostname))return value;
-      const authority=/^(?:https?:)?\\/\\/([^/?#]+)/i.exec(value)?.[1];
+      const authority=/^(?:https?:)?\/\/([^/?#]+)/i.exec(value)?.[1];
       // Exact authority equality excludes credentials and explicitly named ports.
       if(!authority||authority.toLowerCase()!==location.hostname.toLowerCase())return value;
       try{const url=new URL(value,location.href);if(url.protocol!==location.protocol||url.hostname!==location.hostname||url.port)return value;url.port=location.port;return url.href;}catch{return value;}

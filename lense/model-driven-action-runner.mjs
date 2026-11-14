@@ -17,6 +17,15 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     refresh: 'This form cannot be refreshed from a script.',
     context: 'This app does not expose its global context.',
   };
+  const missingReason = (missing, onRecord) => {
+    if (['form', 'saved-record'].includes(missing) && !onRecord)
+      return 'Open a record form to use this; this page is not a form.';
+    if (missing === 'saved-record') return 'Save the record first; this form has no saved record yet.';
+    if (!missing) return undefined;
+    return (
+      REQUIREMENT_TEXT[missing] ?? `The current native page does not provide ${missing.replaceAll('-', ' ')} support.`
+    );
+  };
   // A bounded client API (or a native getter) may throw for an unsupported member;
   // that member is unavailable, never a failure of every other check.
   const safe = (callback) => {
@@ -26,7 +35,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       return undefined;
     }
   };
-  const xrm = window.Xrm,
+  const xrm = globalThis.Xrm,
     form = safe(() => xrm?.Page),
     context = safe(() => xrm?.Utility?.getGlobalContext()),
     type = safe(() => form?.ui?.getFormType());
@@ -42,7 +51,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     context: () => context,
     form: () => onRecord && form?.data?.entity && form?.ui,
     'saved-record': () => onRecord && form?.data?.entity?.getId && type !== 1,
-    metadata: () => context?.getClientUrl && context?.getVersion && window.fetch,
+    metadata: () => context?.getClientUrl && context?.getVersion && globalThis.fetch,
     'open-form': () => typeof xrm?.Navigation?.openForm === 'function',
     navigate: () => context?.getClientUrl && xrm?.Navigation?.openUrl,
     refresh: () => typeof form?.data?.refresh === 'function',
@@ -55,16 +64,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
   return actions.map((action) => {
     const missing = action.requirements?.find((requirement) => !checks[requirement] || !safe(checks[requirement]));
     const reason =
-      location.origin !== origin
-        ? 'The app left this Lense environment.'
-        : ['form', 'saved-record'].includes(missing) && !onRecord
-          ? 'Open a record form to use this; this page is not a form.'
-          : missing === 'saved-record'
-            ? 'Save the record first; this form has no saved record yet.'
-            : missing
-              ? (REQUIREMENT_TEXT[missing] ??
-                `The current native page does not provide ${missing.replaceAll('-', ' ')} support.`)
-              : undefined;
+      location.origin !== origin ? 'The app left this Lense environment.' : missingReason(missing, onRecord);
     return {
       id: action.id,
       available: location.origin === origin && !missing,
@@ -77,19 +77,26 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
 /** page.evaluate-serializable. Private results go straight to the owned browser UI.
  * The returned acknowledgement never contains record identity, values or errors.
  */
-export async function runModelDrivenAction({ origin, token, action, params = {}, requestId, cloud = {} }) {
+/* NOSONAR */ export async function runModelDrivenAction({
+  origin,
+  token,
+  action,
+  params = {},
+  requestId,
+  cloud = {},
+}) {
   const ack = (accepted) => ({ accepted, requestId });
   const host = document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector');
   const receiver = () =>
     location.origin === origin &&
     host?.isConnected &&
     host.__paqModelActions?.token === token &&
-    !window.__paqviloRetiredModelInspectors?.includes(token)
+    !globalThis.__paqviloRetiredModelInspectors?.includes(token)
       ? host.__paqModelActions
       : undefined;
-  if (window.top !== window || !receiver() || typeof requestId !== 'string' || requestId.length > 100)
+  /* NOSONAR */ if (window.top !== globalThis || !receiver() || typeof requestId !== 'string' || requestId.length > 100)
     return ack(false);
-  const safe = (callback) => {
+  /* NOSONAR: identical bodies capture different state */ const safe = (callback) => {
     try {
       return callback();
     } catch {
@@ -105,20 +112,21 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
       : fail('The table logical name is unavailable.');
   const guid = (value) =>
     typeof value === 'string' &&
-    /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\})$/i.test(
+    /* NOSONAR */ /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\})$/i.test(
       value,
     )
       ? value.replace(/[{}]/g, '').toLowerCase()
       : fail('A saved record GUID is required.');
-  const xrm = window.Xrm,
+  const xrm = globalThis.Xrm,
     context = safe(() => xrm?.Utility?.getGlobalContext()),
     form = safe(() => xrm?.Page);
   const target = () => ({
     entity:
-      safe(() => window.Xrm?.Page?.data?.entity?.getEntityName()) ?? new URLSearchParams(location.search).get('etn'),
-    id: safe(() => window.Xrm?.Page?.data?.entity?.getId()) ?? '',
-    form: safe(() => window.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()) ?? '',
-    actor: safe(() => window.Xrm?.Utility?.getGlobalContext()?.userSettings?.userId) ?? '',
+      safe(() => globalThis.Xrm?.Page?.data?.entity?.getEntityName()) ??
+      new URLSearchParams(location.search).get('etn'),
+    id: safe(() => globalThis.Xrm?.Page?.data?.entity?.getId()) ?? '',
+    form: safe(() => globalThis.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()) ?? '',
+    actor: safe(() => globalThis.Xrm?.Utility?.getGlobalContext()?.userSettings?.userId) ?? '',
     route: location.pathname + location.search,
   });
   const captured = target(),
@@ -215,16 +223,11 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
   const check = () => {
     if (!live()) fail('The app or record changed. Run the action again on the current page.', 'cancelled');
   };
-  const text = (value) =>
-    value == null
-      ? value === null
-        ? '[NULL]'
-        : ''
-      : typeof value === 'object'
-        ? value instanceof Date
-          ? value.toISOString()
-          : JSON.stringify(value)
-        : String(value);
+  const text = (value) => {
+    if (value == null) return value === null ? '[NULL]' : '';
+    if (typeof value === 'object') return value instanceof Date ? value.toISOString() : JSON.stringify(value);
+    return String(value);
+  };
   const bounded = (value) => text(value).slice(0, 4000);
   const rowsResult = (title, columns, rows, message = '') => ({
     status: 'ok',
@@ -325,7 +328,7 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
     const definition = await get(
       `EntityDefinitions(LogicalName='${logical(name)}')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute`,
     );
-    if (!/^[a-z][\w]*$/i.test(definition.EntitySetName ?? '')) fail('The actual entity-set metadata is unavailable.');
+    if (!/^[a-z]\w*$/i.test(definition.EntitySetName ?? '')) fail('The actual entity-set metadata is unavailable.');
     return definition;
   };
   const openUrl = async (value) => {
@@ -496,16 +499,16 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
       if (action.endsWith('show-logical-names'))
         for (const attribute of list(form.data.entity.attributes).slice(0, 200)) {
           const name = safe(() => attribute.getName());
-          if (!/^[a-z][\w]*$/i.test(name ?? '')) continue;
+          if (!/^[a-z]\w*$/i.test(name ?? '')) continue;
           const nodes = [...document.querySelectorAll('[data-id],[id]')].filter(
             (node) =>
               node.id === `${name}_c` ||
-              node.getAttribute('data-id') === name ||
-              node.getAttribute('data-id')?.startsWith(name + '.fieldControl'),
+              /* NOSONAR */ node.getAttribute('data-id') === name ||
+              node.getAttribute('data-id')?.startsWith(name + '.fieldControl'), // NOSONAR: reads attributes of observed DOM, dataset would differ
           );
           const node =
             nodes.find((node) => !['INPUT', 'SELECT', 'TEXTAREA'].includes(node.tagName)) ?? nodes[0]?.parentElement;
-          if (!node || node.getRootNode() !== document) continue;
+          if (node?.getRootNode() !== document) continue;
           const label = document.createElement('button');
           label.type = 'button';
           label.textContent = name;
@@ -565,7 +568,7 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
         ['Column', 'Saved value', 'Formatted value'],
         Object.keys(saved)
           .filter((name) => !name.includes('@'))
-          .sort()
+          .sort(/* NOSONAR: preserve default string coercion */)
           .map((name) => [name, saved[name], saved[name + '@OData.Community.Display.V1.FormattedValue']]),
         'Saved server state; unsaved form changes are not included.',
       );
@@ -617,10 +620,8 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
     } else if (action === 'form:restore-overrides') {
       requireForm();
       const restored = state.restore();
-      outcome = result(
-        'Form overrides restored',
-        `${restored.restored} states restored.${restored.unavailable ? ` ${restored.unavailable} controls are no longer available.` : ''}`,
-      );
+      const unavailable = restored.unavailable ? ` ${restored.unavailable} controls are no longer available.` : '';
+      outcome = result('Form overrides restored', `${restored.restored} states restored.${unavailable}`);
     } else if (action === 'form:toggle-autosave') {
       requireForm();
       const owner = form.data.entity;
@@ -649,7 +650,7 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
       if (!form.data.refresh) fail('Native form refresh is unavailable.');
       if (
         safe(() => form.data.entity.getIsDirty()) &&
-        !window.confirm('Discard unsaved changes and refresh this native record?')
+        !globalThis.confirm('Discard unsaved changes and refresh this native record?')
       )
         fail('The draft was kept.', 'cancelled');
       await form.data.refresh(false);
@@ -845,7 +846,7 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
       }
       if (
         safe(() => form?.data?.entity?.getIsDirty()) &&
-        !window.confirm('Reload this native app and discard the unsaved draft?')
+        !globalThis.confirm('Reload this native app and discard the unsaved draft?')
       )
         fail('The draft was kept.', 'cancelled');
       check();

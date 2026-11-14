@@ -61,7 +61,7 @@ unrelated package. Apply reconciliation deliberately and preserve custom command
 
 `validate` remains a lightweight starter check. `validate:configured` adds project
 readiness and strict browser validation: each currently configured site needs a
-successful declared `acceptanceTest` case. Skipped/TODO cases and the starter HTTP
+successful declared `acceptanceTest` case. Skipped and todo-marked cases and the starter HTTP
 smoke do not count. This proves declared tests executed, not the quality of an
 author's assertions. The generated optional acceptance recipe checks content and
 authenticated/denied access, uses isolated state and blocks unexpected browser hosts.

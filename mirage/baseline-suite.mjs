@@ -4,6 +4,7 @@ import {
   boundedScenarioDirectory,
   ensureCaptureDestination,
 } from './baseline-paths.mjs';
+import { assertToolOptions, mirageToolHelp } from './tool-registry.mjs';
 /**
  * Baseline suite: capture every scenario of a matrix on one side into deterministic evidence
  * folders, then compare sides with the allowlist.
@@ -12,9 +13,11 @@ import {
  * browser bridge that exposes a Playwright page (for example `@playwright/mcp --extension`); the
  * bridge command comes from the matrix (`live.command`, `live.args`) so no profile name lives in
  * toolkit code. Live writes are refused unless `--allow-writes` names the run as authorised and
- * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded.
+ * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded. The live browser's
+ * loopback debugging endpoint (`live.cdpUrl`, for a bridge started with `--cdp-endpoint`) lets the suite hold a
+ * browser-session write net around every run.
  *
- * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] [--only IDS|@FILE]
+ * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] (--only IDS|@FILE | --all-scenarios)
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS|@FILE] [--headed]
  * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--evidence-changes FILE] [--only IDS|@FILE]
  */
@@ -23,11 +26,12 @@ import { loopbackFetch } from './lib/dataverse-webhooks.mjs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { parseArgs } from 'node:util';
+import { parseToolCommand } from './tool-options.mjs';
 import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
+  captureNetDecision,
   captureScenario,
   pageRunnerSource,
   runnerOptions,
@@ -43,6 +47,7 @@ import {
   summaryMarkdown,
 } from './baseline-compare.mjs';
 import { startMcpServer } from './mcp-stdio.mjs';
+import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // `--only a,b,c` or `--only @file` selects scenarios. A list file holds one scenario per line: the first
@@ -64,7 +69,7 @@ export const list = (value) => {
 };
 
 export function validateMatrix(matrix) {
-  if (!matrix || matrix.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
+  if (matrix?.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
     throw new Error('A version 1 matrix with scenarios is required.');
   const ids = new Set();
   for (const scenario of matrix.scenarios) {
@@ -76,9 +81,12 @@ export function validateMatrix(matrix) {
     if (scenario.persona && !matrix.personas?.[scenario.persona])
       throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
   }
-  for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern);
+  for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern); // NOSONAR: constructor validates the pattern or has side effects
   if (matrix.origin && !/^https:\/\/[^/?#]+$/.test(matrix.origin))
     throw new Error('matrix.origin must be a bare HTTPS origin.');
+  // connectCdpTransport judges the endpoint's host: only a loopback URL opens a debugging socket.
+  if (matrix.live?.cdpUrl !== undefined && typeof matrix.live.cdpUrl !== 'string')
+    throw new Error('matrix.live.cdpUrl must be a string.');
   return matrix;
 }
 
@@ -175,14 +183,74 @@ export async function startSaver() {
   };
 }
 
-async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null }) {
+/** The refresh and clear-cache steps write to the live portal: a run without --allow-writes refuses them before any bridge starts. */
+function refuseWriteStepsWithoutPermission(bridge, allowWrites) {
+  const step = ['refresh', 'clearCache'].find((name) => bridge[name] && !allowWrites);
+  if (step) throw new Error(`matrix.live.${step} writes to the live portal; rerun with --allow-writes.`);
+}
+
+const NO_CDP_NET_DIAGNOSTIC = 'live.cdpUrl is not set: writes are guarded per page by the capture runner only';
+
+// The browser-level net adopts the capture page only when that page opened in the browser of live.cdpUrl.
+function requireAdoptedPage(net) {
+  if (net?.adopted() === 0)
+    throw new Error(
+      'live.cdpUrl is not the bridge browser: the capture page did not open there, so the browser-level write net did not cover it.',
+    );
+}
+
+// Pages created during the capture without an opener (the runner's own page) and their popups are owned; a tab the user
+// opens during a capture is owned too.
+async function openCaptureWriteNet(cdpUrl, options, { connect = connectCdpTransport } = {}) {
+  const blocked = [];
+  let adopted = 0;
+  const transport = await connect(cdpUrl);
+  try {
+    const net = await openBrowserWriteNet({
+      transport,
+      decide: captureNetDecision(options),
+      adoptNewPages: true,
+      onAdopted: () => {
+        adopted += 1;
+      },
+      onDecided: ({ request }) =>
+        blocked.push({ method: request.method.toUpperCase(), path: new URL(request.url).pathname }),
+    });
+    return {
+      blocked,
+      adopted: () => adopted,
+      close: async () => {
+        try {
+          await net.close();
+        } finally {
+          await transport.close();
+        }
+      },
+    };
+  } catch (error) {
+    await transport.close();
+    throw error;
+  }
+}
+
+async function liveSide({
+  matrix,
+  allowWrites,
+  cwd,
+  outputRoot,
+  signInOut = null,
+  startBridge = startMcpServer,
+  startEvidenceSaver = startSaver,
+  openWriteNet = openCaptureWriteNet,
+}) {
   const bridge = matrix.live;
   if (!bridge?.command)
     throw new Error(
       'matrix.live.command is required for the live side (a browser bridge that exposes a Playwright page, such as @playwright/mcp --extension).',
     );
+  refuseWriteStepsWithoutPermission(bridge, allowWrites);
   const stderr = [];
-  const client = startMcpServer({
+  const client = startBridge({
     command: bridge.command === 'node' ? process.execPath : bridge.command,
     args: bridge.args ?? [],
     cwd: bridge.cwd ? path.resolve(cwd, bridge.cwd) : cwd,
@@ -197,18 +265,21 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
   const tools = new Set((await client.listTools().catch(abortSetup)).map((tool) => tool.name));
   const runTool = bridge.tool ?? 'browser_run_code_unsafe';
   if (!tools.has(runTool)) await abortSetup(new Error(`The browser bridge offers no ${runTool} tool.`));
-  saver = await startSaver().catch(abortSetup);
+  saver = await startEvidenceSaver().catch(abortSetup);
   const source = pageRunnerSource();
   const runInBridge = async (scenario, { ids = {}, allowWrites: writes = allowWrites } = {}) => {
     const options = runnerOptions({ scenario, origin: matrix.origin, ids, matrix, allowWrites: writes });
     // A scenario expecting the sign-in page (`expect.signIn`, anonymous access to a restrict-read page) checks its markers itself.
     if (scenario.expect?.signIn) options.signInMarkers = [];
-    const { run, received } = saver.expect();
-    const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
-    const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
+    // The browser-session net is in force from before the bridge call until the evidence is received.
+    const net = bridge.cdpUrl ? await openWriteNet(bridge.cdpUrl, options) : null;
     let timer;
+    let result;
     try {
-      return await Promise.race([
+      const { run, received } = saver.expect();
+      const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
+      const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
+      result = await Promise.race([
         received,
         new Promise((_, reject) => {
           timer = setTimeout(
@@ -219,7 +290,11 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       ]);
     } finally {
       clearTimeout(timer);
+      await net?.close();
     }
+    requireAdoptedPage(net);
+    if (net) result.raw.blockedWrites.push(...net.blocked);
+    return result;
   };
   // Optional scripted portal sign-in through the profile's identity provider. No credentials are
   // involved: the profile's SSO either completes or the run stops and names the human step.
@@ -260,7 +335,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       throw new Error(
         'matrix.live.signOut is required for anonymous scenarios on the live side (steps that sign the portal session out).',
       );
-    const expect = { absent: bridge.signIn?.expectPresent ?? [], ...(bridge.signOut.expect ?? {}) };
+    const expect = { absent: bridge.signIn?.expectPresent ?? [], ...bridge.signOut.expect };
     const result = await runInBridge({ id: 'sign-out', steps: bridge.signOut.steps, expect }, { allowWrites: false });
     if (result.summary.status !== 'captured')
       await fail(`Portal sign-out did not complete (${result.summary.problems.join('; ')}).`, result, 'sign-out');
@@ -305,7 +380,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
     if (!bridge.refresh) return;
     const result = await runInBridge(
       { id: 'refresh', steps: bridge.refresh.steps, expect: bridge.refresh.expect ?? {} },
-      { allowWrites: true },
+      { allowWrites },
     );
     if (result.summary.status !== 'captured')
       await fail(`Portal cache refresh did not complete (${result.summary.problems.join('; ')}).`, result, 'refresh');
@@ -325,7 +400,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       for (let attempt = 1; attempt <= (clear.attempts ?? 12); attempt++) {
         result = await runInBridge(
           { id: 'clear-cache', steps: clear.steps, expect: clear.expect ?? {} },
-          { allowWrites: true },
+          { allowWrites },
         );
         if (result.summary.status === 'captured') break;
         await sleep(clear.delay ?? 10000);
@@ -401,6 +476,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       });
     },
     diagnostics: () => [
+      ...(bridge.cdpUrl ? [] : [NO_CDP_NET_DIAGNOSTIC]),
       ...stderr.slice(-20),
       ...saver.late.map((post) => `late evidence post of an abandoned run ${post.run} at ${post.at} refused`),
     ],
@@ -414,10 +490,29 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
   };
 }
 
+/**
+ * Opens the capture browser of an isolated Mirage and reads its state summary. Nothing else owns that Mirage yet, so a
+ * failure here closes the browser, stops the Mirage and removes its workspace before the failure is reported.
+ */
+async function openSideBrowser(owned, launch) {
+  let browser = null;
+  try {
+    browser = await launch();
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const status = await (await loopbackFetch(owned.url + '/__sim/api/state?summary=1')).json();
+    return { browser, context, status };
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    await owned.app.close().catch(() => {});
+    if (owned.workspace) await fs.rm(owned.workspace, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function mirageSide({ matrix, config, site, env, source, state, headed, workDir }) {
   const { startIsolatedMirage, createIdentityController } = await import('./parity-suite.mjs');
   const { chromium } = await import('playwright-core');
-  const { browserLaunchOptions } = await import('./lib/browser-launch.mjs');
+  const { BROWSER_HANG_GUARD_MS, browserLaunchOptions } = await import('./lib/browser-launch.mjs');
   let catalogue = null;
   if (site) {
     const { loadConfig } = await import('../lense/config.mjs');
@@ -448,11 +543,15 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   const identity = createIdentityController(owned.url);
   // Headless Chromium hides scrollbars (width 0) while the live capture's headed Edge has a 15 px one, which shows as
   // body padding-right when a dialog opens: keep the scrollbar so both sides measure the same.
-  const browser = await chromium.launch(
-    browserLaunchOptions({ headless: !headed, ignoreDefaultArgs: ['--hide-scrollbars'] }),
+  const { browser, context, status } = await openSideBrowser(owned, () =>
+    chromium.launch(
+      browserLaunchOptions({
+        headless: !headed,
+        timeout: BROWSER_HANG_GUARD_MS,
+        ignoreDefaultArgs: ['--hide-scrollbars'],
+      }),
+    ),
   );
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  const status = await (await loopbackFetch(owned.url + '/__sim/api/state?summary=1')).json();
   const csrf = () => owned.app.state().csrf;
   // The live portal shows the signed-in tester's own name, parent account and base roles; the project declares those
   // observed values (`matrix.mirage.identity.contact`) and they are written onto the mirrored contact after every reset.
@@ -481,19 +580,10 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       throw new Error(
         `Mirage identity contact ${contactId} is not in the preset data; cannot mirror the live tester's fields.`,
       );
-    for (const [field, value] of Object.entries(fields ?? {}))
-      row[field] =
-        value && typeof value === 'object' && row[field] && typeof row[field] === 'object'
-          ? { ...row[field], ...value }
-          : value;
+    mirrorContactFields(row, fields);
     // Lookups to the mirrored contact show its (mirrored) name.
     const name = row.fullname ?? [row.firstname, row.lastname].filter(Boolean).join(' ');
-    if (name)
-      for (const rows of Object.values(state.tables ?? {}))
-        for (const record of Array.isArray(rows) ? rows : [])
-          for (const value of Object.values(record))
-            if (value && typeof value === 'object' && value.logical_name === 'contact' && value.id === contactId)
-              value.name = name;
+    if (name) mirrorContactLookups(state.tables ?? {}, contactId, name);
     // Fixture fields go only to the disposable runtime started above, never matrix.origin.
     const response = await loopbackFetch(owned.url + '/__sim/api/state/import', {
       method: 'POST',
@@ -583,6 +673,25 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   };
 }
 
+function mirrorContactFields(row, fields) {
+  for (const [field, value] of Object.entries(fields ?? {}))
+    row[field] =
+      value && typeof value === 'object' && row[field] && typeof row[field] === 'object'
+        ? { ...row[field], ...value }
+        : value;
+}
+
+function mirrorContactLookups(tables, contactId, name) {
+  for (const rows of Object.values(tables))
+    for (const record of Array.isArray(rows) ? rows : []) updateContactLookupNames(record, contactId, name);
+}
+
+function updateContactLookupNames(record, contactId, name) {
+  for (const value of Object.values(record))
+    if (value && typeof value === 'object' && value.logical_name === 'contact' && value.id === contactId)
+      value.name = name;
+}
+
 /** Preserve uncertain hook markers through aggregate cleanup errors. */
 function uncertainMutatingHook(error) {
   const pending = [error],
@@ -598,7 +707,14 @@ function uncertainMutatingHook(error) {
   return null;
 }
 
-export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
+/* NOSONAR: preserve observable side hook await ordering */ export async function captureMatrix({
+  matrix,
+  side,
+  outDir,
+  label,
+  ids = {},
+  only = null,
+}) {
   validateMatrix(matrix);
   validateCaptureLabel(label);
   const results = [];
@@ -704,114 +820,118 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
   return results;
 }
 
+/** A capture names its side. The live side also names its scenarios: an explicit --only selection or --all-scenarios. */
+function assertCaptureSelection(values) {
+  if (!['live', 'mirage'].includes(values.side))
+    throw new Error(`--side must be live or mirage.\n${mirageToolHelp('baseline-suite')}`.trimEnd());
+  if (values.side === 'live' && !values.only && !values['all-scenarios'])
+    throw new Error(
+      'A live capture needs --only IDS|@FILE to name its scenarios, or --all-scenarios to capture every scenario of the matrix.',
+    );
+}
+
+/** A selection that names an unknown scenario is refused before anything is written. */
+function assertKnownScenarioIds(matrix, only) {
+  const known = new Set(matrix.scenarios.map((scenario) => scenario.id));
+  const unknown = (only ?? []).filter((id) => !known.has(id));
+  if (unknown.length) throw new Error(`Unknown scenario ids: ${unknown.join(', ')}`);
+}
+
 async function main() {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      matrix: { type: 'string' },
-      out: { type: 'string' },
-      side: { type: 'string' },
-      label: { type: 'string' },
-      'allow-writes': { type: 'boolean' },
-      ids: { type: 'string' },
-      only: { type: 'string' },
-      config: { type: 'string' },
-      site: { type: 'string' },
-      env: { type: 'string' },
-      source: { type: 'string' },
-      state: { type: 'string' },
-      headed: { type: 'boolean' },
-      'work-dir': { type: 'string' },
-      live: { type: 'string' },
-      mirage: { type: 'string' },
-      allowlist: { type: 'string' },
-      'second-live': { type: 'string' },
-      'evidence-changes': { type: 'string' },
-    },
-  });
+  const { values, positionals } = parseToolCommand('baseline-suite', process.argv.slice(2), { allowPositionals: true });
   const action = positionals[0];
-  if (!['capture', 'compare'].includes(action) || !values.matrix || !values.out)
-    throw new Error('Usage: suite.mjs capture|compare --matrix FILE --out DIR ...');
+  if (positionals.length !== 1 || !['capture', 'compare'].includes(action))
+    throw new Error(mirageToolHelp('baseline-suite').trimEnd());
+  assertToolOptions('baseline-suite', values);
+  if (action === 'capture') assertCaptureSelection(values);
   const matrixFile = path.resolve(values.matrix);
   const matrix = validateMatrix(JSON.parse(await fs.readFile(matrixFile, 'utf8')));
   const outDir = path.resolve(values.out);
   const only = list(values.only);
-  if (action === 'capture') {
-    // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
-    const ids = {
-      run: matrix.runToken ?? 'r1',
-      ...(values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : {}),
-    };
-    const label = validateCaptureLabel(values.label ?? values.side);
-    for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id)))
-      await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
-    await ensureCaptureDestination(path.join(outDir, '_sign-in'), outDir, { create: false });
-    if (values.side === 'mirage' && !values['work-dir'])
-      await ensureCaptureDestination(path.join(outDir, '.runtime'), outDir, { create: false });
-    const startedAt = new Date().toISOString();
-    await ensureCaptureDestination(outDir, outDir, {
-      create: false,
-      files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, '')}.json`],
-    });
-    let side;
-    if (values.side === 'live') {
-      if (!matrix.origin) throw new Error('matrix.origin (HTTPS reference origin) is required for the live side.');
-      side = await liveSide({
-        matrix,
-        allowWrites: Boolean(values['allow-writes']),
-        cwd: path.dirname(matrixFile),
-        outputRoot: outDir,
-        signInOut: path.join(outDir, '_sign-in'),
-      });
-    } else if (values.side === 'mirage') {
-      side = await mirageSide({
-        matrix,
-        config: values.config,
-        site: values.site,
-        env: values.env,
-        source: values.source,
-        state: values.state,
-        headed: Boolean(values.headed),
-        workDir: path.resolve(values['work-dir'] ?? path.join(outDir, '.runtime')),
-      });
-    } else throw new Error('--side must be live or mirage.');
+  assertKnownScenarioIds(matrix, only);
+  if (action === 'capture') return runCaptureAction({ action, values, matrix, matrixFile, outDir, only });
+  return runCompareAction({ action, values, matrix, outDir, only });
+}
 
-    let results;
-    try {
-      results = await captureMatrix({ matrix, side, outDir, label, ids, only });
-    } finally {
-      await side.close();
-    }
-    const run = {
-      version: 1,
-      action,
-      side: values.side,
-      label,
-      startedAt,
-      finishedAt: new Date().toISOString(),
+async function runCaptureAction({ action, values, matrix, matrixFile, outDir, only }) {
+  // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
+  const ids = {
+    run: matrix.runToken ?? 'r1',
+    ...(values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : {}),
+  };
+  const label = validateCaptureLabel(values.label ?? values.side);
+  for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id)))
+    await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
+  await ensureCaptureDestination(path.join(outDir, '_sign-in'), outDir, { create: false });
+  if (values.side === 'mirage' && !values['work-dir'])
+    await ensureCaptureDestination(path.join(outDir, '.runtime'), outDir, { create: false });
+  const startedAt = new Date().toISOString();
+  await ensureCaptureDestination(outDir, outDir, {
+    create: false,
+    files: [`run-${label}.json`, `run-${label}-${startedAt.replaceAll(':', '')}.json`],
+  });
+  let side;
+  if (values.side === 'live') {
+    if (!matrix.origin) throw new Error('matrix.origin (HTTPS reference origin) is required for the live side.');
+    side = await liveSide({
+      matrix,
       allowWrites: Boolean(values['allow-writes']),
-      scenarios: results,
-      totals: {
-        captured: results.filter((r) => r.status === 'captured').length,
-        failed: results.filter((r) => r.status === 'failed').length,
-        error: results.filter((r) => r.status === 'error').length,
-        blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0),
-        notAttempted: results.filter((r) => r.notAttempted).length,
-      },
-    };
-    await ensureCaptureDestination(outDir, outDir, {
-      files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, '')}.json`],
+      cwd: path.dirname(matrixFile),
+      outputRoot: outDir,
+      signInOut: path.join(outDir, '_sign-in'),
     });
-    await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
-    // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
-    await fs.writeFile(
-      path.join(outDir, `run-${label}-${startedAt.replace(/:/g, '')}.json`),
-      JSON.stringify(run, null, 2),
-    );
-    console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
-    process.exitCode = run.totals.error ? 2 : run.totals.failed || run.totals.blockedWrites ? 1 : 0;
-    return;
+  } else if (values.side === 'mirage') {
+    side = await mirageSide({
+      matrix,
+      config: values.config,
+      site: values.site,
+      env: values.env,
+      source: values.source,
+      state: values.state,
+      headed: Boolean(values.headed),
+      workDir: path.resolve(values['work-dir'] ?? path.join(outDir, '.runtime')),
+    });
+  } else throw new Error('--side must be live or mirage.');
+
+  let results;
+  try {
+    results = await captureMatrix({ matrix, side, outDir, label, ids, only });
+  } finally {
+    await side.close();
   }
+  const run = {
+    version: 1,
+    action,
+    side: values.side,
+    label,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    allowWrites: Boolean(values['allow-writes']),
+    allScenarios: Boolean(values['all-scenarios']),
+    scenarios: results,
+    totals: {
+      captured: results.filter((r) => r.status === 'captured').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      error: results.filter((r) => r.status === 'error').length,
+      blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0),
+      notAttempted: results.filter((r) => r.notAttempted).length,
+    },
+  };
+  await ensureCaptureDestination(outDir, outDir, {
+    files: [`run-${label}.json`, `run-${label}-${startedAt.replaceAll(':', '')}.json`],
+  });
+  await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
+  // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
+  await fs.writeFile(
+    path.join(outDir, `run-${label}-${startedAt.replaceAll(':', '')}.json`),
+    JSON.stringify(run, null, 2),
+  );
+  console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
+  if (run.totals.error) process.exitCode = 2;
+  else process.exitCode = run.totals.failed || run.totals.blockedWrites ? 1 : 0;
+}
+
+async function runCompareAction({ action, values, matrix, outDir, only }) {
   const allowlist = values.allowlist ? await loadAllowlist(values.allowlist) : { entries: [] };
   const changes = values['evidence-changes'] ? (await loadEvidenceChanges(values['evidence-changes'])).changes : [];
   const report = {
@@ -874,8 +994,11 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });
 }
+
+// Test seam: the live side with its injected bridge, evidence receiver and browser-session write net, and the Mirage side.
+export const __testing = { liveSide, openCaptureWriteNet, mirageSide, openSideBrowser };

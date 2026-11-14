@@ -19,6 +19,14 @@ export const STORAGE_CONTRACT_CASES = Object.freeze([
   'unavailable',
   'delete',
   'head',
+  'invalid-range',
+  'byte-window',
+  'if-none-match',
+  'create-only',
+  'page-size',
+  'body-types',
+  'content-type-default',
+  'preflight-settles',
 ]);
 
 async function bytesOf(body) {
@@ -161,7 +169,7 @@ export function runStorageContract(
       'a/./b',
       'a//b',
       'a/.',
-      'a\\b',
+      String.raw`a\b`,
       'nul\0key',
       '-dash-first',
       'space key',
@@ -249,5 +257,97 @@ export function runStorageContract(
     assert.deepEqual(head.metadata, { a: '1' });
     assert.ok(!Number.isNaN(Date.parse(head.lastModified)));
     assert.equal(head.body, undefined);
+  });
+
+  run('invalid-range', 'a negative or fractional range start is InvalidRange on every provider', async (s) => {
+    await s.put('contract/range-invalid.bin', Buffer.from('0123456789'));
+    await assert.rejects(s.get('contract/range-invalid.bin', { range: { start: -3 } }), providerError('InvalidRange'));
+    await assert.rejects(
+      s.get('contract/range-invalid.bin', { range: { start: 1.5, end: 4 } }),
+      providerError('InvalidRange'),
+    );
+  });
+
+  run(
+    'if-none-match',
+    'If-None-Match with the current ETag fails a write, and * on a read answers notModified',
+    async (s) => {
+      const put = await s.put('contract/inm', Buffer.from('a'));
+      await assert.rejects(
+        s.put('contract/inm', Buffer.from('b'), { ifNoneMatch: put.etag }),
+        providerError('PreconditionFailed'),
+      );
+      assert.equal((await bytesOf((await s.get('contract/inm')).body)).toString(), 'a');
+      const notModified = await s.get('contract/inm', { ifNoneMatch: '*' });
+      assert.equal(notModified.notModified, true);
+      assert.equal(notModified.body, null);
+    },
+  );
+
+  run(
+    'byte-window',
+    'a range that ends before it starts, starts at the size or has a fractional end is InvalidRange',
+    async (s) => {
+      await s.put('contract/window.bin', Buffer.from('0123456789'));
+      await assert.rejects(
+        s.get('contract/window.bin', { range: { start: 5, end: 2 } }),
+        providerError('InvalidRange'),
+      );
+      await assert.rejects(s.get('contract/window.bin', { range: { start: 10 } }), providerError('InvalidRange'));
+      await assert.rejects(
+        s.get('contract/window.bin', { range: { start: 1, end: 4.5 } }),
+        providerError('InvalidRange'),
+      );
+      const clamped = await s.get('contract/window.bin', { range: { start: 7, end: 99 } });
+      assert.equal((await bytesOf(clamped.body)).toString(), '789', 'an end past the size is clamped to the last byte');
+    },
+  );
+
+  run('create-only', 'If-None-Match * creates an absent object and conflicts with an existing one', async (s) => {
+    await s.put('contract/create-only', Buffer.from('first'), { ifNoneMatch: '*' });
+    await assert.rejects(
+      s.put('contract/create-only', Buffer.from('second'), { ifNoneMatch: '*' }),
+      providerError('Conflict'),
+    );
+    assert.equal((await bytesOf((await s.get('contract/create-only')).body)).toString(), 'first');
+  });
+
+  run('page-size', 'pageSize outside 1 to 5000 is InvalidKey, and a final page has a null continuation', async (s) => {
+    await s.put('page-size/only', Buffer.from('1'));
+    await assert.rejects(s.list('page-size/', { pageSize: 0 }), providerError('InvalidKey'));
+    await assert.rejects(s.list('page-size/', { pageSize: 5001 }), providerError('InvalidKey'));
+    assert.equal((await s.list('page-size/', { pageSize: 1 })).continuation, null);
+  });
+
+  run('body-types', 'a Uint8Array or a string body is stored as one object', async (s) => {
+    const put = await s.put('contract/u8', new Uint8Array(Buffer.from('bytes')));
+    assert.equal(put.size, 5);
+    assert.equal((await bytesOf((await s.get('contract/u8')).body)).toString(), 'bytes');
+    await s.put('contract/text', 'text body');
+    assert.equal((await bytesOf((await s.get('contract/text')).body)).toString(), 'text body');
+  });
+
+  run(
+    'content-type-default',
+    'an overwrite without a content type resets it to application/octet-stream',
+    async (s) => {
+      await s.put('contract/type', Buffer.from('a'), { contentType: 'text/plain' });
+      await s.put('contract/type', Buffer.from('b'));
+      assert.equal((await s.head('contract/type')).contentType, 'application/octet-stream');
+    },
+  );
+
+  // A provider without preflight() has nothing to settle, so the case is skipped for it after the provider is made.
+  // No timer here: a preflight that never settles fails the test through the runner's timeout.
+  run('preflight-settles', 'preflight settles once its signal has aborted', async (s, t) => {
+    if (typeof s.preflight !== 'function') {
+      t.skip('the provider has no preflight()');
+      return;
+    }
+    const outcome = await s.preflight({ signal: AbortSignal.abort() }).then(
+      () => 'settled',
+      () => 'settled',
+    );
+    assert.equal(outcome, 'settled');
   });
 }

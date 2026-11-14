@@ -7,7 +7,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CSP =
   "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -72,7 +72,7 @@ async function assertHeaders(base) {
 }
 
 test('Power Pages /_sim/ sends the admin CSP and nosniff; assets resolve by pattern only', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-headers-pp-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-headers-pp-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await writeFiles(dir, {
     'website.yml':
@@ -108,7 +108,7 @@ test('Power Pages /_sim/ sends the admin CSP and nosniff; assets resolve by patt
 });
 
 test('standalone /_sim/ sends the same CSP and nosniff; assets resolve by pattern only', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-headers-sa-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-headers-sa-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeFiles(root, {
     'solution/Other/Solution.xml':

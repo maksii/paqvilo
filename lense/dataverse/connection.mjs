@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isLoopbackOrigin } from './client.mjs';
+import { matchNamedLine } from '../../mirage/lib/text-scanning.mjs';
 
 const GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 export function environmentOrigin(value, { allowLoopback = false } = {}) {
@@ -80,10 +81,11 @@ export async function protectSecret(value, decrypt = false) {
 }
 
 export function parseRegistrationOutput(output) {
-  if (/^\s*Error:/im.test(output)) throw new Error('PAC reported an error, even if its process exit code was zero.');
+  if (/^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(output))
+    throw new Error('PAC reported an error, even if its process exit code was zero.');
   const start = output.search(/Tenant\s*ID\s+Application\s*ID\s+Client\s*Secret/i);
   if (start < 0) throw new Error('PAC credential table was not recognized.');
-  const row = output.slice(start).match(new RegExp(`^\\s*(${GUID})\\s+(${GUID})\\s+(\\S+)\\s+(.+?)\\s*$`, 'im'));
+  const row = output.slice(start).match(new RegExp(String.raw`^\s*(${GUID})\s+(${GUID})\s+(\S+)\s+(.+?)\s*$`, 'im'));
   if (!row) throw new Error('PAC credential row was not recognized.');
   return {
     tenantId: row[1].toLowerCase(),
@@ -120,7 +122,7 @@ export async function activeEnvironment() {
   const result = await runProcess(pacExecutable(), ['env', 'who']);
   if (result.code !== 0 || result.timedOut)
     throw new Error('PAC cannot identify the active environment. Sign in with pac auth create first.');
-  const field = (label) => result.stdout.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, 'm'))?.[1].trim();
+  const field = (label) => result.stdout.match(new RegExp(String.raw`^\s*${label}:\s*(.+)$`, 'm'))?.[1].trim();
   return {
     environmentUrl: environmentOrigin(field('Org URL')),
     environmentId: field('Environment ID'),
@@ -146,6 +148,11 @@ export function publicConnection(connection) {
     createdAt,
     credentialSource,
   } = connection;
+  const protection = () => {
+    if (connection.protectedSecret) return 'Windows DPAPI CurrentUser';
+    if (credentialSource === 'environment') return 'environment';
+    return null;
+  };
   return {
     schemaVersion,
     environmentUrl,
@@ -162,11 +169,7 @@ export function publicConnection(connection) {
     credentialSource,
     state: connection.state,
     secretStored: Boolean(connection.protectedSecret),
-    protection: connection.protectedSecret
-      ? 'Windows DPAPI CurrentUser'
-      : credentialSource === 'environment'
-        ? 'environment'
-        : null,
+    protection: protection(),
   };
 }
 
@@ -175,11 +178,109 @@ function privateStatePath(file) {
     throw new Error('Connection and registration state must be under an ignored .paqvilo directory.');
 }
 
+function originOf(value) {
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// Every *.json file directly in the folder is read. Only the environment and application name are kept; a file
+// without an environment, or one that is malformed or unreadable, is not a registration and cannot block a new one.
+async function registrationRecords(directory) {
+  let names;
+  try {
+    names = await fs.readdir(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const records = [];
+  for (const name of names.filter((entry) => entry.endsWith('.json'))) {
+    const file = path.join(directory, name);
+    try {
+      const record = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (typeof record?.environmentUrl === 'string')
+        records.push({ file, environmentUrl: record.environmentUrl, applicationName: record.applicationName });
+    } catch {
+      /* A record that cannot be read is not a registration, so it cannot block a new one. */
+    }
+  }
+  return records;
+}
+
+function registrationExists(message) {
+  return Object.assign(new Error(message), { code: 'REGISTRATION_EXISTS' });
+}
+
+async function refuseExistingRegistration({ connectionFile, environmentUrl, applicationName, allowAdditional }) {
+  if (allowAdditional) return;
+  const origin = environmentUrl ? originOf(environmentUrl) : null;
+  const existing = (await registrationRecords(path.dirname(path.resolve(connectionFile)))).find(
+    (record) =>
+      (origin !== null && originOf(record.environmentUrl) === origin) || record.applicationName === applicationName,
+  );
+  if (!existing) return;
+  throw registrationExists(
+    `An application is already registered for this environment or name in ${existing.file}. ` +
+      `Reuse it with 'paqvilo dataverse inspect' or 'verify' using --connection ${existing.file}. ` +
+      'Pass --allow-additional-application to create another.',
+  );
+}
+
+function applicationsUnchecked() {
+  return new Error(
+    'Existing applications could not be checked with PAC, so no application was created. ' +
+      'Pass --allow-additional-application to register without this check.',
+  );
+}
+
+// PAC CLI 2.13.1 `pac admin list-service-principal` offers only --filter and --max and no machine-readable output,
+// so the listing is parsed from its table.
+// Output is split into cells on tabs and runs of two or more spaces, so a longer name that only starts with the
+// requested one is a different application. Output is parsed here and never copied into a message.
+async function listedApplicationNames(applicationName) {
+  let result;
+  try {
+    result = await runProcess(pacExecutable(), [
+      'admin',
+      'list-service-principal',
+      '--filter',
+      applicationName,
+      '--max',
+      '50',
+    ]);
+  } catch {
+    throw applicationsUnchecked();
+  }
+  if (result.code !== 0 || result.timedOut) throw applicationsUnchecked();
+  return result.stdout
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/\t| {2,}/))
+    .map((cell) => cell.trim().toLowerCase());
+}
+
+// The tenant listing is the registry: an application it already lists under the requested name is not created again.
+async function refuseListedApplication({ applicationName, allowAdditional }) {
+  if (allowAdditional) return;
+  const wanted = applicationName.trim().toLowerCase();
+  if ((await listedApplicationNames(applicationName)).includes(wanted))
+    throw registrationExists(
+      `An application named ${applicationName.trim()} is already registered in this tenant, ` +
+        'and the check matches by application name. ' +
+        'Reuse its existing connection file with paqvilo dataverse inspect or verify --connection FILE, ' +
+        'or pass --allow-additional-application to create another.',
+    );
+}
+
 export async function registerApplication({
   connectionFile,
   environment,
   applicationName,
   role = 'System Customizer',
+  allowAdditionalApplication = false,
+  protect = protectSecret,
 }) {
   if (!connectionFile || !applicationName) throw new Error('Registration requires --connection and --name.');
   privateStatePath(connectionFile);
@@ -187,11 +288,25 @@ export async function registerApplication({
     throw new Error(
       'Connection already exists; registration will not create a duplicate app. Inspect or use another connection path.',
     );
+  const requested = environment ? environmentOrigin(environment) : null;
+  await refuseExistingRegistration({
+    connectionFile,
+    environmentUrl: requested,
+    applicationName,
+    allowAdditional: allowAdditionalApplication,
+  });
   const active = await activeEnvironment();
-  const environmentUrl = environment ? environmentOrigin(environment) : active.environmentUrl;
+  const environmentUrl = requested ?? active.environmentUrl;
   if (environmentUrl !== active.environmentUrl)
     throw new Error('Select the intended environment in PAC first; registration must match its active environment.');
-  await protectSecret('encryption-preflight');
+  await refuseExistingRegistration({
+    connectionFile,
+    environmentUrl,
+    applicationName,
+    allowAdditional: allowAdditionalApplication,
+  });
+  await refuseListedApplication({ applicationName, allowAdditional: allowAdditionalApplication });
+  await protect('encryption-preflight');
   const pending = `${connectionFile}.registration.json`;
   await privateJson(
     pending,
@@ -209,8 +324,8 @@ export async function registerApplication({
     role,
   ]);
   // Save encrypted recovery evidence before parsing or reporting anything.
-  const reportedError = /^\s*Error:/im.test(result.stdout + '\n' + result.stderr);
-  const partialApplicationId = result.stdout.match(new RegExp(`Application\\s+['"]?(${GUID})`, 'i'))?.[1];
+  const reportedError = /^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(result.stdout + '\n' + result.stderr);
+  const partialApplicationId = result.stdout.match(new RegExp(String.raw`Application\s+['"]?(${GUID})`, 'i'))?.[1];
   await privateJson(pending, {
     schemaVersion: 1,
     ...active,
@@ -220,7 +335,7 @@ export async function registerApplication({
     state: result.code === 0 && !result.timedOut && !reportedError ? 'Returned' : 'FailedOrUnknown',
     code: result.code,
     timedOut: result.timedOut,
-    protectedOutput: await protectSecret(JSON.stringify({ stdout: result.stdout, stderr: result.stderr })),
+    protectedOutput: await protect(JSON.stringify({ stdout: result.stdout, stderr: result.stderr })),
   });
   if (result.code !== 0 || result.timedOut || reportedError)
     throw new Error(
@@ -244,7 +359,7 @@ export async function registerApplication({
     expiration: credentials.expiration,
     createdAt: new Date().toISOString(),
     credentialSource: 'dpapi',
-    protectedSecret: await protectSecret(credentials.clientSecret),
+    protectedSecret: await protect(credentials.clientSecret),
   };
   await privateJson(connectionFile, connection, true);
   return publicConnection(connection);
@@ -334,30 +449,8 @@ export function parseCredentialFile(input) {
   }
   const normalize = (key) => key.toLowerCase().replace(/[ _-]/g, '');
   if (!fields) {
-    const lines = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const named = lines.map((line) => line.match(/^([a-zA-Z _-]+)\s*[:=]\s*(.*)$/)).filter(Boolean);
-    if (named.length === lines.length)
-      fields = Object.fromEntries(named.map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]));
-    else if (lines.length === 2 && normalize(lines[0].split(',')[0]) === 'clientid')
-      fields = Object.fromEntries(
-        lines[0].split(',').map((key, i) => [
-          key,
-          lines[1]
-            .split(',')
-            [i]?.trim()
-            .replace(/^["']|["']$/g, ''),
-        ]),
-      );
-    else if (
-      lines.length === 4 &&
-      new RegExp(`^${GUID}$`, 'i').test(lines[0]) &&
-      new RegExp(`^${GUID}$`, 'i').test(lines[1])
-    )
-      fields = { clientId: lines[0], tenantId: lines[1], value: lines[2], secretId: lines[3] };
-    else return { value: text };
+    fields = credentialFieldsFromLines(text, normalize);
+    if (!fields) return { value: text };
   }
   const values = Object.fromEntries(Object.entries(fields).map(([key, value]) => [normalize(key), value]));
   const result = {
@@ -372,6 +465,29 @@ export function parseCredentialFile(input) {
     if (result[key] && !new RegExp(`^${GUID}$`, 'i').test(result[key]))
       throw new Error('Credential file contains an invalid identity field.');
   return result;
+}
+
+function credentialFieldsFromLines(text, normalize) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const named = lines.map(matchNamedLine).filter(Boolean);
+  if (named.length === lines.length)
+    return Object.fromEntries(named.map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]));
+  if (lines.length === 2 && normalize(lines[0].split(',')[0]) === 'clientid')
+    return Object.fromEntries(
+      lines[0].split(',').map((key, i) => [
+        key,
+        lines[1]
+          .split(',')
+          [i]?.trim()
+          .replace(/^["']|["']$/g, ''),
+      ]),
+    );
+  if (lines.length === 4 && new RegExp(`^${GUID}$`, 'i').test(lines[0]) && new RegExp(`^${GUID}$`, 'i').test(lines[1]))
+    return { clientId: lines[0], tenantId: lines[1], value: lines[2], secretId: lines[3] };
+  return null;
 }
 
 export async function loadConnection(file, { allowLoopback = false } = {}) {

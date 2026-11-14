@@ -83,7 +83,7 @@ async function copy(text) {
   area.select();
   let ok;
   try {
-    ok = document.execCommand('copy');
+    ok = document.execCommand('copy'); // NOSONAR: deprecated API kept for compatibility
   } catch {
     ok = false;
   }
@@ -102,7 +102,7 @@ for (const block of document.querySelectorAll('.cmd')) {
     // innerText skips the hidden shell variant.
     const ok = await copy(block.querySelector('code').innerText);
     button.textContent = ok ? 'Copied' : 'Select and copy';
-    status.textContent = ok ? 'Copied to clipboard' : 'Copy failed; select the text instead';
+    status.textContent = ok ? 'Copied to clipboard' : 'Copy failed; select the text instead'; // NOSONAR: deprecated API kept for compatibility
     setTimeout(() => {
       button.textContent = 'Copy';
     }, 1600);
@@ -121,11 +121,17 @@ const scalar = (value) =>
   /^[A-Za-z0-9._/:-]+$/.test(value) && !/^[-:]|:$/.test(value) && !special.test(value) ? value : JSON.stringify(value);
 const key = (value) => (/^[A-Za-z0-9_-]+$/.test(value) && !special.test(value) ? value : JSON.stringify(value));
 
+function stripTrailingSlashes(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '/') end--;
+  return text.slice(0, end);
+}
+
 function build() {
   const data = Object.fromEntries(new FormData(form));
   const site = data.site.trim() || 'portal';
   const exportPath =
-    data.export.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || 'sources/portal-export';
+    stripTrailingSlashes(data.export.trim().replaceAll('\\', '/').replace(/^\.\//, '')) || 'sources/portal-export';
   const url = data.url.trim() || 'https://your-portal.example.test';
   const editor = data.editor.trim();
   const problems = [];
@@ -172,7 +178,7 @@ form.addEventListener('input', build);
 form.addEventListener('submit', (event) => event.preventDefault());
 
 // Clips: play only while visible, never auto-play under reduced motion, keep a viewer's pause.
-const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+const reduce = globalThis.matchMedia('(prefers-reduced-motion: reduce)');
 const clips = [...document.querySelectorAll('video')];
 const held = new Set(); // paused by the viewer or by reduced motion
 const ours = new Set(); // pauses this script made
@@ -191,7 +197,7 @@ function applyMotion() {
   }
 }
 // The observer below starts clips in view; native autoplay would also start those off screen.
-if ('IntersectionObserver' in window)
+if ('IntersectionObserver' in globalThis)
   for (const clip of clips) {
     clip.autoplay = false;
     pause(clip);
@@ -204,7 +210,7 @@ for (const clip of clips) {
 }
 applyMotion();
 reduce.addEventListener('change', applyMotion);
-if ('IntersectionObserver' in window) {
+if ('IntersectionObserver' in globalThis) {
   const watch = new IntersectionObserver(
     (entries) => {
       for (const { target, isIntersecting } of entries) {
@@ -219,7 +225,7 @@ if ('IntersectionObserver' in window) {
 
 // Contents: mark the chapter being read.
 const links = new Map([...document.querySelectorAll('.toc a')].map((a) => [a.hash.slice(1), a]));
-if ('IntersectionObserver' in window) {
+if ('IntersectionObserver' in globalThis) {
   const spy = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {

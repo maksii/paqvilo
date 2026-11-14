@@ -1,13 +1,55 @@
+// @test-kind compatibility: Microsoft Learn QueryExpression, QueryByAttribute and BulkDelete to FetchXML operator and join mapping; untranslatable facets refused
 // QueryExpression, QueryByAttribute and BulkDelete QuerySet to FetchXML. The output
 // is run through DataStore.fetchXml as well.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { DataError } from '../lib/data-error.mjs';
-import { fromBulkDeleteJson, fromQueryByAttribute, toFetchXml } from '../lib/dataverse-soap-query.mjs';
+import { fromBulkDeleteJson, fromQueryByAttribute, toFetchXml, toSdkQuery } from '../lib/dataverse-soap-query.mjs';
 import { modelOf } from '../lib/dataverse-misc-messages.mjs';
 
 const text = { dataverseType: 'nvarchar' };
+
+test('SOAP query adapters retain collection predicates, filter hints, alias orders and typed values', () => {
+  const model = {
+    entityName: 'widget',
+    columnSet: { allColumns: true },
+    orders: [{ entityName: 'g', attributeName: 'name', orderType: 1 }],
+    criteria: {
+      filterOperator: 'Or',
+      filterHint: 'union',
+      isQuickFindFilter: true,
+      conditions: [
+        {
+          attributeName: 'widgetid',
+          operator: 0,
+          values: [{ type: 'guid', value: '00000000-0000-0000-0000-000000000001' }],
+        },
+      ],
+      anyAllFilterLinkEntity: {
+        linkFromEntityName: 'widget',
+        linkFromAttributeName: 'widgetid',
+        linkToEntityName: 'gadget',
+        linkToAttributeName: 'widgetid',
+        joinOperator: 7,
+        linkCriteria: {
+          conditions: [{ attributeName: 'name', operator: 'Equal', values: [{ type: 'string', value: 'x' }] }],
+        },
+      },
+    },
+  };
+  const xml = toFetchXml(model);
+  assert.match(xml, /<filter type="or" hint="union" isquickfindfields="true">/);
+  assert.match(xml, /link-type="not any"/);
+  assert.match(xml, /<order attribute="name" entityname="g" descending="true"/);
+  const sdk = toSdkQuery(model);
+  assert.equal(sdk.criteria.operatorName, 'Or');
+  assert.equal(sdk.criteria.conditions[0].operatorName, 'Equal');
+  assert.equal(sdk.criteria.conditions[0].values[0].$type, 'Guid');
+  assert.equal(sdk.criteria.anyAllFilterLinkEntity.joinOperator, 'NotAny');
+  assert.equal(sdk.criteria.anyAllFilterLinkEntity.linkCriteria.conditions[0].values[0], 'x');
+  assert.equal(sdk.orders[0].entityName, 'g');
+});
 
 function fixtureState() {
   const state = emptyState();
@@ -50,11 +92,14 @@ test('numeric ConditionOperator values resolve to the documented FetchXML operat
     [25, 'on'],
     [33, 'last-x-days'],
     [41, 'eq-userid'],
-    [49, 'like'],
     [75, 'under'],
     [87, 'contain-values'],
   ];
   for (const [value, op] of expected) assert.match(conditionXml(value, ['x']), new RegExp(`operator="${op}"`));
+  assert.throws(
+    () => conditionXml(49, ['x']),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
+  );
   assert.match(conditionXml('EqualUserId'), /operator="eq-userid"\/>/);
   assert.match(conditionXml('LastXDays', ['3']), /operator="last-x-days" value="3"\/>/);
 });
@@ -92,12 +137,18 @@ test('single values use the value attribute, lists and pairs use value elements,
   );
 });
 
-test('text operators keep their wildcards and Contains wraps and escapes the value', () => {
+test('text operators retain semantics and unsupported full-text conditions fail explicitly', () => {
   assert.match(conditionXml('BeginsWith', ['Old']), /operator="begins-with" value="Old"/);
   assert.match(conditionXml('DoesNotEndWith', ['ing']), /operator="not-end-with" value="ing"/);
   assert.match(conditionXml('Like', ['R%']), /operator="like" value="R%"/);
-  assert.match(conditionXml('Contains', ['a%_[b']), /operator="like" value="%a\[%\]\[_\]\[\[\]b%"/);
-  assert.match(conditionXml('DoesNotContain', ['x']), /operator="not-like" value="%x%"/);
+  assert.throws(
+    () => conditionXml('Contains', ['a%_[b']),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
+  );
+  assert.throws(
+    () => conditionXml('DoesNotContain', ['x']),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
+  );
 });
 
 test('nested filters keep their And/Or types and order', () => {
@@ -254,7 +305,10 @@ test('generated FetchXML runs through DataStore.fetchXml', async () => {
   assert.deepEqual(names(store.fetchXml(toFetchXml(filtered), admin)), ['Old Bellevue', 'Redmond']);
 
   const contains = where(condition('Contains', ['Redmond']));
-  assert.deepEqual(names(store.fetchXml(toFetchXml(contains), admin)), ['Redmond', 'Redmond East']);
+  assert.throws(
+    () => store.fetchXml(toFetchXml(contains), admin),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
+  );
 
   const linked = toFetchXml({
     entityName: 'widget',
@@ -413,9 +467,13 @@ test('CompareColumns in a BulkDelete condition renders valueof and matches the c
   );
 });
 
-test('BulkDelete accepts QueryHints as options and ignores ForceSeek', async () => {
+test('BulkDelete retains QueryHints but refuses configured internal SDK-only facets', async () => {
   const store = await new DataStore({ state: fixtureState() }).init();
-  const model = fromBulkDeleteJson({ EntityName: 'widget', QueryHints: 'FAST', ForceSeek: true, Criteria: {} });
+  const model = fromBulkDeleteJson({ EntityName: 'widget', QueryHints: 'FAST', ForceSeek: '', Criteria: {} });
+  for (const ForceSeek of [true, 'configured', 'false'])
+    assert.throws(() => fromBulkDeleteJson({ EntityName: 'widget', ForceSeek }), {
+      code: 'LocalPluginQueryUnsupported',
+    });
   assert.equal(toFetchXml(model), '<fetch options="FAST"><entity name="widget"></entity></fetch>');
   assert.equal(store.fetchXml(toFetchXml(model), { admin: true }).entities.length, 4);
 });
@@ -484,7 +542,10 @@ test('typed codec values and Date objects render as their scalar text', () => {
   assert.match(equal([new Date('2026-01-01T00:00:00Z')]), /value="2026-01-01T00:00:00\.000Z"/);
   // A guess: a boolean renders as "true"; the service's FetchXML text form of booleans is not documented.
   assert.match(equal([true]), /value="true"/);
-  assert.match(toFetchXml(where(condition('Contains', [{ type: 'string', value: 'Red' }]))), /value="%Red%"/);
+  assert.throws(
+    () => toFetchXml(where(condition('Contains', [{ type: 'string', value: 'Red' }]))),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
+  );
 });
 
 test('an empty ColumnSet on the root returns only the primary key, as QueryExpression does', async () => {
@@ -523,20 +584,21 @@ test('TopCount with paging in a QueryExpression is refused', () => {
   );
 });
 
-test('JoinOperator Natural maps to inner as an unverified placeholder', () => {
-  // No FetchXML link-type is documented for JoinOperator.Natural; mapping it to inner is a guess.
-  assert.match(
-    toFetchXml({
-      entityName: 'widget',
-      linkEntities: [
-        {
-          linkToEntityName: 'gadget',
-          linkToAttributeName: 'widgetid',
-          linkFromAttributeName: 'widgetid',
-          joinOperator: 'Natural',
-        },
-      ],
-    }),
-    /link-type="inner"/,
+test('JoinOperator Natural refuses a false Inner approximation', () => {
+  // Refuse before returning rows with incorrect duplicate-column projection semantics.
+  assert.throws(
+    () =>
+      toFetchXml({
+        entityName: 'widget',
+        linkEntities: [
+          {
+            linkToEntityName: 'gadget',
+            linkToAttributeName: 'widgetid',
+            linkFromAttributeName: 'widgetid',
+            joinOperator: 'Natural',
+          },
+        ],
+      }),
+    (error) => error.code === 'LocalPluginQueryUnsupported',
   );
 });

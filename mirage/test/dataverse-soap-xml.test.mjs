@@ -1,3 +1,4 @@
+// @test-kind compatibility: documented Organization service SOAP/DataContract wire formats (namespaces, member order, faults) from Microsoft SDK docs and samples
 // Dataverse SOAP XML codec: namespace-aware parsing, value round trips, envelopes, faults.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,14 +43,25 @@ const VALUES = [
   { type: 'guid', value: GUID },
   { type: 'base64', value: 'AQID' },
   { type: 'duration', value: 'PT5S' },
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-11
   {
     type: 'EntityReference',
     logicalName: 'widget',
     id: GUID,
     name: 'Blue',
     keyAttributes: new Map([['code', text('W-1')]]),
+    rowVersion: null,
   },
-  { type: 'EntityReference', logicalName: 'widget', id: GUID, name: null, keyAttributes: new Map() },
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-12
+  { type: 'EntityReference', logicalName: 'widget', id: GUID, name: null, keyAttributes: new Map(), rowVersion: null },
+  ...[null, '17'].map((rowVersion) => ({
+    type: 'EntityReference',
+    logicalName: 'widget',
+    id: GUID,
+    name: null,
+    keyAttributes: new Map(),
+    rowVersion,
+  })),
   { type: 'OptionSetValue', value: 2 },
   { type: 'Money', value: '99.9000' }, // four-digit exact scale on the wire and after decode
   { type: 'OptionSetValueCollection', values: [1, 3] },
@@ -65,7 +77,8 @@ const VALUES = [
     ]),
     formattedValues: new Map([['price', '$5.00']]),
     keyAttributes: new Map([['code', text('W-1')]]),
-    relatedEntities: null,
+    // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-20 (no RelatedEntities: an empty list)
+    relatedEntities: [],
     rowVersion: '123',
     entityState: null,
   },
@@ -74,7 +87,17 @@ const VALUES = [
   { type: 'ColumnSet', allColumns: true, columns: [] },
   {
     type: 'EntityReferenceCollection',
-    values: [{ type: 'EntityReference', logicalName: 'widget', id: GUID, name: 'Blue', keyAttributes: new Map() }],
+    // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-24 (RowVersion absent: null)
+    values: [
+      {
+        type: 'EntityReference',
+        logicalName: 'widget',
+        id: GUID,
+        name: 'Blue',
+        keyAttributes: new Map(),
+        rowVersion: null,
+      },
+    ],
   },
   {
     type: 'Entity',
@@ -112,7 +135,8 @@ const VALUES = [
         attributes: new Map([['name', text('Blue')]]),
         formattedValues: new Map(),
         keyAttributes: new Map(),
-        relatedEntities: null,
+        // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-26 (no RelatedEntities: an empty list)
+        relatedEntities: [],
         rowVersion: null,
         entityState: null,
       },
@@ -160,6 +184,7 @@ test('https:// namespace forms from Microsoft samples are accepted', () => {
   assert.equal(parseOrganizationRequest(request).requestName, 'WhoAmI');
 });
 
+// @test-kind security: XML hardening: DTDs, unbalanced tags and undeclared prefixes are refused
 test('DTDs, unbalanced tags and undeclared prefixes throw DataError 400', () => {
   for (const bad of ["<!DOCTYPE x [<!ENTITY y 'z'>]><x/>", '<a><b></a>', '<p:a xmlns:q="urn:x"/>']) {
     assert.throws(
@@ -415,14 +440,12 @@ test('untyped a:Value decodes OptionSetValue and its collection as int, and Mone
   );
 });
 
-test('Money encodes an exact four-digit decimal in a typed c:decimal Value, rounding beyond four digits', () => {
-  assert.equal(
-    encodeValue('v', { type: 'Money', value: 12.5 }),
-    '<v i:type="a:Money"><a:Value i:type="c:decimal">12.5000</a:Value></v>',
-  );
+test('Money encodes an exact four-digit decimal in an untyped Value, rounding beyond four digits', () => {
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-16
+  assert.equal(encodeValue('v', { type: 'Money', value: 12.5 }), '<v i:type="a:Money"><a:Value>12.5000</a:Value></v>');
   assert.equal(
     encodeValue('v', { type: 'Money', value: '0.123456' }),
-    '<v i:type="a:Money"><a:Value i:type="c:decimal">0.1235</a:Value></v>',
+    '<v i:type="a:Money"><a:Value>0.1235</a:Value></v>',
   );
   assert.equal(encodeValue('v', { type: 'Money', value: null }), '<v i:nil="true"/>');
 });
@@ -498,9 +521,10 @@ test('TotalRecordCount is always written: -1 when no count was requested', () =>
 });
 
 test('an AliasedValue with a null inner value stays typed and writes a nil a:Value', () => {
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-18
   assert.equal(
     encodeValue('v', { type: 'AliasedValue', attribute: 'name', entity: 'widget', value: null }),
-    '<v i:type="a:AliasedValue"><a:AttributeLogicalName>name</a:AttributeLogicalName><a:EntityLogicalName>widget</a:EntityLogicalName><a:Value i:nil="true"/></v>',
+    '<v i:type="a:AliasedValue"><a:AttributeLogicalName>name</a:AttributeLogicalName><a:EntityLogicalName>widget</a:EntityLogicalName><a:NeedFormatting>false</a:NeedFormatting><a:ReturnType>0</a:ReturnType><a:Value i:nil="true"/></v>',
   );
   assert.deepStrictEqual(
     decodeValue(
@@ -511,17 +535,19 @@ test('an AliasedValue with a null inner value stays typed and writes a nil a:Val
 });
 
 test('a null AliasedValue name is nil, not the text null; a null OptionSetValue stays nil as a whole', () => {
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-18
   assert.equal(
     encodeValue('v', { type: 'AliasedValue', attribute: null, entity: 'widget', value: text('x') }),
-    '<v i:type="a:AliasedValue"><a:AttributeLogicalName i:nil="true"/><a:EntityLogicalName>widget</a:EntityLogicalName><a:Value i:type="c:string">x</a:Value></v>',
+    '<v i:type="a:AliasedValue"><a:AttributeLogicalName i:nil="true"/><a:EntityLogicalName>widget</a:EntityLogicalName><a:NeedFormatting>false</a:NeedFormatting><a:ReturnType>0</a:ReturnType><a:Value i:type="c:string">x</a:Value></v>',
   );
   assert.equal(encodeValue('v', { type: 'OptionSetValue', value: null }), '<v i:nil="true"/>');
 });
 
 test('ColumnSet encodes AllColumns and string Columns in the arrays namespace, and decodes SDK-shaped XML', () => {
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-22
   assert.equal(
     encodeValue('v', { type: 'ColumnSet', allColumns: false, columns: ['name', 'createdon'] }),
-    '<v i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string><f:string>createdon</f:string></a:Columns></v>',
+    '<v i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:AttributeExpressions/><a:Columns><f:string>name</f:string><f:string>createdon</f:string></a:Columns></v>',
   );
   const head = `xmlns:i="${NS.i}" xmlns:a="${NS.a}" xmlns:f="${SDK_ARRAYS}"`;
   const node = sdkNode(
@@ -532,12 +558,13 @@ test('ColumnSet encodes AllColumns and string Columns in the arrays namespace, a
 });
 
 test('EntityReferenceCollection encodes untyped EntityReference items and decodes SDK-shaped XML', () => {
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-24
   assert.equal(
     encodeValue('v', {
       type: 'EntityReferenceCollection',
       values: [{ type: 'EntityReference', logicalName: 'widget', id: GUID, name: 'Blue', keyAttributes: new Map() }],
     }),
-    `<v i:type="a:EntityReferenceCollection"><a:EntityReference><a:Id>${GUID}</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name></a:EntityReference></v>`,
+    `<v i:type="a:EntityReferenceCollection"><a:EntityReference><a:Id>${GUID}</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name><a:RowVersion i:nil="true"/></a:EntityReference></v>`,
   );
   assert.deepStrictEqual(
     sdkValue(
@@ -545,12 +572,22 @@ test('EntityReferenceCollection encodes untyped EntityReference items and decode
     ),
     {
       type: 'EntityReferenceCollection',
-      values: [{ type: 'EntityReference', logicalName: 'widget', id: GUID, name: null, keyAttributes: new Map() }],
+      // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-24 (RowVersion absent: null)
+      values: [
+        {
+          type: 'EntityReference',
+          logicalName: 'widget',
+          id: GUID,
+          name: null,
+          keyAttributes: new Map(),
+          rowVersion: null,
+        },
+      ],
     },
   );
 });
 
-test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollection with declared key and value', () => {
+test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN with declared key and value', () => {
   const related = [
     {
       relationship: { schemaName: 'widget_gadgets', primaryEntityRole: 'Referenced' },
@@ -579,12 +616,16 @@ test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollection with 
   });
   assert.ok(
     xml.includes(
-      '<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollection><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key>' +
-        '<b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollection></a:RelatedEntities>',
+      // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-25
+      '<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key>' +
+        '<b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MinActiveRowVersion i:nil="true"/><a:MoreRecords>false</a:MoreRecords><a:PagingCookie i:nil="true"/><a:RecordCountLessThanMarv>0</a:RecordCountLessThanMarv><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN></a:RelatedEntities>',
     ),
     xml,
   );
-  const item = byName(byName(encodedNode(xml), 'RelatedEntities'), 'KeyValuePairOfRelationshipEntityCollection');
+  const item = byName(
+    byName(encodedNode(xml), 'RelatedEntities'),
+    'KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN',
+  );
   assert.equal(item.ns, 'http://schemas.microsoft.com/xrm/2011/Contracts');
   assert.deepStrictEqual(decodeValue(encodedNode(xml)).relatedEntities, related);
 });

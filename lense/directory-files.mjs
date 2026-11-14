@@ -2,8 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { orderedMap } from './async-map.mjs';
 
-/** Read directories concurrently, then flatten in depth-first entry order. Never follows symlinks. */
-export async function directoryFiles(root, { skip = new Set(), sort, concurrency = 32 } = {}) {
+// Code-unit name order: listing order differs between file systems and operating systems, and a locale-aware order
+// differs between processes.
+const byName = (a, b) => Number(a.name > b.name) - Number(a.name < b.name);
+
+/** Read directories concurrently, then flatten in depth-first name order. Never follows symlinks. */
+export async function directoryFiles(root, { skip = new Set(), concurrency = 32 } = {}) {
   const children = new Map();
   let level = [root];
   while (level.length) {
@@ -11,7 +15,7 @@ export async function directoryFiles(root, { skip = new Set(), sort, concurrency
       const entries = (await fs.readdir(current, { withFileTypes: true })).filter(
         (entry) => !entry.isSymbolicLink() && !skip.has(entry.name),
       );
-      if (sort) entries.sort(sort);
+      entries.sort(byName);
       children.set(current, entries);
       return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(current, entry.name));
     });

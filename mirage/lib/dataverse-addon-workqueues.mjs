@@ -5,7 +5,7 @@
 // ponytail: ClearWorkQueue is always synchronous (isDeletionGoingAsync false); no draft-3 schema validation of the input.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
-import { argsOf, registerAddon } from './dataverse-addon-common.mjs';
+import { argsOf, callerColumns, registerAddon } from './dataverse-addon-common.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
 import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
@@ -20,6 +20,14 @@ const invalid = (message, innerCode = '0x80040203') => new DataError(message, 40
 const minutes = (count) => count * 60000;
 const ms = (value) => (value == null ? null : Date.parse(value));
 const iso = (at) => new Date(at).toISOString();
+// The caller's item as the table stores it: its columns only, OData annotations dropped. A bind is refused: the queue is the bound
+// row and the caller owns the item. A property the table does not have is a 400.
+function storedColumns(store, item) {
+  return callerColumns(store, 'workqueueitem', item, {
+    operation: 'EnqueueWorkQueueItem',
+    reason: 'the queue is the bound row and the caller owns the item',
+  });
+}
 
 // SLA status of one item at time `at`: NotSet without a queue TTL, Out past its expiry, AtRisk past its threshold, else In.
 function slaOf(row, ttl, at) {
@@ -57,7 +65,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   // Queued and not delayed or expired at `at`.
   const eligible = (row, at) =>
@@ -66,6 +74,34 @@ function operations(api) {
     (ms(row.expirydate) == null || ms(row.expirydate) > at);
   const fifo = (a, b) => (a.priority ?? 1) - (b.priority ?? 1) || (ms(a.createdon) ?? 0) - (ms(b.createdon) ?? 0);
   const flag = (value) => value === true || value === 'true';
+  // The row-level check of the CRUD path (dataverse-records.mjs authorize) for one item; a refusal throws the 403.
+  const authorizeItem = (c, operation, row) =>
+    api.principals.authorize({
+      user: c.user,
+      entity: 'workqueueitem',
+      operation,
+      row,
+      mapping: store.resolveMapping('workqueueitem'),
+    });
+  // The read check on the queue row a queue-bound message targets, made before anything else it does.
+  const authorizeQueue = (c) =>
+    api.principals.authorize({
+      user: c.user,
+      entity: 'workqueue',
+      operation: 'read',
+      row: c.target.row,
+      mapping: store.resolveMapping('workqueue'),
+    });
+  // Whether the caller may write the item: a row the check refuses is not claimed.
+  const mayWrite = (c, row) => {
+    try {
+      authorizeItem(c, 'write', row);
+      return true;
+    } catch (error) {
+      if (error.status === 403) return false;
+      throw error;
+    }
+  };
 
   return [
     {
@@ -85,7 +121,7 @@ function operations(api) {
         ],
       },
       handle: async (c) => {
-        need(c, 'workqueue', 'Read');
+        authorizeQueue(c);
         need(c, 'workqueueitem', 'Create');
         const queue = c.target.row;
         // A queue that is inactive or paused (statuscode 2 Inactive, 3 Paused) takes no items.
@@ -93,10 +129,11 @@ function operations(api) {
           throw invalid('Work queue paused or stopped');
         const item = argsOf(c).workQueueItem ?? {};
         if (typeof item !== 'object' || Array.isArray(item)) throw invalid('workQueueItem must be an entity object.');
+        const columns = storedColumns(store, item);
         // A Json queue (inputschematype 1) needs input that parses as JSON.
-        if (queue.inputschematype === 1 && item.input != null) {
+        if (queue.inputschematype === 1 && columns.input != null) {
           try {
-            JSON.parse(item.input);
+            JSON.parse(columns.input);
           } catch {
             throw invalid('Input is not valid JSON.');
           }
@@ -105,23 +142,30 @@ function operations(api) {
         const ttl = Number(queue.defaultitemtimetoliveinminutes) || 0;
         const slaPercent = Number(queue.slathresholdinpercentage) || 0;
         const row = {
-          ...item,
+          ...columns,
+          // The owner and audit columns are the ones an ordinary create of the table writes for the caller.
+          ...api.principals.systemColumns({
+            user: c.user,
+            caller: c.onBehalfOf ?? c.caller ?? null,
+            mapping: store.resolveMapping('workqueueitem'),
+            create: true,
+          }),
           workqueueitemid: randomUUID(),
           workqueueid: c.target.id,
           statecode: STATE_QUEUED,
           statuscode: 0,
           requeuecount: 0,
           retrycount: 0,
-          priority: Math.max(1, Math.trunc(Number(item.priority ?? 1)) || 1),
+          priority: Math.max(1, Math.trunc(Number(columns.priority ?? 1)) || 1),
           createdon: iso(at),
-          expirydate: item.expirydate ?? (ttl ? iso(at + minutes(ttl)) : null),
+          expirydate: columns.expirydate ?? (ttl ? iso(at + minutes(ttl)) : null),
           slathresholddate: ttl && slaPercent ? iso(at + (minutes(ttl) * slaPercent) / 100) : null,
           slastatus: ttl ? SLA.In : SLA.NotSet,
         };
         await write(() => {
           if (
-            item.uniqueidbyqueue != null &&
-            itemsOf(c.target.id).some((entry) => entry.uniqueidbyqueue === item.uniqueidbyqueue)
+            columns.uniqueidbyqueue != null &&
+            itemsOf(c.target.id).some((entry) => entry.uniqueidbyqueue === columns.uniqueidbyqueue)
           )
             throw new DataError(
               'A record with the same uniqueidbyqueue already exists in this work queue.',
@@ -147,9 +191,10 @@ function operations(api) {
       // answers 204. Guesses: the empty-queue status and the returned keys.
       signature: { params: [['request', 'Edm.String']], returns: 'mscrm.crmbaseentity' },
       handle: async (c) => {
-        need(c, 'workqueue', 'Read');
+        authorizeQueue(c);
         need(c, 'workqueueitem', 'Write');
         const queueId = c.target.id;
+        const claimable = (row, at) => eligible(row, at) && mayWrite(c, row);
         const raw = argsOf(c).request;
         let request = {};
         if (raw) {
@@ -190,9 +235,9 @@ function operations(api) {
           const pick = candidates
             ? candidates
                 .map((id) => rowIn('workqueueitem', 'workqueueitemid', id))
-                .find((row) => row && sameId(row.workqueueid, queueId) && eligible(row, at))
+                .find((row) => row && sameId(row.workqueueid, queueId) && claimable(row, at))
             : itemsOf(queueId)
-                .filter((row) => eligible(row, at))
+                .filter((row) => claimable(row, at))
                 .sort(fifo)[0];
           if (!pick) return;
           const user = c.user?.systemuserid ?? null;
@@ -215,9 +260,12 @@ function operations(api) {
       // Removes every item of the queue. ponytail: always synchronous, so isDeletionGoingAsync is false.
       signature: { params: [], response: [['isDeletionGoingAsync', 'Edm.Boolean']] },
       handle: async (c) => {
+        authorizeQueue(c);
         need(c, 'workqueueitem', 'Delete');
         const queueId = c.target.id;
         await write(() => {
+          // Every item is checked before any is removed: one the caller may not delete refuses the whole clear with its 403.
+          for (const row of itemsOf(queueId)) authorizeItem(c, 'delete', row);
           const rows = tableOf('workqueueitem');
           for (let i = rows.length - 1; i >= 0; i -= 1) if (sameId(rows[i].workqueueid, queueId)) rows.splice(i, 1);
         });

@@ -1,4 +1,5 @@
 import { scanSolutionSources, buildSolutionSchema } from './solution-schema.mjs';
+import { solutionSideFileHashes } from './solution-content-fingerprint.mjs';
 import { importSolutionMetadata } from './solution-metadata.mjs';
 import { importSolutionData } from './solution-data.mjs';
 import { importOperationWorkflows } from './exported-operations.mjs';
@@ -18,9 +19,10 @@ export async function loadOrganizationSources({
   projectRoot = null,
 } = {}) {
   const scan = await scanSolutionSources(solutionRoots, { order: solutionOrder, cacheFile });
-  const schema = buildSolutionSchema(scan, { lcid });
+  const sideHashes = solutionSideFileHashes(scan.layers, scan.cache);
+  const schema = buildSolutionSchema(scan, { lcid, sideHashes });
   const [metadata, solutionData, workflows, operations] = await Promise.all([
-    importSolutionMetadata(solutionRoots, { scan, schema, lcid }),
+    importSolutionMetadata(solutionRoots, { scan, schema, sideHashes, lcid }),
     importSolutionData(solutionRoots, { scan, schema, lcid }),
     importOperationWorkflows(scan.layers),
     importSolutionOperationSources(scan.layers),
@@ -34,6 +36,7 @@ export async function loadOrganizationSources({
   metadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
   metadata.modelDrivenAppActions = clientResources.appActions;
   await scan.cache?.save();
+  scan.cache?.release();
   // inventory: listed Solution components (solution-inventory.mjs); graph: read-only index over these results (source-graph.mjs).
   const graph = buildSourceGraph({ scan, metadata, solutionData, workflows });
   return {

@@ -7,6 +7,7 @@ import { DataStore, formatMockRecord, normalizeMockLiquidRecord, normalizeMockLi
 import { createSimulator } from '../server.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { normalizeLiveRecord } from '../lib/live.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const definition = {
   dataverseType: 'picklist',
@@ -204,9 +205,9 @@ test('FetchXML root/link/attribute aliases use each entity metadata while aggreg
   );
 });
 test('actual HTTP PATCH keeps scalar API values and renders updated Liquid entity plus FetchXML choice value/label', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-liquid-choice-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-liquid-choice-'));
   let app;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app?.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -272,9 +273,9 @@ test('actual HTTP PATCH keeps scalar API values and renders updated Liquid entit
 });
 
 test('custom mapping choice metadata remains available without an imported solution', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-custom-choice-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-custom-choice-'));
   let app;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app?.close();
     await fs.rm(dir, { recursive: true, force: true });
   });

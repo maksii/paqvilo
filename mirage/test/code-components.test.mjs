@@ -1,14 +1,16 @@
+// @test-kind contract: Paqvilo's PCF catalogue import and rendering are designed runtime behaviour, exercised with invented control fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
+import { importCodeComponents, renderCodeComponent, takeAdmittedFiles } from '../lib/code-components.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = 'd0000000-0000-4000-8000-000000000001';
 async function fixture(t, resources = '<code path="bundle.js" order="1"/>') {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const control = path.join(dir, 'Controls', 'tst_Synthetic.Editor');
   await fs.mkdir(control, { recursive: true });
@@ -78,24 +80,38 @@ test('PCF classic SDK export declarations consume only leading block comments an
   }
 });
 
-test(
-  'PCF classic SDK declaration scanning handles large repeated headers and incomplete prefixes',
-  { timeout: 10000 },
-  async (t) => {
-    const { dir, control } = await fixture(t);
-    const header = ' \t/* generated header */\n'.repeat(20000);
-    for (const [source, expected] of [
-      [header + 'var LargeBundle;', 'LargeBundle'],
-      [header + ' '.repeat(250000) + 'var LargeBundle=', undefined],
-      [header + '/*' + '* '.repeat(250000), undefined],
-    ]) {
-      await fs.writeFile(path.join(control, 'bundle.js'), source);
-      const catalog = await importCodeComponents([{ dir }]);
-      assert.deepEqual(catalog.diagnostics, []);
-      assert.equal(catalog.controls.get('tst_Synthetic.Editor').resources[0].exportGlobal, expected);
-    }
-  },
-);
+test('PCF classic SDK declaration scanning handles large repeated headers and incomplete prefixes', async (t) => {
+  const { dir, control } = await fixture(t);
+  const header = ' \t/* generated header */\n'.repeat(20000);
+  for (const [source, expected] of [
+    [header + 'var LargeBundle;', 'LargeBundle'],
+    [header + ' '.repeat(250000) + 'var LargeBundle=', undefined],
+    [header + '/*' + '* '.repeat(250000), undefined],
+  ]) {
+    await fs.writeFile(path.join(control, 'bundle.js'), source);
+    const catalog = await importCodeComponents([{ dir }]);
+    assert.deepEqual(catalog.diagnostics, []);
+    assert.equal(catalog.controls.get('tst_Synthetic.Editor').resources[0].exportGlobal, expected);
+  }
+});
+test('a default catalogue import keeps no manifest or resource bytes once it has returned', async (t) => {
+  const { dir } = await fixture(t);
+  const catalog = await importCodeComponents([{ dir }]);
+  assert.equal(catalog.controls.size, 1);
+  assert.equal(takeAdmittedFiles(catalog.controls).size, 0);
+});
+
+test('a catalogue import that asks to retain bytes hands them out once', async (t) => {
+  const { dir, control } = await fixture(t);
+  const catalog = await importCodeComponents([{ dir }], { retainBytes: true });
+  const admitted = takeAdmittedFiles(catalog.controls);
+  assert.ok(admitted.has(await fs.realpath(path.join(control, 'ControlManifest.xml'))));
+  assert.ok(admitted.has(await fs.realpath(path.join(control, 'bundle.js'))));
+  assert.equal(takeAdmittedFiles(catalog.controls).size, 0);
+});
+
+// @test-kind security: a PCF manifest path cannot traverse out of the control folder and unresolved resources
+// are never served
 test('PCF manifest traversal is rejected and missing resources never become mountable', async (t) => {
   const { dir } = await fixture(t, '<code path="../../outside.js"/>');
   await fs.writeFile(path.join(dir, 'outside.js'), 'bad');

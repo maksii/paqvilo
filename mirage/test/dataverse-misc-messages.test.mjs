@@ -2,6 +2,7 @@
 // QueryExpression conversion and validation, RetrieveTimestamp, the knowledge article and kbarticle searches, knowledge versions and
 // views, rollup, virtual table events, composite data sources, certificate credentials, the managed identity subject, business
 // process flow instances and SetProcess.
+// @test-kind contract: Paqvilo's designed behaviour of the miscellaneous Dataverse messages; texts the module marks as guesses are not proof
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -14,6 +15,7 @@ import { hashSecret } from '../lib/dataverse-auth.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
+import { bearerCall, signedInRequester } from './support/web-api.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -303,17 +305,8 @@ async function token(form) {
   return (await response.json()).access_token;
 }
 
-// One request. A JSON body is serialised. The default token is the System Administrator application.
-const call = (path, { token = appToken, method = 'GET', body } = {}) =>
-  fetch(`${origin}${path}`, {
-    method,
-    signal: AbortSignal.timeout(10_000),
-    headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+// One request. The default token is the System Administrator application.
+const call = (path, options) => bearerCall(origin, () => appToken)(path, options);
 const webApi = (suffix) => `/api/data/v9.2/${suffix}`;
 const fetchXmlToQuery = (xml, token) =>
   call(webApi(`FetchXmlToQueryExpression(FetchXml='${encodeURIComponent(xml)}')`), { token });
@@ -393,6 +386,7 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
     await errorOf(await call(webApi(`ValidateFetchXmlExpression(FetchXml='${encodeURIComponent('<fetch>')}')`)), 400);
   });
 
+  // @test-kind security: validating a saved query requires its read privilege
   it('ValidateSavedQuery answers 204 for valid FetchXML, refuses malformed FetchXML, and needs the saved query read privilege', async () => {
     const path = webApi(`savedqueries/${CRM}ValidateSavedQuery`);
     const valid = await call(path, { method: 'POST', body: { FetchXml: FETCH, QueryType: 0 } });
@@ -406,9 +400,13 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
   });
 
   it('RetrieveTimestamp returns the current server time as an ISO timestamp', async () => {
+    // The organization runs on wall time here, so the answer lies between the moments the call started and ended.
+    const started = Date.now();
     const body = await (await call(webApi('RetrieveTimestamp'))).json();
-    assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T/);
-    assert.ok(Math.abs(Date.parse(body.Timestamp) - Date.now()) < 60_000, body.Timestamp);
+    const ended = Date.now();
+    assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    const answered = Date.parse(body.Timestamp);
+    assert.ok(answered >= started && answered <= ended, `${body.Timestamp} outside the call`);
   });
 
   it('FullTextSearchKnowledgeArticle finds articles by text, filters by state and drops older versions on request', async () => {
@@ -423,6 +421,7 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
     assert.deepEqual(latest.value.map((row) => row.knowledgearticleid).sort(), [ART_ONE, ART_THREE].sort());
   });
 
+  // @test-kind security: searching articles requires the knowledge article read privilege
   it('FullTextSearchKnowledgeArticle refuses a missing SearchText and needs the knowledge article read privilege', async () => {
     const path = webApi('FullTextSearchKnowledgeArticle');
     assert.match(
@@ -460,6 +459,7 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
     assert.match(denied.message, /prvReadKbArticle/);
   });
 
+  // @test-kind security: the lookup requires the kbarticle read privilege
   it("RetrieveByTopIncidentSubjectKbArticle returns the subject's articles and needs the kbarticle read privilege", async () => {
     const found = await (
       await call(webApi(`subjects(${SUBJECT_A})/${CRM}RetrieveByTopIncidentSubjectKbArticle`))
@@ -766,5 +766,285 @@ describe('knowledge versions, rollup, virtual events, composite data sources, ce
     const error = await errorOf(set, 501);
     assert.match(error.text, /0x80040216/);
     assert.match(error.message, /SetProcess is for internal use only and is not simulated\./);
+  });
+});
+
+// A Basic User (an application with the Basic User role) holds the basic privileges and sees only the rows it owns; the
+// administrator application sees all rows. The assertions are refusals and unchanged rows.
+describe('knowledge rows and environment variable definitions follow the caller access', () => {
+  const BASIC_APP = '33333333-3333-4333-8333-333333333333';
+  const BASIC_SECRET_VAR = 'PAQVILO_MISC_BASIC_SECRET';
+  const NONE_APP = '55555555-5555-4555-8555-555555555555';
+  const NONE_SECRET_VAR = 'PAQVILO_MISC_NONE_SECRET';
+  const PREFER = { prefer: 'return=representation' };
+  let accessServer;
+  let accessStore;
+  let admin;
+  let basic;
+  let none;
+
+  before(async () => {
+    process.env[BASIC_SECRET_VAR] = 'misc-basic-secret';
+    process.env[NONE_SECRET_VAR] = 'misc-none-secret';
+    accessStore = await new DataStore({ state: emptyState() }).init();
+    await accessStore.transact(() => {
+      accessStore.state.tables.languagelocale = [{ languagelocaleid: LANG_FR, localeid: 1036, code: 'fr-FR' }];
+    });
+    const settings = dataverseSettings({
+      enabled: true,
+      tenantId: TENANT,
+      applications: [
+        {
+          appId: APP_ID,
+          displayName: 'Misc app',
+          secretEnvironmentVariable: SECRET_VAR,
+          roles: ['System Administrator'],
+        },
+        {
+          appId: BASIC_APP,
+          displayName: 'Misc basic app',
+          secretEnvironmentVariable: BASIC_SECRET_VAR,
+          roles: ['Basic User'],
+        },
+        {
+          appId: NONE_APP,
+          displayName: 'Misc no-role app',
+          secretEnvironmentVariable: NONE_SECRET_VAR,
+          roles: [],
+        },
+      ],
+    });
+    accessServer = await startDataverseApi({ store: accessStore, settings, log: () => {}, extensions: EXTENSIONS });
+    // The requester takes a path that starts with a slash; the calls below name the set or function only.
+    const relative = (request) => (method, path, body, headers) => request(method, `/${path}`, body, headers);
+    admin = relative(await signedInRequester(accessServer, APP_ID, process.env[SECRET_VAR]));
+    basic = relative(await signedInRequester(accessServer, BASIC_APP, process.env[BASIC_SECRET_VAR]));
+    none = relative(await signedInRequester(accessServer, NONE_APP, process.env[NONE_SECRET_VAR]));
+  });
+
+  after(async () => {
+    delete process.env[BASIC_SECRET_VAR];
+    delete process.env[NONE_SECRET_VAR];
+    await accessServer?.close();
+  });
+
+  // @test-kind security: RetrieveProcessInstances checks the table read privilege before the primary row, so a caller without it cannot tell an existing id from a missing one (R1-7)
+  it('RetrieveProcessInstances answers the same 403 for an existing and a missing id to a caller without read on the table', async () => {
+    const existing = await adminArticle('Instance probe');
+    const missing = '00000000-0000-4000-8000-0000000000aa';
+    const path = (id) => `RetrieveProcessInstances(EntityId=${id},EntityLogicalName='knowledgearticle')`;
+    const forExisting = await none('GET', path(existing));
+    const forMissing = await none('GET', path(missing));
+    assert.equal(forExisting.status, 403, JSON.stringify(forExisting.json));
+    assert.equal(forMissing.status, 403, JSON.stringify(forMissing.json));
+    assert.equal(forMissing.json.error.code, forExisting.json.error.code);
+  });
+
+  // @test-kind security: the two upserts address one value row per definition, whichever of them wrote the definition first (R1-5)
+  it('UpsertEnvironmentVariable and UpsertCompositeDataSource keep one value row for a definition, in either order', async () => {
+    const valueRowsOf = (schema) => {
+      const [definition] = definitionsNamed(schema);
+      return tableOf('environmentvariablevalue').filter(
+        (row) =>
+          (row.environmentvariabledefinitionid?.id ?? row.environmentvariabledefinitionid) ===
+          definition.environmentvariabledefinitionid,
+      );
+    };
+    const plain = await admin('POST', 'UpsertEnvironmentVariable', {
+      SchemaName: 'new_plainfirst',
+      Type: 100000004,
+      Value: 'one',
+    });
+    assert.equal(plain.status, 204, JSON.stringify(plain.json));
+    const composite = await admin('POST', 'UpsertCompositeDataSource', {
+      ParentSchemaName: 'new_plainfirst',
+      ParentParameterKey: 'pk',
+      ParentValue: 'two',
+    });
+    assert.equal(composite.status, 204, JSON.stringify(composite.json));
+    assert.deepEqual(
+      valueRowsOf('new_plainfirst').map((row) => row.value),
+      ['two'],
+    );
+    const compositeFirst = await admin('POST', 'UpsertCompositeDataSource', {
+      ParentSchemaName: 'new_compositefirst',
+      ParentParameterKey: 'pk',
+      ParentValue: 'one',
+    });
+    assert.equal(compositeFirst.status, 204, JSON.stringify(compositeFirst.json));
+    const plainSecond = await admin('POST', 'UpsertEnvironmentVariable', {
+      SchemaName: 'new_compositefirst',
+      Type: 100000004,
+      Value: 'two',
+    });
+    assert.equal(plainSecond.status, 204, JSON.stringify(plainSecond.json));
+    assert.deepEqual(
+      valueRowsOf('new_compositefirst').map((row) => row.value),
+      ['two'],
+    );
+  });
+
+  const tableOf = (logical) => accessStore.state.tables[logical] ?? [];
+  const rowById = (logical, column, id) => tableOf(logical).find((row) => row[column] === id);
+  const copiesOf = (id) =>
+    tableOf('knowledgearticle').filter((row) => row.knowledgearticleid === id || row.rootarticleid === id);
+  const definitionsNamed = (schema) =>
+    tableOf('environmentvariabledefinition').filter((row) => String(row.schemaname).toLowerCase() === schema);
+  const incrementPath = (article) =>
+    `IncrementKnowledgeArticleViewCount(Source=@s,ViewDate=@d,Location=@l,Count=@c)?@s=${encoded(ref('knowledgearticles', article))}&@d=${encoded('2026-10-20T10:00:00Z')}&@l=1&@c=1`;
+  const adminArticle = async (title) => {
+    const created = await admin('POST', 'knowledgearticles', { title, content: `${title} body` }, PREFER);
+    assert.equal(created.status, 201, JSON.stringify(created.json));
+    return created.json.knowledgearticleid;
+  };
+
+  // @test-kind security: a knowledge search returns only the rows the caller may read, as the Dataverse read filter applies (DV3b-2)
+  it('the knowledge searches return only the articles the caller may read', async () => {
+    await adminArticle('Vault plan');
+    const found = await basic('POST', 'FullTextSearchKnowledgeArticle', { SearchText: 'vault' });
+    assert.equal(found.status, 200);
+    assert.deepEqual(found.json.value, []);
+    const own = await basic('POST', 'knowledgearticles', { title: 'Vault note', content: 'basic vault' }, PREFER);
+    assert.equal(own.status, 201, JSON.stringify(own.json));
+    const mine = await basic('POST', 'FullTextSearchKnowledgeArticle', { SearchText: 'vault' });
+    assert.deepEqual(
+      mine.json.value.map((row) => row.knowledgearticleid),
+      [own.json.knowledgearticleid],
+    );
+  });
+
+  // @test-kind security: a version or translation needs read on its source article, and a refused copy is never stored (DV3b-2)
+  it('CreateKnowledgeArticleVersion and CreateKnowledgeArticleTranslation refuse an article the caller may not read', async () => {
+    const article = await adminArticle('Vault plan');
+    const copies = copiesOf(article).length;
+    const version = await basic('POST', 'CreateKnowledgeArticleVersion', {
+      Source: ref('knowledgearticles', article),
+      IsMajor: true,
+    });
+    assert.equal(version.status, 403);
+    const translation = await basic('POST', 'CreateKnowledgeArticleTranslation', {
+      Source: ref('knowledgearticles', article),
+      Language: ref('languagelocales', LANG_FR),
+    });
+    assert.equal(translation.status, 403);
+    assert.equal(copiesOf(article).length, copies, 'no copy of the refused article is stored');
+    const allowed = await admin('POST', 'CreateKnowledgeArticleVersion', {
+      Source: ref('knowledgearticles', article),
+      IsMajor: true,
+    });
+    assert.equal(allowed.status, 200, JSON.stringify(allowed.json));
+  });
+
+  // @test-kind security: a copy is owned by the caller that made it, not by the owner of the source (DV3b-2)
+  it('a version made by the administrator is owned by the administrator, not by the owner of the source', async () => {
+    const own = await basic('POST', 'knowledgearticles', { title: 'Basic note', content: 'basic body' }, PREFER);
+    assert.equal(own.status, 201, JSON.stringify(own.json));
+    const version = await admin('POST', 'CreateKnowledgeArticleVersion', {
+      Source: ref('knowledgearticles', own.json.knowledgearticleid),
+      IsMajor: true,
+    });
+    assert.equal(version.status, 200, JSON.stringify(version.json));
+    const copy = rowById('knowledgearticle', 'knowledgearticleid', version.json.knowledgearticleid);
+    const adminNote = rowById('knowledgearticle', 'knowledgearticleid', await adminArticle('Admin note'));
+    assert.deepEqual(copy.ownerid, adminNote.ownerid);
+    assert.notDeepEqual(
+      copy.ownerid,
+      rowById('knowledgearticle', 'knowledgearticleid', own.json.knowledgearticleid).ownerid,
+    );
+  });
+
+  // @test-kind security: a view count is written only when the caller may read the article (DV3b-2)
+  it('IncrementKnowledgeArticleViewCount refuses a Basic User on an article it cannot read and writes no view', async () => {
+    const article = await adminArticle('Vault plan');
+    const views = tableOf('knowledgearticleviews').length;
+    const refused = await basic('GET', incrementPath(article));
+    assert.equal(refused.status, 403);
+    assert.equal(tableOf('knowledgearticleviews').length, views);
+    assert.equal((await admin('GET', incrementPath(article))).status, 200);
+  });
+
+  // @test-kind security: an upsert never changes a definition the caller does not own, and adds no second definition (DV3b-3)
+  it('UpsertCompositeDataSource refuses a Basic User for an admin definition and keeps one definition of the schema name', async () => {
+    const made = await admin(
+      'POST',
+      'environmentvariabledefinitions',
+      { schemaname: 'new_apikey', displayname: 'API key', type: 100000000 },
+      PREFER,
+    );
+    assert.equal(made.status, 201, JSON.stringify(made.json));
+    const refused = await basic('POST', 'UpsertCompositeDataSource', {
+      ParentSchemaName: 'new_apikey',
+      ParentParameterKey: 'k',
+      ParentValue: 'ATTACKER-VALUE',
+    });
+    assert.equal(refused.status, 403);
+    const named = definitionsNamed('new_apikey');
+    assert.equal(named.length, 1);
+    assert.equal(named[0].type, 100000000);
+    assert.equal(named[0].displayname, 'API key');
+  });
+
+  // @test-kind security: an existing definition that is not a data source is refused with 0x80040237 (DV3b-3)
+  it('UpsertCompositeDataSource answers 412 0x80040237 for an ordinary definition of the same schema name', async () => {
+    const made = await admin(
+      'POST',
+      'environmentvariabledefinitions',
+      { schemaname: 'new_plainkey', displayname: 'Plain', type: 100000000 },
+      PREFER,
+    );
+    assert.equal(made.status, 201, JSON.stringify(made.json));
+    const refused = await admin('POST', 'UpsertCompositeDataSource', {
+      ParentSchemaName: 'new_plainkey',
+      ParentParameterKey: 'k',
+      ParentValue: 'NEW-VALUE',
+    });
+    assert.equal(refused.status, 412);
+    assert.match(JSON.stringify(refused.json), /0x80040237/);
+    assert.equal(definitionsNamed('new_plainkey').length, 1);
+    assert.equal(
+      rowById(
+        'environmentvariabledefinition',
+        'environmentvariabledefinitionid',
+        made.json.environmentvariabledefinitionid,
+      ).type,
+      100000000,
+    );
+  });
+
+  // @test-kind security: the retrieve functions omit the values of a caller without read on the value table (DV3b-3)
+  it('the retrieve functions omit environment variable values from a caller without read on the value table', async () => {
+    // Environment variable definitions are user owned: the Basic User creates the pair without values (it holds no create
+    // privilege on the value table), and the administrator writes the values afterwards, so the caller reads the
+    // definitions it owns but not the values.
+    const pair = (parentValue, childValue) => ({
+      ParentDisplayName: 'Pipeline',
+      ParentSchemaName: 'new_pipeline',
+      ParentParameterKey: 'pk',
+      ParentApiId: '/api/pipeline',
+      ParentValue: parentValue,
+      ChildDisplayName: 'Pipeline child',
+      ChildSchemaName: 'new_pipelinechild',
+      ChildParameterKey: 'ck',
+      ChildValue: childValue,
+    });
+    const created = await basic('POST', 'UpsertCompositeDataSource', pair(null, null));
+    assert.equal(created.status, 204, JSON.stringify(created.json));
+    const upsert = await admin('POST', 'UpsertCompositeDataSource', pair('ADMIN-VALUE-SECRET', 'CHILD-VALUE-SECRET'));
+    assert.equal(upsert.status, 204, JSON.stringify(upsert.json));
+    const all = await basic('GET', "RetrieveAllCompositeDataSources(ParentSchemaName='new_pipeline')");
+    assert.equal(all.status, 200, JSON.stringify(all.json));
+    assert.equal(all.json.value.length, 2);
+    assert.deepEqual(all.json.value[0].environmentvariabledefinition_environmentvariablevalue, []);
+    const both = await basic(
+      'GET',
+      "RetrieveCompositeDataSource(ParentSchemaName='new_pipeline',ChildSchemaName='new_pipelinechild')",
+    );
+    assert.equal(both.status, 200, JSON.stringify(both.json));
+    assert.doesNotMatch(JSON.stringify([all.json, both.json]), /SECRET/);
+    const adminAll = await admin('GET', "RetrieveAllCompositeDataSources(ParentSchemaName='new_pipeline')");
+    assert.equal(
+      adminAll.json.value[0].environmentvariabledefinition_environmentvariablevalue[0].value,
+      'ADMIN-VALUE-SECRET',
+    );
   });
 });

@@ -1,15 +1,16 @@
+// @test-kind unproven: local model of elastic-table key and partition addressing, typed lookup partitions and the 500-row fetch page; no native capture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { localOrganizationService, sdkValueToRecord } from '../lib/local-organization-service.mjs';
 import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { builtInKey } from '../lib/dataverse-elastic.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-4000-8000-000000000001',
   id = '20000000-0000-4000-8000-000000000001',
@@ -104,6 +105,20 @@ test('SDK typed lookup keys preserve their partition and missing partitions neve
   assert.equal(unresolved.readingidpid, null);
   assert.equal(recordToSdkEntity(store, 'widget', unresolved).attributes.readingid.name, null);
 });
+// @test-kind contract: an image's phonetic-name companion of a lookup to an elastic row names that row's own yomi name
+test('an image names a lookup to an elastic row in a partition from that row, not from the bare reference', () => {
+  const store = fixture();
+  store.state.mappings.reading.fields.yomifullname = { dataverseType: 'nvarchar' };
+  store.state.mappings.widget.fields.readingidyominame = { dataverseType: 'nvarchar' };
+  store.state.tables.reading = store.state.tables.reading.map((row) => ({
+    ...row,
+    yomifullname: `Yomi ${row.partitionid}`,
+  }));
+  const row = { widgetid: zero, name: 'Linked', readingid: { id, logical_name: 'reading' }, readingidpid: 'B' };
+  const image = recordToSdkEntity(store, 'widget', row, { allColumns: true, image: true });
+  assert.equal(image.attributes.readingid.name, 'Partition B');
+  assert.equal(image.attributes.readingidyominame, 'Yomi B');
+});
 test('local SDK FetchXML uses elastic default and maximum page/count size 500', () => {
   const store = fixture(),
     service = localOrganizationService(store, profile);
@@ -125,11 +140,11 @@ test('local SDK FetchXML uses elastic default and maximum page/count size 500', 
 });
 test(
   'an original .NET plugin forwards elastic key attributes through the real CLR host',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-elastic-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const sdk = clrSdk(),
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-elastic-'));
+    t.after(() => removeFixtureDirectory(root));
     const source = path.join(root, 'Elastic.cs'),
       assembly = path.join(root, 'Elastic.dll');
     await fs.writeFile(
@@ -147,13 +162,7 @@ var delete=new DeleteRequest{Target=new EntityReference("reading",new Guid("${id
 var after=((RetrieveResponse)s.Execute(request)).Entity.GetAttributeValue<string>("name");((Entity)c.InputParameters["Target"])["name"]=before+"|"+after;
 }}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const built = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(built.status, 0, built.stdout + built.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
@@ -164,7 +173,6 @@ var after=((RetrieveResponse)s.Execute(request)).Entity.GetAttributeValue<string
       cacheRoot: path.join(root, '.paqvilo/cache'),
       serviceProfile: profile,
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const store = fixture(),
       step = {

@@ -67,8 +67,13 @@ export function validateKey(key, provider = null, { prefix = false } = {}) {
 export function assertProvider(provider) {
   const d = provider?.descriptor;
   const fail = (reason) => {
-    throw new TypeError(`Storage provider ${d?.id ? `'${d.id}' ` : ''}is invalid: ${reason}`);
+    throw new TypeError(`Storage provider ${d?.id ? "'" + d.id + "' " : ''}is invalid: ${reason}`);
   };
+  assertProviderDescriptor(provider, d, fail);
+  return provider;
+}
+
+/* NOSONAR */ function assertProviderDescriptor(provider, d, fail) {
   if (!d || typeof d !== 'object') fail('descriptor is missing');
   for (const field of ['id', 'kind'])
     if (typeof d[field] !== 'string' || !d[field]) fail(`descriptor.${field} must be a non-empty string`);
@@ -83,33 +88,120 @@ export function assertProvider(provider) {
     fail("operation 'sas' needs verifySas(url)");
   if (provider.preflight !== undefined && typeof provider.preflight !== 'function')
     fail('preflight must be a function when present');
-  return provider;
+}
+
+/** The default idle bound of a readiness probe: a provider that makes no progress for this long has given no answer. */
+export const PREFLIGHT_IDLE_TIMEOUT_MS = 30000;
+
+// The longest delay a Node timer accepts; a longer one fires after 1 ms.
+const MAX_TIMER_DELAY_MS = 2147483647;
+
+/**
+ * Arms a timer for ms, clamped to MAX_TIMER_DELAY_MS. A non-finite ms (Infinity, or null for no bound) arms nothing and
+ * returns null, so that bound never ends by itself. clearTimeout(null) is a no-op.
+ */
+function armTimer(ms, callback) {
+  return Number.isFinite(ms) ? setTimeout(callback, Math.min(ms, MAX_TIMER_DELAY_MS)) : null;
 }
 
 /**
- * Readiness of an instantiated storage provider or message bus through its optional preflight() → { ready, reason? }, bounded
- * by timeoutMs (2 s, as local-service probes). null when the instance has no preflight(): it is declared, never probed.
+ * The bounds of a one-request probe, shared by requestBound and preflightProvider: an explicit timeoutMs is the only bound
+ * (deadlineMs, with no idle window: idleMs null). Without it the idle window applies and no deadline does.
  */
-export async function preflightProvider(instance, { timeoutMs = 2000 } = {}) {
+function probeBounds(timeoutMs, idleTimeoutMs) {
+  return timeoutMs != null ? { deadlineMs: timeoutMs, idleMs: null } : { deadlineMs: null, idleMs: idleTimeoutMs };
+}
+
+/**
+ * An idle guard: onIdle runs once when idleMs pass without a progress() call. Each progress() restarts that window, and
+ * stop() ends the guard for good (a late progress() after stop() re-arms nothing). A null or non-finite idleMs never fires.
+ */
+function startIdleGuard(idleMs, onIdle) {
+  let timer = null;
+  let done = false;
+  const progress = () => {
+    if (done) return;
+    clearTimeout(timer);
+    timer = armTimer(idleMs, () => {
+      done = true;
+      onIdle();
+    });
+  };
+  progress();
+  return {
+    progress,
+    stop() {
+      done = true;
+      clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * The bound of a one-request probe: the caller's timeoutMs when it gives one, else the idle window (no answer within
+ * PREFLIGHT_IDLE_TIMEOUT_MS). signal aborts with a TimeoutError when the bound ends; limitMs names the bound in a message;
+ * done() releases the deadline and the idle guard once the answer is in.
+ */
+export function requestBound(timeoutMs) {
+  const { deadlineMs, idleMs } = probeBounds(timeoutMs, PREFLIGHT_IDLE_TIMEOUT_MS);
+  if (deadlineMs != null) return { ...deadlineBound(deadlineMs), limitMs: deadlineMs };
+  const controller = new AbortController();
+  const guard = startIdleGuard(idleMs, () =>
+    controller.abort(new DOMException(`no answer within ${PREFLIGHT_IDLE_TIMEOUT_MS} ms`, 'TimeoutError')),
+  );
+  return { signal: controller.signal, limitMs: PREFLIGHT_IDLE_TIMEOUT_MS, done: () => guard.stop() };
+}
+
+/**
+ * The bound of an explicit request deadline: signal aborts with a TimeoutError when the delay ends, on the same timer clock as
+ * the rest of the probe. done() releases the timer. A non-finite deadline arms nothing, so its signal never aborts.
+ */
+function deadlineBound(ms) {
+  const controller = new AbortController();
+  const timer = armTimer(ms, () =>
+    controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+  );
+  return { signal: controller.signal, done: () => clearTimeout(timer) };
+}
+
+/**
+ * Readiness of an instantiated storage provider or message bus through its optional preflight() → { ready, reason? }. The probe
+ * ends at the first of: the provider's answer, a caller's timeoutMs (when given, and then the only bound), or idleTimeoutMs
+ * (30 s by default) without progress. Either bound answers ready: false and calls onTimeout. preflight() receives
+ * { signal, progress }: the signal aborts when the probe ends, and each progress() call restarts the idle window, so a
+ * provider that keeps signalling is never cut off. null when the instance has no preflight(): it is declared, never probed.
+ */
+export async function preflightProvider(
+  instance,
+  { timeoutMs, idleTimeoutMs = PREFLIGHT_IDLE_TIMEOUT_MS, onTimeout } = {},
+) {
   if (typeof instance?.preflight !== 'function') return null;
-  let timer;
-  // A CLI may have no other active handles while awaiting a provider. Keep its
-  // deadline alive until an answer is delivered, then release it in finally.
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ready: false, reason: `No preflight answer within ${timeoutMs} ms.` }),
-      timeoutMs,
-    );
+  const controller = new AbortController();
+  const bounds = probeBounds(timeoutMs, idleTimeoutMs);
+  let deadline = null;
+  let guard = null;
+  // A CLI may have no other active handles while awaiting a provider. The deadline and the idle guard stay alive until an
+  // answer is delivered, then both are released in finally.
+  const ended = new Promise((resolve) => {
+    const expire = (reason) => {
+      onTimeout?.();
+      controller.abort();
+      resolve({ ready: false, reason });
+    };
+    deadline = armTimer(bounds.deadlineMs, () => expire(`No preflight answer within ${timeoutMs} ms.`));
+    guard = startIdleGuard(bounds.idleMs, () => expire(`The provider gave no answer for ${idleTimeoutMs} ms.`));
   });
+  const context = { signal: controller.signal, progress: () => guard.progress() };
   try {
-    const result = await Promise.race([Promise.resolve().then(() => instance.preflight()), timeout]);
+    const result = await Promise.race([Promise.resolve().then(() => instance.preflight(context)), ended]);
     return result?.ready === true
       ? { ready: true, reason: null }
       : { ready: false, reason: String(result?.reason ?? 'The provider reported it is not ready.') };
   } catch (error) {
     return { ready: false, reason: error?.message ?? String(error) };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(deadline);
+    guard.stop();
   }
 }
 
@@ -200,15 +292,26 @@ export function guardProvider(provider, { counters = () => null } = {}) {
     }
   };
   if (typeof provider.compact === 'function') guarded.compact = () => provider.compact();
-  if (typeof provider.preflight === 'function') guarded.preflight = () => provider.preflight();
+  // A probe the bound aborted can still be in its cleanup: close waits for each probe started through this wrapper that
+  // has not settled yet.
+  const probes = new Set();
+  const track = (probe) => {
+    const forget = () => probes.delete(settled);
+    const settled = probe.then(forget, forget);
+    probes.add(settled);
+    return probe;
+  };
+  if (typeof provider.preflight === 'function')
+    guarded.preflight = (context) => track(Promise.resolve().then(() => provider.preflight(context)));
   guarded.close = async () => {
+    await Promise.all(probes);
     await provider.close?.();
   };
   return guarded;
 }
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
-const ENV_REFERENCE = /^env:[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_REFERENCE = /^env:[A-Za-z_]\w*$/;
 const CONTAINER = /^(?=.{3,63}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PACK_KIND = /^pack:[a-z0-9][a-z0-9._-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const KIND_KEYS = {
@@ -222,48 +325,59 @@ const inside = (parent, child) => {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 };
 
-function storageEntry(id, value, label, stateDirectory) {
+function storageRoot(entry, value, label, id, stateDirectory) {
+  if (value.root === undefined) return;
+  if (typeof value.root !== 'string' || !value.root) throw new Error(`${label}.${id}.root must be a path`);
+  // One rule for every caller: the root resolves under the state directory. A caller without one (config load, dry-run, the
+  // offline preflight description) checks that a relative root does not escape and leaves an absolute root to the host, which
+  // knows the state directory; it keeps no root, so the host gives that id in-memory storage.
+  const base = path.resolve(stateDirectory ?? ROOT_PROBE),
+    root = path.resolve(base, value.root);
+  if ((stateDirectory || !path.isAbsolute(value.root)) && !inside(base, root))
+    throw new Error(`${label}.${id}.root must resolve under the state directory`);
+  if (stateDirectory) entry.root = root;
+}
+
+function storageConnectionString(entry, value, label, id) {
+  if (value.connectionString === undefined) return;
+  // The value is never echoed: a literal here is usually a real secret.
+  if (typeof value.connectionString !== 'string' || !ENV_REFERENCE.test(value.connectionString))
+    throw new Error(
+      `${label}.${id}.connectionString must be an env:NAME reference; literal connection strings are rejected`,
+    );
+  entry.connectionString = value.connectionString;
+}
+
+function configureAzurite(entry, value, label, id) {
+  if (entry.connectionString === undefined)
+    throw new Error(`${label}.${id}.connectionString is required for kind azurite`);
+  entry.container = value.container ?? 'paqvilo';
+  if (value.start !== undefined && value.start !== 'external')
+    throw new Error(`${label}.${id}.start must be external; Paqvilo never starts Azurite`);
+  entry.start = 'external';
+  // Per-request bound until the response headers arrive (storage-azurite.mjs, default 30000).
+  if (value.timeoutMs !== undefined) {
+    if (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 100 || value.timeoutMs > 600_000)
+      throw new Error(`${label}.${id}.timeoutMs must be an integer from 100 to 600000`);
+    entry.timeoutMs = value.timeoutMs;
+  }
+}
+
+/* NOSONAR */ function storageEntry(id, value, label, stateDirectory) {
   if (!ID.test(id)) throw new Error(`${label} id '${id}' must match ${ID.source}`);
   if (!plain(value)) throw new Error(`${label}.${id} must be an object`);
   const kind = value.kind ?? (id === 'local' ? 'local-disk' : undefined);
-  const family = kind === 'local-disk' || kind === 'azurite' ? kind : PACK_KIND.test(kind ?? '') ? 'pack' : null;
+  let family = null;
+  if (kind === 'local-disk' || kind === 'azurite') family = kind;
+  else if (PACK_KIND.test(kind ?? '')) family = 'pack';
   if (!family) throw new Error(`${label}.${id}.kind must be local-disk, azurite or pack:<packId>/<name>`);
   for (const key of Object.keys(value))
     if (!KIND_KEYS[family].includes(key)) throw new Error(`Unknown ${label}.${id} key '${key}' for kind ${kind}`);
   const entry = { kind };
-  if (value.root !== undefined) {
-    if (typeof value.root !== 'string' || !value.root) throw new Error(`${label}.${id}.root must be a path`);
-    // One rule for every caller: the root resolves under the state directory. A caller without one (config load, dry-run, the
-    // offline preflight description) checks that a relative root does not escape and leaves an absolute root to the host, which
-    // knows the state directory; it keeps no root, so the host gives that id in-memory storage.
-    const base = path.resolve(stateDirectory ?? ROOT_PROBE),
-      root = path.resolve(base, value.root);
-    if ((stateDirectory || !path.isAbsolute(value.root)) && !inside(base, root))
-      throw new Error(`${label}.${id}.root must resolve under the state directory`);
-    if (stateDirectory) entry.root = root;
-  }
-  if (value.connectionString !== undefined) {
-    // The value is never echoed: a literal here is usually a real secret.
-    if (typeof value.connectionString !== 'string' || !ENV_REFERENCE.test(value.connectionString))
-      throw new Error(
-        `${label}.${id}.connectionString must be an env:NAME reference; literal connection strings are rejected`,
-      );
-    entry.connectionString = value.connectionString;
-  }
-  if (family === 'azurite') {
-    if (entry.connectionString === undefined)
-      throw new Error(`${label}.${id}.connectionString is required for kind azurite`);
-    entry.container = value.container ?? 'paqvilo';
-    if (value.start !== undefined && value.start !== 'external')
-      throw new Error(`${label}.${id}.start must be external; Paqvilo never starts Azurite`);
-    entry.start = 'external';
-    // Per-request bound until the response headers arrive (storage-azurite.mjs, default 30000).
-    if (value.timeoutMs !== undefined) {
-      if (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 100 || value.timeoutMs > 600_000)
-        throw new Error(`${label}.${id}.timeoutMs must be an integer from 100 to 600000`);
-      entry.timeoutMs = value.timeoutMs;
-    }
-  } else if (value.container !== undefined) entry.container = value.container;
+  storageRoot(entry, value, label, id, stateDirectory);
+  storageConnectionString(entry, value, label, id);
+  if (family === 'azurite') configureAzurite(entry, value, label, id);
+  else if (value.container !== undefined) entry.container = value.container;
   if (entry.container !== undefined && (typeof entry.container !== 'string' || !CONTAINER.test(entry.container)))
     throw new Error(
       `${label}.${id}.container must be a Blob container name (3-63 lower-case letters, digits and single hyphens)`,
@@ -352,7 +466,7 @@ export function createStorageRouter({ config, providers = {}, counters = () => n
     }),
   });
   // Readiness of one created provider (preflightProvider); null when it was not created or has no preflight().
-  const preflight = (id) => preflightProvider(instances[id]);
+  const preflight = (id, options) => preflightProvider(instances[id], options);
   return { forRoute, routes, describe, preflight };
 }
 

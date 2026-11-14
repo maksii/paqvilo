@@ -1,3 +1,5 @@
+// @test-kind contract: the external and local sign-in forms as the designed local identity flow answers them, including the anti-forgery checks on their body tokens.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import {
   AUTHORITY,
   hiddenFields,
@@ -15,6 +17,8 @@ import {
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, createPublicKey, verify } from 'node:crypto';
+import http from 'node:http';
+import { createExternalSignIn } from '../lib/sign-in-flow.mjs';
 import {
   authenticationSettings,
   contactFieldsFromClaims,
@@ -290,7 +294,7 @@ test('the local identity provider serves discovery, keys, the preset chooser, fo
     allowRedirect: (target) => new URL(target).origin === portalOrigin,
   });
   let closed = false;
-  t.after(() => (closed ? undefined : idp.close()));
+  ownedFixture(t).add(() => (closed ? undefined : idp.close()));
   assert.match(idp.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(idp.port, Number(new URL(idp.origin).port));
   const authority = `${idp.origin}/oidc-local/`;
@@ -481,7 +485,7 @@ const field = (html, id) => new RegExp(`id="${id}">([^<]*)<`).exec(html)?.[1] ??
 const json = async (browser, target) => (await browser.request(target)).json();
 
 test("the portal's provider form runs the platform chain: ExternalLogin, the provider chooser, the form post to the site root, ExternalLoginCallback and the session", async (t) => {
-  const { app, csrf, idp } = await simulator(t);
+  const { app, idp } = await simulator(t);
   assert.equal(idp.available, true);
   assert.match(idp.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.notEqual(idp.origin, app.url, 'the identity provider is cross-origin to the portal');
@@ -523,7 +527,7 @@ test("the portal's provider form runs the platform chain: ExternalLogin, the pro
   assert.match(
     html,
     new RegExp(
-      `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${csrf}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
+      `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
     ),
   );
   assert.doesNotMatch(html, /paqvilo-mirage-persona/);
@@ -654,7 +658,7 @@ test("the provider's response is validated: state, nonce cookie, signature, repl
   // The provider's answer posted to another provider's reply URL.
   const misplaced = answer.replace(`action="${app.url}/"`, `action="${app.url}/ajax/"`);
   await reject(await postBack(browser, misplaced, idp.origin), /not the provider&#39;s reply URL/);
-  // The genuine answer signs in once; a replay has no nonce cookie any more.
+  // The genuine answer signs in once; a replay finds no nonce cookie.
   const accepted = await postBack(browser, answer, idp.origin);
   assert.equal(accepted.status, 302);
   await reject(await postBack(browser, answer, idp.origin), /no matching OpenIdConnect\.nonce cookie/);
@@ -1046,4 +1050,67 @@ test('the session roles override needs a signed-in browser and known web roles; 
   assert.equal((await fetch(`${origin}/`)).status, 200);
   await close();
   await assert.rejects(fetch(`${origin}/`), { name: 'TypeError', message: 'fetch failed' });
+});
+
+const sendHtml = (res, status, html) => {
+  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(html);
+};
+const readAll = async (req) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+};
+
+// Runs the sign-in route on a loopback server whose portal has external sign-in off, so each form answers at its anti-forgery check.
+async function signInForm(t, { adminToken, path, fields }) {
+  let origin = '';
+  const signIn = createExternalSignIn({
+    portal: () => ({ settings: {}, templates: {}, snippets: {}, pages: [] }),
+    origin: () => origin,
+    csrf: 'page-token',
+    sessions: {},
+    store: { state: { tables: {} }, resolveMapping: () => null },
+    personas: () => [],
+    identity: () => null,
+    audit: () => {},
+    renderSignIn: (req, res, url, { status = 200, error = '' }) => sendHtml(res, status, error),
+    renderPage: (req, res, url, { status = 200, content = '' }) => sendHtml(res, status, content),
+    readBody: readAll,
+    ...(adminToken ? { adminToken } : {}),
+  });
+  const server = http.createServer(async (req, res) => {
+    if (!(await signIn.route(req, res, new URL(req.url, origin)))) res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  ownedFixture(t).add(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const response = await fetch(origin + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(fields),
+    redirect: 'manual',
+  });
+  return { status: response.status, body: await response.text() };
+}
+
+// @test-kind security: the admin token is accepted as an anti-forgery field only when configured
+test('the sign-in forms accept the admin token as their anti-forgery field only when the option names it', async (t) => {
+  const external = (adminToken, token) =>
+    signInForm(t, { adminToken, path: '/Account/Login/ExternalLogin', fields: { __RequestVerificationToken: token } });
+  const invitation = (adminToken, token) =>
+    signInForm(t, {
+      adminToken,
+      path: '/Account/Login/RedeemInvitation',
+      fields: { __RequestVerificationToken: token, InvitationCode: 'invented' },
+    });
+  const admin = () => 'admin-token';
+  assert.match((await external(admin, 'admin-token')).body, /is not an identity provider of this site/);
+  assert.match((await invitation(admin, 'admin-token')).body, /invitation code is not valid/);
+  assert.match((await external(admin, 'wrong')).body, /anti-forgery token is missing or invalid/);
+  assert.match((await external(undefined, 'admin-token')).body, /anti-forgery token is missing or invalid/);
+  assert.match((await invitation(undefined, 'admin-token')).body, /anti-forgery token is missing or invalid/);
 });

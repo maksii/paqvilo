@@ -1,19 +1,24 @@
+// @test-kind contract: owned browser profiles and their runtime behaviour are designed Paqvilo behaviour
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import net from 'node:net';
 import { chromium } from 'playwright-core';
 import {
   openBrowser,
   refreshPages,
   keepSessionCookies,
+  sessionFileFor,
   safeDownloadName,
   browserProfileDir,
+  profileLockPresent,
 } from '../lense/browser.mjs';
 import { refreshUrl } from '../lense/navigation.mjs';
 import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
+import { tempDirSync } from './fixture.mjs';
+import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
 
 const origin = 'https://portal.example.com';
 
@@ -90,8 +95,9 @@ test('Edge normal storage fails early with actionable attachment options without
   );
 });
 
+// @test-kind security: session credentials are not exported from external browser storage
 test('external browser storage stays in the selected child without exporting session credentials', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-external-browser-'));
+  const root = tempDirSync('pp-external-browser-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'Profile 2'));
   let closed = false;
@@ -120,7 +126,7 @@ test('external browser storage stays in the selected child without exporting ses
 });
 
 test('owned headed windows normalize old maximization once and retain subsequent user placement', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-window-'));
+  const root = tempDirSync('pp-window-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sends = [];
   const launches = [];
@@ -321,7 +327,7 @@ test('failed document GETs are left pending and online mode does not change page
 });
 
 test('session cookies restore and save atomically without retaining persistent cookies', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookies-'));
+  const dir = tempDirSync('paqvilo-cookies-');
   const file = path.join(dir, 'profile.session.json');
   const old = [{ name: 'old', value: 'value', domain: 'portal.example.com', path: '/', expires: -1 }];
   fs.writeFileSync(file, JSON.stringify(old));
@@ -336,7 +342,7 @@ test('session cookies restore and save atomically without retaining persistent c
     ],
   });
   try {
-    const stop = await keepSessionCookies(context, file);
+    const stop = await keepSessionCookies(context, file, { origins: ['https://portal.example.com'] });
     assert.deepEqual(restored, old);
     await stop();
     assert.deepEqual(
@@ -351,7 +357,7 @@ test('session cookies restore and save atomically without retaining persistent c
 });
 
 test('owned profiles discard obsolete loopback Mirage port cookies while preserving selected runtimes and remote cookies', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookie-ports-'));
+  const dir = tempDirSync('paqvilo-cookie-ports-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'sessions.json'),
     cookie = (name, domain = '127.0.0.1') => ({ name, domain, path: '/', expires: -1, value: 'invented' });
@@ -373,7 +379,9 @@ test('owned profiles discard obsolete loopback Mirage port cookies while preserv
       restored = values;
     },
   });
-  const stop = await keepSessionCookies(context, file, { origins: ['http://127.0.0.1:9000', 'http://127.0.0.1:9100'] });
+  const stop = await keepSessionCookies(context, file, {
+    origins: ['http://127.0.0.1:9000', 'http://127.0.0.1:9100', 'https://portal.example.test'],
+  });
   await stop();
   assert.deepEqual(removed, ['paqvilo-mirage-auth-8000', 'paqvilo-mirage-idp-8000']);
   assert.deepEqual(
@@ -388,6 +396,244 @@ test('owned profiles discard obsolete loopback Mirage port cookies while preserv
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).length, 4);
 });
 
+// @test-kind security: owned profiles save and restore only the session cookies of the portal origins
+test('owned profiles save and restore only the session cookies of the portal origins', async (t) => {
+  const dir = tempDirSync('paqvilo-cookie-scope-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  const cookie = (name, domain) => ({ name, domain, path: '/', expires: -1, value: 'invented' });
+  const cookies = [
+    cookie('portal', 'portal.example.test'),
+    cookie('domain', '.example.test'),
+    cookie('idp', 'login.example.net'),
+  ];
+  fs.writeFileSync(file, JSON.stringify(cookies));
+  let restored;
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => cookies,
+    addCookies: async (values) => {
+      restored = values;
+    },
+  });
+  const stop = await keepSessionCookies(context, file, { origins: ['https://portal.example.test'] });
+  await stop();
+  assert.deepEqual(
+    restored.map((item) => item.name),
+    ['portal', 'domain'],
+  );
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(file, 'utf8')).map((item) => item.name),
+    ['portal', 'domain'],
+  );
+});
+
+// Fake browser context: `live` is what the browser holds, and `restored` collects the cookies put back into it.
+function fakeSessionContext(live) {
+  const context = Object.assign(new EventEmitter(), {
+    restored: [],
+    cookies: async () => live,
+    addCookies: async (values) => {
+      context.restored.push(...values);
+    },
+    close: async () => {
+      context.emit('close');
+    },
+  });
+  return context;
+}
+
+// Installs the launch mock once; a test sets `launch.context` before each open.
+function fakeLaunch(t) {
+  const launch = { context: null };
+  t.mock.method(chromium, 'launchPersistentContext', async () => launch.context);
+  return launch;
+}
+
+const portalConfig = (configDir, origin) => ({
+  configDir,
+  siteName: 'test',
+  envName: 'dev',
+  origin,
+  browser: { channel: 'chromium', headless: true },
+});
+
+// The session files of the profile `${dir}/profile`, sorted by name.
+const sessionFilesIn = (dir) =>
+  fs
+    .readdirSync(dir)
+    .filter((name) => name.startsWith('profile.session.'))
+    .toSorted((a, b) => a.localeCompare(b));
+
+// @test-kind security: portals that share one profile keep separate session files and never restore each other's cookies
+test('portals that share one profile keep separate session files and restore only their own cookies', async (t) => {
+  const dir = tempDirSync('paqvilo-session-scope-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  const launch = fakeLaunch(t);
+  launch.context = fakeSessionContext([sessionCookie('session-a', 'a.example.test')]);
+  const openedA = await openBrowser(portalConfig(dir, 'https://a.example.test'), { profileDir });
+  await openedA.close();
+  const [fileA] = sessionFilesIn(dir);
+  const bytesA = fs.readFileSync(path.join(dir, fileA), 'utf8');
+
+  launch.context = fakeSessionContext([sessionCookie('session-b', 'b.example.test')]);
+  const openedB = await openBrowser(portalConfig(dir, 'https://b.example.test'), { profileDir });
+  assert.deepEqual(launch.context.restored, []);
+  await openedB.close();
+
+  assert.equal(sessionFilesIn(dir).length, 2);
+  assert.equal(fs.readFileSync(path.join(dir, fileA), 'utf8'), bytesA);
+});
+
+// @test-kind security: the same portal hosts in another order or case select the same session file
+test('the same portal hosts in another order or case select the same session file', async (t) => {
+  const dir = tempDirSync('paqvilo-session-order-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  const launch = fakeLaunch(t);
+  launch.context = fakeSessionContext([
+    sessionCookie('session-a', 'a.example.test'),
+    sessionCookie('session-b', 'b.example.test'),
+  ]);
+  const first = await openBrowser(portalConfig(dir, 'https://a.example.test'), {
+    profileDir,
+    cookieOrigins: ['https://b.example.test', 'https://A.example.test'],
+  });
+  await first.close();
+
+  launch.context = fakeSessionContext([]);
+  const second = await openBrowser(portalConfig(dir, 'https://a.example.test'), {
+    profileDir,
+    cookieOrigins: ['https://B.example.test', 'https://a.example.test'],
+  });
+  assert.deepEqual(
+    launch.context.restored.map((item) => item.name),
+    ['session-a', 'session-b'],
+  );
+  await second.close();
+  assert.equal(sessionFilesIn(dir).length, 1);
+});
+
+// @test-kind security: an unscoped session file from an earlier version is deleted on open and never restored
+test('an unscoped session file from an earlier version is deleted on open and never restored', async (t) => {
+  const dir = tempDirSync('paqvilo-session-legacy-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  const legacy = `${profileDir}.session.json`;
+  fs.writeFileSync(
+    legacy,
+    JSON.stringify([sessionCookie('session-a', 'a.example.test'), sessionCookie('idp', 'login.example.net')]),
+  );
+  const launch = fakeLaunch(t);
+  launch.context = fakeSessionContext([]);
+  const opened = await openBrowser(portalConfig(dir, 'https://a.example.test'), { profileDir });
+  assert.equal(fs.existsSync(legacy), false);
+  assert.deepEqual(launch.context.restored, []);
+  await opened.close();
+});
+
+// @test-kind security: a legacy session file that cannot be deleted is reported in one line and the browser still opens
+test('a legacy session file that cannot be deleted is reported in one line and the browser still opens', async (t) => {
+  const dir = tempDirSync('paqvilo-session-legacy-fail-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  const legacy = `${profileDir}.session.json`;
+  fs.writeFileSync(legacy, '[]');
+  const remove = fs.rmSync;
+  t.mock.method(fs, 'rmSync', (target, options) => {
+    if (target === legacy)
+      throw Object.assign(new Error(`EPERM: operation not permitted, unlink '${legacy}'`), { code: 'EPERM' });
+    return remove(target, options);
+  });
+  const error = t.mock.method(console, 'error', () => {});
+  const launch = fakeLaunch(t);
+  launch.context = fakeSessionContext([]);
+  const opened = await openBrowser(portalConfig(dir, 'https://a.example.test'), { profileDir });
+  await opened.close();
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    [
+      `Could not remove the unscoped session file ${legacy}: EPERM: operation not permitted, unlink '${legacy}'. It is not read.`,
+    ],
+  );
+});
+
+// @test-kind security: the session file name is a hash of the portal scope and carries no host text
+test('the session file name carries a hash of the portal scope and no host text', async (t) => {
+  const dir = tempDirSync('paqvilo-session-name-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const launch = fakeLaunch(t);
+  launch.context = fakeSessionContext([sessionCookie('session-a', 'portal.example.test')]);
+  const opened = await openBrowser(portalConfig(dir, 'https://portal.example.test'), {
+    profileDir: path.join(dir, 'profile'),
+  });
+  await opened.close();
+  assert.deepEqual(
+    sessionFilesIn(dir).map((name) => name.replace(/[0-9a-f]{16}/, '<scope>')),
+    ['profile.session.<scope>.json'],
+  );
+});
+
+// Restores the cookies that `origins` admits from a session file holding `cookies`; returns their names.
+async function restoredCookieNames(file, origins, cookies) {
+  fs.writeFileSync(file, JSON.stringify(cookies));
+  let restored = [];
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => cookies,
+    addCookies: async (values) => {
+      restored = values;
+    },
+  });
+  const stop = await keepSessionCookies(context, file, { origins });
+  await stop();
+  context.emit('close');
+  return restored.map((item) => item.name);
+}
+
+const sessionCookie = (name, domain) => ({ name, domain, path: '/', expires: -1, value: 'invented' });
+
+// @test-kind security: an empty origin list restores nothing and leaves the stored session file byte-identical
+test('an empty origin list restores nothing and leaves the stored session file byte-identical', async (t) => {
+  const dir = tempDirSync('paqvilo-cookie-empty-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  const stored = JSON.stringify([sessionCookie('session', 'portal.example.com')], null, 2);
+  fs.writeFileSync(file, stored);
+  let restored;
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => [sessionCookie('session', 'portal.example.com'), sessionCookie('other', 'login.example.net')],
+    addCookies: async (values) => {
+      restored = values;
+    },
+  });
+  const stop = await keepSessionCookies(context, file, { origins: [] });
+  await stop();
+  context.emit('close');
+  assert.equal(restored, undefined);
+  assert.equal(fs.readFileSync(file, 'utf8'), stored);
+});
+
+// @test-kind security: cookies match the origin host on label boundaries and ignore its port
+test('session cookies match the origin host on label boundaries, ignoring ports', async (t) => {
+  const dir = tempDirSync('paqvilo-cookie-match-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  const portal = [
+    sessionCookie('host', 'portal.example.com'),
+    sessionCookie('parent', '.example.com'),
+    sessionCookie('lookalike', 'evilportal.example.com'),
+    sessionCookie('suffix', 'example.com.evil.test'),
+  ];
+  assert.deepEqual(await restoredCookieNames(file, ['https://portal.example.com:8443'], portal), ['host', 'parent']);
+  assert.deepEqual(await restoredCookieNames(file, ['https://portal.example.com'], portal), ['host', 'parent']);
+  const ipv6 = [sessionCookie('bracketed', '[::1]'), sessionCookie('bare', '::1'), sessionCookie('local', 'localhost')];
+  assert.deepEqual(await restoredCookieNames(file, ['http://[::1]:5000'], ipv6), ['bracketed', 'bare']);
+  const loopback = [sessionCookie('localhost', 'localhost'), sessionCookie('ipv4', '127.0.0.1')];
+  assert.deepEqual(await restoredCookieNames(file, ['http://127.0.0.1:5000'], loopback), ['ipv4']);
+  assert.deepEqual(await restoredCookieNames(file, ['http://localhost:5000'], loopback), ['localhost']);
+});
+
+// @test-kind security: a download name cannot write outside Downloads
 test('download names cannot escape Downloads or name a Windows device', () => {
   assert.equal(safeDownloadName('../../private/data.txt'), 'data.txt');
   assert.equal(safeDownloadName('..\\private\\data.txt'), 'data.txt');
@@ -397,18 +643,613 @@ test('download names cannot escape Downloads or name a Windows device', () => {
 });
 
 test('unchanged session cookies do not rewrite credentials and stopping is idempotent', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookie-cache-'));
+  const dir = tempDirSync('paqvilo-cookie-cache-');
   const file = path.join(dir, 'profile.session.json');
   const cookies = [{ name: 'session', value: 'secret', domain: 'portal.example.com', path: '/', expires: -1 }];
   fs.writeFileSync(file, JSON.stringify(cookies));
   const context = Object.assign(new EventEmitter(), { addCookies: async () => {}, cookies: async () => cookies });
   const write = t.mock.method(fs, 'writeFileSync');
   try {
-    const stop = await keepSessionCookies(context, file);
+    const stop = await keepSessionCookies(context, file, { origins: ['https://portal.example.com'] });
     await Promise.all([stop(), stop()]);
     assert.equal(write.mock.callCount(), 0);
     context.emit('close');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a session restore the open gave up on keeps nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const dir = tempDirSync('paqvilo-cookie-abandon-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  let answerRead;
+  const heldRead = new Promise((resolve) => {
+    answerRead = resolve;
+  });
+  let reads = 0;
+  const context = Object.assign(new EventEmitter(), {
+    addCookies: async () => {},
+    cookies: () => {
+      reads++;
+      return heldRead;
+    },
+  });
+  const controller = new AbortController();
+  const kept = keepSessionCookies(context, file, {
+    origins: ['https://portal.example.com'],
+    signal: controller.signal,
+  });
+  controller.abort();
+  answerRead([]);
+  const stop = await kept;
+  t.mock.timers.tick(5000);
+  assert.equal(context.listenerCount('close'), 0, 'no close listener is attached');
+  assert.equal(reads, 1, 'no periodic save reads the cookies again');
+  await stop();
+  assert.equal(fs.existsSync(file), false, 'no session file is written');
+  assert.equal(fs.existsSync(`${file}.tmp`), false, 'no temporary session file is written');
+});
+
+async function freeLoopbackPort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+test('the debugger port wait keeps polling past ten refused attempts until the launched target is listed', async (t) => {
+  const root = tempDirSync('paqvilo-debugger-wait-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const port = await freeLoopbackPort();
+  // The mocked clock only moves when the test ticks it, so each poll pause is released by the test.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let listings = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    listings++;
+    if (listings <= 20) throw new TypeError('fetch failed');
+    return { ok: true, json: async () => [{ id: 'target-1' }] };
+  });
+  const context = Object.assign(new EventEmitter(), {
+    pages: () => [{}],
+    newCDPSession: async () => ({
+      send: async () => ({ targetInfo: { targetId: 'target-1' } }),
+      detach: async () => {},
+    }),
+    close: async () => {
+      context.emit('close');
+    },
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  let opened = null;
+  openBrowser(
+    { configDir: root, siteName: 'test', envName: 'dev', browser: { channel: 'chromium', headless: true } },
+    { profileDir: path.join(root, 'profile'), headless: true, debugPort: port },
+  ).then(
+    (browser) => {
+      opened = browser;
+    },
+    (error) => {
+      opened = error;
+    },
+  );
+  while (!opened) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(200);
+  }
+  assert.equal(opened instanceof Error, false, opened?.message);
+  assert.equal(listings, 21);
+  await opened.close();
+});
+
+test('closing waits for a slow session cookie save and still writes the cookie file', async (t) => {
+  const fixture = closeFixture(t);
+  const cookie = { name: 'session', value: 'kept', domain: 'portal.example.com', path: '/', expires: -1 };
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  // the save reads the cookies only at close, and that read takes 10 s of mocked time
+  fixture.context.cookies = () => new Promise((resolve) => setTimeout(() => resolve([cookie]), 10_000));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.file, 'utf8')), [cookie]);
+  assert.equal(error.mock.callCount(), 0);
+});
+
+test('a session cookie save that never settles ends at the close guard with one notice line', async (t) => {
+  const fixture = closeFixture(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  fixture.context.cookies = () => new Promise(() => {});
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    ['Session cookies were not saved: the browser did not answer within 30 s.'],
+  );
+  assert.equal(fs.existsSync(fixture.file), false);
+});
+
+test('a session cookie save that never settles is reported even when the browser has no page left', async (t) => {
+  const fixture = closeFixture(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  fixture.context.cookies = () => new Promise(() => {});
+  fixture.context.pages = () => [];
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    ['Session cookies were not saved: the browser did not answer within 30 s.'],
+  );
+});
+
+test('a final session cookie save that fails prints the write error, not the timeout notice', async (t) => {
+  const fixture = closeFixture(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  t.mock.method(fs, 'writeFileSync', () => {
+    throw Object.assign(new Error("EACCES: permission denied, open 'profile.session.json.tmp'"), { code: 'EACCES' });
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    ["Session cookies were not saved: EACCES: permission denied, open 'profile.session.json.tmp'"],
+  );
+});
+
+test('closing after the user closed the browser prints no notice and leaves the session file as it was', async (t) => {
+  const fixture = closeFixture(t);
+  fs.writeFileSync(fixture.file, JSON.stringify([]));
+  const before = fs.readFileSync(fixture.file, 'utf8');
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  // The user closed the browser: its cookies can no longer be read at the final save.
+  fixture.context.cookies = async () => {
+    throw new Error('browserContext.cookies: Target page, context or browser has been closed');
+  };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.equal(fs.readFileSync(fixture.file, 'utf8'), before);
+  assert.equal(error.mock.callCount(), 0);
+});
+
+// @test-kind contract: a browser guard override that is not a positive duration is rejected before any launch
+test('browser guard overrides must be positive durations and are rejected before a launch', async (t) => {
+  const dir = tempDirSync('paqvilo-guard-override-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const launch = t.mock.method(chromium, 'launchPersistentContext', async () =>
+    assert.fail('a rejected guard override must not launch the browser'),
+  );
+  const cfg = {
+    configDir: dir,
+    siteName: 'test',
+    envName: 'dev',
+    origin,
+    browser: { channel: 'chromium', headless: true },
+  };
+  const invalid = [0, -1, NaN, 'x'];
+  for (const name of ['hangGuardMs', 'closeGuardMs']) {
+    for (const value of invalid) {
+      await assert.rejects(openBrowser(cfg, { profileDir: path.join(dir, 'profile'), [name]: value }), (error) => {
+        assert.equal(error.message, `${name} must be a positive number of milliseconds.`);
+        return true;
+      });
+    }
+  }
+  assert.equal(launch.mock.callCount(), 0);
+});
+
+// @test-kind contract: a browser guard override above the timer limit is clamped to that limit before a launch
+test('a browser guard override above the timer limit is clamped to it', async (t) => {
+  const dir = tempDirSync('paqvilo-guard-clamp-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const context = Object.assign(new EventEmitter(), { close: async () => {} });
+  const launch = t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  const opened = await openBrowser(
+    { configDir: dir, siteName: 'test', envName: 'dev', browser: { channel: 'chromium', headless: true } },
+    { profileDir: path.join(dir, 'profile'), hangGuardMs: 3_000_000_000 },
+  );
+  assert.equal(launch.mock.calls[0].arguments[1].timeout, 2_147_483_647);
+  await opened.close();
+});
+
+test('a normal close leaves no timer armed', async (t) => {
+  const fixture = closeFixture(t);
+  const timers = trackTimers(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  await opened.close();
+  assert.ok(timers.recorded > 0, 'the open and close arm at least one Lense timer');
+  assert.equal(timers.armed.size, 0);
+});
+
+test('a reload that gets no document in time is given up with one notice line', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  const tab = page(origin);
+  tab.goto = () => new Promise(() => {});
+  const outcomes = new Map();
+  let result;
+  const refreshing = refreshPages({ pages: () => [tab] }, session, ['app.js'], { outcomes }).then((value) => {
+    result = value;
+  });
+  for (let step = 0; result === undefined && step < 100; step++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(1000);
+  }
+  await refreshing;
+  assert.equal(result, 'none');
+  assert.equal(outcomes.get(tab).how, 'none');
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    ['Browser tab was not reloaded: its document did not arrive within 60 s. It keeps its previous document.'],
+  );
+});
+
+// An owned headless browser whose cookie file lives beside its profile, in a fresh directory.
+function closeFixture(t) {
+  const dir = tempDirSync('paqvilo-close-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => [],
+    addCookies: async () => {},
+    close: async () => {
+      context.emit('close');
+    },
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  return {
+    context,
+    cfg: { configDir: dir, siteName: 'test', envName: 'dev', origin, browser: { channel: 'chromium', headless: true } },
+    profileDir: path.join(dir, 'profile'),
+    file: sessionFileFor(path.join(dir, 'profile'), [origin]),
+  };
+}
+
+// Advances the mocked clock step by step until the promise settles, so each pending callback runs in turn.
+async function settleWhileTicking(t, promise, stepMs) {
+  let settled = false;
+  const mark = () => {
+    settled = true;
+  };
+  promise.then(mark, mark);
+  for (let step = 0; !settled && step < 100; step++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(stepMs);
+  }
+  assert.ok(settled, 'the close did not finish within the mocked clock steps');
+  await promise;
+}
+
+// Records the timers that Lense's own code schedules and has not yet cleared (armed), and how many it scheduled
+// (recorded), so a test can assert that none is left armed. Timers other code in the process schedules are not recorded.
+const LENSE = new URL('../lense/', import.meta.url).href;
+function trackTimers(t) {
+  const armed = new Set();
+  const timers = { armed, recorded: 0 };
+  const {
+    setTimeout: startTimer,
+    clearTimeout: stopTimer,
+    setInterval: startInterval,
+    clearInterval: stopInterval,
+  } = globalThis;
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...rest) => {
+    if (!calledFrom(LENSE, import.meta.url)) return startTimer(callback, ms, ...rest);
+    const handle = startTimer(
+      function (...args) {
+        armed.delete(handle);
+        callback.apply(this, args);
+      },
+      ms,
+      ...rest,
+    );
+    armed.add(handle);
+    timers.recorded++;
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (handle) => {
+    armed.delete(handle);
+    stopTimer(handle);
+  });
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => {
+    if (!calledFrom(LENSE, import.meta.url)) return startInterval(callback, ms, ...rest);
+    const handle = startInterval(callback, ms, ...rest);
+    armed.add(handle);
+    timers.recorded++;
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearInterval', (handle) => {
+    armed.delete(handle);
+    stopInterval(handle);
+  });
+  return timers;
+}
+
+test('a launch that Playwright times out is reported as the hang guard whatever its message says', async (t) => {
+  const dir = tempDirSync('paqvilo-launch-guard-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const timeout = Object.assign(new Error('the launch was cut short'), { name: 'TimeoutError' });
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw timeout;
+  });
+  await assert.rejects(
+    openBrowser(portalConfig(dir, origin), { profileDir: path.join(dir, 'profile'), hangGuardMs: 5 }),
+    (error) => {
+      assert.match(error.message, /Launching the browser profile did not finish within 5 ms/);
+      assert.equal(error.cause, timeout);
+      return true;
+    },
+  );
+});
+
+// Opens a browser with a 50 ms hang guard and the given close. Headed, its window set-up never settles. With `origin`,
+// its session steps read the given `cookies`; `context` is the fake context, which the test may hold.
+function openUnansweringWindow(t, close, { context = new EventEmitter(), headless = false, origin, cookies } = {}) {
+  const root = tempDirSync('paqvilo-window-guard-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  Object.assign(context, {
+    pages: () => [],
+    newPage: async () => ({}),
+    newCDPSession: async () => ({
+      send: () => new Promise(() => {}),
+      detach: async () => {},
+    }),
+    close,
+    cookies,
+    addCookies: async () => {},
+    clearCookies: async () => {},
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  const cfg = {
+    configDir: root,
+    siteName: 'test',
+    envName: 'dev',
+    origin,
+    browser: { channel: 'msedge', profileDir: 'profiles' },
+  };
+  return openBrowser(cfg, { headless, hangGuardMs: 50 });
+}
+
+test('a browser that stops answering during window set-up ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(t, async () => {
+      closed++;
+    }),
+    (error) => {
+      assert.match(error.message, /Setting up the browser window did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when its window set-up fails');
+});
+
+test('a browser that stops answering the debugger endpoint query ends the open at the hang guard', async (t) => {
+  const root = tempDirSync('paqvilo-debugger-guard-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const port = await freeLoopbackPort();
+  let closed = 0;
+  const context = Object.assign(new EventEmitter(), {
+    pages: () => [{}],
+    newCDPSession: async () => ({
+      send: () => new Promise(() => {}),
+      detach: async () => {},
+    }),
+    close: async () => {
+      closed++;
+    },
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  const cfg = {
+    configDir: root,
+    siteName: 'test',
+    envName: 'dev',
+    browser: { channel: 'chromium', headless: true },
+  };
+  await assert.rejects(
+    openBrowser(cfg, { profileDir: path.join(root, 'profile'), headless: true, debugPort: port, hangGuardMs: 50 }),
+    (error) => {
+      assert.match(error.message, /Querying the debugger endpoint did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when the debugger endpoint query fails');
+});
+
+test('a browser that stops answering its close after a failed set-up still ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(t, () => {
+      closed++;
+      return new Promise(() => {});
+    }),
+    (error) => {
+      assert.match(error.message, /Setting up the browser window did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the close is called once, and its own silence does not hold the set-up failure');
+});
+
+test('an attached browser that stops answering its close after two contexts ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  t.mock.method(chromium, 'connectOverCDP', async () => ({
+    contexts: () => [{}, {}],
+    close: () => {
+      closed++;
+      return new Promise(() => {});
+    },
+  }));
+  t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  const cdpUrl = 'ws://127.0.0.1:9333/devtools/browser/invented';
+  await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: null } }, { hangGuardMs: 50 }), (error) => {
+    assert.match(error.message, /Expected one browser context at the CDP endpoint, found 2/);
+    return true;
+  });
+  assert.equal(closed, 1, 'the attached browser is detached once, and its silence does not hold the context error');
+});
+
+test('a browser that stops answering while its portal session is restored ends the open at the hang guard', async (t) => {
+  const context = new EventEmitter();
+  let closed = 0;
+  let reads = 0;
+  let answerRead;
+  const heldRead = new Promise((resolve) => {
+    answerRead = resolve;
+  });
+  const opened = openUnansweringWindow(
+    t,
+    async () => {
+      closed++;
+    },
+    {
+      context,
+      headless: true,
+      origin,
+      cookies: () => {
+        reads++;
+        return heldRead;
+      },
+    },
+  );
+  await assert.rejects(opened, (error) => {
+    assert.match(error.message, /Restoring the portal session did not finish within 50 ms/);
+    assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+    return true;
+  });
+  assert.equal(closed, 1, 'the launched browser is closed when its portal session cannot be restored');
+  // The read the open gave up on answers late: it keeps nothing and attaches no close listener.
+  answerRead([]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.listenerCount('close'), 0, 'the abandoned session restore arms no close listener');
+  assert.equal(reads, 1, 'the abandoned session restore reads the cookies once');
+});
+
+test('a session step that fails closes the browser it launched', async (t) => {
+  const failure = new Error('cookies unavailable');
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(
+      t,
+      async () => {
+        closed++;
+      },
+      {
+        headless: true,
+        origin,
+        cookies: async () => {
+          throw failure;
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error, failure);
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when its portal session cannot be restored');
+});
+
+test('a failed launch names the profile as in use only while its browser lock file is present', async (t) => {
+  const launchError = new Error('browser exited during start-up');
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw launchError;
+  });
+  for (const lock of ['lockfile', 'SingletonLock', null]) {
+    const dir = tempDirSync('paqvilo-profile-lock-');
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const profileDir = path.join(dir, 'profile');
+    fs.mkdirSync(profileDir);
+    if (lock) fs.writeFileSync(path.join(profileDir, lock), '');
+    await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+      if (lock) assert.match(error.message, /is in use or could not start/);
+      else assert.equal(error, launchError);
+      return true;
+    });
+  }
+});
+
+test('a launch timeout keeps its hang-guard message while the profile lock file is present', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw Object.assign(new Error('Timeout 5ms exceeded.'), { name: 'TimeoutError' });
+  });
+  const dir = tempDirSync('paqvilo-profile-timeout-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, 'lockfile'), '');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir, hangGuardMs: 5 }), (error) => {
+    assert.match(error.message, /Launching the browser profile did not finish within 5 ms/);
+    assert.doesNotMatch(error.message, /in use/);
+    return true;
+  });
+});
+
+test('a missing browser executable is named as not installed while a stale SingletonLock is present', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw new Error("browserType.launchPersistentContext: Executable doesn't exist at /invented/msedge");
+  });
+  const dir = tempDirSync('paqvilo-profile-missing-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, 'SingletonLock'), '');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.match(error.message, /is not installed/);
+    assert.doesNotMatch(error.message, /in use/);
+    return true;
+  });
+});
+
+test('a dangling SingletonLock link whose target cannot be parsed still names the profile as in use', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw new Error('browser exited during start-up');
+  });
+  const dir = tempDirSync('paqvilo-profile-dangling-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  const lockPath = path.join(profileDir, 'SingletonLock');
+  fs.symlinkSync(path.join(dir, 'gone'), lockPath, 'junction');
+  assert.equal(fs.existsSync(lockPath), false, 'an existence test misses the dangling link');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.match(error.message, /is in use or could not start/);
+    return true;
+  });
+});
+
+test('a SingletonLock link that names another host does not hold the profile', async (t) => {
+  const launchError = new Error('browser exited during start-up');
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw launchError;
+  });
+  const dir = tempDirSync('paqvilo-profile-other-host-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.symlinkSync('invented-host-12345', path.join(profileDir, 'SingletonLock'), 'junction');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.equal(error, launchError);
+    return true;
+  });
+});
+
+test('a SingletonLock link is held only by a live process on the host it names', (t) => {
+  const dir = tempDirSync('paqvilo-profile-live-link-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.symlinkSync('lock-host-4242', path.join(dir, 'SingletonLock'), 'junction');
+  const probed = [];
+  const alive = (pid) => {
+    probed.push(pid);
+    return true;
+  };
+  assert.equal(profileLockPresent(dir, { hostname: 'lock-host', alive }), true);
+  assert.equal(profileLockPresent(dir, { hostname: 'lock-host', alive: () => false }), false);
+  assert.equal(profileLockPresent(dir, { hostname: 'other-host', alive }), false);
+  assert.deepEqual(probed, [4242]);
 });

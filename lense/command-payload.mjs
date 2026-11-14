@@ -30,27 +30,33 @@ function commandDirectory(directory, create) {
     const parent = path.dirname(selected);
     if (create) fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
     const absolute = path.join(fs.realpathSync(parent), path.basename(selected));
-    let info = fs.lstatSync(absolute, { throwIfNoEntry: false });
-    if (!info && create) {
-      try {
-        fs.mkdirSync(absolute, { mode: 0o700 });
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-      }
-      info = fs.lstatSync(absolute);
-    }
+    const info = commandSubdirectoryInfo(absolute, create);
     if (!info) return null;
-    if (!info.isDirectory() || info.isSymbolicLink())
-      throw failure(
-        'Command payload storage cannot use a linked or non-directory commands folder.',
-        'COMMAND_PAYLOAD_DIRECTORY',
-      );
     return { selected, absolute, real: fs.realpathSync(absolute), info };
   } catch (error) {
     if (!create && error.code === 'ENOENT') return null;
     if (error.code?.startsWith('COMMAND_PAYLOAD_')) throw error;
     throw failure('Cannot prepare command payload storage.', 'COMMAND_PAYLOAD_DIRECTORY');
   }
+}
+
+function commandSubdirectoryInfo(absolute, create) {
+  let info = fs.lstatSync(absolute, { throwIfNoEntry: false });
+  if (!info && create) {
+    try {
+      fs.mkdirSync(absolute, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    info = fs.lstatSync(absolute);
+  }
+  if (!info) return null;
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw failure(
+      'Command payload storage cannot use a linked or non-directory commands folder.',
+      'COMMAND_PAYLOAD_DIRECTORY',
+    );
+  return info;
 }
 
 function checkDirectory(directory) {
@@ -71,34 +77,90 @@ function readOwned(file, { reportPublication = false } = {}) {
     // open cannot establish which inode the eventual descriptor will reference.
     // NONBLOCK also prevents an unexpected FIFO from stalling before fstat.
     handle = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
-    const opened = fs.fstatSync(handle);
-    if (!opened.isFile() || opened.size > MAX_COMMAND_PAYLOAD_BYTES) return null;
-    if (opened.nlink !== 1) return reportPublication && opened.nlink === 2 ? { publishing: true } : null;
-    // On platforms without NOFOLLOW, reject a linked name before reading any
-    // bytes. The descriptor remains the sole target of the bounded reads.
-    if (!sameFileVersion(opened, fs.lstatSync(file))) return null;
-    const buffer = Buffer.alloc(opened.size + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const count = fs.readSync(handle, buffer, length, buffer.length - length, length);
-      if (!count) break;
-      length += count;
-    }
-    const bytes = buffer.subarray(0, length);
-    const after = fs.fstatSync(handle);
-    if (
-      bytes.length > MAX_COMMAND_PAYLOAD_BYTES ||
-      !sameFileVersion(opened, after) ||
-      after.size !== bytes.length ||
-      !sameFileVersion(after, fs.lstatSync(file))
-    )
-      return null;
-    return { bytes, info: after };
-  } catch {
-    return null;
+    return readOwnedDescriptor(file, handle, reportPublication);
+  } catch (error) {
+    // Windows can temporarily deny access while another process retires its
+    // publication link. Only collision reuse waits for these specific errors;
+    // a later successful descriptor read must still pass every ownership check.
+    return reportPublication && ['EBUSY', 'EPERM', 'EACCES'].includes(error.code) ? { publishing: true } : null;
   } finally {
     if (handle !== undefined) fs.closeSync(handle);
   }
+}
+
+function readOwnedDescriptor(file, handle, reportPublication) {
+  const opened = fs.fstatSync(handle);
+  if (!opened.isFile() || opened.size > MAX_COMMAND_PAYLOAD_BYTES) return null;
+  if (opened.nlink !== 1) return reportPublication && opened.nlink === 2 ? { publishing: true } : null;
+  // On platforms without NOFOLLOW, reject a linked name before reading any
+  // bytes. The descriptor remains the sole target of the bounded reads.
+  if (!sameFileVersion(opened, fs.lstatSync(file))) return reportPublication ? { publishing: true } : null;
+  const buffer = Buffer.alloc(opened.size + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const count = fs.readSync(handle, buffer, length, buffer.length - length, length);
+    if (!count) break;
+    length += count;
+  }
+  const bytes = buffer.subarray(0, length);
+  const after = fs.fstatSync(handle);
+  if (
+    bytes.length > MAX_COMMAND_PAYLOAD_BYTES ||
+    !sameFileVersion(opened, after) ||
+    after.size !== bytes.length ||
+    !sameFileVersion(after, fs.lstatSync(file))
+  )
+    return reportPublication ? { publishing: true } : null;
+  return { bytes, info: after };
+}
+
+function reuseExistingCommandPayload(file, bytes, storage) {
+  const until = Date.now() + 200;
+  for (;;) {
+    checkDirectory(storage);
+    const saved = readOwned(file, { reportPublication: true });
+    if (saved?.bytes?.equals(bytes)) {
+      checkDirectory(storage);
+      return file;
+    }
+    // Another publisher can have atomically linked the complete file and be
+    // about to remove its temporary link. Never accept a hard-linked file.
+    if (saved?.publishing && Date.now() < until) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4);
+      continue;
+    }
+    // An inspection can itself exhaust the publication window. Its transient
+    // sample is not evidence that publication remains incomplete: acquire one
+    // final descriptor without extending the wait, retaining every ownership
+    // and byte check before accepting a completed canonical file.
+    if (saved?.publishing && readOwned(file)?.bytes.equals(bytes)) {
+      checkDirectory(storage);
+      return file;
+    }
+    throw failure('An existing command payload is unsafe or does not match its identity.', 'COMMAND_PAYLOAD_CONFLICT');
+  }
+}
+
+function retireCommandTemporary(storage, temporary, temporaryIdentity, completed) {
+  let cleanupFailed = false;
+  try {
+    checkDirectory(storage);
+    const info = fs.lstatSync(temporary, { throwIfNoEntry: false });
+    if (
+      temporaryIdentity &&
+      info?.isFile() &&
+      !info.isSymbolicLink() &&
+      info.dev === temporaryIdentity.dev &&
+      info.ino === temporaryIdentity.ino
+    )
+      fs.unlinkSync(temporary);
+    else if (completed) cleanupFailed = true;
+  } catch {
+    // Never claim a completed publication when its temporary file could not
+    // be safely retired. Preserve unfamiliar paths without broader cleanup.
+    if (completed) cleanupFailed = true;
+  }
+  return cleanupFailed;
 }
 
 /** Persist raw JSON bytes without overwriting any existing path or exposing its contents. */
@@ -112,27 +174,6 @@ export function persistCommandPayload(directory, bytes) {
   }
   const storage = commandDirectory(directory, true);
   const file = path.join(storage.absolute, `stop-${digest(bytes)}.json`);
-  const existing = () => {
-    const until = Date.now() + 200;
-    for (;;) {
-      checkDirectory(storage);
-      const saved = readOwned(file, { reportPublication: true });
-      if (saved?.bytes?.equals(bytes)) {
-        checkDirectory(storage);
-        return file;
-      }
-      // Another publisher can have atomically linked the complete file and be
-      // about to remove its temporary link. Never accept a hard-linked file.
-      if (saved?.publishing && Date.now() < until) {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4);
-        continue;
-      }
-      throw failure(
-        'An existing command payload is unsafe or does not match its identity.',
-        'COMMAND_PAYLOAD_CONFLICT',
-      );
-    }
-  };
   // Reuse requires a validated descriptor; absence or an invalid existing name
   // is handled by exclusive publication, never by a check-then-open decision.
   if (readOwned(file)?.bytes.equals(bytes)) {
@@ -140,7 +181,11 @@ export function persistCommandPayload(directory, bytes) {
     return file;
   }
   const temporary = path.join(storage.absolute, `.stop-${randomUUID()}.tmp`);
-  let handle, temporaryIdentity;
+  let handle,
+    temporaryIdentity,
+    completed = false,
+    cleanupFailed,
+    result;
   try {
     checkDirectory(storage);
     handle = fs.openSync(
@@ -160,32 +205,23 @@ export function persistCommandPayload(directory, bytes) {
       fs.linkSync(temporary, file);
     } catch (error) {
       if (error.code !== 'EEXIST') throw failure('Cannot publish command payload.', 'COMMAND_PAYLOAD_WRITE');
-      return existing();
+      result = reuseExistingCommandPayload(file, bytes, storage);
     }
     checkDirectory(storage);
-    return file;
+    completed = true;
+    result ??= file;
   } catch (error) {
     if (error.code?.startsWith('COMMAND_PAYLOAD_')) throw error;
     throw failure('Cannot persist command payload.', 'COMMAND_PAYLOAD_WRITE');
   } finally {
     if (handle !== undefined) fs.closeSync(handle);
-    // Delete only our random temporary regular file while the original directory
-    // still has the same identity. A replaced directory is never followed.
-    try {
-      checkDirectory(storage);
-      const info = fs.lstatSync(temporary, { throwIfNoEntry: false });
-      if (
-        temporaryIdentity &&
-        info?.isFile() &&
-        !info.isSymbolicLink() &&
-        info.dev === temporaryIdentity.dev &&
-        info.ino === temporaryIdentity.ino
-      )
-        fs.unlinkSync(temporary);
-    } catch {
-      /* Preserve unfamiliar paths rather than trying broader cleanup. */
-    }
+    // Revalidate the temporary inode and directory before pathname cleanup.
+    // Their continued integrity is a trusted-storage requirement: portable
+    // unlink cannot atomically compare a previously checked inode (SECURITY.md).
+    cleanupFailed = retireCommandTemporary(storage, temporary, temporaryIdentity, completed);
   }
+  if (cleanupFailed) throw failure('Cannot retire command payload temporary file.', 'COMMAND_PAYLOAD_WRITE');
+  return result;
 }
 
 /** Remove only explicitly released, intact payloads with no remaining ownership reference. */

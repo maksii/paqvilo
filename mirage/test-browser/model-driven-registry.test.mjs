@@ -1,17 +1,24 @@
+// @test-kind contract: Paqvilo's own model-driven shell registry, query-packet and presentation-owner isolation behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedBrowser } from './shared-browser.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { resolveInspectionEvidence } from '../../lense/inspection-evidence.mjs';
 import { modelDrivenObservationRuntime } from '../../lense/model-driven-observation.mjs';
 
 const chrome = sharedBrowser();
+// Every test only reads the shell and tampers with its own page, so the file shares one simulator.
+const files = fileScope();
+let sharedApp;
+const app = () => (sharedApp ??= modelDrivenFixture(files));
 const scope = { documentId: 'invented-document', frameId: 'top', uiEpoch: 1, sourceRevision: '1' };
 
 test('actual installed Mirage registry cannot acquire an unbound owner through WeakMap prototype tampering', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await app();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   const packets = await page.evaluate((scope) => {
     const node = document.createElement('div');
@@ -54,9 +61,9 @@ test('actual installed Mirage registry cannot acquire an unbound owner through W
 });
 
 test('query packets cannot mutate private actual-node owner and source snapshots', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await app();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();
   await cell.waitFor();
   const result = await cell.evaluate((node, scope) => {
@@ -73,9 +80,9 @@ test('query packets cannot mutate private actual-node owner and source snapshots
 });
 
 test('model-driven provider query snapshots cannot rewrite cached source regions or limits', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await app();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();
   await cell.waitFor();
   await page.evaluate(() => {
@@ -85,7 +92,7 @@ test('model-driven provider query snapshots cannot rewrite cached source regions
     };
   });
   await page.evaluate(new Function('data', `return (${modelDrivenObservationRuntime.toString()})().install(data);`), {
-    origin,
+    origin: appsOrigin(sim, origin),
     token: 'invented-cache',
     validatedScope: scope,
     validatedAnchorGeneration: 1,
@@ -114,9 +121,9 @@ test('model-driven provider query snapshots cannot rewrite cached source regions
 });
 
 test('registry writer leases and metadata copies retain captured intrinsics after customization overrides', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await app();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   const result = await page.evaluate(
     async ({ asset, scope }) => {
@@ -204,7 +211,7 @@ test('registry writer leases and metadata copies retain captured intrinsics afte
       }
       return { hooks, reads, packet, stale, expired, context, afterRelease, key };
     },
-    { asset: origin + '/_apps/assets/provenance-registry.mjs', scope },
+    { asset: appsOrigin(sim, origin) + '/_apps/assets/provenance-registry.mjs', scope },
   );
   assert.equal(result.hooks, 0);
   assert.equal(result.reads, 0, 'metadata copies never invoke an authored value getter');
@@ -218,9 +225,9 @@ test('registry writer leases and metadata copies retain captured intrinsics afte
 });
 
 test('page-writable parent and connected properties cannot transfer actual-node registry identity', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await app();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();
   await cell.waitFor();
   const result = await cell.evaluate((node, scope) => {
@@ -253,4 +260,24 @@ test('page-writable parent and connected properties cannot transfer actual-node 
   assert.equal(result.reads, 0);
   for (const packet of [result.forgedPacket, result.detachedPacket]) assert.equal(packet.facts.length, 0);
   assert.equal(result.detachedPacket.availability[0].reason, 'node-document-unavailable');
+});
+
+test('a solution without an app module says what to add instead of pointing at an app picker with no apps', async (t) => {
+  const fixture = await modelDrivenFixture(t, { defer: true });
+  await fs.rm(path.join(fixture.solutionDir, 'AppModules'), { recursive: true });
+  await fs.rm(path.join(fixture.solutionDir, 'AppModuleSiteMaps'), { recursive: true });
+  // A standalone runtime reads the solution only, so the fixture's Power Pages source is not passed.
+  const sim = await fixture.start({ runtime: { kind: 'model-driven' }, sourceDir: undefined });
+  const page = await chrome.page(t);
+  await page.goto((sim.origin ?? sim.url) + '/main.aspx?etn=x_item');
+  await page.locator('#notice.error').waitFor();
+  assert.equal(
+    await page.locator('#notice').textContent(),
+    'This solution has no app module, so there is no table to open. Add an app module to the solution and reload this page.',
+  );
+  assert.equal(await page.locator('#app-loading').count(), 0, 'the shell does not stay on a loading state');
+  assert.equal(await page.getByRole('button', { name: 'Try again', exact: true }).count(), 0);
+  assert.equal(await page.locator('#apps').isDisabled(), true);
+  assert.equal(await page.locator('#apps span').textContent(), 'No application');
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.mirageAppState), 'error');
 });

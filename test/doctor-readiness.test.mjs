@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise doctor readiness with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,13 +19,14 @@ const doctor = (cwd, ...args) =>
         execFile(
           process.execPath,
           [cli, 'lense', 'doctor', ...args],
-          { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 64 << 20 },
+          { cwd, env, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
       ),
   );
 
+// @test-kind contract: export-wide profile lint warns on an unbound profile and binding it fails readiness
 test('export-wide profile lint warns on an unbound profile and binding it fails readiness', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -101,6 +103,7 @@ test('export-wide profile lint warns on an unbound profile and binding it fails 
   );
 });
 
+// @test-kind contract: duplicate source keys gate Sources independently of Lense readiness
 test('duplicate source keys gate Sources independently of Lense readiness', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -153,6 +156,7 @@ test('duplicate source keys gate Sources independently of Lense readiness', asyn
   assert.match(answer.errors[0].message, /nosuch.*invented/);
 });
 
+// @test-kind contract: doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures
 test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -175,19 +179,20 @@ test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in g
     doctor(fx.dir, '--config', config, '--mirage', '--json'),
   ]);
   const optional = JSON.parse(optionalRun.stdout);
+  assert.equal(optionalRun.status, 0, optionalRun.stderr);
   assert.equal(optional.ok, true);
   assert.deepEqual(optional.errors, []);
   assert.ok(optional.reports[0].mirage.errors.some((error) => error.message.includes('missing-project.yml')));
   const gated = JSON.parse(gatedRun.stdout);
+  assert.equal(gatedRun.status, 1, gatedRun.stderr);
   assert.equal(gated.ok, false);
   assert.ok(gated.errors.some((error) => error.message.includes('missing-project.yml')));
-  assert.ok(
-    gated.reports[0].mirage.errors.every(
-      (error) => typeof error.code === 'string' && typeof error.message === 'string',
-    ),
-  );
+  const nested = gated.reports[0].mirage.errors;
+  assert.ok(nested.length > 0);
+  assert.ok(nested.every((error) => typeof error.code === 'string' && typeof error.message === 'string'));
 });
 
+// @test-kind contract: deployment-profile diagnostics use forward slashes for project-relative paths
 test('deployment-profile diagnostics use forward slashes for project-relative paths', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);

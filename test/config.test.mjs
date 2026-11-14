@@ -1,11 +1,12 @@
+// @test-kind contract: catalogue, personal and shell settings follow Paqvilo's designed CLI loading rules
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, loadCatalogue, loadDevTargets } from '../lense/config.mjs';
 import { setEnvLine, rememberSelection } from '../lense/commands/use.mjs';
 import { resolveCatalogue } from '../lense/api.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const CATALOGUE = `
 defaultSite: alpha
@@ -45,7 +46,7 @@ const write = (rel, text) => {
   fs.writeFileSync(path.join(dir, rel), text);
 };
 beforeEach(() => {
-  dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cfg-')));
+  dir = tempDirSync('paqvilo-cfg-');
   config = path.join(dir, 'paqvilo.config.yml');
   write('paqvilo.config.yml', CATALOGUE);
   for (const site of ['alpha', 'beta', 'gamma'])
@@ -240,6 +241,56 @@ test('mistakes are explained', async () => {
 
 test('diagnostic switches in the shell are not taken for settings', async () => {
   assert.equal((await load({}, { PAQVILO_DEBUG: '1', PAQVILO_KEEP_TEMP: '1' })).siteName, 'alpha');
+});
+
+test('tool variables read by scripts, Mirage and Code Apps are not settings, and typos are still rejected', async () => {
+  const toolVariables = {
+    PAQVILO_XRM_SDK: 'C:/example/Microsoft.Xrm.Sdk.dll',
+    PAQVILO_PAC_EXECUTABLE: 'pac',
+    PAQVILO_GIT_EXECUTABLE: 'git',
+    PAQVILO_TOOL_CACHE: 'cache',
+    PAQVILO_MIRAGE_URL: 'http://127.0.0.1:8787',
+    PAQVILO_CODE_APP: 'alpha-app',
+  };
+  assert.equal((await load({}, toolVariables)).siteName, 'alpha');
+  await assert.rejects(load({}, { PAQVILO_SCOPEE: 'all' }), /Unknown setting PAQVILO_SCOPEE/);
+});
+
+test('per-site variables match declared site names, add no phantom site and reject an ambiguous match', () => {
+  write(
+    'mixed.yml',
+    [
+      'sites:',
+      '  my_site:',
+      '    source: portals/my_site',
+      '    environments: { dev: https://my-site.example.com }',
+      '  my-site2:',
+      '    source: portals/my-site2',
+      '    environments: { dev: https://my-site2.example.com }',
+      '  Alpha:',
+      '    source: portals/alpha',
+      '    environments: { dev: https://alpha-mixed.example.com }',
+    ].join('\n'),
+  );
+  const shell = {
+    PAQVILO_MY_SITE_SOURCE: 'elsewhere/one',
+    PAQVILO_MY_SITE2_SOURCE: 'elsewhere/two',
+    PAQVILO_ALPHA_SOURCE: 'elsewhere/three',
+  };
+  const { sites } = loadCatalogue({ config: path.join(dir, 'mixed.yml') }, shell);
+  assert.deepEqual(new Set(Object.keys(sites)), new Set(['my_site', 'my-site2', 'Alpha']));
+  assert.equal(sites.my_site.sourceDir, path.join(dir, 'elsewhere', 'one'));
+  assert.equal(sites['my-site2'].sourceDir, path.join(dir, 'elsewhere', 'two'));
+  assert.equal(sites.Alpha.sourceDir, path.join(dir, 'elsewhere', 'three'));
+
+  write(
+    'clash.yml',
+    'sites:\n  Alpha:\n    environments: { dev: https://alpha.example.com }\n  alpha:\n    environments: { dev: https://alpha-lower.example.com }\n',
+  );
+  assert.throws(
+    () => loadCatalogue({ config: path.join(dir, 'clash.yml') }, { PAQVILO_ALPHA_SOURCE: 'elsewhere' }),
+    /ALPHA matches more than one site/,
+  );
 });
 
 test('paqvilo.config.local.yml adds to the catalogue', async () => {
@@ -528,6 +579,7 @@ test('external user-data paths resolve by their configuration layer and preserve
   assert.equal((await load({ 'user-data-dir': absolute })).browser.userDataDir, absolute);
 });
 
+// @test-kind security: a profile selector cannot traverse out of the profile directory
 test('profile selectors reject traversal, reserved names, controls and ambiguous settings', async () => {
   for (const profile of [
     '',
@@ -751,7 +803,7 @@ test('Mirage settings are schema checked', async () => {
 });
 
 test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-resolved-'));
+  const root = tempDirSync('paqvilo-resolved-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'portal'));
   const config = path.join(root, 'paqvilo.config.yml');

@@ -100,7 +100,7 @@ export function applyEnvironmentOverride(store, state, schemaName, value, { secr
       400,
       'SecretValueNotAccepted',
     );
-  const overrides = { ...(state.simulator.environmentVariables ?? {}) };
+  const overrides = { ...state.simulator.environmentVariables };
   if (value === null) delete overrides[schemaName];
   else overrides[schemaName] = value;
   state.simulator.environmentVariables = overrides;

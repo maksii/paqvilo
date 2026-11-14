@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "date": "2026-11-08",
+  "scope": "Declared DateTime custom API HTTP responses serialize zero-fraction UTC text with Z, including DateTime.MinValue and authored nonminimum dates. SDK internal values/Kind retain their existing roundtrip representation. Calendar values and schema names are parameters; no private schema or case identifier is a runtime lookup key.",
+  "nativeType": "Edm.DateTimeOffset",
+  "captures": [
+    {
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "nativeCsdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "responses": [
+        {
+          "caseIdentitySha256": "b5d422a24c042b5b06c9ec0d4053f48ea860ee04e3fd75d4b08c5b28e7049423",
+          "nativeResponseSha256": "3a345d2ab591c55b084e91f41e0bfb9c3b83a11ae40ac35eafc4c6c34bfedf2c",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "981455bf3b939128edf2009c3f2b1c1168dcd79c4edcfe257f1d5c0757a6a9f3",
+          "nativeResponseSha256": "7b92efc5e2d1fe4edbe8a1aaa5f9d805c5e62808bdb99ee40d7db30ae0d2c66e",
+          "nativeUtcText": "2020-01-15T12:34:56Z"
+        },
+        {
+          "caseIdentitySha256": "e06ab3bb3257647b7eb9c8b38bccfdf52a8f5a3fa3019c2732b3ea65024be3ac",
+          "nativeResponseSha256": "3a345d2ab591c55b084e91f41e0bfb9c3b83a11ae40ac35eafc4c6c34bfedf2c",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "172dcd75139086b1cb6c4377479bb7b98a7b30a1145df6959a72d7db1d6f1804",
+          "nativeResponseSha256": "b3e3d8118c4cdc4fbd622da0d7b2a57d0fcd8d7258a2d770ffbcdb6b63597a71",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "06743e3fc247445647613f47728b2cb572aea837deb8ea0d0d155beee530f4db",
+          "nativeResponseSha256": "885dfedd7af987a541ee90a2add2a2931499a4dab2ff9049d3c28395002b1de3",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "5bb10a6f06b4b84dbdb6761c5f7bb45d3aa9f2cbf211fb58ed12528fc43737a0",
+          "nativeResponseSha256": "41c24f42b4ffc135d39022397da23b0875d54e3e49b7f1c316ac5bc17ee36aab",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "578fd989d83a9c8477349d62954edbe07548ec57b310f1d0cd59b2d68c8ff81b",
+          "nativeResponseSha256": "e67aaaa0f24b66928a937a3902dcfaf3146a9b4419c0d3b53011027af0dbb4fa",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "nativeCsdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "responses": [
+        {
+          "caseIdentitySha256": "b5d422a24c042b5b06c9ec0d4053f48ea860ee04e3fd75d4b08c5b28e7049423",
+          "nativeResponseSha256": "3a345d2ab591c55b084e91f41e0bfb9c3b83a11ae40ac35eafc4c6c34bfedf2c",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "981455bf3b939128edf2009c3f2b1c1168dcd79c4edcfe257f1d5c0757a6a9f3",
+          "nativeResponseSha256": "61fd7a7f4aea8776a720a9eea3fb3a471668bd4e3393c52ac3aba3488e2a25d2",
+          "nativeUtcText": "2020-01-15T12:34:56Z"
+        },
+        {
+          "caseIdentitySha256": "e06ab3bb3257647b7eb9c8b38bccfdf52a8f5a3fa3019c2732b3ea65024be3ac",
+          "nativeResponseSha256": "3a345d2ab591c55b084e91f41e0bfb9c3b83a11ae40ac35eafc4c6c34bfedf2c",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "172dcd75139086b1cb6c4377479bb7b98a7b30a1145df6959a72d7db1d6f1804",
+          "nativeResponseSha256": "b3e3d8118c4cdc4fbd622da0d7b2a57d0fcd8d7258a2d770ffbcdb6b63597a71",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "06743e3fc247445647613f47728b2cb572aea837deb8ea0d0d155beee530f4db",
+          "nativeResponseSha256": "885dfedd7af987a541ee90a2add2a2931499a4dab2ff9049d3c28395002b1de3",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "5bb10a6f06b4b84dbdb6761c5f7bb45d3aa9f2cbf211fb58ed12528fc43737a0",
+          "nativeResponseSha256": "41c24f42b4ffc135d39022397da23b0875d54e3e49b7f1c316ac5bc17ee36aab",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        },
+        {
+          "caseIdentitySha256": "578fd989d83a9c8477349d62954edbe07548ec57b310f1d0cd59b2d68c8ff81b",
+          "nativeResponseSha256": "e67aaaa0f24b66928a937a3902dcfaf3146a9b4419c0d3b53011027af0dbb4fa",
+          "nativeUtcText": "0001-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ],
+  "minimumHttpText": "0001-01-01T00:00:00Z",
+  "responseRule": {
+    "zone": "Z",
+    "zeroFraction": "omitted",
+    "dateAndTime": "retained"
+  }
+}

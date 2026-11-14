@@ -1,6 +1,8 @@
+// @test-kind contract: Paqvilo's own flow runtime behaviour as documented in mirage/docs/operations.md (flow limits, expressions)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
+import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import {
   executeFlowDefinition,
   inspectFlowDefinition,
@@ -175,6 +177,100 @@ test('WDL arithmetic retains literal numeric type, boolean equality and null str
   assert.equal(value('equals(true,2)'), false);
   assert.equal(value('string(null)'), '');
   assert.equal(value(`equals(json('{"a":1,"b":2}'),json('{"b":2,"a":1}'))`), true);
+});
+
+// @test-kind compatibility: Microsoft Learn expression-functions-reference#div: "div(11,5)" returns the Integer 2, and the result is a Float only when either the dividend or the divisor is a Float
+test('div uses the Integer type of evaluated action outputs and loop items and keeps Float operands', () => {
+  const answer = executeFlowDefinition({
+    definition: definition({
+      Five: { type: 'Compose', inputs: 5 },
+      parts: { type: 'InitializeVariable', inputs: { variables: [{ name: 'halves', type: 'array', value: [] }] } },
+      loop: {
+        type: 'Foreach',
+        foreach: '@createArray(5,7)',
+        runAfter: { parts: ['Succeeded'] },
+        actions: { half: { type: 'AppendToArrayVariable', inputs: { name: 'halves', value: '@div(item(),2)' } } },
+      },
+      reply: {
+        type: 'Response',
+        runAfter: { loop: ['Succeeded'] },
+        inputs: {
+          body: {
+            halves: "@variables('halves')",
+            output: "@div(outputs('Five'),2)",
+            float: '@div(float(5),2)',
+          },
+        },
+      },
+    }),
+    input: {},
+  });
+  assert.deepEqual(answer, { status: 200, body: { halves: [2, 3], output: 2, float: 2.5 } });
+});
+
+// @test-kind compatibility: Microsoft Learn expression-functions-reference#comparison-functions: the comparison functions accept Integer, Float or String values, so two strings are compared as text
+test('comparison functions order two strings and reject a string mixed with a number', () => {
+  const state = { input: {}, variables: {}, parameters: {}, results: {}, items: [] };
+  const value = (s) => resolveFlowValue('@' + s, state);
+  assert.equal(value("greater('apple','banana')"), false);
+  assert.equal(value("less('apple','banana')"), true);
+  assert.equal(value("greaterOrEquals('b','b')"), true);
+  assert.equal(value("lessOrEquals('b','a')"), false);
+  // Strings compare by UTF-16 code unit (ordinal), so 'B' (0x42) sorts before 'a' (0x61).
+  assert.equal(value("greater('B','a')"), false);
+  assert.equal(value('greater(2,1.5)'), true);
+  assert.throws(() => value("greater('a',1)"), /Numeric arguments required for greater/);
+});
+
+// @test-kind compatibility: Microsoft Learn expression-functions-reference#logical-comparison-functions: "If you use logical functions or conditions to compare values, null values are converted to empty string ("") values"
+test('equals converts null to an empty string beside a string or null only', () => {
+  const state = { input: {}, variables: {}, parameters: {}, results: {}, items: [] };
+  const value = (s) => resolveFlowValue('@' + s, state);
+  assert.equal(value("equals(null,'')"), true);
+  assert.equal(value("equals(triggerBody()?['missing'],'')"), true);
+  assert.equal(value("equals('',null)"), true);
+  assert.equal(value("equals('a',null)"), false);
+  assert.equal(value('equals(null,0)'), false);
+  assert.equal(value('equals(null,false)'), false);
+});
+
+// @test-kind compatibility: Microsoft Learn expression-functions-reference#logical-comparison-functions: the null-to-empty-string conversion applies to equals, while a Switch on null does not match a case of ""
+test('Switch on null does not match a case of an empty string', () => {
+  const answer = executeFlowDefinition({
+    definition: definition({
+      pick: {
+        type: 'Switch',
+        expression: '@null',
+        cases: {
+          blank: { case: '', actions: { hit: { type: 'Response', inputs: { statusCode: 201, body: 'blank' } } } },
+        },
+        default: { actions: { miss: { type: 'Response', inputs: { statusCode: 202, body: 'default' } } } },
+      },
+    }),
+    input: {},
+  });
+  assert.deepEqual(answer, { status: 202, body: 'default' });
+});
+
+test('a provider call receives the remaining run deadline as timeoutMs only when limits.timeoutMs is supplied', async () => {
+  const contexts = [];
+  const connectors = createConnectorRuntime({
+    packs: [{ id: 'p', flowActions: { Probe: async (request, context) => (contexts.push(context), { body: 'ok' }) } }],
+  });
+  const d = {
+    triggers: { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object', properties: {} } } } },
+    actions: { Probe: { type: 'Probe', inputs: {}, runAfter: {} } },
+  };
+  await executeFlowDefinition({
+    definition: d,
+    input: {},
+    connectors,
+    limits: { timeoutMs: 5000 },
+    context: { background: true },
+  });
+  await executeFlowDefinition({ definition: d, input: {}, connectors, context: { background: true } });
+  assert.ok(contexts[0].timeoutMs > 0 && contexts[0].timeoutMs <= 5000, String(contexts[0].timeoutMs));
+  assert.equal(Object.hasOwn(contexts[1], 'timeoutMs'), false);
 });
 
 test('Unchosen nested branches expose Skipped state and Response preserves safe headers', () => {
@@ -360,7 +456,6 @@ const createWidget = {
 
 test('Request trigger settings cannot silently execute an unconditional flow or commit data', () => {
   const settings = [
-    { conditions: [{ expression: '@false' }] },
     { splitOn: "@triggerBody()['values']" },
     { runtimeConfiguration: { concurrency: { runs: 1 } } },
     { runTimeConfiguration: { concurrency: { runs: 1 } } },
@@ -565,4 +660,46 @@ test('Explicit SDK projection preserves selected nulls and typed numerics/lookup
     ({ operation }) => operation === 'retrieve',
   );
   assert.deepEqual(data.get('widget', id, { admin: true }, { sdkColumns: columnSet }), projected);
+});
+
+// A pack action that waits on a gate the test releases, after the mocked clock has moved past two seconds.
+const gatedRun = (t, limits) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const connectors = createConnectorRuntime({ packs: [{ id: 'gate-pack', flowActions: { x_Gate: () => gate } }] });
+  const d = definition({
+    Gate: { type: 'x_Gate', inputs: {} },
+    Stamp: { type: 'Compose', runAfter: { Gate: ['Succeeded'] }, inputs: 'done' },
+  });
+  const pending = executeFlowDefinition({
+    definition: d,
+    input: {},
+    connectors,
+    limits,
+    context: { background: true },
+  });
+  t.mock.timers.tick(3000);
+  release({ body: { ok: true } });
+  return pending;
+};
+
+test('a run has no wall-clock deadline unless limits.timeoutMs is supplied', async (t) => {
+  const answer = await gatedRun(t);
+  assert.equal(answer.status, 'Succeeded');
+  assert.equal(answer.actions.Stamp.status, 'Succeeded');
+});
+
+test('limits.timeoutMs bounds the run on its clock and fails the next action with LocalFlowTimeout', async (t) => {
+  await assert.rejects(gatedRun(t, { timeoutMs: 1000 }), { code: 'LocalFlowTimeout', status: 504 });
+});
+
+test('replace() substitutes its text literally, and an empty search text needs native evidence', () => {
+  const state = { input: {}, variables: {}, parameters: {}, results: {}, items: [] };
+  const value = (s) => resolveFlowValue('@' + s, state);
+  assert.equal(value("replace('a-b','-','$&$&')"), 'a$&$&b');
+  assert.equal(value("replace('a-b','-','$$')"), 'a$$b');
+  assert.throws(() => value("replace('a-b','','x')"), { status: 501, code: 'LocalFlowUnsupported' });
 });

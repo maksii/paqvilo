@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataverseClient } from '../lense/dataverse/client.mjs';
 import {
   validateCatalogue,
@@ -10,6 +9,7 @@ import {
   runDataQueries,
   retrieveFetchXml,
 } from '../lense/dataverse/data.mjs';
+import { loopbackServer } from './fixture.mjs';
 const ids = {
   company: '11111111-1111-5111-8111-111111111111',
   one: '22222222-2222-5222-8222-222222222222',
@@ -82,7 +82,7 @@ async function serverFixture(t) {
   let failWrite = false,
     duplicatePage = false,
     omitTerminal = false;
-  const server = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : null,
@@ -211,11 +211,9 @@ async function serverFixture(t) {
       return res.end();
     }
     send(400, { error: { message: 'unsupported fixture route ' + route } });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  };
   const client = new DataverseClient({
-    environmentUrl: `http://127.0.0.1:${server.address().port}`,
+    environmentUrl: await loopbackServer(t, handle),
     allowLoopback: true,
     token: async () => 'invented-token',
   });

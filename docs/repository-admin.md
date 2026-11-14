@@ -5,8 +5,9 @@ with [getting started](getting-started.md); contributors should use [CONTRIBUTIN
 
 ## Repository settings
 
-`scripts/github-admin.mjs` describes the repository settings. Preview its plan before
-applying it with an authenticated repository administrator account:
+`scripts/github-admin.mjs` describes the repository settings. Workflows may use GitHub-owned
+actions and `SonarSource/sonarqube-scan-action`; other third-party actions are blocked. Actions stay pinned by full
+commit SHA. Preview its plan before applying it with an authenticated repository administrator account:
 
 ```sh
 gh auth status
@@ -25,12 +26,13 @@ security checks required for administrators.
 
 ## Validation and security
 
+PRs targeting `main` or the `0.9.8` maintenance branch run the CI and Security workflows.
 CI runs the pinned Node 24 toolchain on Ubuntu 24.04 and Windows 2025. Mirage and
-example lanes install .NET SDK 10.0.113 from `global.json`; roll-forward is disabled
-so the hosted image cannot silently select a different compiler. Ordinary PRs
+example lanes install .NET SDK 10.0.114 from `global.json`; roll-forward accepts only later servicing patches of that
+feature band (10.0.1xx), so a hosted image or a local SDK update never selects a different compiler band. Ordinary PRs
 select Lense, Mirage and example suites conservatively using changed paths and literal
 import consumers. Shared assets, dependency/build/workflow changes and unknown paths
-expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi and certificate/MSAL.NET client gates. Python and ServiceClient retain their explicit opt-in prerequisites.
+expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi, certificate/MSAL.NET and ServiceClient client gates. ServiceClient drops the port from its URL, so its gate binds loopback port 80: hosted runs stop the image's kernel HTTP service first, and a self-hosted Windows runner must leave port 80 free. Python retains its explicit opt-in prerequisites.
 Main pushes, manual full runs and releases run all unit/browser
 suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain quality
 and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory
@@ -52,18 +54,20 @@ runtime matrices are skipped. Local commits trigger no hosted run. Do not use CI
 
 All PR edits, including description edits, run the applicable source checks and report the same required `CI gate`
 name. A metadata-only run with a different gate name can leave GitHub waiting for the required context despite an
-older successful run. Run `npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success;
-it requires the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
+older successful run. An edit right after a push leaves cancelled matrix jobs named by their template, and
+`check:pr` counts them as replaced once a newer run of that workflow reports on the head. Run
+`npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success; it requires
+the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
 
-Report vulnerabilities through [private reporting](../SECURITY.md). Alert triage decisions
-are recorded in [`.github/security/codeql-triage.json`](../.github/security/codeql-triage.json). A triage entry
+Report vulnerabilities through [private reporting](https://github.com/maksii/paqvilo/blob/main/SECURITY.md). Alert triage decisions
+are recorded in [`.github/security/codeql-triage.json`](https://github.com/maksii/paqvilo/blob/main/.github/security/codeql-triage.json). A triage entry
 must record the actual source-to-sink constraint, a focused regression where applicable,
 and validation on the affected revision. Do not dismiss an alert merely because code
 runs locally or appears in a test.
 
 ## Packages
 
-The [Release workflow](../.github/workflows/release.yml) resolves an immutable tag, runs
+The [Release workflow](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) resolves an immutable tag, runs
 all release gates and publishes the tested archive. Stable tags must match package
 metadata and belong to main. Use [branch previews](branch-packages.md) for pre-merge tests.
 

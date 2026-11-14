@@ -1,0 +1,182 @@
+// Reusable operation/evidence contracts. Tool references are never executable requests.
+const capability = (id, domains, operation, tools, evidence, reference) =>
+  Object.freeze({
+    id,
+    domains: Object.freeze(domains),
+    operation,
+    tools: Object.freeze(tools),
+    evidence,
+    reference,
+    execution: 'not-performed',
+  });
+
+export const analysisCapabilities = Object.freeze([
+  capability(
+    'solution-checker',
+    ['dataverse', 'model-driven', 'alm'],
+    'solution-check',
+    ['Microsoft.PowerApps.CLI.Tool', 'Power Apps Checker'],
+    'An authorized uploaded Solution Checker result bound to the actual solution package is required.',
+    'https://learn.microsoft.com/power-platform/alm/checker-api/overview',
+  ),
+  capability(
+    'pcf-build',
+    ['pcf'],
+    'build',
+    ['node', 'npm', 'pcf-scripts'],
+    'Use the project-declared package engines and manifest host; source review does not establish a successful build.',
+    'https://learn.microsoft.com/power-apps/developer/component-framework/implementing-controls-using-typescript',
+  ),
+  capability(
+    'pcf-package',
+    ['pcf'],
+    'package',
+    ['dotnet', 'Microsoft.PowerApps.MSBuild.Pcf'],
+    'Restore and package evidence must identify the actual project, dependency versions and target host.',
+    'https://learn.microsoft.com/power-apps/developer/component-framework/import-custom-controls',
+  ),
+  capability(
+    'pcf-push',
+    ['pcf'],
+    'deploy',
+    ['Microsoft.PowerApps.CLI.Tool', 'dotnet'],
+    'PAC and .NET apply to this operation; deployment needs a separately authorized environment and identity.',
+    'https://learn.microsoft.com/power-platform/developer/cli/reference/pcf',
+  ),
+  capability(
+    'code-app-build',
+    ['code-apps'],
+    'build',
+    ['node', 'npm', '@microsoft/power-apps'],
+    'Validate the actual project build and generated connector contracts; the runtime SDK is distinct from the CLI.',
+    'https://learn.microsoft.com/power-apps/developer/code-apps/overview',
+  ),
+  capability(
+    'code-app-connections',
+    ['code-apps'],
+    'connections',
+    ['@microsoft/power-apps-cli'],
+    'A declared SDK or connector does not prove the selected tenant, identity, connection or runtime authorization.',
+    'https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-data',
+  ),
+  capability(
+    'canvas-compile',
+    ['canvas'],
+    'compile',
+    ['Power Apps Studio'],
+    'PA YAML source review and modeled Power Fx checks require separate native compile/runtime evidence. Retired unpack tooling is not a substitute.',
+    'https://learn.microsoft.com/power-apps/maker/canvas-apps/power-apps-yaml',
+  ),
+  capability(
+    'dataverse-query',
+    ['dataverse', 'model-driven', 'code-apps', 'canvas', 'flows'],
+    'query',
+    ['Dataverse Web API', 'Microsoft.PowerApps.CLI.Tool'],
+    'Logical names, EntitySetName, navigation properties and effective access need actual metadata and identity-specific evidence.',
+    'https://learn.microsoft.com/power-apps/developer/data-platform/webapi/query/overview',
+  ),
+  capability(
+    'flow-validation',
+    ['flows'],
+    'validate',
+    ['Power Automate'],
+    'Source graph checks do not certify every connector expression, trigger, connection or native flow compilation.',
+    'https://learn.microsoft.com/power-automate/guidance/coding-guidelines/overview',
+  ),
+  capability(
+    'flow-run',
+    ['flows'],
+    'run',
+    ['Power Automate'],
+    'Flow runs and retries may change business data; use separately authorized identity, routing and observed run results.',
+    'https://learn.microsoft.com/power-automate/guidance/coding-guidelines/error-handling',
+  ),
+  capability(
+    'connector-test',
+    ['connectors'],
+    'test',
+    ['Custom connector platform', 'OpenAPI tooling'],
+    'A valid local operation schema does not prove endpoint behavior, authentication, DLP policy or service availability.',
+    'https://learn.microsoft.com/connectors/custom-connectors/define-openapi-definition',
+  ),
+  capability(
+    'mobile-build',
+    ['mobile-apps'],
+    'build',
+    ['node', 'Expo', 'React Native'],
+    'Native mobile compilation, offline synchronization and device navigation need project build and device evidence.',
+    'https://learn.microsoft.com/power-apps/maker/common/wrap/overview',
+  ),
+  capability(
+    'mobile-extension-build',
+    ['mobile-extension'],
+    'build',
+    ['JDK/Gradle (Android)', 'Xcode (iOS)', 'dotnet (declared projects)'],
+    'Requirements depend on the chosen native target. A package manifest is not device, dispatcher or tenant integration proof.',
+    'https://learn.microsoft.com/power-apps/developer/component-framework/overview',
+  ),
+  capability(
+    'mcp-host-test',
+    ['mcp-apps'],
+    'host-test',
+    ['MCP host', 'JSON Schema validator'],
+    'Tool schemas and annotations are declarations; actual read/write behavior and private/visible result separation need host execution evidence.',
+    'https://modelcontextprotocol.io/specification/2025-06-18/server/tools',
+  ),
+  capability(
+    'tenant-governance',
+    ['governance'],
+    'tenant-review',
+    ['Power Platform admin center', 'Microsoft Graph'],
+    'Environment routing, DLP, licensing, governance and service-health evidence come from the intended authorized tenant, not an application export.',
+    'https://learn.microsoft.com/power-platform/admin/wp-data-loss-prevention',
+  ),
+  capability(
+    'process-analysis',
+    ['process-intelligence'],
+    'process-review',
+    ['Power Automate Process Mining'],
+    'Business cohorts, process variants and metric conclusions require their declared dataset, region, query and freshness evidence; source-only results cannot supply them.',
+    'https://learn.microsoft.com/power-automate/process-mining-overview',
+  ),
+  capability(
+    'external-security',
+    [
+      'power-pages',
+      'dataverse',
+      'pcf',
+      'canvas',
+      'code-apps',
+      'flows',
+      'connectors',
+      'mcp-apps',
+      'mobile-apps',
+      'mobile-extension',
+    ],
+    'security-review',
+    ['opengrep', 'trivy', 'dependency/secret scanners'],
+    'Imported reports must retain tool/rules/input versions, execution failures and redacted findings. No scanner is automatically installed or executed.',
+    'https://learn.microsoft.com/power-platform/alm/devops-build-tool-tasks',
+  ),
+  capability(
+    'runtime-accessibility',
+    ['power-pages', 'model-driven', 'canvas', 'code-apps', 'pcf', 'mobile-apps'],
+    'accessibility',
+    ['Playwright', 'axe-core', 'native accessibility tools'],
+    'Static hints do not replace rendered states, keyboard navigation, assistive technology or device testing.',
+    'https://learn.microsoft.com/power-apps/maker/canvas-apps/accessibility-checker',
+  ),
+]);
+
+export function capabilityCoverage(domains) {
+  const present = new Set(
+    domains
+      .filter((domain) => domain.recognized > 0 || domain.files > 0 || domain.status === 'separate-evidence-required')
+      .map((domain) => domain.domain),
+  );
+  return analysisCapabilities.map((entry) => ({
+    ...entry,
+    applicable: entry.domains.some((domain) => present.has(domain)),
+    status: entry.domains.some((domain) => present.has(domain)) ? 'separate-evidence-required' : 'not-detected',
+  }));
+}
