@@ -517,7 +517,7 @@ function dirOf(real) {
 }
 // The deepest folder that contains every directory, or null when there is none short of a filesystem root.
 function commonDirectory(dirs) {
-  if (!dirs.length || dirs.some((dir) => dir === null)) return null;
+  if (!dirs.length || dirs.includes(null)) return null;
   const inside = (base, dir) => {
     const relative = path.relative(base, dir);
     return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);

@@ -32,6 +32,8 @@ const UNICORN_RULES = [
   'prefer-dom-node-dataset',
   'catch-error-name',
   'prefer-top-level-await',
+  'prefer-global-this',
+  'prefer-includes',
 ];
 
 /** The SonarJS key (S<number>) of a sonarjs rule, from its documentation link; undefined for other plugins. */

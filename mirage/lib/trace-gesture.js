@@ -7,9 +7,11 @@
 export function createGestureTrace() {
   let gesture = false;
   let interaction = null;
-  if (typeof window !== 'undefined')
+  // No window outside a browser (the unit tests of the importing clients).
+  const page = globalThis.window;
+  if (page)
     for (const type of ['pointerdown', 'keydown'])
-      window.addEventListener(
+      page.addEventListener(
         type,
         (event) => {
           if (event.isTrusted) gesture = true;
