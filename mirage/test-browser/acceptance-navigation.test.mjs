@@ -624,12 +624,19 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       assert.equal(flow.navigationWaits[0].commitReserveMs, reserveFor(flow.navigationWaits[0]));
     });
 
-  test('a short action retains its half-budget bound when its replacement document cannot arrive within it', async (t) => {
-    // The writes never answer, so the hold ends at the reserve's deadline.
-    // The replacement document is never answered while the action runs, so it cannot fit however slow the host is.
-    const flow = await navigationFixture(t, { history: 'none', timeout: 4000, scheduleDocumentResponse: () => {} });
-    assert.equal(flow.passed, false);
-    assert.match(flow.error, /Timeout 4000ms/);
+  test('an action retains its half-budget bound when its replacement document cannot arrive within it', async (t) => {
+    // The writes never answer, so the hold ends at the reserve's deadline; the document is never answered.
+    // The click keeps the runner's hang-guard budget: a short budget can expire before a loaded host dispatches the
+    // submit, and then no hold exists. The reserve is recomputed from the remaining time the hold recorded; the cap of
+    // a short budget is asserted without a browser in test/navigation-budget.test.mjs.
+    const flow = await navigationFixture(t, {
+      history: 'none',
+      timeout: HANG_GUARD_ACTION_MS,
+      scheduleDocumentResponse: () => {},
+    });
+    assert.equal(flow.passed, false, JSON.stringify(flow));
+    assert.match(flow.error, new RegExp(`Timeout ${HANG_GUARD_ACTION_MS}ms`));
+    assert.ok(flow.navigationWaits?.length > 0, JSON.stringify(flow));
     assert.ok(
       flow.navigationWaits.some(
         (wait) => wait.commitReservePolicy === 'bounded-write-fallback' && wait.commitReserveMs === reserveFor(wait),
