@@ -31,12 +31,18 @@ const pageHeaders = (page) => ({
   ...(page.spanId ? { 'X-Sim-Parent-Trace': page.spanId } : {}),
 });
 
+// The trace headers of a call: the helper's when it is loaded, else the page's own; none before getContext() answered.
+function traceHeaders() {
+  if (!trace) return {};
+  return gestureTrace ? gestureTrace.headersFor(trace) : pageHeaders(trace);
+}
+
 function requestHeaders(body, binaryBody, headers) {
   return {
     accept: 'application/json',
     'x-paqvilo-code-app-session': sessionId,
     ...(csrf ? { 'x-sim-csrf': csrf } : {}),
-    ...(trace ? (gestureTrace ? gestureTrace.headersFor(trace) : pageHeaders(trace)) : {}),
+    ...traceHeaders(),
     ...(body === undefined ? {} : { 'content-type': binaryBody ? 'application/octet-stream' : 'application/json' }),
     ...headers,
   };
@@ -109,7 +115,7 @@ export function configure({ app, origin = '', onEvent, loadModule } = {}) {
   observer = onEvent ?? null;
   generation++;
   // The same origin keeps the page's helper; another origin loads its runtime's helper, which reuses the existing one.
-  if (!gestureTrace || gestureOrigin !== normalizedOrigin) loadGestureTrace(normalizedOrigin, loadModule);
+  if (!gestureTrace || gestureOrigin !== normalizedOrigin) void loadGestureTrace(normalizedOrigin, loadModule);
 }
 
 async function call(path, { method = 'GET', body, headers = {}, binaryBody = false, binaryResponse = false } = {}) {
