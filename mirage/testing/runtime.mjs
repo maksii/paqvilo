@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { loadConfig } from '../../lense/config.mjs';
 import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
@@ -77,8 +78,32 @@ export function runtimeOrigin(value) {
 }
 
 /** Connect to an existing local runtime. This never starts or stops it. */
-export async function connectRuntime({ origin, config, site, fetchImpl = globalThis.fetch } = {}) {
+export async function connectRuntime({ origin, config, site, project, fetchImpl = globalThis.fetch } = {}) {
   let cfg;
+  if (!origin && project) {
+    // The live runtime whose discovery record names this project (a standalone runtime or a project's portals).
+    const file = path.resolve(project);
+    const owned = await discoveries(miragePaths(null, { project: file }), { probe: false });
+    const urls = [
+      ...new Set(
+        owned
+          .filter((item) => item.processAlive && item.project && samePath(item.project, file))
+          .map((item) => item.url),
+      ),
+    ];
+    if (urls.length > 1)
+      throw Object.assign(new Error(`Multiple runtimes serve this project (${urls.join(', ')}); pass --origin.`), {
+        code: 'InvalidArguments',
+      });
+    if (!urls.length)
+      throw Object.assign(
+        new Error(
+          'No running runtime discovered for this project; start it with paqvilo mirage serve --project FILE or pass --origin.',
+        ),
+        { code: 'RuntimeUnreachable' },
+      );
+    origin = urls[0];
+  }
   if (!origin) {
     cfg = await loadConfig({ config, site }, process.env, { checkSource: false });
     if (cfg.mirageConfig.project) {

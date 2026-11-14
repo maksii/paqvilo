@@ -27,7 +27,9 @@ organization's metadata. Large datasets use far less memory.
   [static analysis](static-analysis.md).
 - **Canvas player.** `/_apps/canvas/<app>` runs a Canvas app from its exported source: controls, Power Fx,
   components, PCF, media, galleries and local data, with an inspector for source locations, state and errors.
-  Source edits reload the app. Start opens a new instance, `Notify` honours its timeout and survives reload, the
+  The Zoom setting fits the stage to the window by default. By default a text input's `Text` follows typing, and
+  `OnChange` runs when the entry is committed. Source edits reload the app, and a `canvas.sources` folder or `.msapp`
+  whose unique name matches a Solution canvas app replaces that app. Start opens a new instance, `Notify` honours its timeout and survives reload, the
   native `Form.Unsaved` is true only after input, and PCF resources are served from the apps address at
   `/_apps/canvas/pcf/<token>/`. A visitor without a Dataverse user answers 401 `CanvasPrincipalRequired`.
   See [Canvas apps](../mirage/docs/canvas-apps.md).
@@ -122,8 +124,10 @@ organization's metadata. Large datasets use far less memory.
   time limit and cancel apply. Pre-login packets over 64 KiB are refused.
 - **SOAP Organization service.** Decimal and money values keep their exact digits, an untyped `entity` element
   is decoded, and every message validates its required inputs.
-- **Web API and FetchXML.** Paging cookies continue past boolean and untyped numeric order columns, `count="0"`
-  returns no rows, a bare id binds to a polymorphic lookup, `$expand=transactioncurrencyid` is kept, and money
+- **Web API and FetchXML.** Paging cookies continue past boolean and untyped numeric order columns, `count` must be
+  a positive integer (0, negative, fractional and non-numeric values answer 400 `InvalidFetchXml`; for a bounded
+  total, request `count="1" returntotalrecordcount="true"` and read `total_record_count`), a bare id binds to a
+  polymorphic lookup, `$expand=transactioncurrencyid` is kept, and money
   columns read in the row's own currency with `exchangerate` and `_base` values. Metadata `$filter` and
   `$expand` depth is limited to 100. Paging links carry the address of the listener that served the request.
 - **Column types.** Multi-select columns report `AttributeType` 17 (Virtual) and partylist columns 10. Liquid
@@ -152,8 +156,9 @@ organization's metadata. Large datasets use far less memory.
 - **Liquid and portal rendering.** An `include` of a missing template renders `Template "<name>" not found.` as
   escaped text, never as Liquid. Only the first `entityform` or `webform` tag of a page renders and the others
   report a diagnostic. `request.params` includes cookies, and the renderer uses the runtime clock. A file name
-  outside Latin-1 uploads intact through `x-ms-file-name-encoding: uri-component`. A basic form's validation
-  message is inserted without HTML encoding, with summary links on or off, as observed on a native site.
+  outside Latin-1 uploads intact through `x-ms-file-name-encoding: uri-component`. A basic form's declared
+  validation message is inserted without HTML encoding, with summary links on or off, as observed on a native site.
+  A plug-in exception shows the generic submission error unless `observed.formSubmissionErrorMessage` is set.
 - **Plug-ins.** A pooled C# host that died while idle is replaced on the next call. `RelatedEntitiesQuery` and
   N:1 related queries survive the `Retrieve` pipeline, a Delete step runs as the SYSTEM user, and queue sequence
   numbers are kept per entity in `paqvilo_queuesequence`.

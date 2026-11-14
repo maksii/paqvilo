@@ -716,11 +716,18 @@ export async function closeProviders(providers) {
   if (created) await closeCreated(created);
 }
 
+// Shown in a debugger's process picker: which project and runtime port a plug-in host belongs to.
+const clrHostLabel = (root, origin) =>
+  `${path.basename(root ?? process.cwd())}@${origin ? new URL(origin).port : '0'}`
+    .replace(/[^\w.@-]+/g, '-')
+    .slice(0, 80);
+
 // Every runtime the host's preparer returns is recorded: the host closes the ones it or its custom API prepared, and a
 // runtime the caller mapped itself is not among them.
-function recordedPreparer(prepareRuntime, prepared) {
+function recordedPreparer(prepareRuntime, prepared, hostLabel) {
   return async (descriptor) => {
     const runtime = await prepareRuntime(descriptor);
+    runtime.hostLabel ??= hostLabel;
     prepared.add(runtime);
     return runtime;
   };
@@ -1174,7 +1181,7 @@ async function hostContext({
     clock,
     ids,
     scheduler,
-    prepareRuntime: recordedPreparer(prepareRuntime, preparedRuntimes),
+    prepareRuntime: recordedPreparer(prepareRuntime, preparedRuntimes, () => clrHostLabel(projectRoot, localOrigin())),
     preparedRuntimes,
     runtime,
     surfaces,
@@ -1229,7 +1236,25 @@ async function hostContext({
   }
 }
 function hostContextRest(c, { store, clock, ids, scheduler, diagnostic, inventory }) {
-  c.allInventory = () => [...(inventory() ?? []), ...c.canvas.records];
+  // A configured Canvas source replaces the Solution's packed app of the same unique name: the folder is the editable source.
+  c.allInventory = () => {
+    const solution = inventory() ?? [];
+    const own = new Map(c.canvas.records.map((record) => [String(record.name).toLowerCase(), record]));
+    const packed = new Map(
+      solution
+        .filter((record) => record.component === 'canvasapp')
+        .map((record) => [String(record.name).toLowerCase(), record]),
+    );
+    return [
+      ...solution.filter((record) => !(record.component === 'canvasapp' && own.has(String(record.name).toLowerCase()))),
+      ...c.canvas.records.map((record) => {
+        const same = packed.get(String(record.name).toLowerCase());
+        return same
+          ? { ...record, displayName: record.displayName ?? same.displayName, id: record.id ?? same.id }
+          : record;
+      }),
+    ];
+  };
   c.connectors = c.providers.connectors;
   // Solution custom connectors (custom-connector.mjs) follow the current inventory (memoised on its identity, so the
   // connector registry re-registers only after a sources reload); canvas records never carry a connector.

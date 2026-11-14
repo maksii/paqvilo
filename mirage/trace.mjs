@@ -1,5 +1,6 @@
 // paqvilo mirage trace: reads the trace store of a running local runtime through /_sim/api/trace (sim-trace-routes.mjs).
-// The runtime is --origin (loopback only) or the one connectRuntime discovers for --config/--site. watch follows the
+// The runtime is --origin (loopback only), the one discovered for --project FILE, or the one connectRuntime discovers for
+// --config/--site. show takes a full trace id, a unique id prefix or --latest. watch follows the
 // `trace` channel of /_sim/events (connectRuntime().trace.subscribe) and prints one line per ended span, or per ended
 // trace with --trace-end, until Ctrl+C, --count lines or the runtime stopping. flush waits until the runtime wrote its
 // queued persisted lines and SSE frames. --json prints one envelope { schemaVersion: 1, ok, command, result } (watch: one
@@ -11,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { parseToolCommand } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
-import { checkTraceFilters, idMatches, searchText } from './lib/trace-store.mjs';
+import { checkTraceFilters, idMatches, searchText, traceFailed } from './lib/trace-store.mjs';
 
 const ACTIONS = new Set(['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch']);
 // The span filters, which watch also applies to the frames it receives.
@@ -96,12 +97,12 @@ const pageLine = (page) =>
 const spanLine = (span) =>
   `${span.startedAt}  ${span.kind}  ${span.status}  ${ms(span.durationMs)}  ${span.name}${span.entity ? ' (' + span.entity + ')' : ''}  trace ${span.traceId}`;
 const traceLine = (trace) =>
-  `${trace.startedAt}  ${trace.status}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${trace.errorCount} errors  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
+  `${trace.startedAt}  ${trace.status}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${plural(trace.errorCount, 'error')}  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
 const statusLines = (status) => {
   const persistence = () => (status.persist.enabled ? 'on, ' + (status.persist.directory ?? 'no state folder') : 'off');
   return [
-    `Retained ${status.retained} traces, ${status.spans} spans (${status.running} running), about ${status.memoryBytes} bytes; ${status.dropped} traces and ${status.droppedSpans} spans dropped.`,
-    `Persistence: ${persistence()}${status.persist.lastError ? ' (' + status.persist.lastError + ')' : ''}; ${status.persist.written} lines written, ${status.persist.failures} failed.`,
+    `Retained ${plural(status.retained, 'trace')}, ${plural(status.spans, 'span')} (${status.running} running), about ${status.memoryBytes} bytes; ${plural(status.dropped, 'trace')} and ${plural(status.droppedSpans, 'span')} dropped.`,
+    `Persistence: ${persistence()}${status.persist.lastError ? ' (' + status.persist.lastError + ')' : ''}; ${plural(status.persist.written, 'line')} written, ${status.persist.failures} failed.`,
   ];
 };
 // An actor as `kind`, `kind:name` or `kind:id`.
@@ -111,13 +112,14 @@ const actorText = (actor) => {
   if (actor.name || actor.id) return kind + ':' + (actor.name || actor.id);
   return kind + '';
 };
-const figuresLine = (label, value, unit) =>
-  `${label}: ${plural(value.count, unit)}, ${value.errors} errors, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}.`;
+// failed (roots only) is the count of failed activities, appended after the max figure.
+const figuresLine = (label, value, unit, failed = null) =>
+  `${label}: ${plural(value.count, unit)}, ${plural(value.errors, 'error')}, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}${failed === null ? '' : `, ${failed} failed`}.`;
 
 function humanTrace(result) {
   const { trace } = result,
     lines = [
-      `Trace ${trace.traceId}: ${trace.status}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${trace.spanCount} spans, ${trace.errorCount} errors, ${trace.deniedCount} denied.`,
+      `Trace ${trace.traceId}: ${trace.status}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${plural(trace.spanCount, 'span')}, ${plural(trace.errorCount, 'error')}, ${trace.deniedCount} denied.`,
     ];
   const walk = (node, depth) => {
     const entity = () => (node.entity ? ' ' + node.entity : '');
@@ -138,7 +140,7 @@ function human(action, result, { utc = false } = {}) {
     return [
       ...table(result.items, [
         startedColumn(utc, (t) => t.startedAt),
-        ['STATUS', (t) => t.status],
+        ['STATUS', (t) => (traceFailed(t) && t.status === 'ok' ? 'ok (failed steps)' : t.status)],
         ['DURATION', (t) => ms(t.durationMs)],
         ['TOTAL', (t) => ms(t.totalDurationMs)],
         ['SPANS', (t) => t.spanCount],
@@ -172,9 +174,9 @@ function human(action, result, { utc = false } = {}) {
   if (action === 'show') return humanTrace(result);
   if (action === 'stats')
     return [
-      `${result.count} spans from ${result.from ?? '—'} to ${result.to ?? '—'}.`,
+      `${plural(result.count, 'span')} from ${result.from ?? '—'} to ${result.to ?? '—'}.`,
       figuresLine('Overall', result.overall, 'span'),
-      figuresLine('Roots', result.roots, 'trace'),
+      figuresLine('Roots', result.roots, 'trace', result.roots.failed),
       ...table(Object.entries(result.byKind), [
         ['KIND', ([key]) => key],
         ['COUNT', ([, value]) => value.count],
@@ -256,7 +258,11 @@ function frameFilter(filters) {
     const start = Date.parse(span.startedAt);
     const search = f.search?.toLowerCase();
     const status = frameStatusMatches(f, span, trace, lower);
-    const errors = trace ? trace.errorCount > 0 : span.status === 'error';
+    // A browser probe's 404 root span is an expected answer, not a failed step.
+    const errors = trace
+      ? traceFailed(trace)
+      : ['error', 'denied'].includes(span.status) &&
+        !(span.attributes?.browserProbe === true && span.attributes?.statusCode === 404);
     const duration = trace ? trace.totalDurationMs : span.durationMs;
     return (
       status &&
@@ -318,17 +324,28 @@ async function streamExport(client, filters) {
 let command = null,
   accepted = false;
 
-function validateTracePositionals(action, rest) {
-  if (rest.length !== (action === 'show' ? 1 : 0))
-    throw invalid(
-      action === 'show' ? 'trace show needs exactly one TRACE_ID.' : `Unexpected argument: ${rest.join(' ')}`,
-    );
+const SHOW_USAGE =
+  'trace show needs one TRACE_ID (or a unique prefix of at least 8 characters of the id), or --latest.';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PREFIX = /^[0-9a-f]{8}[0-9a-f-]*$/i;
+
+// show takes exactly one of a trace id (a full UUID or a prefix of one) and --latest.
+function validateTracePositionals(action, rest, latest) {
+  if (action !== 'show') {
+    if (rest.length) throw invalid(`Unexpected argument: ${rest.join(' ')}`);
+    return;
+  }
+  const [id] = rest;
+  if (rest.length > 1 || Boolean(id) === Boolean(latest)) throw invalid(SHOW_USAGE);
+  if (id && !UUID.test(id) && !PREFIX.test(id)) throw invalid(SHOW_USAGE);
 }
 
-function validateTraceFilters(action, filtered, change) {
-  const paging = action === 'watch' && filtered.find((name) => PAGING.has(name));
-  if (paging) throw invalid(`--${paging} applies to list, spans, stats and export, not watch.`);
-  if (filtered.length && !['list', 'spans', 'stats', 'export', 'watch'].includes(action))
+function validateTraceFilters(action, filtered, change, latest) {
+  const paging = filtered.find((name) => PAGING.has(name));
+  if (paging && action === 'watch') throw invalid(`--${paging} applies to list, spans, stats and export, not watch.`);
+  if (paging && action === 'show') throw invalid(`--${paging} does not apply to trace show.`);
+  const filterable = ['list', 'spans', 'stats', 'export', 'watch'].includes(action) || (action === 'show' && latest);
+  if (filtered.length && !filterable)
     throw invalid(`--${filtered[0]} filters list, spans, stats, export and watch only.`);
   if (change && action !== 'settings') throw invalid('Settings flags belong to trace settings.');
 }
@@ -337,10 +354,12 @@ function validateTraceOptions(action, values) {
   if (values.count !== undefined && (action !== 'watch' || !/^[1-9]\d{0,8}$/.test(values.count)))
     throw invalid('--count must be a positive integer and applies to trace watch only.');
   if (values['trace-end'] && action !== 'watch') throw invalid('--trace-end applies to trace watch only.');
+  if (values.latest && action !== 'show') throw invalid('--latest applies to trace show only.');
   if (values.utc && !['list', 'spans'].includes(action)) throw invalid('--utc applies to trace list and spans only.');
   for (const name of ['format', 'limit'])
     if (values[name] !== undefined && action !== 'export') throw invalid(`--${name} applies to trace export only.`);
-  if (values.origin && (values.config || values.site)) throw invalid('Use --origin or --config/--site, not both.');
+  if ([values.origin, values.config || values.site, values.project].filter(Boolean).length > 1)
+    throw invalid('Use one of --origin, --config/--site or --project.');
   if (values.origin)
     try {
       runtimeOrigin(values.origin);
@@ -367,9 +386,29 @@ async function traceRequest(client, action, rest, filters, change) {
     const settings = change ? await client.trace.configure(change) : await client.trace.settings();
     return { settings, status: await client.trace.status() };
   }
-  const tree = await client.trace.tree(rest[0]);
-  if (!tree) throw Object.assign(new Error(`No retained trace has the id ${rest[0]}.`), { code: 'TraceNotFound' });
-  return tree;
+  return showTree(client, rest[0], filters);
+}
+
+// The tree of a full trace id, or of the newest trace matching a unique id prefix or the filters (--latest).
+async function showTree(client, id, filters) {
+  const treeOf = async (traceId) => {
+    const tree = await client.trace.tree(traceId);
+    if (!tree) throw Object.assign(new Error(`No retained trace has the id ${traceId}.`), { code: 'TraceNotFound' });
+    return tree;
+  };
+  if (id && UUID.test(id)) return treeOf(id);
+  const page = await client.trace.query({ ...filters, ...(id ? { traceId: id } : {}), pageSize: 2 });
+  if (id && page.total > 1)
+    throw Object.assign(new Error(`${id} begins ${page.total} retained trace ids; give more characters.`), {
+      code: 'AmbiguousTraceId',
+    });
+  const [newest] = page.items;
+  if (!newest)
+    throw Object.assign(
+      new Error(id ? `No retained trace has the id ${id}.` : 'No retained trace matches the filters.'),
+      { code: 'TraceNotFound' },
+    );
+  return treeOf(newest.traceId);
 }
 
 /* NOSONAR: single-pass routine, splitting it would change shared state */ async function main(argv) {
@@ -378,14 +417,19 @@ async function traceRequest(client, action, rest, filters, change) {
   const [action, ...rest] = positionals;
   if (!ACTIONS.has(action)) throw usage();
   command = action;
-  validateTracePositionals(action, rest);
+  validateTracePositionals(action, rest, values.latest);
   const filtered = FILTERS.filter((name) => values[name] !== undefined),
     change = settingsChange(values);
-  validateTraceFilters(action, filtered, change);
+  validateTraceFilters(action, filtered, change, values.latest);
   validateTraceOptions(action, values);
   const filters = createTraceFilters(filtered, values);
   accepted = true;
-  const client = await connectRuntime({ origin: values.origin, config: values.config, site: values.site });
+  const client = await connectRuntime({
+    origin: values.origin,
+    config: values.config,
+    site: values.site,
+    project: values.project,
+  });
   if (action === 'watch')
     return watch(client, {
       count: Number(values.count ?? 0),

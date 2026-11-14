@@ -61,6 +61,21 @@ test('unrelated, credential-bearing, oversized and malformed lines are never for
   assert.deepEqual(received, [line]);
 });
 
+test('a debugger instruction with a host label is forwarded like the unlabelled one; a label with a space or over 80 characters is not', async (t) => {
+  const { owner, log } = await fixture(t, 'paq-debug-label-');
+  await fs.writeFile(log, '');
+  const received = [];
+  const relay = mirageDebugOutput(log, (text) => received.push(text));
+  owner.add(() => relay.close());
+  const labelled = line.replace('PID 1234 ', 'PID 1234 --label inv_project@8787 ');
+  const boundary = line.replace('PID 1234 ', `PID 1234 --label ${'a'.repeat(80)} `);
+  const spaced = line.replace('PID 1234 ', 'PID 1234 --label inv project@8787 ');
+  const long = line.replace('PID 1234 ', `PID 1234 --label ${'a'.repeat(81)} `);
+  await fs.appendFile(log, [line, labelled, boundary, spaced, long].join('\n') + '\n');
+  await relay.flush();
+  assert.deepEqual(received, [line, labelled, boundary]);
+});
+
 test('the dev wrapper retires its watchers when the foreground action fails', async (t) => {
   const { root, log } = await fixture(t, 'paq-debug-close-');
   await fs.writeFile(log, '');

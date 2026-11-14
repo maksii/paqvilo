@@ -446,3 +446,52 @@ test('a start that rejects rejects every waiting session call, and a later call 
   assert.equal(later.snapshot().variables.fxReady, true);
   assert.equal(launches, 2);
 });
+
+const textInputApp = () =>
+  createCanvasApp({
+    app: {
+      uniqueName: 'inv_text',
+      source: {
+        tree: {
+          screens: [
+            {
+              name: 'Home',
+              controls: [
+                { name: 'Search', control: 'TextInput@2.3' },
+                { name: 'Echo', control: 'Label@2.5' },
+                { name: 'Flag', control: 'Label@2.5' },
+              ],
+            },
+          ],
+        },
+        formulas: [
+          { owner: 'App', property: 'OnStart', text: '=Set(typed, false)' },
+          { owner: 'Search', property: 'OnChange', text: '=Set(typed, true)' },
+          { owner: 'Echo', property: 'Text', text: '=Search.Text' },
+          { owner: 'Flag', property: 'Text', text: '=If(typed, "changed", "idle")' },
+        ],
+      },
+    },
+    evaluator: createPowerFxEvaluator(),
+  });
+
+test('a text action sets a text input without running its OnChange; an input action still runs it', async () => {
+  const instance = textInputApp();
+  await instance.start();
+  const shown = (snapshot, name) => control(snapshot, 'Home', name).properties.Text;
+  let { snapshot } = await instance.act({ action: 'text', control: 'Search', value: 'be' });
+  assert.deepEqual([shown(snapshot, 'Search'), shown(snapshot, 'Echo'), shown(snapshot, 'Flag')], ['be', 'be', 'idle']);
+  ({ snapshot } = await instance.act({ action: 'input', control: 'Search', value: 'bee' }));
+  assert.deepEqual([shown(snapshot, 'Echo'), shown(snapshot, 'Flag')], ['bee', 'changed']);
+});
+
+test('a text action is refused for a control that is not a text input and for a value that is not a string', async () => {
+  const instance = textInputApp();
+  await instance.start();
+  await assert.rejects(instance.act({ action: 'text', control: 'Flag', value: 'x' }), {
+    code: 'CanvasActionInvalid',
+  });
+  await assert.rejects(instance.act({ action: 'text', control: 'Search', value: 3 }), {
+    code: 'CanvasActionInvalid',
+  });
+});

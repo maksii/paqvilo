@@ -63,6 +63,17 @@ test('empty and unsupported source trees cannot produce a complete clean assessm
   }
 });
 
+test('analysis verdict is ready, error or incomplete, and only the gate result stays ready under none', (t) => {
+  const clean = project(t, { 'body.html': '<p>review</p>' });
+  assert.equal(analyzeProject(clean, { failOn: 'error' }).verdict, 'ready');
+  const hinted = project(t, { 'body.html': '<img>' });
+  assert.equal(analyzeProject(hinted, { failOn: 'hint' }).verdict, 'error');
+  assert.equal(analyzeProject(hinted, { failOn: 'hint' }).ready, false);
+  const unsupported = project(t, { 'export.json': '{"unknownExport":true}' });
+  for (const failOn of ['error', 'none']) assert.equal(analyzeProject(unsupported, { failOn }).verdict, 'incomplete');
+  assert.equal(analyzeProject(unsupported, { failOn: 'none' }).ready, true);
+});
+
 test('repeated review has deterministic identities, canonical relative locations and source digest', (t) => {
   const root = project(t, { 'b.html': '<p>text</p>\n<img>', 'a.html': '<img>\n<img alt="">' });
   const first = analyzeProject(root);

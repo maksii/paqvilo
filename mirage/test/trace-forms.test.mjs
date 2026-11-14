@@ -11,6 +11,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { endedTree } from './support/trace-scenario.mjs';
+import { nativeFormControlIds } from '../lib/native-postback.mjs';
 
 const id = (n) => `f0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const SITE = id(1),
@@ -35,6 +36,11 @@ const portalFiles = {
   'OrdersList.list.yml': `adx_entitylistid: ${LIST}\nadx_name: Orders list\nadx_entityname: x_order\nadx_pagesize: 5`,
   'NewOrder.basicform.yml':
     'adx_entityformid: neworder\nadx_name: New order form\nadx_entityname: x_order\nadx_mode: 100000000\nadx_successmessage: Order submitted',
+  'Refuse.webpage.yml':
+    'adx_webpageid: refuse\nadx_name: Refuse\nadx_partialurl: refuse\nadx_parentpageid: home\nadx_pagetemplateid: refuse',
+  'Refuse.pagetemplate.yml': 'adx_pagetemplateid: refuse\nadx_name: Refuse\nadx_webtemplateid: refuse',
+  'Refuse.webtemplate.yml': 'adx_webtemplateid: refuse\nadx_name: Refuse',
+  'Refuse.webtemplate.source.html': '<main>{% entityform name: "New order form" %}</main>',
   'sitesetting.yml': [
     ['Webapi/x_order/enabled', 'true'],
     ['Webapi/x_order/fields', 'x_name'],
@@ -94,6 +100,15 @@ before(async () => {
           scope: 'global',
           operations: ['read', 'create', 'append', 'appendTo'],
           roles: ['Member'],
+        },
+      ],
+      // A declarative rule refuses an order named Refused with its own message (the rule's span is an error).
+      plugins: [
+        {
+          id: 'refuse-refused-order',
+          entity: 'x_order',
+          operations: ['create'],
+          validate: [{ field: 'x_name', pattern: '^(?!Refused)', message: 'Invented rule refused the order.' }],
         },
       ],
       settings: { permissionMode: 'enforce' },
@@ -232,4 +247,36 @@ test('a refused Web API collection read carries the permission deny event, like 
   );
   assert.equal(deny.message, 'Table permission denies read on x_order');
   assert.deepEqual([tree.root.status, tree.root.error.code], ['denied', 'PermissionDenied']);
+});
+
+// @test-kind contract: a refused save is a failed activity
+test('a refused basic-form save answers 200 with its message; its activity is failed though the root is ok', async () => {
+  const controls = nativeFormControlIds('entityform', 'neworder');
+  const response = await fetch(sim.url + '/refuse/', {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: member },
+    body: new URLSearchParams([
+      ['__EVENTTARGET', controls.buttons + 'InsertButton'],
+      ['__EVENTARGUMENT', ''],
+      ['__RequestVerificationToken', sim.csrf],
+      [controls.names + 'x_name', 'Refused order'],
+    ]),
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /Invented rule refused the order\./);
+  const { root } = await treeOf(response);
+  assert.equal(root.status, 'ok');
+  const failed = sim.trace.query({ hasErrors: 'true' }).items;
+  const traceId = response.headers.get('x-trace-id');
+  assert.equal(
+    failed.find((item) => item.traceId === traceId)?.failed,
+    true,
+    'the refused save is in the failed activities',
+  );
+  assert.equal(
+    sim.trace.query({ result: 'error' }).items.some((item) => item.traceId === traceId),
+    false,
+    'the root answered ok, so no error result names it',
+  );
 });

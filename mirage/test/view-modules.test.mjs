@@ -1704,7 +1704,7 @@ test('the detail tabs carry their (i) on the tab strip row, not on a line of its
   assert.doesNotMatch(activity.render(ctx), /class="ui-activity-tabhelp"/, 'Steps keeps its (i) in its tool row');
 });
 
-test('one click on Errors & denied filters what failed, shows a chip and a second click clears it (T1)', async () => {
+test('one click on Errors & denied filters the failed activities, shows a chip and a second click clears it (T1)', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams());
   await activity.load(ctx);
@@ -1713,20 +1713,20 @@ test('one click on Errors & denied filters what failed, shows a chip and a secon
     ctx.requested.length = 0;
     assert.equal(activity.handle(ctx, click('[data-activity-action]', { activityAction: 'errors' })), true);
     await ctx.data.activity.reloading;
-    assert.deepEqual(hashes, ['#activity?result=error%2Cdenied']);
+    assert.deepEqual(hashes, ['#activity?hasErrors=true']);
     assert.ok(
-      ctx.requested.some((path) => path.startsWith('/trace?result=error%2Cdenied&')),
+      ctx.requested.some((path) => path.startsWith('/trace?hasErrors=true&')),
       ctx.requested.join(),
     );
     let html = activity.render(ctx);
     assert.match(html, /id="activity-errors" data-activity-action="errors" aria-pressed="true"/);
-    assert.match(html, /id="activity-chip-result" data-activity-unfilter="result"/);
+    assert.match(html, /id="activity-chip-hasErrors" data-activity-unfilter="hasErrors"/);
     activity.handle(ctx, click('[data-activity-action]', { activityAction: 'errors' }));
     await ctx.data.activity.reloading;
     assert.equal(hashes.at(-1), '#activity');
     html = activity.render(ctx);
     assert.match(html, /aria-pressed="false" aria-label="Errors and denied only"/);
-    assert.doesNotMatch(html, /id="activity-chip-result"/);
+    assert.doesNotMatch(html, /id="activity-chip-hasErrors"/);
   });
 });
 
@@ -2050,6 +2050,74 @@ test('the Request tab shows the audit entry and its reads; Log & findings reads 
   activity.route(standalone, new URLSearchParams({ detail: 'request' }), [traceId]);
   await activity.load(standalone);
   assert.match(activity.render(standalone), /No request audit on this host: the root step’s facts\./);
+});
+
+test('Log & findings lists the trace lines of the steps oldest first, each linked to its step (P3)', async () => {
+  const tree = structuredClone(traceTree);
+  const late = tree.spans.find((span) => span.spanId === stepSpan.spanId);
+  const early = tree.spans.find((span) => span.spanId === sdkSpan.spanId);
+  late.startedAt = '2026-10-22T09:00:00.100Z';
+  late.events = [
+    { offsetMs: 2000, type: 'trace', message: 'inv late line' },
+    { offsetMs: 10, type: 'permission', message: 'inv not a trace line' },
+  ];
+  early.startedAt = '2026-10-22T09:00:00.000Z';
+  early.events = [{ offsetMs: 500, type: 'trace', message: 'inv early line' }];
+  const ctx = activityContext({ responses: activityResponses({ [`/trace/id/${traceId}`]: tree }) });
+  activity.route(ctx, new URLSearchParams({ detail: 'log' }), [traceId]);
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  safeMarkup(html);
+  const section = html.slice(html.indexOf('<h4>Trace lines (2)</h4>'), html.indexOf('<h4>Log lines'));
+  assert.ok(section.indexOf('inv early line') < section.indexOf('inv late line'), 'oldest first');
+  assert.doesNotMatch(section, /inv not a trace line/);
+  assert.match(
+    section,
+    new RegExp(
+      `<span class="ui-badge ui-tone-neutral">trace</span> <a href="#activity/${traceId}/${early.spanId}">${escapeHtml(early.name)}</a>`,
+    ),
+  );
+  assert.match(section, new RegExp(`<a href="#activity/${traceId}/${late.spanId}">${escapeHtml(late.name)}</a>`));
+  // A tree without trace events says so.
+  const quiet = structuredClone(traceTree);
+  for (const span of quiet.spans) span.events = (span.events ?? []).filter((event) => event.type !== 'trace');
+  const plain = activityContext({ responses: activityResponses({ [`/trace/id/${traceId}`]: quiet }) });
+  activity.route(plain, new URLSearchParams({ detail: 'log' }), [traceId]);
+  await activity.load(plain);
+  assert.match(
+    activity.render(plain),
+    /<h4>Trace lines \(0\)<\/h4><p class="ui-help">No step wrote a trace line \(plug-in ITracingService, flow trace\(\), server logic Logger\)\.<\/p>/,
+  );
+});
+
+test('the Related list of an activity links its page load when the root names a parent request (T3)', async () => {
+  const tree = structuredClone(traceTree);
+  tree.root = {
+    ...tree.root,
+    links: [{ traceId: 'fx-page-load', spanId: 'fx-load-span', relation: 'parent-request' }],
+  };
+  const ctx = activityContext({ responses: activityResponses({ [`/trace/id/${traceId}`]: tree }) });
+  activity.route(ctx, new URLSearchParams(), [traceId]);
+  await activity.load(ctx);
+  assert.match(
+    activity.render(ctx),
+    /<span class="ui-help">Related:<\/span> <a class="ui-button ui-small" href="#activity\/fx-page-load\/fx-load-span">Page load<\/a>/,
+  );
+});
+
+test('a row of an activity whose step failed shows the failure count although its root result is ok (T4)', async () => {
+  const items = activityQuery.items.map((item) =>
+    item.traceId === traceId ? { ...item, status: 'ok', failed: true, errorCount: 1, deniedCount: 0 } : item,
+  );
+  const ctx = activityContext({ responses: activityResponses({ '/trace': { ...activityQuery, items } }) });
+  activity.route(ctx, new URLSearchParams(), [traceId]);
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  const start = html.indexOf(`<tr data-activity-row="${traceId}"`);
+  assert.ok(start >= 0, 'the row is listed');
+  const row = html.slice(start, html.indexOf('</tr>', start));
+  assert.match(row, /<span class="ui-badge ui-tone-ok">ok<\/span>/);
+  assert.match(row, /<span class="ui-badge ui-tone-bad">1 error<\/span>/);
 });
 
 test('Export bundle follows the filters; the activity files remain as other formats (D-M-3)', async () => {

@@ -2225,7 +2225,7 @@ export function createCanvasApp({
       );
     return controls.get(name);
   };
-  async function setInput(name, given, item) {
+  async function setInput(name, given, item, { change = true } = {}) {
     const entry = hosted(name),
       scope = itemScope(name, item);
     const key = `input:${name}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
@@ -2263,6 +2263,7 @@ export function createCanvasApp({
     state.inputs.set(key, next);
     changed(key);
     log({ event: 'input', control: name, ...(scope.itemIndex !== undefined ? { item: scope.itemIndex } : {}) });
+    if (!change) return undefined;
     const result = await behaviour(name, 'OnChange', scope);
     if (checked) await behaviour(name, next ? 'OnCheck' : 'OnUncheck', scope);
     return result;
@@ -2467,7 +2468,9 @@ export function createCanvasApp({
       }),
     /**
      * One driver action: { action: 'select', control, item? } runs OnSelect (item = gallery row index); 'input' sets a
-     * control's user value ({ control, value, item? }) and runs OnChange; 'navigate' { screen }; 'back'; 'run' { formula }
+     * control's user value ({ control, value, item? }) and runs OnChange; 'text' sets a text input's value ({ control,
+     * value, item? }) without running OnChange, for typing before the value is committed; 'navigate' { screen }; 'back';
+     * 'run' { formula }
      * runs a behaviour formula on the current screen; 'evaluate' { formula } answers its value; 'resize' { width, height }
      * changes the bounded viewport; 'refresh' rereads data.
      */
@@ -2483,6 +2486,12 @@ export function createCanvasApp({
           case 'input':
             await setInput(request.control, request.value, request.item);
             break;
+          case 'text': {
+            if (hosted(request.control).kind !== 'textinput' || typeof request.value !== 'string')
+              throw fail('text needs a text input and a string value.', 'CanvasActionInvalid');
+            await setInput(request.control, request.value, request.item, { change: false });
+            break;
+          }
           case 'add-media': {
             await addMediaAction(request);
             break;
@@ -2540,7 +2549,7 @@ export function createCanvasApp({
             break;
           default:
             throw fail(
-              `Unknown canvas action ${request?.action}; use select, input, codecomponent, media, tick, search, gallery-window, navigate, back, run, evaluate, resize or refresh.`,
+              `Unknown canvas action ${request?.action}; use select, input, text, codecomponent, media, tick, search, gallery-window, navigate, back, run, evaluate, resize or refresh.`,
               'CanvasActionInvalid',
             );
         }
@@ -2860,6 +2869,7 @@ export function describeCanvasRuntime({ evaluatorLevel = 'contract' } = {}) {
       'open',
       'select',
       'input',
+      'text',
       'codecomponent',
       'codecomponent-event',
       'add-media',

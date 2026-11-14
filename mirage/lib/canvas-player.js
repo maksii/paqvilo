@@ -1,3 +1,4 @@
+/* global createGestureTrace -- served in front of this script by canvas-player.mjs (lib/trace-gesture.js) */
 (() => {
   const body = document.body,
     app = body.dataset.app,
@@ -38,6 +39,7 @@
     if (typeof v === 'object') return JSON.stringify(v);
     return String(v);
   };
+  const accessibleLabel = (p) => valueText(p.AccessibleLabel).trim();
   const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
   const viewport = () =>
     resolution.value === 'browser'
@@ -82,14 +84,13 @@
   }
   // Every call joins the page's trace (canvas-player.mjs data-trace-id / data-trace-parent, docs/design/tracing.md),
   // except the source watch's revision polls (untraced), which would fill the page trace once a second.
-  const traceHeaders = {
-    ...(body.dataset.traceId ? { 'X-Trace-Id': body.dataset.traceId } : {}),
-    ...(body.dataset.traceParent ? { 'X-Sim-Parent-Trace': body.dataset.traceParent } : {}),
-  };
+  const gestureTrace = createGestureTrace();
   async function request(url, { untraced = false, ...options } = {}) {
-    const headers = untraced ? options.headers : { ...traceHeaders, ...options.headers };
-    const response = await fetch(url, { ...options, headers }),
-      data = await response.json();
+    const page = { traceId: body.dataset.traceId, spanId: body.dataset.traceParent };
+    const headers = untraced ? options.headers : { ...gestureTrace.headersFor(page), ...options.headers };
+    const response = await fetch(url, { ...options, headers });
+    gestureTrace.noteAnswer(response);
+    const data = await response.json();
     if (!response.ok && !data.snapshot)
       throw new Error(
         data.error?.message || data.errors?.map((e) => e.message).join('; ') || `HTTP ${response.status}`,
@@ -396,7 +397,7 @@
   function makeImageControl(control, scope, p, disabled, url) {
     const el = node('img');
     el.src = url;
-    el.alt = valueText(p.AccessibleLabel || control.name);
+    el.alt = accessibleLabel(p);
     if (
       !disabled &&
       (control.behaviours?.includes('OnSelect') ||
@@ -456,7 +457,6 @@
     }
     el.dataset.mediaKey = mediaKey;
     el.controls = !disabled;
-    el.setAttribute('aria-label', control.name);
     if (el !== existing) bindMediaEvents(el, control, scope, p);
     return el;
   }
@@ -556,7 +556,7 @@
       search.type = 'search';
       search.value = valueText(p.SearchText);
       search.disabled = disabled;
-      search.setAttribute('aria-label', `${control.name} search`);
+      search.setAttribute('aria-label', accessibleLabel(p) || 'Search');
       const filter = () => {
         for (const option of select.options)
           option.hidden = !option.textContent.toLocaleLowerCase().includes(search.value.toLocaleLowerCase());
@@ -607,8 +607,49 @@
     if (kind === 'datepicker') el.value = valueText(p.SelectedDate).slice(0, 10);
     el.disabled = /disabled/i.test(displayMode);
     el.readOnly = /view/i.test(displayMode);
-    el.addEventListener('change', () => act({ action: 'input', control: control.name, value: el.value, ...scope }));
+    if (kind === 'textinput') bindTextInputOutput(el, control, scope, p);
+    else
+      el.addEventListener('change', () => act({ action: 'input', control: control.name, value: el.value, ...scope }));
     return el;
+  }
+  // The text input's TriggerOutput formula decides when typing reaches the app: on each keystroke (the default), after
+  // half a second (Delayed, or DelayOutput true) or never before the commit (FocusOut). A commit runs OnChange.
+  function bindTextInputOutput(el, control, scope, p) {
+    const formula =
+      source.formulas?.find((row) => row.owner.endsWith(`.${control.name}`) && row.property === 'TriggerOutput')
+        ?.text ?? '';
+    const trigger = /FocusOut/.test(formula) ? 'focusout' : /Delayed/.test(formula) ? 'delayed' : 'keypress';
+    const delay = p.DelayOutput === true || trigger === 'delayed' ? 500 : 0;
+    let timer = null;
+    // The text the app holds for this element: the value it was built with, then each value sent (dataset.sent, read by
+    // prepareRenderStage). Typed text that equals it is already in the app, so a re-render keeps the app's value.
+    el.dataset.sent = el.value;
+    const sendText = () => {
+      timer = null;
+      const value = el.value;
+      el.dataset.sent = value;
+      void act({ action: 'text', control: control.name, value, ...scope });
+    };
+    el.addEventListener('input', () => {
+      el.dataset.dirty = 'true';
+      if (trigger === 'focusout') return;
+      clearTimeout(timer);
+      timer = null;
+      if (delay) timer = setTimeout(sendText, delay);
+      else sendText();
+    });
+    // A commit runs OnChange once for the typing since the last commit. The dirty mark is kept on the element and carried
+    // to a re-rendered input (prepareRenderStage), because the app already holds the typed value by then.
+    const commit = () => {
+      if (el.dataset.rerendering || el.dataset.dirty !== 'true') return;
+      el.dataset.dirty = '';
+      clearTimeout(timer);
+      timer = null;
+      el.dataset.sent = el.value;
+      void act({ action: 'input', control: control.name, value: el.value, ...scope });
+    };
+    el.addEventListener('change', commit);
+    el.addEventListener('blur', commit);
   }
   function makeNumericControl(control, scope, p, kind, disabled) {
     const el = node('input');
@@ -644,10 +685,19 @@
     if ((p.Italic ?? p.FontItalic) === true) el.style.fontStyle = 'italic';
     if ((p.Underline ?? p.FontUnderline) === true) el.style.textDecoration = 'underline';
   }
-  function styleControl(el, control, p) {
+  // AccessibleLabel names the control. Images take their name from alt, containers and galleries have none, and a check
+  // box without a label is named by its text. A graphic without a name is hidden unless it can be selected (role button).
+  const UNNAMED_KINDS = ['image', 'container', 'form', 'formviewer', 'card', 'gallery', 'addmedia'];
+  const HIDDEN_WITHOUT_NAME = ['icon', 'rectangle', 'circle', 'image'];
+  function styleControl(el, control, p, kind) {
     el.dataset.control = control.name;
     el.classList.add('canvas-control');
-    el.setAttribute('aria-label', control.name);
+    const name =
+      accessibleLabel(p) || (kind === 'checkbox' || kind === 'toggle' ? valueText(p.Text || p.Label).trim() : '');
+    if (name && !UNNAMED_KINDS.includes(kind)) el.setAttribute('aria-label', name);
+    else el.removeAttribute('aria-label');
+    if (!name && HIDDEN_WITHOUT_NAME.includes(kind) && el.getAttribute('role') !== 'button')
+      el.setAttribute('aria-hidden', 'true');
     el.style.left = `${num(p.X, 0)}px`;
     el.style.top = `${num(p.Y, 0)}px`;
     el.style.width = `${num(p.Width, 160)}px`;
@@ -713,7 +763,7 @@
         input.type = 'file';
         input.accept = 'image/png,image/jpeg,image/gif,image/webp';
         input.disabled = disabled;
-        input.setAttribute('aria-label', valueText(p.AccessibleLabel || control.name));
+        if (accessibleLabel(p)) input.setAttribute('aria-label', accessibleLabel(p));
         input.addEventListener('change', addMediaChange.bind(null, input, control, scope));
         el.append(text, input);
         break;
@@ -782,7 +832,7 @@
         el.classList.add('unsupported');
       }
     }
-    return styleControl(el, control, p);
+    return styleControl(el, control, p, kind);
   }
   function attach(parent, child) {
     if (child.parentNode === parent) return;
@@ -854,7 +904,22 @@
     const active = stage.contains(document.activeElement) ? document.activeElement : null;
     const focusedControl = active?.closest('[data-control]')?.dataset.control;
     const focusedSearch = active?.type === 'search';
-    const cursor = focusedSearch ? active.selectionStart : null;
+    // What the user typed is kept across the re-render that a pending text action causes.
+    const typed =
+      active &&
+      (active.tagName === 'TEXTAREA' ||
+        (active.tagName === 'INPUT' && ['text', 'search', 'password'].includes(active.type)))
+        ? {
+            value: active.value,
+            start: active.selectionStart,
+            end: active.selectionEnd,
+            dirty: active.dataset.dirty === 'true',
+            sent: active.dataset.sent,
+          }
+        : null;
+    const item = active?.closest('[data-item-index]')?.dataset.itemIndex ?? null;
+    // Removing a focused input can fire its change event in some browsers; that is not a commit by the user.
+    if (active) active.dataset.rerendering = 'true';
     const canMove = typeof stage.moveBefore === 'function';
     const media = [...stage.querySelectorAll('audio[data-media-key], video[data-media-key]')].filter(
       (el) => canMove || el.parentNode === stage,
@@ -865,7 +930,7 @@
     for (const el of media) if (el.parentNode !== stage) stage.moveBefore(el, null);
     for (const child of [...stage.children]) if (!media.includes(child)) child.remove(); // NOSONAR: snapshot copy guards against mutation while iterating
     inspector.replaceChildren(node('h2', 'Inspector'));
-    return { focusedControl, focusedSearch, cursor };
+    return { focusedControl, focusedSearch, typed, item };
   }
   function buildCanvasControls(screen) {
     const elements = new Map();
@@ -938,12 +1003,21 @@
   function restoreCanvasFocus(focus) {
     if (!focus.focusedControl) return;
     const candidate = [...stage.querySelectorAll('[data-control]')].find(
-      (element) => element.dataset.control === focus.focusedControl,
+      (element) =>
+        element.dataset.control === focus.focusedControl &&
+        (element.closest('[data-item-index]')?.dataset.itemIndex ?? null) === focus.item,
     );
     const target = focus.focusedSearch ? candidate?.querySelector('input[type="search"]') : candidate;
     if (target?.isConnected && !target.disabled) {
       target.focus();
-      if (focus.cursor != null && target.setSelectionRange) target.setSelectionRange(focus.cursor, focus.cursor);
+      const typed = focus.typed;
+      // Typed text the app has not received is written back; text already sent leaves the app's value in place.
+      if (typed && typed.value !== typed.sent && target.value !== typed.value) target.value = typed.value;
+      if (typed?.dirty) target.dataset.dirty = 'true';
+      if (typed && target.setSelectionRange) {
+        const end = target.value.length;
+        target.setSelectionRange(Math.min(typed.start, end), Math.min(typed.end, end));
+      }
     }
   }
   function updateCanvasTransition(screen) {
@@ -1036,6 +1110,38 @@
       if (control.kind === 'container')
         applyLayout(elements.get(control.name), control.properties || {}, screen.controls, control);
   }
+  // Viewer zoom: scales the drawn stage to the space beside the inspector. Formulas still see the chosen resolution.
+  function fitStage() {
+    const zoom = document.querySelector('[data-testid="canvas-zoom"]');
+    const scroller = document.querySelector('.stage-scroll');
+    const fit = document.querySelector('.canvas-fit');
+    const w = parseFloat(surface.style.width),
+      h = parseFloat(surface.style.height);
+    if (!(w > 0) || !(h > 0)) return;
+    // A hidden pane has no width: fitting to it would scale the stage to zero, so the current transform stays.
+    if (scroller.clientWidth === 0) return;
+    const s =
+      zoom.value === 'fit'
+        ? Math.min(
+            1,
+            scroller.clientWidth / w,
+            Math.max(120, window.innerHeight - scroller.getBoundingClientRect().top - 16) / h,
+          )
+        : 1;
+    surface.style.transformOrigin = 'top left';
+    surface.style.transform = s < 1 ? `scale(${s})` : '';
+    fit.style.width = `${w * s}px`;
+    fit.style.height = `${h * s}px`;
+  }
+  // Before Start the stage is drawn at the chosen resolution, as a resolution change before Start draws it.
+  function sizeIdleStage() {
+    const [width, height] = logicalViewport();
+    stage.style.width = `${width}px`;
+    stage.style.height = `${height}px`;
+    surface.style.width = `${width}px`;
+    surface.style.height = `${height}px`;
+    fitStage();
+  }
   function render() {
     globalThis.paqviloCanvasPcf?.begin();
     const focus = prepareRenderStage();
@@ -1043,6 +1149,7 @@
     if (!snapshot || snapshot.started === false) {
       for (const el of preservedMedia.values()) el.remove();
       status.textContent = 'The app has not been started. Start runs its OnStart formula.';
+      sizeIdleStage();
       globalThis.paqviloCanvasPcf?.end();
       return;
     }
@@ -1072,6 +1179,7 @@
     applyScreenLayouts(screen, elements);
     appendCanvasDiagnostics(geometry);
     restoreCanvasFocus(focus);
+    fitStage();
     syncClock(
       screen?.controls.some((control) => control.kind === 'timer' && control.properties?.Running === true),
       snapshot.clockKey,
@@ -1154,11 +1262,12 @@
   resolution.addEventListener('change', () => {
     const [width, height] = logicalViewport();
     if (snapshot && snapshot.started !== false) void act({ action: 'resize', width, height });
-    else {
-      stage.style.width = `${width}px`;
-      stage.style.height = `${height}px`;
-    }
+    else sizeIdleStage();
   });
+  document.querySelector('[data-testid="canvas-zoom"]').addEventListener('change', fitStage);
+  // Deferred to a frame: fitStage changes the scroller's content height, which would end the observer loop undelivered.
+  new ResizeObserver(() => requestAnimationFrame(fitStage)).observe(document.querySelector('.stage-scroll'));
+  window.addEventListener('resize', fitStage);
   let resizeTimer;
   window.addEventListener('resize', () => {
     if (resolution.value !== 'browser') return;

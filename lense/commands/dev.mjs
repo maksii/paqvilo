@@ -15,6 +15,7 @@ const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
 const tag = (session) => `${session.cfg.siteName ?? 'portal'}@${session.cfg.envName ?? 'env'}`;
 const short = (commit) => (typeof commit === 'string' ? commit.slice(0, 7) : null);
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 function logHitNotes(hit, label, log) {
   for (const note of hit.notes ?? []) log(`${time()}  ${label}  WARN   ${hit.url}  ${note.rel}: ${note.reason}`);
@@ -99,7 +100,7 @@ function printSummaryDiagnostics(session, cfg, model, rewriter, log) {
     log(`  NEEDS DEPLOY: ${unsupported.rel} - ${unsupported.reason}`);
   if (model.warnings.length > 3 || rewriter.unsupported.length > 3)
     log(
-      `diagnostics ${model.warnings.length} source warnings, ${rewriter.unsupported.length} deployment-only sources; full details in the panel or "paqvilo doctor"`,
+      `diagnostics ${plural(model.warnings.length, 'source warning')}, ${plural(rewriter.unsupported.length, 'deployment-only source')}; full details in the panel or "paqvilo doctor"`,
     );
 }
 

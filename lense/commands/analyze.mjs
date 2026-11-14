@@ -12,9 +12,11 @@ const displayPath = (value) =>
       (character) => String.raw`\u${character.codePointAt(0).toString(16).padStart(4, '0')}`,
     );
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 export function printAnalysis(analysis) {
   console.log(
-    `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${analysis.counts.error} errors, ${analysis.counts.warning} warnings, ${analysis.counts.hint} hints (fail on ${analysis.failOn})`,
+    `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${plural(analysis.counts.error, 'error')}, ${plural(analysis.counts.warning, 'warning')}, ${plural(analysis.counts.hint, 'hint')} (fail on ${analysis.failOn})`,
   );
   for (const finding of analysis.findings) {
     const field = finding.field ? ` (${finding.field})` : '';
@@ -82,7 +84,7 @@ async function analyzeSiteReport(catalogue, site, args, failOn) {
 function printAnalyzeReport(reports) {
   console.log('Offline Power Platform source analysis (no native build, live, rendered or authorization verification)');
   for (const item of reports) {
-    console.log(`\n${item.site}: ${item.ready ? 'READY' : 'ERROR'}`);
+    console.log(`\n${item.site}: ${item.analysis ? item.analysis.verdict.toUpperCase() : 'ERROR'}`);
     if (item.analysis) printAnalysis(item.analysis);
     for (const error of item.errors) console.log(`  ERROR: ${error.message}`);
   }

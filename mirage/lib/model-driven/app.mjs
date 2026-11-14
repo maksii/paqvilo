@@ -5,6 +5,7 @@ import { icon, navigationIcon, columnIcon } from './icons.mjs';
 import { createFormClientRuntime, evaluateRibbonRules, pageRequest, webResourcePage } from './client-runtime.mjs';
 import { renderPcfDataset } from './pcf-runtime.mjs';
 import { createModelDrivenProvenanceRegistry, modelDrivenKey, modelDrivenControlKey } from './provenance-registry.mjs';
+import { createGestureTrace } from '../trace-gesture.js';
 
 const totalLabel = (result) => `${result.total}${result.totalLimitExceeded ? '+' : ''}`;
 
@@ -68,15 +69,14 @@ const esc = (value) =>
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
   );
 const csrf = $('meta[name="mirage-csrf"]').content;
+const gestureTrace = createGestureTrace();
 // The shell's root (http.mjs fills the metas): every call of the app joins the page trace (docs/design/tracing.md).
-const traceHeaders = Object.fromEntries(
-  [
-    ['x-trace-id', 'mirage-trace-id'],
-    ['x-sim-parent-trace', 'mirage-trace-parent'],
-  ]
-    .map(([header, meta]) => [header, $(`meta[name="${meta}"]`)?.content])
-    .filter(([, value]) => value),
-);
+function pageTraceHeaders() {
+  return gestureTrace.headersFor({
+    traceId: $('meta[name="mirage-trace-id"]')?.content,
+    spanId: $('meta[name="mirage-trace-parent"]')?.content,
+  });
+}
 const storage = {
   get(key, fallback) {
     try {
@@ -264,13 +264,14 @@ async function api(path = '', options = {}) {
     ...options,
     headers: {
       'content-type': 'application/json',
-      ...traceHeaders,
+      ...pageTraceHeaders(),
       'x-sim-csrf': csrf,
       'x-mirage-provenance-format': '1',
       ...(app?.id ? { 'x-mirage-app': app.id } : {}),
       ...options.headers,
     },
   });
+  gestureTrace.noteAnswer(response);
   const body = await response.json();
   if (
     response.ok &&
@@ -4602,8 +4603,9 @@ async function customPageExists(name) {
   const resolved = app.customPages?.[String(name).toLowerCase()];
   if (!resolved?.supported) throw customPageMissing(name, resolved?.reason);
   const response = await fetch('/_apps/canvas/api/' + encodeURIComponent(name), {
-    headers: { accept: 'application/json', ...traceHeaders },
+    headers: { accept: 'application/json', ...pageTraceHeaders() },
   });
+  gestureTrace.noteAnswer(response);
   if (response.status === 404) {
     const body = await response.json().catch(() => ({}));
     if (body.error?.code === 'CanvasAppsDisabled')

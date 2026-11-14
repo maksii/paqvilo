@@ -190,6 +190,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
     writesFiles: [],
     failOn,
     ready: failOn === 'none' || (complete && !meetsThreshold),
+    verdict: complete ? (failOn === 'none' || !meetsThreshold ? 'ready' : 'error') : 'incomplete',
     complete,
     sourceDigest: input.sourceDigest,
     sources: analysisSources,

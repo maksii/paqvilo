@@ -19,6 +19,7 @@ import {
 } from '../lib/trace-store.mjs';
 import { createRequestContext, runWithRequest } from '../lib/request-context.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { browserProbe } from '../lib/trace-hosts.mjs';
 
 const START = Date.parse('2026-02-01T10:00:00.000Z');
 function clock() {
@@ -487,8 +488,12 @@ test('query filters traces by every documented filter and pages the summaries', 
   assert.deepEqual(names({ traceId: ids['api read'].traceId }), ['api read']);
   assert.deepEqual(names({ search: 'STAGE' }), ['portal create'], 'search covers attributes');
   assert.deepEqual(names({ minDurationMs: 35 }), ['anonymous page']);
-  assert.deepEqual(names({ hasErrors: 'true' }), ['portal create']);
-  assert.deepEqual(names({ hasErrors: false }), ['anonymous page', 'api read']);
+  assert.deepEqual(
+    names({ hasErrors: 'true' }),
+    ['anonymous page', 'portal create'],
+    'an error or a denial fails an activity',
+  );
+  assert.deepEqual(names({ hasErrors: false }), ['api read'], 'a denied step makes its activity failed');
   assert.deepEqual(names(new URLSearchParams('kind=dataverse&entity=x_item')), ['portal create']);
   assert.deepEqual(names({ kind: 'dataverse', entity: 'x_other', host: 'power-pages' }), [], 'one span meets all');
   const page = traces.query({ pageSize: 2, page: 2 });
@@ -522,8 +527,9 @@ test('spans filters flat spans, including parentSpanId and depth', () => {
     ['render', 'dataverse'],
   );
   assert.deepEqual(
-    traces.spans({ hasErrors: true }).items.map((span) => span.name),
-    ['portal create plugin-step'],
+    traces.spans({ hasErrors: true, traceId: root.traceId, order: 'asc' }).items.map((span) => span.name),
+    ['portal create', 'portal create dataverse', 'portal create plugin-step'],
+    'a failed activity keeps every one of its spans',
   );
   assert.equal(traces.spans({ traceId: root.traceId }).total, 3);
   assert.equal(traces.spans({ from: '2026-02-01T10:00:02Z' }).total, 3);
@@ -1137,11 +1143,11 @@ test('stats reports overall figures over the matching spans and root figures ove
   trace(30, 8, 'x_other');
   const all = traces.stats();
   assert.deepEqual(all.overall, { count: 6, errors: 2, p50: 8, p95: 30, max: 30 });
-  assert.deepEqual(all.roots, { count: 3, errors: 1, p50: 20, p95: 30, max: 30 });
+  assert.deepEqual(all.roots, { count: 3, errors: 1, failed: 1, p50: 20, p95: 30, max: 30 });
   // A span filter narrows overall to the spans and roots to the roots of traces holding one.
   const items = traces.stats({ entity: 'x_item' });
   assert.deepEqual(items.overall, { count: 2, errors: 1, p50: 4, p95: 6, max: 6 });
-  assert.deepEqual(items.roots, { count: 2, errors: 1, p50: 10, p95: 20, max: 20 });
+  assert.deepEqual(items.roots, { count: 2, errors: 1, failed: 1, p50: 10, p95: 20, max: 20 });
   const roots = traces.stats({ depth: 0, entity: 'x_item' });
   assert.equal(roots.overall.count, 0, 'no root has the entity');
   assert.equal(roots.roots.count, 2, 'root figures ignore depth');
@@ -1149,6 +1155,7 @@ test('stats reports overall figures over the matching spans and root figures ove
   assert.deepEqual(traces.stats({ status: 'running' }).roots, {
     count: 1,
     errors: 0,
+    failed: 0,
     p50: null,
     p95: null,
     max: null,
@@ -1777,4 +1784,90 @@ test("a trace's total keeps its latest span end when an injected clock steps bac
   time.set(START + 40);
   root.end();
   assert.equal(traces.tree(root.traceId).trace.totalDurationMs, 100);
+});
+
+// @test-kind contract: one activity outcome (failed) for query, spans, stats and summary
+test('a form save refused by a step is a failed activity though its root answered 200', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'POST /form' });
+  traces.run(root, () => traces.start({ kind: 'plugin-step', name: 'Invented.Refuse' }).fail(new Error('refused')));
+  root.end({ attributes: { statusCode: 200 } });
+  const names = (filters) => traces.query(filters).items.map((item) => item.root.name);
+  assert.equal(traces.query().items[0].status, 'ok');
+  assert.equal(traces.query().items[0].failed, true);
+  assert.deepEqual(names({ hasErrors: true }), ['POST /form']);
+  assert.deepEqual(names({ result: 'error' }), [], 'the result still names the root status');
+  assert.equal(traces.stats({}).roots.failed, 1);
+  assert.deepEqual(
+    traces.spans({ hasErrors: true, order: 'asc' }).items.map((span) => span.name),
+    ['POST /form', 'Invented.Refuse'],
+  );
+});
+
+// @test-kind contract: one activity outcome (failed) for query, spans, stats and summary
+test('an activity whose only failure is a denied step is failed', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'GET /secure' });
+  traces.run(root, () => traces.start({ kind: 'permission', name: 'Invented.Check' }).end({ status: 'denied' }));
+  root.end({ attributes: { statusCode: 200 } });
+  assert.equal(traces.query().items[0].failed, true);
+  assert.equal(traces.query({ hasErrors: true }).total, 1);
+});
+
+// @test-kind contract: one activity outcome (failed) for query, spans, stats and summary
+test('a browser probe that ends 404 is not a failed activity and stays in the error results', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'GET /favicon.ico', attributes: { browserProbe: true } });
+  root.end({ status: 'error', attributes: { statusCode: 404 } });
+  assert.equal(traces.query().items[0].failed, false);
+  assert.equal(traces.query({ hasErrors: true }).total, 0);
+  assert.equal(traces.query({ result: 'error' }).total, 1);
+  assert.equal(traces.stats({}).roots.failed, 0);
+});
+
+// @test-kind contract: a traceId filter takes an 8-character prefix as the id filters do, and a shorter one matches nothing
+test('a traceId filter takes an 8-character prefix, ignores case and spaces, and refuses a shorter prefix', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'GET /prefixed' });
+  root.end();
+  const id = root.traceId;
+  const names = (filters) => traces.query(filters).items.map((item) => item.root.name);
+  assert.deepEqual(names({ traceId: id.slice(0, 8) }), ['GET /prefixed']);
+  assert.deepEqual(names({ traceId: `  ${id.toUpperCase()}  ` }), ['GET /prefixed']);
+  assert.deepEqual(names({ traceId: id.slice(0, 7) }), []);
+  assert.deepEqual(
+    traces.spans({ traceId: id.slice(0, 8) }).items.map((span) => span.name),
+    ['GET /prefixed'],
+  );
+});
+
+// @test-kind contract: an x-sim-parent-request header links a root to a retained span with relation parent-request
+test('x-sim-parent-request links a root to a retained span, by span id or audit id, and ignores other values', () => {
+  const { traces } = store();
+  const AUDIT = '0e0e0e0e-0000-4000-8000-00000000000e';
+  const requested = traces.start({ kind: 'http', name: 'POST /submit', attributes: { auditId: AUDIT } });
+  requested.end();
+  const link = { traceId: requested.traceId, spanId: requested.spanId, relation: 'parent-request' };
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-parent-request': requested.spanId }).links, [link]);
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-parent-request': AUDIT.toUpperCase() }).links, [link]);
+  const root = traces.start({
+    kind: 'http',
+    name: 'POST /follow',
+    ...traces.fromHeaders({ 'x-sim-parent-request': requested.spanId }),
+  });
+  root.end();
+  assert.deepEqual(traces.span(root.spanId).links, [link]);
+  const UNKNOWN = '0f0f0f0f-0000-4000-8000-00000000000f';
+  assert.equal('links' in traces.fromHeaders({ 'x-sim-parent-request': 'not a uuid' }), false);
+  assert.equal('links' in traces.fromHeaders({ 'x-sim-parent-request': UNKNOWN }), false);
+});
+
+// @test-kind contract: browser-made requests are recognised by method and path only
+test('browserProbe names the requests a browser makes on its own', () => {
+  assert.equal(browserProbe('GET', '/favicon.ico'), true);
+  assert.equal(browserProbe('HEAD', '/apple-touch-icon-120x120-precomposed.png'), true);
+  assert.equal(browserProbe('GET', '/.well-known/appspecific/com.chrome.devtools.json'), true);
+  assert.equal(browserProbe('POST', '/favicon.ico'), false);
+  assert.equal(browserProbe('GET', '/robots.txt'), false);
+  assert.equal(browserProbe('GET', '/images/favicon.ico'), false);
 });

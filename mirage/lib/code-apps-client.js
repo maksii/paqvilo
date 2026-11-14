@@ -10,6 +10,8 @@
 // Generated services retain the real SDK when the optional executor or Vite integration installs local data execution.
 // This lower-level throwing client is also available for application-owned service layers.
 
+import { createGestureTrace } from './trace-gesture.js';
+
 let base = null;
 let csrf = null;
 let generation = 0;
@@ -20,13 +22,14 @@ let appName = null;
 let context = null;
 // The getContext() answer's trace (X-Trace-Id, X-Sim-Span-Id): every later call joins it (docs/design/tracing.md).
 let trace = null;
+const gestureTrace = createGestureTrace();
 
 function requestHeaders(body, binaryBody, headers) {
   return {
     accept: 'application/json',
     'x-paqvilo-code-app-session': sessionId,
     ...(csrf ? { 'x-sim-csrf': csrf } : {}),
-    ...(trace ? { 'x-trace-id': trace.traceId, 'x-sim-parent-trace': trace.spanId } : {}),
+    ...(trace ? gestureTrace.headersFor(trace) : {}),
     ...(body === undefined ? {} : { 'content-type': binaryBody ? 'application/octet-stream' : 'application/json' }),
     ...headers,
   };
@@ -78,6 +81,7 @@ export function configure({ app, origin = '', onEvent } = {}) {
   csrf = null;
   context = null;
   trace = null;
+  gestureTrace.reset();
   sessionId = crypto.randomUUID();
   observer = onEvent ?? null;
   generation++;
@@ -108,6 +112,7 @@ async function call(path, { method = 'GET', body, headers = {}, binaryBody = fal
       ...(body === undefined ? {} : { body: binaryBody ? body : JSON.stringify(body) }),
     });
     status = response.status;
+    gestureTrace.noteAnswer(response);
     const bytes = binaryResponse && response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
     const text = bytes === null ? await response.text() : '';
     // Reject stale results; an already-sent write cannot be rolled back by reconfiguration.

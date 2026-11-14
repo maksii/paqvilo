@@ -641,10 +641,10 @@ test('Health KPI tiles link into Activity with the matching filter and name what
     ['storage', '#services?panel=storage'],
   ])
     assert.match(tile(key), new RegExp(`<a class="dm-kpi-link" href="${RegExp.escape(kit.escapeHtml(href))}"`), key);
-  // Failures link to the same filter narrowed to errors; a zero count stays plain text.
+  // Failures link to the same filter narrowed to failed steps; a zero count stays plain text.
   assert.match(
     tile('plugins'),
-    /<a class="dm-kpi-errors" href="#activity\?kind=plugin-step&amp;result=error">2 failed<\/a>/,
+    /<a class="dm-kpi-errors" href="#activity\?kind=plugin-step&amp;status=error">2 failed<\/a>/,
   );
   assert.doesNotMatch(tile('webApi'), /dm-kpi-errors/);
   assert.match(tile('webApi'), /0 failed/);
@@ -682,7 +682,7 @@ test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key number
     activity: activity(3),
   };
   // The banner counts failed activities (roots), the number the linked list shows, not failed steps.
-  const stats = { overall: { errors: 16 }, roots: { errors: 5, p95: 137.4 } };
+  const stats = { overall: { errors: 16 }, roots: { errors: 5, failed: 7, p95: 137.4 } };
   const now = Date.parse('2026-10-22T10:05:00Z');
   const actions = '<button class="ui-button ui-small" type="button" data-dashboard-refresh>Refresh now</button>';
   const html = renderDashboard(payload, {
@@ -728,7 +728,7 @@ test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key number
     assert.match(html, fact);
   for (const [href, value] of [
     ['#activity?host=power-pages', '19'],
-    ['#activity?result=error', '5'],
+    ['#activity?hasErrors=true', '7'],
     ['#activity?tab=stats', '137 ms'],
     ['#activity?kind=plugin-step', '3'],
     ['#activity?tab=findings', '2'],

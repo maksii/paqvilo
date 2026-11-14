@@ -555,11 +555,16 @@ export async function keepSessionCookies(context, file, { origins = [], signal }
       }
     }),
   );
+  // The staff selection is signed with a secret that lives in one runtime process, so no other runtime accepts it.
+  const processLocal = (cookie) =>
+    /^paqvilo-mirage-staff(?:-\d+)?$/.test(cookie.name) &&
+    ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(cookie.domain?.replace(/^\./, ''));
   const stale = (cookie) =>
-    ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(cookie.domain?.replace(/^\./, '')) &&
-    /^paqvilo-mirage-(?:auth|idp)-(\d+)$/.test(cookie.name) &&
-    ports.size &&
-    !ports.has(cookie.name.split('-').at(-1));
+    processLocal(cookie) ||
+    (['127.0.0.1', 'localhost', '::1', '[::1]'].includes(cookie.domain?.replace(/^\./, '')) &&
+      /^paqvilo-mirage-(?:auth|idp)-(\d+)$/.test(cookie.name) &&
+      ports.size &&
+      !ports.has(cookie.name.split('-').at(-1)));
   const keep = (cookie) => !stale(cookie) && inPortalScope(cookie, hosts);
   for (const cookie of await context.cookies())
     if (stale(cookie)) await context.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path });

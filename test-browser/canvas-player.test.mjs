@@ -49,7 +49,7 @@ for (const format of ['directory', 'archive']) {
     const stage = page.getByTestId('canvas-stage');
     await stage.waitFor();
     const control = (name) => page.locator(`[data-control="${name}"]`);
-    await control('SearchBox').fill('Al');
+    await action(() => control('SearchBox').fill('Al'));
     await action(() => control('SearchBox').press('Tab'));
     await page.waitForFunction(() =>
       document.querySelector('[data-control="Greeting"]')?.textContent.includes('Hello Al'),
@@ -77,6 +77,7 @@ for (const format of ['directory', 'archive']) {
     assert.equal(await control('VisitStatus').innerText(), 'visited');
     assert.equal(await control('Hidden').count(), 0);
     assert.equal(await control('Disabled').isDisabled(), true);
+    await page.getByTestId('canvas-zoom').selectOption('1');
     const inventory = await (await context.request.get(sim.url + '/_apps/canvas/api/' + app)).json();
     assert.deepEqual(inventory.diagnostics, []);
     const report = await sim.preflight({ strict: true });

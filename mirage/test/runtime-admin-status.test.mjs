@@ -1,7 +1,7 @@
 // @test-kind contract: Paqvilo's own runtime administration router, its status answer and the order of its token gate
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRuntimeAdminRouter } from '../lib/runtime-admin.mjs';
+import { createRuntimeAdminRouter, diagnosticsOfTrace } from '../lib/runtime-admin.mjs';
 import { createStaffSessionHandler } from '../lib/staff-session.mjs';
 import { DataStore } from '../lib/data.mjs';
 
@@ -143,4 +143,65 @@ test('the administration token gate accepts the exact token and refuses every va
   assert.notEqual(await outcome('admin-x'), 403);
   for (const token of ['admin-xy', 'admin-', 'admin-z', '', ['admin-x']])
     assert.equal(await outcome(token), 403, String(token));
+});
+
+// @test-kind contract: findings are filtered by trace id on every host
+test('diagnosticsOfTrace narrows findings, their counts and the listed requests to one trace', () => {
+  const answer = {
+    diagnostics: [
+      { code: 'PAGE_NOT_FOUND', traceId: 'trace-a' },
+      { code: 'OBSERVATION' },
+      { code: 'PAGE_NOT_FOUND', traceId: 'trace-b' },
+      { code: 'PAGE_NOT_FOUND', traceId: 'trace-a' },
+    ],
+    byCode: { PAGE_NOT_FOUND: 3, OBSERVATION: 1 },
+    requests: [
+      { id: 1, traceId: 'trace-a' },
+      { id: 2, traceId: 'trace-b' },
+    ],
+  };
+  assert.equal(diagnosticsOfTrace(answer, undefined), answer, 'no trace id: the answer is unchanged');
+  assert.equal(diagnosticsOfTrace(answer, ''), answer, 'an empty trace id: the answer is unchanged');
+  assert.deepEqual(diagnosticsOfTrace(answer, 'trace-a'), {
+    diagnostics: [
+      { code: 'PAGE_NOT_FOUND', traceId: 'trace-a' },
+      { code: 'PAGE_NOT_FOUND', traceId: 'trace-a' },
+    ],
+    byCode: { PAGE_NOT_FOUND: 2 },
+    requests: [{ id: 1, traceId: 'trace-a' }],
+  });
+  const withoutRequests = diagnosticsOfTrace({ diagnostics: answer.diagnostics, byCode: {} }, 'trace-b');
+  assert.deepEqual(withoutRequests, {
+    diagnostics: [{ code: 'PAGE_NOT_FOUND', traceId: 'trace-b' }],
+    byCode: { PAGE_NOT_FOUND: 1 },
+  });
+});
+
+// @test-kind contract: findings are filtered by trace id on every host
+test('the diagnostics route answers only the findings of the trace it names', async () => {
+  const answered = [];
+  const diagnostics = [
+    { code: 'PAGE_NOT_FOUND', traceId: 'trace-a' },
+    { code: 'OBSERVATION', traceId: 'trace-b' },
+  ];
+  const router = createRuntimeAdminRouter({
+    store: {},
+    json: (_res, status, value) => answered.push({ status, value }),
+    jsonObjectBody: async () => ({}),
+    change: (fn) => fn(),
+    csrf: () => 'admin-x',
+    diagnostics: () => ({ diagnostics, byCode: { PAGE_NOT_FOUND: 1, OBSERVATION: 1 } }),
+  });
+  const get = (query) =>
+    router({ method: 'GET', headers: {} }, {}, new URL(`http://127.0.0.1/_sim/api/diagnostics${query}`));
+  assert.equal(await get('?traceId=trace-a'), true);
+  assert.deepEqual(answered.at(-1), {
+    status: 200,
+    value: { diagnostics: [diagnostics[0]], byCode: { PAGE_NOT_FOUND: 1 } },
+  });
+  assert.equal(await get(''), true);
+  assert.deepEqual(answered.at(-1), {
+    status: 200,
+    value: { diagnostics, byCode: { PAGE_NOT_FOUND: 1, OBSERVATION: 1 } },
+  });
 });

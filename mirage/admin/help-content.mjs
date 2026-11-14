@@ -240,7 +240,7 @@ const HELP = {
   },
   'activity.detail-log': {
     intro:
-      'The log lines and findings written during this activity, oldest first. The log keeps the newest lines only (mirage.logs.retain), so a long-past activity may have none left.',
+      'The trace lines its steps wrote, then the log lines and findings written during this activity, oldest first. The log keeps the newest lines only (mirage.logs.retain), so a long-past activity may have none left.',
     doc: SIM,
   },
   'activity.detail-rendered': {

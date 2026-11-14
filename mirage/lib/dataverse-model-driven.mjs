@@ -2,7 +2,7 @@ import { currentRequest } from './request-context.mjs';
 import { systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
-import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
+import { organizationPrincipalContext, STAFF_UNAVAILABLE_MESSAGE } from './dataverse-principal-context.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { createDataverseHandler } from './dataverse-api.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
@@ -161,7 +161,7 @@ export function createModelDrivenWebApi({ organization }) {
         );
       const user = runtime.principals.byId(principal?.principalId);
       if (!user || user.applicationid || (user.accessmode === 4 && principal.kind !== 'local-admin'))
-        throw new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
+        throw new DataError(STAFF_UNAVAILABLE_MESSAGE, 401, 'StaffPrincipalUnavailable');
       const hostname = /^[a-z0-9.-]+$|^\[[0-9a-f:]+\]$/i.test(new URL(`http://${host ?? 'localhost'}`).hostname)
         ? new URL(`http://${host ?? 'localhost'}`).hostname
         : 'localhost';
@@ -246,7 +246,7 @@ export function createModelDrivenRecordService({
     // request must not retain interactive rights after this user is converted
     // to an application/noninteractive account.
     if (selected && (user?.applicationid || (user?.accessmode === 4 && options.kind !== 'local-admin')))
-      throw new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
+      throw new DataError(STAFF_UNAVAILABLE_MESSAGE, 401, 'StaffPrincipalUnavailable');
     return organizationPrincipalContext(store, user);
   };
   // Convert the canonical, already-authorized JSON projection to the shell's

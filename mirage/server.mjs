@@ -12,6 +12,7 @@ import {
   adminAssetFile,
   adminAssetType,
   diagnosticsByCode,
+  diagnosticsOfTrace,
 } from './lib/runtime-admin.mjs';
 import { hostnameOf } from './lib/dataverse-webhooks.mjs';
 import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './lib/sim-dashboard-routes.mjs';
@@ -205,6 +206,7 @@ import {
 import { createCanvasHandler } from './lib/canvas-http.mjs';
 import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
 import { canvasPcfApps, PORTAL_PCF, servePcfResource } from './lib/canvas-pcf.mjs';
+import { canvasSourceWatch } from './lib/canvas-source.mjs';
 import { createCodeAppsHandler, authorityTokenIssuer } from './lib/code-apps-http.mjs';
 import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
 import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
@@ -214,7 +216,7 @@ import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from '.
 import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
 import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
 import { recordHttpError, statusFromHttp } from './lib/trace-store.mjs';
-import { setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
+import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
@@ -4107,10 +4109,12 @@ export async function createSimulator(options = {}) {
       });
     }
     if (method === 'GET' && relative === '/diagnostics') {
-      // traceId (optional): the findings and portal requests of one trace (D-M-4).
-      const traceId = url.searchParams.get('traceId')?.trim();
-      const of = (items) => (traceId ? items.filter((item) => item.traceId === traceId) : items);
-      return json(res, 200, { diagnostics: of(allDiagnostics()), requests: of(requests) });
+      // traceId (optional): the findings and portal requests of one trace (D-M-4). The answer keeps its two fields.
+      const answer = diagnosticsOfTrace(
+        { diagnostics: allDiagnostics(), requests },
+        url.searchParams.get('traceId')?.trim(),
+      );
+      return json(res, 200, { diagnostics: answer.diagnostics, requests: answer.requests });
     }
     if (method === 'GET' && relative === '/logs') return json(res, 200, logHistory(url.searchParams));
     if (method === 'GET' && relative === '/render-sources')
@@ -6908,7 +6912,11 @@ export async function createSimulator(options = {}) {
     if (route?.kind === 'error') throw error(route.message, route.status, route.code);
     if (route) {
       const message = `${route.message ? route.message + ' ' : ''}Rendered the ${route.page.name} page with HTTP ${route.status}.`;
-      recordDiagnostic({ code: route.code ?? 'PAGE_NOT_FOUND', path: url.pathname, message });
+      const code = route.code ?? 'PAGE_NOT_FOUND';
+      // A browser's own probe of a missing path (favicon, touch icon, devtools manifest) is one finding per path.
+      const probeRepeat =
+        browserProbe(req.method, url.pathname) && diagnostics.some((d) => d.code === code && d.path === url.pathname);
+      if (!probeRepeat) recordDiagnostic({ code, path: url.pathname, message });
       // The error page answers its own status: its root names why (D-R3-4).
       const routed = trace.getStore();
       if (routed) routed.httpError = { code: route.code ?? 'PAGE_NOT_FOUND', message };
@@ -7271,7 +7279,12 @@ export async function createSimulator(options = {}) {
           portal: portalTraceName(),
           preset: cfg.activeExperiment?.id ?? null,
         },
-        attributes: { kindHint: kind, provider, ...requestAttributes(req, url) },
+        attributes: {
+          kindHint: kind,
+          provider,
+          ...requestAttributes(req, url),
+          ...(browserProbe(req.method, url.pathname) ? { browserProbe: true } : {}),
+        },
         ...inbound,
       });
     };
@@ -7740,19 +7753,7 @@ export async function createSimulator(options = {}) {
     ];
     const pluginSourceKeys = new Set(pluginSources.map((file) => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
-    const canvasSources = (settingOptionsRest.canvas?.sources ?? []).map((source) => path.resolve(projectRoot, source));
-    const canvasKeys = canvasSources.map((source) => source.toLowerCase());
-    const isCanvasSource = (file) => {
-      const full = path.resolve(file).toLowerCase();
-      const base = canvasKeys.find((root) => full === root || full.startsWith(root + path.sep));
-      return (
-        Boolean(base) &&
-        !full
-          .slice(base.length)
-          .split(path.sep)
-          .some((part) => /^(?:\.git|node_modules|\.paqvilo|bin|obj)$/i.test(part))
-      );
-    };
+    const canvasWatch = canvasSourceWatch(settingOptionsRest.canvas?.sources, projectRoot);
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
     const ignoreSource = solutionWatchFilter({
       sourceDir,
@@ -7764,11 +7765,11 @@ export async function createSimulator(options = {}) {
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
     watcher = sourceWatcher(
-      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources],
+      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots],
       {
         ignoreInitial: true,
         ignored: (file, stats) =>
-          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
+          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || canvasWatch.contains(file)
             ? false
             : ignoreSource(file, stats),
         awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },

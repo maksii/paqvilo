@@ -6,15 +6,18 @@ body {
   font:
     14px system-ui,
     sans-serif;
-  color: #222;
+  color: var(--ui-ink);
 }
 header {
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.6rem 1rem;
-  border-bottom: 1px solid #ccc;
+  border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+}
+header label {
+  margin-bottom: 0;
 }
 h1 {
   font-size: 1.1rem;
@@ -30,9 +33,14 @@ main {
   padding: 1rem;
 }
 .stage-scroll {
+  flex: 1 1 0;
+  min-width: 0;
   overflow: auto;
-  max-width: calc(100vw - 370px);
-  border: 1px solid #aaa;
+  border: 1px solid var(--line);
+}
+/* The viewer zoom (fitStage in canvas-player.js) sizes this box to the scaled surface, so the scroller only scrolls at 100%. */
+.canvas-fit {
+  overflow: hidden;
 }
 .canvas-surface {
   position: relative;
@@ -43,6 +51,62 @@ main {
   overflow: hidden;
   width: 1366px;
   height: 768px;
+  color: #000;
+  font:
+    14px system-ui,
+    sans-serif;
+  color-scheme: light;
+}
+/* The admin sheets restyle these element types; an app's own labels, fields, links and headings keep the browser's look. */
+.stage label {
+  display: revert;
+  font-size: revert;
+  font-weight: revert;
+  color: revert;
+  margin-bottom: revert;
+}
+.stage a {
+  color: revert;
+  outline-offset: revert;
+}
+.stage code {
+  font-family: revert;
+  font-size: revert;
+  color: revert;
+}
+.stage h1,
+.stage h2,
+.stage h3 {
+  font-size: revert;
+  letter-spacing: revert;
+  margin: revert;
+  color: revert;
+  font-weight: revert;
+}
+.stage input,
+.stage select,
+.stage textarea {
+  border: revert;
+  border-radius: revert;
+  background: revert;
+  color: revert;
+  padding: revert;
+  font-size: inherit;
+  box-shadow: revert;
+  outline-offset: revert;
+}
+.stage input:focus,
+.stage select:focus,
+.stage textarea:focus {
+  border-color: revert;
+  box-shadow: revert;
+}
+.stage button {
+  outline-offset: revert;
+}
+.stage button:disabled {
+  cursor: default;
+  opacity: 1;
 }
 aside {
   width: 330px;

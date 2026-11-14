@@ -174,7 +174,7 @@ test('two ordinary SDK Vite apps load, switch, edit and debug through the local 
   release();
   const frame = page.frameLocator('#preview');
   await frame.locator('#context').filter({ hasText: 'startup edit · alpha-id · Invented Developer' }).waitFor();
-  await page.getByRole('status').filter({ hasText: 'Bridge connected' }).waitFor();
+  await page.getByText('Bridge connected', { exact: true }).waitFor();
   const alphaSession = await page
     .frames()
     .find((f) => f.url().startsWith(servers.alpha))

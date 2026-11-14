@@ -13,6 +13,8 @@ import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
 import { printAnalysis, analysisFailure } from './analyze.mjs';
 import { configuredAnalysisRoots } from '../analysis/project.mjs';
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 function addProfileDiagnostic(diagnostics, sourceDir, file, bound, code, line = 1, column = 1) {
   diagnostics.push({
     code,
@@ -366,7 +368,7 @@ function printDoctorItem(item, args, catalogue) {
   console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${environmentLabel}${mirageSummary}`);
   if (item.counts)
     console.log(
-      `  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`,
+      `  ${item.format}: ${plural(item.counts.pages, 'page')}, ${item.counts.mappedWebFiles}/${plural(item.counts.webFiles, 'mapped web file')}, ${plural(item.counts.inlineSources, 'inline source')} (${item.elapsedMs} ms)`,
     );
   for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
   for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
