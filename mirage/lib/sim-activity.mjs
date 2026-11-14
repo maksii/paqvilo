@@ -199,7 +199,7 @@ async function writeOtlpSpans(res, spans, noSpans) {
     else await line({ kind: 'activity', trace: tree.trace, spans: tree.spans });
   }
   if (frame) await writeChunk(res, frame.tail);
-  for (const entry of deps.audit.entries.filter((item) => item.traceId && matched.has(item.traceId))) {
+  for (const entry of (deps.audit?.entries ?? []).filter((item) => item.traceId && matched.has(item.traceId))) {
     if (res.destroyed) return;
     counts.audit++;
     await line({ kind: 'audit', entry });

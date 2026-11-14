@@ -341,6 +341,44 @@ test('the canvas app list page declares an empty icon so the browser does not re
   assert.match(html, /<link rel="icon" href="data:,">/);
 });
 
+test('the canvas app list and the player use the admin sheets from the canvas prefix under the same policy', async (t) => {
+  const source = { app: { name: 'Invented' }, screens: [], formulas: [], diagnostics: [] };
+  const listUrl = await serveHandler(
+    t,
+    createCanvasHandler({ apps: () => [{ uniqueName: 'invented', source }], runtime: { existing: () => null } }),
+  );
+  const playerUrl = await serveHandler(
+    t,
+    createCanvasHandler({
+      apps: () => [{ uniqueName: 'invented', source: { ...source, screens: [{ name: 'Home', controls: [] }] } }],
+      csrf: () => 'token',
+      principal: () => ({ kind: 'staff', principalId: 'local' }),
+      runtime: { existing: () => null, session: async () => ({ observe: async () => ({}) }) },
+    }),
+  );
+  const list = await fetch(`${listUrl}/_apps/canvas/`);
+  const listHtml = await list.text();
+  assert.ok(listHtml.startsWith('<!doctype html><html lang="en" data-ui-theme="auto">'));
+  assert.ok(listHtml.includes('<meta name="color-scheme" content="light dark">'));
+  assert.ok(listHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_ui-kit.css">'));
+  assert.ok(listHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_shell.css">'));
+  assert.match(listHtml, /<p class="notice" role="status"><strong>Canvas apps use a bounded local player/);
+  const playerHtml = await (await fetch(`${playerUrl}/_apps/canvas/invented`)).text();
+  assert.ok(playerHtml.startsWith('<!doctype html><html lang="en" data-ui-theme="auto">'));
+  assert.ok(playerHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_ui-kit.css">'));
+  assert.ok(playerHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_shell.css">'));
+  assert.ok(playerHtml.indexOf('_shell.css') < playerHtml.indexOf('_player.css'));
+  const policy = list.headers.get('content-security-policy');
+  assert.match(policy, /style-src 'self'/);
+  assert.doesNotMatch(policy, /unsafe-inline|unsafe-eval/);
+  for (const name of ['_ui-kit.css', '_shell.css']) {
+    const sheet = await fetch(`${listUrl}/_apps/canvas/${name}`);
+    assert.equal(sheet.status, 200, name);
+    assert.match(sheet.headers.get('content-type'), /^text\/css/);
+    assert.equal(sheet.headers.get('content-security-policy'), policy, name);
+  }
+});
+
 // A form-posted driver action carries its anti-forgery token as _csrf; the admin token is accepted there only when the host names it.
 async function formStart(t, options, token) {
   let starts = 0;

@@ -15,6 +15,8 @@ For installed projects, use `npx --no-install paqvilo`. The `lense analyze` spel
 
 `--fail-on` accepts `none`, `error`, `warning` or `hint`. Doctor defaults to `none`, keeping its existing operational verdict independent from source advice. `analyze` defaults to `error`. A selected threshold fails for findings at that level or above, or incomplete supported-source inspection. `none` remains advisory and does not certify incomplete input.
 
+Each analysis result has a `verdict`: `ready` when the inspection is complete and no finding reaches the threshold, `incomplete` when supported-source inspection did not finish (whatever the threshold), and `error` when a finding reaches the threshold. The text output prints the verdict as each report's heading (READY, INCOMPLETE or ERROR); a report that fails before analysis, such as a configuration error, keeps the heading ERROR. `ready` remains the gate result, so it is true under `--fail-on none` even when the inspection is incomplete.
+
 - **Error:** a proven invalid local source contract.
 - **Warning:** a concrete risk or inconsistency requiring review; intended configurations may be valid.
 - **Hint:** a possible improvement, missing contextual evidence or unresolved dependency.
@@ -26,7 +28,7 @@ enhanced component envelope with absent, empty or unsupported record content rec
 incomplete coverage instead. Optional or withheld settings do not require disclosing secret values; an explicitly
 empty/null setting inside a supported record payload is valid input.
 
-Locations are exact where direct text/YAML positions are available. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. IDs depend on rule and location; they are not waivers and can change when source moves.
+Locations are exact where direct text/YAML positions are available. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. A Dataverse XML finding points at the child element its `field` names when that element is present, otherwise at the owning element, and the position is approximate. IDs depend on rule and location; they are not waivers and can change when source moves.
 
 ## Source domains
 
@@ -52,11 +54,11 @@ Some recommendations need context. Public access may be deliberate; view-based W
 
 ## Bounded local inventory
 
-All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. Overlapping files are not read twice; root labels disambiguate relative locations.
+All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. With several roots, a file is labelled by its path relative to the roots' common folder; a selected root nested in another is read as its own root; roots without a common folder fall back to a `<root id>/` prefix.
 
 Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted. Member paths, CRCs, counts and inflated sizes are checked. Compressed and selected inflated bytes share the budget, including nested packages up to three archive levels. Larger/unsupported packages are incomplete; supply unpacked sources when appropriate.
 
-Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions and web resource content in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
+Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions, web resource content, Custom API request parameters and response properties, and table chart definitions in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
 
 `complete` describes bounded supported-source inspection. It does not mean every compiler, security, accessibility or runtime check passed. `sourceDigest` fingerprints paths and original bytes actually processed; partial input yields a partial fingerprint, not a deployment receipt. Reports preserve skips, rule execution, domain limitations and operations not performed.
 
@@ -69,7 +71,7 @@ const report = analyzeProject('/absolute/project', {
 });
 ```
 
-For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
+For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. File labels follow the rule above. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
 
 ## Extending quality coverage
 

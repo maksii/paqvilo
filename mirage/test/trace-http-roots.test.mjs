@@ -805,6 +805,45 @@ test('Power Pages: a request root captures its body and content type; an answere
   assert.match(notFound.error.message, /no-such-page|Page Not Found/);
 });
 
+// @test-kind contract: browser probe roots are traced, not counted as failed
+test('a browser probe of a missing icon is a traced 404 root that is not failed, with one finding per path', async () => {
+  const sim = await powerPages();
+  const traceIds = [];
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(sim.url + '/favicon.ico');
+    assert.equal(response.status, 404);
+    await response.text();
+    traceIds.push(response.headers.get('x-trace-id'));
+  }
+  for (const traceId of traceIds) {
+    const { root } = await ended(sim.trace, traceId);
+    assert.deepEqual([root.status, root.attributes.browserProbe, root.attributes.statusCode], ['error', true, 404]);
+    assert.equal(sim.trace.query({ traceId }).items[0].failed, false, 'a probe is not a failed activity');
+  }
+  const findings = (await (await fetch(sim.url + '/_sim/api/diagnostics')).json()).diagnostics;
+  const probed = findings.filter((item) => item.code === 'PAGE_NOT_FOUND' && item.path === '/favicon.ico');
+  assert.equal(probed.length, 1, 'the probe records one finding for its path, not one per page load');
+});
+
+// @test-kind contract: browser probe roots are traced, not counted as failed
+test('a missing page requested twice records a finding each time, and each of its roots is failed', async () => {
+  const sim = await powerPages();
+  const traceIds = [];
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(sim.url + '/inv-missing-page');
+    assert.equal(response.status, 404);
+    await response.text();
+    traceIds.push(response.headers.get('x-trace-id'));
+  }
+  for (const traceId of traceIds) {
+    const { root } = await ended(sim.trace, traceId);
+    assert.deepEqual([root.status, root.attributes.browserProbe], ['error', undefined]);
+    assert.equal(sim.trace.query({ traceId }).items[0].failed, true);
+  }
+  const findings = (await (await fetch(sim.url + '/_sim/api/diagnostics')).json()).diagnostics;
+  assert.equal(findings.filter((item) => item.path === '/inv-missing-page').length, 2);
+});
+
 // @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: an anonymous first page GET starts the visitor session, so every visitor has a visitor session key', async () => {
   const sim = await powerPages();

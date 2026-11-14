@@ -58,8 +58,8 @@ const bannerOf = (hosted, playerList) => {
   return playerList ? PLAYER_BANNER : BANNER;
 };
 const page = (title, body, hosted, playerList = false) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><link rel="icon" href="data:,"></head>` +
-  `<body><p role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}</body></html>`;
+  `<!doctype html><html lang="en" data-ui-theme="auto"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title><link rel="icon" href="data:,"><link rel="stylesheet" href="${PREFIX}_ui-kit.css"><link rel="stylesheet" href="${PREFIX}_shell.css"></head>` +
+  `<body><p class="notice" role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}</body></html>`;
 const summary =
   (hosted) =>
   ({ uniqueName, source }) => ({
@@ -584,12 +584,12 @@ export function createCanvasHandler({
         'text/html; charset=utf-8',
         page(
           'Canvas apps',
-          `<h1>Canvas apps</h1><ul>${list
+          `<main><h1>Canvas apps</h1><div class="table-wrap"><table><thead><tr><th>App</th><th>Unique name</th><th>Level</th></tr></thead><tbody>${list
             .map(
               (app) =>
-                `<li><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a> (${escapeHtml(app.uniqueName)})</li>`,
+                `<tr><td><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a></td><td>${escapeHtml(app.uniqueName)}</td><td><span class="badge">${escapeHtml(levelOf(app.source, Boolean(runtime)))}</span></td></tr>`,
             )
-            .join('')}</ul>`,
+            .join('')}</tbody></table></div></main>`,
           Boolean(runtime),
           true,
         ),

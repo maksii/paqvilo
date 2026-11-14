@@ -5,6 +5,7 @@ import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 import { codeAppShownUrl, pinnedLocalFetch } from './code-apps-config.mjs';
 import { sameToken } from './admin-origin.mjs';
+import { STAFF_UNAVAILABLE_MESSAGE } from './dataverse-principal-context.mjs';
 
 /*
  * Local bridge for Power Apps code apps under /_apps/code/<name>/.
@@ -47,6 +48,13 @@ const BASE_CSP =
 const WORKBENCH_ASSETS = {
   'workbench.js': ['text/javascript; charset=utf-8', new URL('./code-apps-workbench.js', import.meta.url)],
   'workbench.css': ['text/css; charset=utf-8', new URL('./code-apps-workbench.css', import.meta.url)],
+  // Static code, no credential: the app clients import it after configure() (code-apps-client.js).
+  'trace-gesture.js': ['text/javascript; charset=utf-8', new URL('./trace-gesture.js', import.meta.url)],
+};
+// The admin sheets the loader page links; the code app page's CSP allows same-origin stylesheets only.
+const ADMIN_SHEETS = {
+  '/_apps/code/_ui-kit.css': new URL('../admin/ui-kit.css', import.meta.url),
+  '/_apps/code/_shell.css': new URL('../admin/shell.css', import.meta.url),
 };
 const FEATURES = Object.freeze({
   context: 'local staff identity and app settings',
@@ -195,7 +203,7 @@ export function createCodeAppsHandler({
     if (principal.kind !== 'staff')
       throw fail(401, 'StaffSessionRequired', 'Select a staff user in /_sim/ before playing a code app.');
     const row = user(principal.principalId);
-    if (!row) throw fail(401, 'StaffPrincipalUnavailable', 'The selected staff user is unavailable or disabled.');
+    if (!row) throw fail(401, 'StaffPrincipalUnavailable', STAFF_UNAVAILABLE_MESSAGE);
     return { ...principal, row };
   };
   const requireCsrf = (req) => {
@@ -214,7 +222,8 @@ export function createCodeAppsHandler({
     if (
       url.pathname === '/_apps/code/' ||
       url.pathname === '/_apps/code/_api/apps' ||
-      url.pathname.startsWith('/_apps/code/_assets/')
+      url.pathname.startsWith('/_apps/code/_assets/') ||
+      Object.hasOwn(ADMIN_SHEETS, url.pathname)
     ) {
       traceActor(req);
       res.setHeader('cache-control', 'no-store');
@@ -232,6 +241,11 @@ export function createCodeAppsHandler({
           })),
         );
         json(res, 200, { mode: 'simulation', features: FEATURES, apps: inventory });
+        return true;
+      }
+      if (Object.hasOwn(ADMIN_SHEETS, url.pathname)) {
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+        res.end(req.method === 'HEAD' ? undefined : await readFile(ADMIN_SHEETS[url.pathname]));
         return true;
       }
       const assetName = url.pathname.replace('/_apps/code/_assets/', '');
@@ -515,6 +529,6 @@ function loader(req, res, url, app, base) {
   res.end(
     req.method === 'HEAD'
       ? undefined
-      : `<!doctype html><html><head><meta charset="utf-8">${title}</head><body>${notice}${body}</body></html>`,
+      : `<!doctype html><html lang="en" data-ui-theme="auto"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">${title}<link rel="stylesheet" href="/_apps/code/_ui-kit.css"><link rel="stylesheet" href="/_apps/code/_shell.css"></head><body>${notice}${body}</body></html>`,
   );
 }

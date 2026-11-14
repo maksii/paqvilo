@@ -5,6 +5,8 @@ import { OverlaySession } from '../session.mjs';
 import { createSourceReader } from '../portal-model.mjs';
 import { fetchOnline, mapLimit, describeStatus } from '../online.mjs';
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 const WHERE = {
   'page-js': 'inline <script> of the page',
   'page-css': 'inline <style> of the page',
@@ -81,7 +83,7 @@ export function toMarkdown(m) {
   for (const [kind, items] of byKind) {
     const filled = items.filter((i) => !i.empty);
     lines.push(
-      `## ${markdownText(kind)} (${filled.length} with content, ${items.length} files)`,
+      `## ${markdownText(kind)} (${filled.length} with content, ${plural(items.length, 'file')})`,
       '',
       `Appears as: ${markdownText(WHERE[kind])}. Technique: ${markdownText(items[0].technique)}.`,
       '',
@@ -152,7 +154,7 @@ function printMappingSummary(mapping, base, writesFiles, exitCode) {
   console.log('\nINLINE SOURCES (no URL of their own; laid over the page HTML)');
   for (const [kind, items] of Map.groupBy(mapping.inline, (i) => i.kind)) {
     console.log(
-      `  ${kind.padEnd(22)} ${String(items.filter((i) => !i.empty).length).padStart(4)} with content / ${String(items.length).padStart(4)} files   ${WHERE[kind]}`,
+      `  ${kind.padEnd(22)} ${String(items.filter((i) => !i.empty).length).padStart(4)} with content / ${String(items.length).padStart(4)} ${items.length === 1 ? 'file ' : 'files'}   ${WHERE[kind]}`,
     );
   }
   if (mapping.routes.length) {

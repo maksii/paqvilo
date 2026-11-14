@@ -3,12 +3,12 @@ import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, input, timeout, parentProcessId } = workerData,
+const { port, signal, executable, input, timeout, parentProcessId, label } = workerData,
   flags = new Int32Array(signal);
 let complete = false,
   child;
 try {
-  child = spawn(executable, ['--parent', String(parentProcessId)], {
+  child = spawn(executable, ['--parent', String(parentProcessId), ...(label ? ['--label', label] : [])], {
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],

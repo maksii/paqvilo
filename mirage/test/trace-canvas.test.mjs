@@ -12,6 +12,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { endedTree } from './support/trace-scenario.mjs';
+import { canvasPlayerAsset } from '../lib/canvas-player.mjs';
 import { staffSimulator, writeFiles } from './support/trace-staff-hosts.mjs';
 
 const ADMIN = 'c3a00000-0000-4000-8000-0000000000a1',
@@ -258,7 +259,7 @@ test('driver calls carrying the page headers join the player page trace', async 
 });
 
 test('the player sends the page root on its driver calls and leaves the source watch polls out of it', async () => {
-  const code = await fs.readFile(new URL('../lib/canvas-player.js', import.meta.url), 'utf8');
+  const code = (await canvasPlayerAsset('_player.js')).body.toString('utf8');
   const calls = [];
   // A stand-in for every element and API the player touches while it boots: each property is the stand-in again.
   const stub = new Proxy(function () {}, {

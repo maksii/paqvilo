@@ -4,7 +4,9 @@ export function formWriteError(error, observed, kind = 'entityform') {
   // Advanced forms use the LiquidServerControl inline save-error contract.
   // Basic Form.aspx documents use the error MessagePanel postback.
   if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
-  // A plugin's InvalidPluginExecutionException message (a handler's reject(message)) is shown as thrown.
+  // Only a declared validation message (declarative validate rules and a JavaScript handler's reject(message)) is shown
+  // as thrown. Any other plug-in fault, including a CLR InvalidPluginExecutionException, shows the generic text unless
+  // observed.formSubmissionErrorMessage sets another.
   return {
     type: 'error',
     ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}),

@@ -894,6 +894,27 @@ export async function readCanvasSources(sources = [], { projectRoot = process.cw
   return { records, diagnostics };
 }
 
+/**
+ * The file watch of the configured canvas.sources paths (resolved against projectRoot): `roots` for the watcher, and
+ * `contains(file)`, true for a file under one of them outside VCS, dependency and build folders (never ignored by the watcher).
+ */
+export function canvasSourceWatch(sources = [], projectRoot = process.cwd()) {
+  const roots = (sources ?? []).map((source) => path.resolve(projectRoot, source));
+  const keys = roots.map((root) => root.toLowerCase());
+  const contains = (file) => {
+    const full = path.resolve(file).toLowerCase();
+    const base = keys.find((root) => full === root || full.startsWith(root + path.sep));
+    return (
+      Boolean(base) &&
+      !full
+        .slice(base.length)
+        .split(path.sep)
+        .some((part) => /^(?:\.git|node_modules|\.paqvilo|bin|obj)$/i.test(part))
+    );
+  };
+  return { roots, contains };
+}
+
 /** Validates the project `canvas` key: { enabled?: boolean, sources?: string[] }. Registered by provider-modules.mjs. */
 export function canvasSettings(value, label = 'canvas') {
   if (value == null) return value;

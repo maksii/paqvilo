@@ -60,7 +60,7 @@ const LABELS = {
   module: 'Module',
   operation: 'Operation',
   status: 'Step result',
-  hasErrors: 'Failed steps',
+  hasErrors: 'Failed',
   from: 'From',
   to: 'To',
   minDurationMs: 'Minimum duration (ms)',
@@ -496,6 +496,8 @@ export function auditQuery(d) {
   set('correlationId', f.auditId);
   const results = resultList(f.result);
   if (results.length === 1) set('outcome', RESULT_OUTCOME[results[0]] ?? results[0]);
+  // ponytail: the audit route takes one outcome, so denied entries are left out; widen the route when tracing-off lists need them
+  else if (!results.length && f.hasErrors === 'true') set('outcome', 'error');
   return query;
 }
 /** The same trace filters over the equal-length window just before the current one; null without a start time. */
@@ -1036,7 +1038,7 @@ function quickFilter(tab, d) {
   if (tab === 'log')
     return `<button type="button" class="ui-button ui-small" id="activity-startup" data-activity-action="startup" aria-pressed="${d.type === 'startup'}" aria-label="Startup lines only"><span class="ui-wide">Startup</span><span class="ui-narrow" aria-hidden="true">⏻</span></button>`;
   return APPLIES[tab]?.includes('result')
-    ? `<button type="button" class="ui-button ui-small" id="activity-errors" data-activity-action="errors" aria-pressed="${d.filters.result === FAILED}" aria-label="Errors and denied only"><span class="ui-wide">Errors &amp; denied</span><span class="ui-narrow" aria-hidden="true">⚠</span></button>`
+    ? `<button type="button" class="ui-button ui-small" id="activity-errors" data-activity-action="errors" aria-pressed="${d.filters.hasErrors === 'true'}" aria-label="Errors and denied only"><span class="ui-wide">Errors &amp; denied</span><span class="ui-narrow" aria-hidden="true">⚠</span></button>`
     : '';
 }
 const RESULT_CHOICES = [['', 'Any result'], [FAILED, 'error or denied'], ...RESULTS.map((result) => [result, result])];
@@ -1073,9 +1075,9 @@ function filterBar(ctx, d) {
       'activity-has-errors',
       'hasErrors',
       [
-        ['', 'With or without failed steps'],
-        ['true', 'Only with a failed step'],
-        ['false', 'Only without a failed step'],
+        ['', 'Failed or not'],
+        ['true', 'Failed: a step errored or was denied'],
+        ['false', 'Not failed'],
       ],
       f.hasErrors,
     ) +
@@ -1974,10 +1976,35 @@ function findingItems(d, items, { openLinks = true } = {}) {
     })
     .join('')}</ul>`;
 }
-function detailLogPanel(ctx, d) {
+/** The trace lines the steps of an activity wrote (ITracingService, flow trace(), server Logger), oldest first. */
+function traceLines(tree) {
+  const lines = [];
+  for (const span of tree?.spans ?? [])
+    for (const event of span.events ?? [])
+      if (event.type === 'trace') {
+        const at = Date.parse(span.startedAt) + event.offsetMs;
+        lines.push({ span, event, at: Number.isFinite(at) ? at : 0 });
+      }
+  return lines.sort((a, b) => a.at - b.at);
+}
+function traceLinesPanel(d, lines) {
+  return (
+    `<h4>Trace lines (${e(lines.length)})</h4>` +
+    (lines.length
+      ? `<ol class="ui-log-lines">${lines
+          .map(
+            ({ span, event, at }) =>
+              `<li class="data-line ui-log-line">${when(new Date(at).toISOString())} ${kit.badge('trace', 'neutral')} <a href="${e(openHref(d, span.traceId, span.spanId))}">${e(span.name)}</a> <span class="ui-log-text">${e(event.message ?? '')}</span></li>`,
+          )
+          .join('')}</ol>`
+      : '<p class="ui-help">No step wrote a trace line (plug-in ITracingService, flow trace(), server logic Logger).</p>')
+  );
+}
+function detailLogPanel(ctx, d, tree) {
   const answer = d.detailLog;
-  if (!answer) return '<p role="status" class="ui-help">Loading the log lines and findings of this activity…</p>';
-  const parts = [];
+  const parts = [traceLinesPanel(d, traceLines(tree))];
+  if (!answer)
+    return parts.join('') + '<p role="status" class="ui-help">Loading the log lines and findings of this activity…</p>';
   if (answer.logs?.error) parts.push(kit.notice(`Log lines could not be read: ${failed(answer.logs)}`, 'warn'));
   else if (answer.logs) {
     // Finding lines are listed once, under Findings below.
@@ -2173,7 +2200,9 @@ function related(d, tree) {
   const record = spans.find((span) => span.recordId);
   const run = spans.find((span) => typeof span.attributes?.runId === 'string')?.attributes.runId;
   const job = spans.find((span) => typeof span.attributes?.jobId === 'string')?.attributes.jobId;
+  const pageLoad = (root.links ?? []).find((link) => link.relation === 'parent-request');
   const links = [
+    pageLoad && ['Page load', openHref(d, pageLoad.traceId, pageLoad.spanId ?? null)],
     root.session?.sessionKey && ['Same session', pivotHref(d, { session: root.session.sessionKey })],
     who && ['Same who', pivotHref(d, { who })],
     record && ['Same record', pivotHref(d, { table: record.entity ?? '', recordId: record.recordId })],
@@ -2197,10 +2226,11 @@ const detailTabs = (ctx, d, tree) => {
   const count = (items) => (Array.isArray(items) ? ` (${items.length})` : '');
   const rendered = (tree.spans ?? []).filter((span) => ['render', 'render-template', 'read'].includes(span.kind));
   const logs = d.detailLog;
-  const logCount =
-    logs && !logs.logs?.error && !logs.findings?.error
-      ? ` (${(logs.logs?.items?.length ?? 0) + (logs.findings?.diagnostics?.length ?? 0)})`
-      : '';
+  const traces = traceLines(tree).length;
+  const loaded = Boolean(logs && !logs.logs?.error && !logs.findings?.error);
+  // The count covers the trace lines of the steps and, once loaded, the log lines and findings.
+  const loadedLines = loaded ? (logs.logs?.items?.length ?? 0) + (logs.findings?.diagnostics?.length ?? 0) : 0;
+  const logCount = loaded || traces ? ` (${traces + loadedLines})` : '';
   return DETAIL_TABS.filter(([id]) => id !== 'log' || logServed(ctx) || served(ctx, '/diagnostics')).map(
     ([id, label]) => ({
       id,
@@ -2256,7 +2286,7 @@ function detailPanel(ctx, d) {
   const tab = items.some(({ id }) => id === d.detail) ? d.detail : 'steps';
   const body = chooseLazy(
     tab === 'log',
-    () => detailLogPanel(ctx, d),
+    () => detailLogPanel(ctx, d, tree),
     () =>
       chooseLazy(
         tab === 'rendered',
@@ -2922,7 +2952,11 @@ function statsPanel(ctx, d) {
     figures?.p50 === null || figures?.p50 === undefined ? '—' : `${duration(figures.p50)} / ${duration(figures.p95)}`;
   return (
     kit.tiles([
-      { label: 'Activities', value: roots?.count ?? '—', detail: `${d.settings?.status?.retained ?? 0} retained` },
+      {
+        label: 'Activities',
+        value: roots?.count ?? '—',
+        detail: `${roots?.failed ?? 0} failed · ${d.settings?.status?.retained ?? 0} retained`,
+      },
       { label: 'Steps', value: overall.count ?? 0, detail: `p50 / p95 ${percentiles(overall)}` },
       { label: 'Failed steps', value: errors, tone: errors ? 'bad' : 'neutral' },
       { label: 'Denied steps', value: denied, tone: denied ? 'warn' : 'neutral' },
@@ -3569,7 +3603,7 @@ export const view = {
       return true;
     }
     if (action === 'errors') {
-      d.filters.result = d.filters.result === FAILED ? '' : FAILED;
+      d.filters.hasErrors = d.filters.hasErrors === 'true' ? '' : 'true';
       apply();
       focus('activity-errors');
       return true;

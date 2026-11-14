@@ -14,6 +14,20 @@ export const diagnosticsByCode = (entries) => {
   return counts;
 };
 /**
+ * The diagnostics answer narrowed to one trace (`GET /diagnostics?traceId=`): its findings, their counts per code and, when
+ * the answer lists them, its requests. Without a trace id the answer is returned unchanged.
+ */
+export const diagnosticsOfTrace = (answer, traceId) => {
+  if (!traceId) return answer;
+  const diagnostics = answer.diagnostics.filter((item) => item.traceId === traceId);
+  return {
+    ...answer,
+    diagnostics,
+    byCode: diagnosticsByCode(diagnostics),
+    ...(Array.isArray(answer.requests) ? { requests: answer.requests.filter((item) => item.traceId === traceId) } : {}),
+  };
+};
+/**
  * The file URL of the /_sim/<name> asset, or null (answer 404): a shared lib module, else `<name>.mjs|css` matching
  * ^[a-z0-9-]+$ that exists in mirage/admin/. `name` is the raw path segment after /_sim/, so an encoded separator never matches.
  */
@@ -55,6 +69,7 @@ export function createRuntimeAdminRouter({
   configure,
   simulation,
   diagnostics,
+  activityExport,
   shutdown,
   dataverseAdmin,
   staffSession,
@@ -157,7 +172,20 @@ export function createRuntimeAdminRouter({
     ],
     [
       '/diagnostics',
-      diagnostics && ((c) => c.method === 'GET' && c.relative === '/diagnostics' && c.answer(diagnostics())),
+      diagnostics &&
+        ((c) =>
+          c.method === 'GET' &&
+          c.relative === '/diagnostics' &&
+          c.answer(diagnosticsOfTrace(diagnostics(), c.url.searchParams.get('traceId')?.trim()))),
+    ],
+    [
+      '/activity',
+      activityExport &&
+        (async (c) => {
+          if (c.method !== 'GET' || c.relative !== '/activity/export') return false;
+          await activityExport(c.url.searchParams, c.res);
+          return true;
+        }),
     ],
     [
       '/platform-settings',

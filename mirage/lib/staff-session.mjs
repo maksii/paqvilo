@@ -2,13 +2,13 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCookies } from './auth-session.mjs';
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
+import { STAFF_UNAVAILABLE_MESSAGE } from './dataverse-principal-context.mjs';
 import { TIME_ZONE_IDS } from './platform-time-zones.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { sameToken } from './admin-origin.mjs';
 import { missingCsrfToken } from './runtime-admin.mjs';
 
-const unavailable = () =>
-  new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
+const unavailable = () => new DataError(STAFF_UNAVAILABLE_MESSAGE, 401, 'StaffPrincipalUnavailable');
 const GUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const bare = (value) =>
   String(value?.id ?? value ?? '')

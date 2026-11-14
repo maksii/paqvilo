@@ -14,6 +14,11 @@ import { sharedBrowser } from './shared-browser.mjs';
 import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const browser = sharedBrowser();
+// The dev server may add a query (Vite's ?import) to a module URL; the resource is the origin and path.
+const sameResource = (url, origin, pathname) => {
+  const parsed = new URL(url);
+  return parsed.origin === origin && parsed.pathname === pathname;
+};
 const toolkit = fileURLToPath(new URL('../../', import.meta.url));
 const application = `import { getContext, setConfig } from '@microsoft/power-apps/app';
 import { getClient } from '@microsoft/power-apps/data';
@@ -77,6 +82,8 @@ test('two ordinary SDK Vite apps load, switch, edit and debug through the local 
     watch: false,
   });
   ownedFixture(t).add(() => sim.close());
+  // The fixture leaves tracing off; the summary level records the roots the app's calls start.
+  sim.trace.configure({ level: 'summary' });
   const origin = sim.origin ?? sim.url;
   const servers = {},
     vites = {};
@@ -167,6 +174,14 @@ test('two ordinary SDK Vite apps load, switch, edit and debug through the local 
       await route.continue();
     },
   );
+  // The app frame's own requests, registered before the application loads: its gesture helper and its context answers.
+  const helperAnswer = page.waitForResponse((response) =>
+    sameResource(response.url(), servers.alpha, '/_apps/code/_assets/trace-gesture.js'),
+  );
+  const contexts = [];
+  page.on('response', (response) => {
+    if (response.url().startsWith(servers.alpha + '/_apps/code/alpha/context')) contexts.push(response);
+  });
   await page.goto(origin + '/_apps/code/?app=alpha');
   await arrived;
   // An edit made while SDK initialization is held must be the first visible application source.
@@ -174,7 +189,15 @@ test('two ordinary SDK Vite apps load, switch, edit and debug through the local 
   release();
   const frame = page.frameLocator('#preview');
   await frame.locator('#context').filter({ hasText: 'startup edit · alpha-id · Invented Developer' }).waitFor();
-  await page.getByRole('status').filter({ hasText: 'Bridge connected' }).waitFor();
+  await page.getByText('Bridge connected', { exact: true }).waitFor();
+  // The app loads the runtime's gesture helper from its own origin (the plugin configures no origin), through the dev proxy.
+  const helper = await helperAnswer;
+  assert.equal(helper.frame().url().startsWith(servers.alpha), true, 'the app frame requested the helper');
+  assert.equal(helper.status(), 200);
+  assert.match(helper.headers()['content-type'], /^text\/javascript/);
+  t.diagnostic(
+    `Gesture helper: ${helper.status()} ${helper.headers()['content-type']} access-control-allow-origin=${helper.headers()['access-control-allow-origin'] ?? 'absent'}`,
+  );
   const alphaSession = await page
     .frames()
     .find((f) => f.url().startsWith(servers.alpha))
@@ -207,11 +230,28 @@ test('two ordinary SDK Vite apps load, switch, edit and debug through the local 
   assert.ok(lineNumber >= 0);
   const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', { url: script.url, lineNumber });
   await frame.getByLabel('Item name').fill('Shared local record');
+  // The application's context answer that the client now holds: the page trace its gesture calls link to.
+  const pageAnswer = contexts.at(-1).headers();
+  const created = page.waitForResponse(
+    (response) =>
+      sameResource(response.url(), servers.alpha, '/_apps/code/alpha/dataverse/x_items') &&
+      response.request().method() === 'POST',
+  );
   const paused = once(cdp, 'Debugger.paused');
   const create = frame.getByRole('button', { name: 'Create', exact: true }).click();
   assert.ok((await paused)[0].hitBreakpoints.includes(breakpoint.breakpointId));
   await cdp.send('Debugger.resume');
   await create;
+  // The Create click starts an activity of its own: its data call is a new trace's root, linked to the page trace.
+  const answer = (await created).headers();
+  const createdRoot = sim.trace.span(answer['x-sim-span-id']);
+  assert.notEqual(answer['x-trace-id'], pageAnswer['x-trace-id'], 'the click starts an activity of its own');
+  assert.equal(createdRoot.traceId, answer['x-trace-id']);
+  assert.equal(createdRoot.parentSpanId, null);
+  assert.deepEqual(
+    createdRoot.links.filter((link) => link.relation === 'parent-request'),
+    [{ traceId: pageAnswer['x-trace-id'], spanId: pageAnswer['x-sim-span-id'], relation: 'parent-request' }],
+  );
   await cdp.detach();
   await frame.locator('#items').filter({ hasText: 'Shared local record' }).waitFor();
   await fs.writeFile(path.join(root, 'alpha/label.js'), 'export const label="live edit";');

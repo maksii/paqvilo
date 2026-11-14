@@ -239,7 +239,7 @@ export const MIRAGE_SETTINGS = Object.freeze({
     fallback: null,
   },
   preset: {
-    scopes: ['catalogue'],
+    scopes: ['catalogue', 'project'],
     option: null,
     doc: 'Startup data preset ID.',
     parse: (value, label) => {
@@ -251,14 +251,14 @@ export const MIRAGE_SETTINGS = Object.freeze({
     fallback: null,
   },
   presetMode: {
-    scopes: ['catalogue'],
+    scopes: ['catalogue', 'project'],
     option: null,
     doc: 'always (default) or bootstrap.',
     parse: choice(['bootstrap', 'always'], 'must be bootstrap or always'),
     resolve: (value) => value || undefined,
   },
   presetConfiguration: {
-    scopes: ['catalogue'],
+    scopes: ['catalogue', 'project'],
     option: null,
     doc: 'data-only or apply.',
     parse: choice(['data-only', 'apply'], 'must be data-only or apply'),
@@ -615,4 +615,38 @@ export function runtimeIdentity(options = {}) {
         : value;
   }
   return identity;
+}
+
+/** Where the startup preset comes from: the command line, the project file, the catalogue site, or none. */
+function presetSource(args, project, catalogue) {
+  if (args.preset) return 'cli';
+  if (project?.preset) return 'project';
+  return catalogue?.preset ? 'catalogue' : null;
+}
+
+/**
+ * The startup preset of a runtime started to serve (`mirage serve`, `mirage dev`): the command line, else the project
+ * file, else the catalogue site. Other commands take commandLinePreset.
+ */
+export function startupPresetChoice(args = {}, { project = null, catalogue = null } = {}) {
+  const preset = args.preset ?? project?.preset ?? catalogue?.preset ?? null;
+  const from = presetSource(args, project, catalogue);
+  return {
+    preset,
+    from,
+    presetMode: args['preset-mode'] ?? project?.presetMode ?? catalogue?.presetMode ?? 'always',
+    presetConfiguration:
+      args['apply-configuration'] === true
+        ? 'apply'
+        : (project?.presetConfiguration ?? catalogue?.presetConfiguration ?? 'data-only'),
+  };
+}
+
+/** The preset choice of a command that does not serve: the command line alone, no project or catalogue default. */
+export function commandLinePreset(args = {}) {
+  return {
+    preset: args.preset ?? null,
+    presetMode: args['preset-mode'] ?? 'always',
+    presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+  };
 }

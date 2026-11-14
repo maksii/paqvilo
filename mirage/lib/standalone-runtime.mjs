@@ -62,6 +62,8 @@ import {
 import { deploymentProfilesSummary } from './deployment-profiles.mjs';
 import { createCanvasHandler } from './canvas-http.mjs';
 import { createCanvasRuntime } from './canvas-runtime.mjs';
+import { canvasPcfApps } from './canvas-pcf.mjs';
+import { canvasSourceWatch } from './canvas-source.mjs';
 import { createCodeAppsHandler, authorityTokenIssuer } from './code-apps-http.mjs';
 import { codeAppSettings, loadCodeApps } from './code-apps-config.mjs';
 import { createRequestContext, runWithRequest, correlationOf } from './request-context.mjs';
@@ -69,7 +71,8 @@ import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messagi
 import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './sim-trace-routes.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
-import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
+import { ANONYMOUS_ROOT, browserProbe, setTraceHeaders } from './trace-hosts.mjs';
+import { writeActivityBundle } from './sim-activity.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
 import { scenarioSettings } from './capability-report.mjs';
 import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './sim-dashboard-routes.mjs';
@@ -219,6 +222,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
   const projectRoot = options.projectRoot ?? process.cwd(),
     solutionRoots = options.solutionRoots ?? [];
   const watchedRoots = [...new Set([...solutionRoots, ...(modelDriven.clientSources ?? [])])];
+  // The configured canvas.sources folders are watched too: their edits reload the Canvas apps (organization-host.mjs loadCanvas).
+  const canvasWatch = canvasSourceWatch(options.canvas?.sources, projectRoot);
   const stateFile = options.stateFile,
     diagnostics = [],
     // The apps token: the apps pages, Canvas and Code Apps send it. The admin token is the administration's own.
@@ -667,10 +672,18 @@ function standaloneAdminAssetHeaders(res, file, index) {
       recordService,
       readMetadata: (fn) => overlay.withReadEpoch(fn, { valid: () => store.isUnmodifiedRead() }),
     });
+    // Canvas apps carry their source revision and watch facts (canvas-pcf.mjs), so the player polls for edits and old runtime
+    // instances are invalidated. The standalone host has no PCF controls in its catalogue.
+    // One catalog object for every call: canvasPcfApps reuses a prepared app only while its catalog is the same object.
+    const canvasCatalog = { controls: new Map(), assets: new Map(), diagnostics: [] };
+    const canvasApps = () =>
+      canvasPcfApps(organizationHost.canvasApps(), canvasCatalog, {
+        watch: options.watch !== false,
+      });
     // Canvas apps run headlessly as the selected staff user (canvas-runtime.mjs): Dataverse through the engine's data
     // sources as that user, writes in the host change slot, connectors through the project connections.
     const canvasRuntime = createCanvasRuntime({
-      apps: organizationHost.canvasApps,
+      apps: canvasApps,
       evaluator: () => organizationHost.providers.powerFx,
       api: () => organization.api,
       caller: (principal) => {
@@ -682,7 +695,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       diagnostic,
     });
     const canvas = createCanvasHandler({
-      apps: organizationHost.canvasApps,
+      apps: canvasApps,
       enabled: () => organizationHost.canvas.enabled,
       diagnostic,
       runtime: canvasRuntime,
@@ -779,6 +792,21 @@ function standaloneAdminAssetHeaders(res, file, index) {
       configuration: config,
       simulation: policy,
       diagnostics: () => ({ diagnostics, byCode: byCode(diagnostics) }),
+      activityExport: (query, res) =>
+        writeActivityBundle(res, query, {
+          traces,
+          audit: null,
+          logs: () => [],
+          diagnostics: () => diagnostics,
+          evidence: async () => null,
+          runtime: () => ({
+            origin: localOrigin,
+            host: 'standalone',
+            revision: null,
+            storeRevision: store.revision,
+            traceSettings: traces.settings(),
+          }),
+        }),
       staffSession: sessionHandler,
       dataverseAdmin,
       configure: async (patch) => {
@@ -1012,7 +1040,10 @@ function standaloneAdminAssetHeaders(res, file, index) {
               operation: req.method,
               origin: { host: simAction ? 'sim' : (surface?.host ?? 'standalone'), portal: null, preset: null },
               ...(simAction ? { actor: SIM_ACTOR, session: ANONYMOUS_ROOT.session } : ANONYMOUS_ROOT),
-              attributes: { routeFamily: pathname.split('/')[1] || 'root' },
+              attributes: {
+                routeFamily: pathname.split('/')[1] || 'root',
+                ...(browserProbe(req.method, pathname) ? { browserProbe: true } : {}),
+              },
               ...traces.fromHeaders(req.headers),
             })
           : null;
@@ -1108,7 +1139,12 @@ function standaloneAdminAssetHeaders(res, file, index) {
         assertReloadableScan(sources.scan, next.scan);
         const nextProfile = await loadProfile();
         const apply = async () => {
-          const previous = { sources, profile };
+          const previous = {
+            sources,
+            profile,
+            canvasRecords: organizationHost.canvas.records,
+            canvasDiagnostics: organizationHost.canvas.diagnostics,
+          };
           try {
             // One isolated transaction: Solution data, source components and the re-registered source modules (custom APIs,
             // duplicate rules, workflows, plug-in registrations) commit together or not at all.
@@ -1119,11 +1155,14 @@ function standaloneAdminAssetHeaders(res, file, index) {
                 store.state = applySolutionData(store.state, next.solutionData, solutionDataOptions(next));
                 sourceComponents.materialize();
                 await organizationHost.refreshSources();
+                await organizationHost.loadCanvas();
               },
               { isolated: true },
             );
           } catch (error) {
             ({ sources, profile } = previous);
+            organizationHost.canvas.records = previous.canvasRecords;
+            organizationHost.canvas.diagnostics = previous.canvasDiagnostics;
             throw error;
           }
         };
@@ -1154,9 +1193,10 @@ function standaloneAdminAssetHeaders(res, file, index) {
         ],
         exclude: [cacheDirectory, ...(storageAdapter?.report(store.state).targets.map((target) => target.file) ?? [])],
       });
-      const watched = watchSources(watchedRoots, {
+      const watched = watchSources([...watchedRoots, ...canvasWatch.roots], {
         ignoreInitial: true,
         ignored: (file, stats) => {
+          if (canvasWatch.contains(file)) return false;
           const absolute = pathKey(path.resolve(file));
           return (
             Boolean(checkpointKey && (absolute === checkpointKey || absolute.startsWith(checkpointKey + '.'))) ||
@@ -1214,7 +1254,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
           : { backend: 'chokidar', directories: Object.keys(watched.getWatched?.() ?? {}).length };
       await previous?.close();
     }
-    if (options.watch !== false && watchedRoots.length) await restartWatcher();
+    if (options.watch !== false && [...watchedRoots, ...canvasWatch.roots].length) await restartWatcher();
     bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
     bootstrapTimings.startupMs = bootstrapTimings.listenerMs;
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };

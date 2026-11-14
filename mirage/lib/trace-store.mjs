@@ -87,6 +87,7 @@ const SYSTEM_ACTOR = Object.freeze({ kind: 'system', id: null, name: null });
 /** The frame types a store listener observes (subscribe's `events` option). */
 export const TRACE_EVENTS = Object.freeze(['span-start', 'span-end', 'trace-end']);
 const PARENT_HEADER = 'x-sim-parent-trace';
+const REQUEST_HEADER = 'x-sim-parent-request';
 const TRACE_HEADER = 'x-sim-trace-id';
 const TRACE_ID_HEADER = 'x-trace-id';
 const SPAN_HEADER = 'x-sim-span-id';
@@ -620,7 +621,7 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
     spanFiltered: Object.values(span).some((value) => value !== null),
     from: time('from'),
     to: time('to'),
-    traceId: exact('traceId'),
+    traceId: text('traceId'),
     result: resultList?.length ? new Set(resultList) : null,
     minDurationMs: minDuration === null ? null : Number(minDuration),
     hasErrors: flag === null ? null : [true, 'true', '1'].includes(flag),
@@ -747,14 +748,29 @@ function traceTimeMatches(trace, f) {
   );
 }
 
+// The activity outcome: failed when the root or any step ended error or denied, except a browser probe's 404 root.
+// errorCount counts the root too, so a probe root's error is taken back out of it.
+const failedOf = (trace) => {
+  const root = trace.root ? recordOf(trace.root) : null;
+  const probeMiss =
+    root !== null &&
+    root.attributes.browserProbe === true &&
+    root.attributes.statusCode === 404 &&
+    root.status === 'error';
+  return trace.errorCount + trace.deniedCount - (probeMiss ? 1 : 0) > 0;
+};
+
+// The outcome a trace summary carries (summary.failed): the activity-level meaning of hasErrors.
+export const traceFailed = (summary) => summary.failed === true;
+
 function matchesTrace(trace, f, helpers) {
-  if (f.traceId && trace.traceId !== f.traceId) return false;
+  if (f.traceId && !idMatches(trace.traceId, f.traceId)) return false;
   if (!helpers.resultMatches(trace, f)) return false;
   if (!traceTimeMatches(trace, f)) return false;
   if (f.spanFiltered && !trace.spans.some((span) => helpers.spanMatches(recordOf(span), f.span, helpers.searchOf)))
     return false;
   if (f.minDurationMs !== null && helpers.totalOf(trace) < f.minDurationMs) return false;
-  if (f.hasErrors !== null && trace.errorCount > 0 !== f.hasErrors) return false;
+  if (f.hasErrors !== null && failedOf(trace) !== f.hasErrors) return false;
   return true;
 }
 
@@ -765,7 +781,6 @@ function matchesSpan(span, f, helpers) {
     (f.from !== null && start < f.from) ||
     (f.to !== null && start > f.to) ||
     (f.minDurationMs !== null && !(record.durationMs >= f.minDurationMs)) /* NOSONAR */ ||
-    (f.hasErrors !== null && (record.status === 'error') !== f.hasErrors) ||
     (f.parentSpanId && record.parentSpanId !== f.parentSpanId) ||
     (f.depth !== null && record.depth !== f.depth) ||
     (f.spanFiltered && !helpers.spanMatches(record, f.span, helpers.searchOf))
@@ -850,6 +865,7 @@ export function createTraceStore({
       droppedSpans: trace.droppedSpans,
       errorCount: trace.errorCount,
       deniedCount: trace.deniedCount,
+      failed: failedOf(trace),
       ...(trace.firstError ? { firstError: { ...trace.firstError } } : {}),
       pluginCount: kinds['plugin-step'] ?? 0,
       flowCount: kinds['flow-run'] ?? 0,
@@ -1023,8 +1039,9 @@ export function createTraceStore({
     const rows = [];
     const helpers = { resultMatches, spanMatches, searchOf };
     for (const trace of traces.values()) {
-      if (f.traceId && trace.traceId !== f.traceId) continue;
+      if (f.traceId && !idMatches(trace.traceId, f.traceId)) continue;
       if (!resultMatches(trace, f)) continue;
+      if (f.hasErrors !== null && failedOf(trace) !== f.hasErrors) continue;
       for (const span of trace.spans) {
         if (matchesSpan(span, f, helpers)) rows.push(span);
       }
@@ -1294,7 +1311,9 @@ export function createTraceStore({
      * { traceId, parentSpanId } from inbound headers (null when absent or not a UUID); spread into start for a root. The
      * trace id is x-trace-id only and the parent x-sim-parent-trace. x-sim-trace-id is an audit id (D-M-4), never a trace
      * id: without a parent header, a retained span whose attributes.auditId names it is the parent (its trace unless
-     * x-trace-id names one); an unknown audit id is ignored.
+     * x-trace-id names one); an unknown audit id is ignored. x-sim-parent-request names the request a root follows, a
+     * retained span id or else an audit id: it adds links [{ traceId, spanId, relation: 'parent-request' }]; any other
+     * value is ignored.
      */
     fromHeaders(headers = {}) {
       const read = (name) => {
@@ -1305,9 +1324,14 @@ export function createTraceStore({
       const traceId = read(TRACE_ID_HEADER),
         parentSpanId = read(PARENT_HEADER);
       const audited = parentSpanId ? null : audits.get(read(TRACE_HEADER));
-      return audited
+      const inbound = audited
         ? { traceId: traceId ?? audited.traceId, parentSpanId: audited.spanId }
         : { traceId, parentSpanId };
+      const requestId = read(REQUEST_HEADER);
+      const request = requestId ? (spans.get(requestId) ?? audits.get(requestId)) : null;
+      return request
+        ? { ...inbound, links: [{ traceId: request.traceId, spanId: request.spanId, relation: 'parent-request' }] }
+        : inbound;
     },
     /** Remembers which span a later piece of work (a job, a flow run) belongs to: key -> { traceId, spanId }. */
     remember(key, { traceId, spanId } = {}) {
@@ -1436,10 +1460,14 @@ export function createTraceStore({
           }),
         );
       }
+      const rootTraces = matchedTraces(f);
       return {
         count: records.length,
         overall: figures(records),
-        roots: figures(matchedTraces(f).map((trace) => recordOf(trace.root))),
+        roots: {
+          ...figures(rootTraces.map((trace) => recordOf(trace.root))),
+          failed: rootTraces.filter(failedOf).length,
+        },
         from: from === null ? null : new Date(from).toISOString(),
         to: to === null ? null : new Date(to).toISOString(),
         bucketMs,

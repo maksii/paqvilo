@@ -37,7 +37,7 @@ import {
   deploymentProfilesSummary,
 } from './lib/deployment-profiles.mjs';
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
-import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
+import { runtimeOptions, configuredSettingKeys, startupPresetChoice, commandLinePreset } from './lib/config-keys.mjs';
 
 const argv = process.argv.slice(2);
 const terminator = argv.indexOf('--');
@@ -190,7 +190,7 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
     portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
 
-Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /_sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME (when served by mirage serve or mirage dev, the default is the project's or catalogue site's preset; other commands apply --preset only when passed), --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /_sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /_sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
@@ -226,7 +226,15 @@ try {
   ];
   const runtimeOptionNames = ['runtime', 'simulation'];
   const matrix = {
-    inspect: [...sourceOptions, ...runtimeOptionNames, 'deployment-profile', 'json'],
+    inspect: [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'deployment-profile',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'json',
+    ],
     preflight: [...sourceOptions, ...runtimeOptionNames, 'preset', 'pack-module', 'scenario', 'strict', 'json'],
     serve: [
       ...sourceOptions,
@@ -358,6 +366,7 @@ try {
       // Same input resolution as serve; sources are loaded without listeners (lib/capability-report.mjs).
       const { preflight, preflightExitCode } = await import('./lib/capability-report.mjs');
       let options;
+      let presetCatalogue = profileMirage;
       if (runtime.kind !== 'power-pages') {
         if (args.source || args.portal)
           throw new Error('Standalone runtimes select a project or solution roots without a portal or source.');
@@ -400,12 +409,13 @@ try {
           solutionRoots: roots.roots,
           solutionOrder: roots.order,
           dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined,
-          preset: siteMirage?.preset ?? null,
         };
+        presetCatalogue = siteMirage;
       }
       const scenario = args.scenario
         ? { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: args.scenario }
         : null;
+      const startup = startupPresetChoice(args, { project, catalogue: presetCatalogue });
       const report = await preflight({
         ...options,
         runtime,
@@ -415,13 +425,13 @@ try {
         dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
         scenario,
         strict: args.strict === true,
-        preset: args.preset ?? options.preset ?? null,
+        preset: startup.preset,
       });
       if (args.json) console.log(JSON.stringify(report, null, 2));
       else
         console.log(
           [
-            `Preflight (${report.runtime.kind}): ${report.summary.total} requirements, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
+            `Preflight (${report.runtime.kind}): ${report.summary.total} ${report.summary.total === 1 ? 'requirement' : 'requirements'}, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
             ...report.requirements
               .filter((row) => row.inScope && row.status !== 'satisfied')
               .map(
@@ -439,6 +449,7 @@ try {
         );
       const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
       if (command === 'inspect') {
+        const choice = startupPresetChoice(args, { project, catalogue: profileMirage });
         const source = await loadOrganizationSources({
           solutionRoots: roots,
           solutionOrder: project?.solutionOrder ?? args['solution-order'],
@@ -450,6 +461,7 @@ try {
             {
               runtime,
               simulation,
+              startupPreset: { name: choice.preset, mode: choice.presetMode, from: choice.from },
               portals: [],
               solutions: roots,
               applications: source.metadata.modelDrivenApps,
@@ -497,6 +509,10 @@ try {
           return undefined;
         };
         // Settings of every registered key (config-keys.mjs); command-line choices follow.
+        const startup =
+          command === 'serve'
+            ? startupPresetChoice(args, { project, catalogue: profileMirage })
+            : commandLinePreset(args);
         const simulator = await createSimulator({
           ...runtimeOptions({ project, catalogue: profileMirage }),
           configuredSettings: configuredSettingKeys({ project, catalogue: profileMirage }),
@@ -514,8 +530,9 @@ try {
             ...(args['pack-module'] ?? []).map((module) => ({ module })),
           ],
           setup: standaloneSetup(),
-          preset: args.preset,
-          presetMode: args['preset-mode'],
+          preset: startup.preset,
+          presetMode: startup.presetMode,
+          presetConfiguration: startup.presetConfiguration,
           watch: !args['no-watch'] && project?.watch !== false,
           onShutdown: () => stop?.(),
         });
@@ -562,6 +579,7 @@ try {
       const bootstrapped = await bootstrapProject({ ...project, portals: selected });
       // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
       for (const { portal } of bootstrapped.portals) assertPortalSource(portal);
+      const choice = startupPresetChoice(args, { project, catalogue: profileMirage });
       console.log(
         JSON.stringify(
           {
@@ -570,6 +588,7 @@ try {
             defaultPortal: project.defaultPortal,
             lcid: project.lcid,
             solutionOrder: project.solutionOrder,
+            startupPreset: { name: choice.preset, mode: choice.presetMode, from: choice.from },
             portals: bootstrapped.portals.map(
               ({
                 id,
@@ -645,6 +664,7 @@ try {
                 return path.join(state.dir, portal.id, state.base);
               })()
             : projectStateFile(project, portal.id, path.join(stateDir, 'simulator/projects'));
+          const startup = startupPresetChoice(args, { project, catalogue: profileMirage });
           const simulator = await createSimulator({
             ...runtimeOptions({ project, portal }),
             configuredSettings: configuredSettingKeys({ project, portal }),
@@ -661,9 +681,9 @@ try {
                 },
             sourceDir: portal.sourceDir,
             stateFile,
-            preset: args.preset,
-            presetMode: args['preset-mode'] ?? 'always',
-            presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+            preset: startup.preset,
+            presetMode: startup.presetMode,
+            presetConfiguration: startup.presetConfiguration,
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
@@ -785,12 +805,6 @@ try {
         sourceConfigFile = cfg.configFile;
         siteMirage = cfg.mirageConfig ?? null;
       }
-      if (command === 'serve') {
-        args.preset ??= siteMirage?.preset;
-        args['preset-mode'] ??= siteMirage?.presetMode;
-        if (args['apply-configuration'] === undefined && siteMirage?.presetConfiguration === 'apply')
-          args['apply-configuration'] = true;
-      }
       const deploymentProfile = args['deployment-profile'] ?? configuredPortal?.deploymentProfile;
       // The data model of a YAML source: --data-model, else the project portal's or catalogue
       // site's dataModel, else the source's default (lib/importer.mjs).
@@ -811,10 +825,12 @@ try {
             dataModel,
           }),
         );
+        const choice = startupPresetChoice(args, { project, catalogue: siteMirage });
         console.log(
           JSON.stringify(
             {
               sourceDir: portal.sourceDir,
+              startupPreset: { name: choice.preset, mode: choice.presetMode, from: choice.from },
               profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
               format: portal.format,
               layout: portal.source?.dialect ?? null,
@@ -902,6 +918,9 @@ try {
           if (project?.configFile) return path.dirname(project.configFile);
           return process.cwd();
         };
+        // Only a runtime started to serve takes the project or catalogue default; render and the captures use the command line.
+        const startup =
+          command === 'serve' ? startupPresetChoice(args, { project, catalogue: siteMirage }) : commandLinePreset(args);
         const simulator = await createSimulator({
           // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
           ...runtimeOptions({ project, portal: configuredPortal, catalogue: siteMirage }),
@@ -915,9 +934,9 @@ try {
           projectRoot: powerPagesProjectRoot(),
           ...(project ? { project: projectSummary(project, configuredPortal.id) } : {}),
           stateFile,
-          preset: args.preset,
-          presetMode: args['preset-mode'] ?? 'always',
-          presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+          preset: startup.preset,
+          presetMode: startup.presetMode,
+          presetConfiguration: startup.presetConfiguration,
           port,
           origin,
           solutionRoots,

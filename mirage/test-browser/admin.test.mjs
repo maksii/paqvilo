@@ -524,7 +524,7 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
   await page.getByLabel('Static file paths').fill('/static/theme.css');
   await page.getByLabel('Observe selected stylesheet versions', { exact: true }).check();
   await page.getByRole('button', { name: 'Capture assets', exact: true }).click();
-  await page.getByText('Captured 1 files for 1 requested paths.', { exact: true }).waitFor();
+  await page.getByText('Captured 1 file for 1 requested path.', { exact: true }).waitFor();
   assert.ok(
     mutations.some(
       (item) => item.route.join('/') === 'assets/capture-stylesheets' && item.body.paths[0] === '/static/theme.css',

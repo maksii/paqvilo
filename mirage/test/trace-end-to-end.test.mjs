@@ -339,13 +339,13 @@ test('query filters find the trace by entity, actor, session, kind, module, erro
     { kind: 'plugin-step' },
     { module: 'flows' },
     { kind: 'secret', status: 'ok' },
-    { hasErrors: 'false' },
+    { hasErrors: 'true' },
     { status: 'denied' },
     { host: 'job' },
     { minDurationMs: String(total) },
   ])
     assert.ok(ids(filters).includes(traceId), JSON.stringify(filters));
-  for (const filters of [{ hasErrors: 'true' }, { minDurationMs: String(total + 60000) }, { entity: 'x_absent' }])
+  for (const filters of [{ hasErrors: 'false' }, { minDurationMs: String(total + 60000) }, { entity: 'x_absent' }])
     assert.equal(ids(filters).includes(traceId), false, JSON.stringify(filters));
   assert.equal(sim.trace.spans({ traceId, kind: 'plugin-step', pageSize: 200 }).total, 6);
   assert.equal(sim.trace.spans({ traceId, actorKind: 'flow', pageSize: 200 }).total, 11);

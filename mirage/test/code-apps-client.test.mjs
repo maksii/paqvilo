@@ -278,3 +278,138 @@ test('metadata requests select local entity metadata and filter requested column
   assert.equal(url.searchParams.get('$expand'), 'Attributes,OneToManyRelationships');
   await assert.rejects(dataClient.getEntityMetadata('x_item', { schema: { columns: ['bad/name'] } }), /identifiers/);
 });
+
+// Each fresh module instance has its own gesture helper, so a test never inherits another test's window listeners.
+let freshInstances = 0;
+const freshClient = () => import(`../lib/code-apps-client.js?instance=${++freshInstances}`);
+
+// A fetch stub whose context answer names the page's trace; every other call answers an empty collection.
+function traceFetch(t) {
+  const calls = [];
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    if (url.endsWith('/context'))
+      return new Response('{}', {
+        headers: { 'x-sim-csrf': 'local-token', 'x-trace-id': 'trace-page', 'x-sim-span-id': 'span-page' },
+      });
+    return new Response('{"value":[]}');
+  };
+  return calls;
+}
+
+// A window that records its listeners, so a test delivers the gestures a browser would.
+function stubWindow(t) {
+  const listeners = [];
+  globalThis.window = {
+    addEventListener: (type, listener) => listeners.push({ type, listener }),
+  };
+  t.after(() => {
+    delete globalThis.window;
+  });
+  return (type, event) => {
+    for (const entry of listeners) if (entry.type === type) entry.listener(event);
+  };
+}
+
+// @test-kind contract: the code app client sends the page's trace headers until the runtime's gesture helper has loaded
+test('the code app client sends the page trace until the gesture helper loads', async (t) => {
+  const { configure, dataClient } = await freshClient();
+  const calls = traceFetch(t);
+  stubWindow(t);
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  configure({ app: 'sample', loadModule: () => pending });
+  await dataClient.getAll('x_items');
+  assert.equal(calls.at(-1).init.headers['X-Trace-Id'], 'trace-page');
+  assert.equal(calls.at(-1).init.headers['X-Sim-Parent-Trace'], 'span-page');
+  release(await import('../lib/trace-gesture.js'));
+  await pending;
+});
+
+// @test-kind contract: after the runtime's gesture helper loads, a trusted gesture starts an activity linked to the page span
+test('a trusted gesture starts an activity once the gesture helper has loaded', async (t) => {
+  const { configure, dataClient } = await freshClient();
+  const calls = traceFetch(t);
+  const dispatch = stubWindow(t);
+  const loaded = import('../lib/trace-gesture.js');
+  configure({ app: 'sample', loadModule: () => loaded });
+  await loaded;
+  await dataClient.getAll('x_items');
+  dispatch('keydown', { isTrusted: false });
+  await dataClient.getAll('x_items');
+  assert.equal(calls.at(-1).init.headers['X-Trace-Id'], 'trace-page', 'an untrusted key changes nothing');
+  dispatch('keydown', { isTrusted: true });
+  await dataClient.getAll('x_items');
+  assert.notEqual(calls.at(-1).init.headers['X-Trace-Id'], 'trace-page');
+  assert.match(calls.at(-1).init.headers['X-Trace-Id'], /^[0-9a-f-]{36}$/);
+  assert.equal(calls.at(-1).init.headers['X-Sim-Parent-Request'], 'span-page');
+});
+
+// @test-kind contract: the code app client works without the gesture helper and keeps the page headers when the import is refused
+test('the code app client works when the gesture helper cannot be loaded', async (t) => {
+  const { configure, dataClient } = await freshClient();
+  const calls = traceFetch(t);
+  const dispatch = stubWindow(t);
+  const refused = Promise.reject(new Error('refused'));
+  configure({ app: 'sample', loadModule: () => refused });
+  await assert.rejects(refused, /refused/);
+  dispatch('keydown', { isTrusted: true });
+  await dataClient.getAll('x_items');
+  assert.equal(calls.at(-1).init.headers['X-Trace-Id'], 'trace-page');
+  assert.equal(calls.at(-1).init.headers['X-Sim-Parent-Trace'], 'span-page');
+  assert.equal(calls.at(-1).init.headers['X-Sim-Parent-Request'], undefined);
+});
+
+// @test-kind contract: a gesture helper load that finishes after a newer configure() does not replace the newer helper
+test('an older gesture helper load does not replace the helper of a newer configure()', async (t) => {
+  const { configure, dataClient } = await freshClient();
+  const calls = traceFetch(t);
+  const helper = (name) => ({
+    createGestureTrace: () => ({ headersFor: () => ({ 'X-Helper': name }), noteAnswer() {}, reset() {} }),
+  });
+  let finishFirst;
+  let finishSecond;
+  const first = new Promise((resolve) => {
+    finishFirst = resolve;
+  });
+  const second = new Promise((resolve) => {
+    finishSecond = resolve;
+  });
+  configure({ app: 'first', loadModule: () => first });
+  configure({ app: 'second', loadModule: () => second });
+  finishSecond(helper('second'));
+  await second;
+  finishFirst(helper('first'));
+  await first;
+  await dataClient.getAll('x_items');
+  assert.equal(calls.at(-1).init.headers['X-Helper'], 'second');
+});
+
+// @test-kind contract: a page keeps one gesture helper: a repeated origin reuses it, and another origin reuses it too, so the window gets two listeners in all
+test('repeated configure calls keep one gesture helper with one pointerdown and one keydown listener', async (t) => {
+  const { configure } = await freshClient();
+  const registered = [];
+  globalThis.window = { addEventListener: (type) => registered.push(type) };
+  t.after(() => {
+    delete globalThis.window;
+  });
+  const loads = [];
+  const loadModule = () => {
+    const load = import('../lib/trace-gesture.js');
+    loads.push(load);
+    return load;
+  };
+  configure({ app: 'sample', origin: 'http://127.0.0.1:9001', loadModule });
+  await loads[0];
+  configure({ app: 'sample', origin: 'http://127.0.0.1:9001', loadModule });
+  configure({ app: 'sample', origin: 'http://127.0.0.1:9002', loadModule });
+  await Promise.all(loads);
+  assert.equal(loads.length, 2, 'the repeated origin does not load again; the other origin loads once');
+  assert.deepEqual(registered.sort(), ['keydown', 'pointerdown']);
+});

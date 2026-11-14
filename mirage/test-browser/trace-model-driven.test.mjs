@@ -2,15 +2,10 @@
 // Model-driven client trace propagation in a real browser (docs/design/tracing.md, DV-A-13): the shell's calls to
 // /_apps/api (catalogue, records) and Xrm.WebApi through the bridge carry the page root's trace headers, so they are
 // children of the GET /main.aspx root in one trace.
-import test, { after } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { createSimulator } from '../api.mjs';
-import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
-import { writeFiles } from '../test/support/trace-staff-hosts.mjs';
+import { openModelDrivenRecord } from './model-driven-trace-fixture.mjs';
 
 const chrome = sharedBrowser();
 const ITEM = 'c3e00000-0000-4000-8000-000000000001';
@@ -29,33 +24,12 @@ const solution = {
     '<savedquery><savedqueryid>{items-view}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName description="Items" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="x_item"><attribute name="x_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="200"/></row></grid></layoutxml></savedquery>',
 };
 
-const closers = [],
-  removers = [];
-after(async () => {
-  await drainFixture(closers);
-  await drainFixture(removers);
-});
-
 test('the shell, its record calls and Xrm.WebApi join the page trace as children of the GET /main.aspx root', async (t) => {
-  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'trace-model-driven-browser-'));
-  removers.push(() => fs.rm(root, { recursive: true, force: true }));
-  await writeFiles(path.join(root, 'solution'), solution);
-  const sim = await createSimulator({
-    runtime: { kind: 'model-driven' },
-    solutionRoots: [path.join(root, 'solution')],
-    projectRoot: root,
-    port: 0,
-    watch: false,
-    simulation: { level: 'dry-run' },
-    initial: { tables: { x_item: [{ x_itemid: ITEM, x_name: 'Copper' }] } },
-    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
-    trace: { level: 'summary' },
+  const { sim, page, errors, response } = await openModelDrivenRecord(t, chrome, {
+    tempPrefix: 'trace-model-driven-browser-',
+    solution,
+    item: ITEM,
   });
-  closers.push(() => sim.close());
-  const page = await chrome.page(t);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  const response = await page.goto(sim.url + '/main.aspx?appname=x_trace&pagetype=entityrecord&etn=x_item&id=' + ITEM);
   const traceId = response.headers()['x-trace-id'],
     pageSpan = response.headers()['x-sim-span-id'];
   assert.ok(traceId && pageSpan, 'the shell answer names its root');

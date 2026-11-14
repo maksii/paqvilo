@@ -185,6 +185,44 @@ test('text analysis prints the skipped Dataverse file and reason for an incomple
   assert.match(answer.stdout, /SKIPPED: .*Unknown\.xml: unsupported-dataverse-metadata/);
 });
 
+// @test-kind contract: the analyze heading names the verdict
+test('the analyze heading names the verdict: INCOMPLETE, ERROR and READY under each gate', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write('solution/Other/Solution.xml', '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>');
+  fx.write('solution/customapis/inv_Ping/Unknown.xml', '<SomethingElse />');
+  const analyzeSource = (dir, ...args) =>
+    new Promise((resolve) =>
+      execFile(
+        process.execPath,
+        [cli, 'analyze', '--source', dir, ...args],
+        { env, encoding: 'utf8', windowsHide: true },
+        (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+      ),
+    );
+  const incomplete = await analyzeSource(fx.file('solution'));
+  assert.equal(incomplete.status, 1, incomplete.stdout + incomplete.stderr);
+  assert.match(incomplete.stdout, /^local-project: INCOMPLETE$/m);
+  const incompleteJson = await analyzeSource(fx.file('solution'), '--json');
+  assert.equal(JSON.parse(incompleteJson.stdout).reports[0].analysis.verdict, 'incomplete');
+  const ungated = await analyzeSource(fx.file('solution'), '--fail-on', 'none');
+  assert.equal(ungated.status, 0, ungated.stdout + ungated.stderr);
+  assert.match(ungated.stdout, /^local-project: INCOMPLETE$/m);
+
+  const step = createFixture();
+  t.after(step.cleanup);
+  step.write('step/Other/Solution.xml', '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>');
+  step.write(
+    'step/sdkmessageprocessingsteps/step.xml',
+    '<SdkMessageProcessingStep><SdkMessageName>Update</SdkMessageName><FilteringAttributes>inv_name</FilteringAttributes><Stage>20</Stage><Mode>1</Mode></SdkMessageProcessingStep>',
+  );
+  const errored = await analyzeSource(step.file('step'));
+  assert.equal(errored.status, 1, errored.stdout + errored.stderr);
+  assert.match(errored.stdout, /^local-project: ERROR$/m);
+  assert.match(errored.stdout, /analysis: inventory complete, 1 error, 0 warnings, 0 hints \(fail on error\)/);
+  assert.doesNotMatch(errored.stdout, /1 errors/);
+});
+
 test('analyze --source overrides the selected site portal source with --config and --site, and --all applies it to every site', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -236,4 +274,34 @@ test('analyze --source without --config reads the folder as a standalone source'
     ['local-project'],
   );
   assert.deepEqual(answer.errors, []);
+});
+
+// @test-kind contract: file labels are the same for --source and a catalogue site
+test('file labels are the same for --source and a catalogue site', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write('solution/Other/Solution.xml', '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>');
+  fx.write(
+    'solution/sdkmessageprocessingsteps/step.xml',
+    '<SdkMessageProcessingStep><SdkMessageName>Update</SdkMessageName><FilteringAttributes>inv_name</FilteringAttributes><Stage>20</Stage><Mode>1</Mode></SdkMessageProcessingStep>',
+  );
+  const config = catalogue(fx, 'http://127.0.0.1:1', {
+    sample: { mirage: { port: 0, solutionRoots: [fx.file('solution')] } },
+  });
+  const stepFiles = (site) =>
+    site.analysis.findings.filter(({ ruleId }) => ruleId === 'DV-PLUGIN-003').map(({ file }) => file);
+  const standalone = await new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [cli, 'analyze', '--source', fx.dir, '--fail-on', 'none', '--json'],
+      { cwd: fx.dir, env, encoding: 'utf8', windowsHide: true },
+      (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+    ),
+  );
+  const catalogued = await run(fx.dir, 'analyze', config, '--site', 'sample', '--fail-on', 'none', '--json');
+  assert.equal(standalone.status, 0, standalone.stderr);
+  assert.equal(catalogued.status, 0, catalogued.stdout + catalogued.stderr);
+  const expected = ['solution/sdkmessageprocessingsteps/step.xml'];
+  assert.deepEqual(stepFiles(JSON.parse(standalone.stdout).reports[0]), expected);
+  assert.deepEqual(stepFiles(JSON.parse(catalogued.stdout).reports[0]), expected);
 });

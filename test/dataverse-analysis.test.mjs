@@ -679,3 +679,67 @@ test('unknown Entities metadata beside the standard unpacked files is still skip
     { file: 'Entities/inv_widget/Unknown.xml', reason: 'unsupported-dataverse-metadata' },
   ]);
 });
+
+const customApiFiles = () => [
+  xml(
+    '<customapi><uniquename>inv_Ping</uniquename><bindingtype>0</bindingtype><plugintypeid>22222222-2222-4222-8222-222222222222</plugintypeid></customapi>',
+    'customapis/inv_Ping/customapi.xml',
+  ),
+  xml(
+    '<customapirequestparameter><uniquename>inv_Text</uniquename></customapirequestparameter>',
+    'customapis/inv_Ping/customapirequestparameters/inv_Text/customapirequestparameter.xml',
+  ),
+  xml(
+    '<customapiresponseproperty><uniquename>inv_Answer</uniquename></customapiresponseproperty>',
+    'customapis/inv_Ping/customapiresponseproperties/inv_Answer/customapiresponseproperty.xml',
+  ),
+  xml(
+    '<visualization><name>inv_chart</name></visualization>',
+    'Entities/inv_widget/Visualizations/{11111111-1111-4111-8111-111111111111}.xml',
+  ),
+];
+
+test('Custom API request parameters, response properties and chart definitions are recognized without rules', () => {
+  const result = inspect(customApiFiles());
+  const [dataverse] = result.coverage.domains;
+  assert.equal(result.coverage.complete, true);
+  assert.equal(dataverse.complete, true);
+  assert.ok(!dataverse.skipped.some((skip) => skip.reason === 'unsupported-dataverse-metadata'));
+  assert.ok(
+    dataverse.limitations.includes(
+      'Recognized without rules: chart definition, custom API request parameter, custom API response property.',
+    ),
+  );
+});
+
+test('unknown files under customapis stay skipped and incomplete beside recognized Custom API files', () => {
+  const result = inspect([...customApiFiles(), xml('<SomethingElse />', 'customapis/inv_Ping/Unknown.xml')]);
+  const [dataverse] = result.coverage.domains;
+  assert.equal(result.coverage.complete, false);
+  assert.deepEqual(dataverse.skipped, [
+    { file: 'customapis/inv_Ping/Unknown.xml', reason: 'unsupported-dataverse-metadata' },
+  ]);
+});
+
+test('a Dataverse XML finding points at the child element its field names, else at the owning element', (t) => {
+  const root = tempDirSync('paq-dataverse-location-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'sdkmessageprocessingsteps'));
+  fs.writeFileSync(
+    path.join(root, 'sdkmessageprocessingsteps', 'step.xml'),
+    [
+      '<?xml version="1.0"?>',
+      '<SdkMessageProcessingStep>',
+      '  <Stage>20</Stage>',
+      '  <Mode>1</Mode>',
+      '  <SdkMessageName>Update</SdkMessageName>',
+      '</SdkMessageProcessingStep>',
+      '',
+    ].join('\n'),
+  );
+  const findings = analyzeProject(root, { failOn: 'none' }).findings;
+  const stage = findings.find(({ ruleId }) => ruleId === 'DV-PLUGIN-003');
+  const filtering = findings.find(({ ruleId }) => ruleId === 'DV-PLUGIN-001');
+  assert.deepEqual([stage.line, stage.column, stage.field], [3, 3, 'stage']);
+  assert.deepEqual([filtering.line, filtering.column], [2, 1]);
+});

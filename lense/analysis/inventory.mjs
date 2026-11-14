@@ -344,6 +344,7 @@ function inspectEntry(state, root, directory, pending, entry) {
     skip(state, file, 'symbolic-link');
     return true;
   }
+  if (nestedSelectedRoot(state, absolute)) return true;
   if (entry.isDirectory()) {
     if (++state.stats.directories > state.limits.directories) {
       skip(state, file, 'directory-limit');
@@ -429,12 +430,21 @@ export function collectAnalysisInputs(roots, overrides, { platform = true } = {}
   const selectedRoots = roots.slice(0, limits.roots);
   if (new Set(selectedRoots.map((root) => root?.id)).size !== selectedRoots.length)
     throw new Error('Static analysis source root identities must be unique');
+  const reals = selectedRoots.map((root) => {
+    try {
+      return fs.realpathSync.native(path.resolve(root.path));
+    } catch {
+      return null;
+    }
+  });
+  state.rootPaths = new Set(reals.filter(Boolean));
+  state.labelBase = roots.length > 1 ? commonDirectory(reals.map((real) => (real ? dirOf(real) : null))) : null;
   for (const [index, selected] of roots.entries()) {
     if (index >= limits.roots) {
       skip(state, '.', 'root-count-limit');
       break;
     }
-    inspectRoot(state, selected, roots.length > 1);
+    inspectRoot(state, selected, roots.length > 1, reals[index]);
   }
   addEmbeddedUnits(state);
   if (!state.stats.files) skip(state, '.', 'no-supported-sources');
@@ -443,17 +453,21 @@ export function collectAnalysisInputs(roots, overrides, { platform = true } = {}
   delete state.seenFiles;
   delete state.rootId;
   delete state.prefix;
+  delete state.rootPaths;
+  delete state.labelBase;
+  delete state.currentRoot;
   delete state.platform;
   delete state.gaps;
   return state;
 }
 
-function inspectRoot(state, selected, multiple) {
+function inspectRoot(state, selected, multiple, real) {
   const id = selected?.id;
   if (typeof id !== 'string' || !/^[a-z0-9-]{1,64}$/i.test(id) || typeof selected.path !== 'string')
     throw new Error('Invalid static analysis source root');
   state.rootId = id;
-  state.prefix = multiple ? id + '/' : '';
+  state.currentRoot = real;
+  state.prefix = multiple ? rootPrefix(state.labelBase, real, id) : '';
   const rootInfo = { id, kind: selected.kind ?? 'source', complete: true };
   state.roots.push(rootInfo);
   const skippedBefore = state.gaps;
@@ -497,6 +511,36 @@ function isFileRoot(file) {
   } catch {
     return false;
   }
+}
+function dirOf(real) {
+  return isFileRoot(real) ? path.dirname(real) : real;
+}
+// The deepest folder that contains every directory, or null when there is none short of a filesystem root.
+function commonDirectory(dirs) {
+  if (!dirs.length || dirs.some((dir) => dir === null)) return null;
+  const inside = (base, dir) => {
+    const relative = path.relative(base, dir);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
+  let base = dirs[0];
+  while (!dirs.every((dir) => inside(base, dir))) {
+    const up = path.dirname(base);
+    if (up === base) return null;
+    base = up;
+  }
+  return path.parse(base).root === base ? null : base;
+}
+// Several roots label files relative to their common folder; without one, each label starts with the root id.
+function rootPrefix(base, real, id) {
+  if (!base || !real) return id + '/';
+  const relative = path.relative(base, dirOf(real)).replaceAll('\\', '/');
+  return relative ? relative + '/' : '';
+}
+// A selected root nested in another selected root is read only as itself, whatever the order of roots.
+// No resolution is needed: each root is walked from its real path and symbolic links are skipped before this check,
+// so every absolute path reaching here is already real.
+function nestedSelectedRoot(state, absolute) {
+  return state.rootPaths.size > 1 && absolute !== state.currentRoot && state.rootPaths.has(absolute);
 }
 function inspectResolvedRoot(state, root, id) {
   const stat = fs.statSync(root);

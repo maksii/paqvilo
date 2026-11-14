@@ -1491,13 +1491,15 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   else stateFile = path.join(miragePaths(cfg, args).discoveryRoot, cfg.siteName, 'state.json');
   const solutionRoots = (await launchSolutionRoots(sourceDir, args, projectInfo)).map((item) => resolved(item));
   // The registered settings (mirage/lib/config-keys.mjs) as the Mirage CLI resolves them, then the command-line choices.
-  const { runtimeOptions, runtimeIdentity } = await import('../../mirage/lib/config-keys.mjs');
+  const { runtimeOptions, runtimeIdentity, startupPresetChoice } = await import('../../mirage/lib/config-keys.mjs');
   const options = runtimeOptions({
     project: projectInfo,
     portal: projectInfo?.portals.find((item) => item.id === portalId) ?? null,
     catalogue: cfg.mirageConfig,
   });
   options.runtime = runtime;
+  // The startup preset the child applies (the child is launched with --site, so the catalogue site is in scope too).
+  const startup = startupPresetChoice(args, { project: projectInfo, catalogue: cfg.mirageConfig });
   if (args.simulation) options.simulation = { level: args.simulation };
   const scope = catalogueIdentity(cfg);
   return {
@@ -1520,9 +1522,9 @@ async function launchIdentity(cfg, args, projectInfo = null) {
           }
         : null,
       stateFile: resolved(stateFile),
-      preset: args.preset ?? null,
-      presetMode: args['preset-mode'] ?? 'always',
-      presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+      preset: startup.preset,
+      presetMode: startup.presetMode,
+      presetConfiguration: startup.presetConfiguration,
       allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
       solutionRoots: [...solutionRoots],
@@ -2214,6 +2216,7 @@ async function matchingPacks(cfg, dataPacks) {
     '# Paths are relative to this file; the first reference is the selected environment. solutionOrder derived layers the',
     '# solutions in their dependency order (written in that order); explicit keeps the listed order.',
     '# Source import reads local files only; recording a reference origin does not connect to it.',
+    '# Set preset: <id> to apply a data preset at each start; --preset overrides it.',
   ].join('\n');
   await fs.mkdir(base, { recursive: true });
   const write = async () => {

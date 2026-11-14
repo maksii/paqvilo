@@ -95,6 +95,22 @@ Notes for specific clients:
 - **MSAL libraries** need an https authority: set `tls: true` and point the authority at `<tlsOrigin>/<tenantId>` with instance discovery disabled. `@azure/msal-node`: `knownAuthorities` containing the tlsOrigin host. MSAL Python: `validate_authority=False, instance_discovery=False`. .NET: `WithInstanceDiscovery(false)`. Trust the CA as described above; .NET clients that read only the OS store need their own trust configuration. Microsoft's Python Dataverse SDK takes `tlsOrigin` as `base_url`.
 - **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. `IOrganizationService` calls go to the SOAP endpoint, which is simulated for the messages listed under [SOAP Organization service](#soap-organization-service).
 - **`Microsoft.CrmSdk.XrmTooling.CoreAssembly`** (`CrmServiceClient`, .NET Framework, used by XrmToolBox) has Microsoft Entra ID validate the authority of its own authentication types, so it cannot use the local authority. Set `port: 80`, register an `IOverrideAuthHookWrapper` that returns a client-credentials token in `CrmServiceClient.AuthOverrideHook`, and construct `CrmServiceClient(new Uri(origin), true)`. Its SOAP responses deserialize with `Microsoft.Xrm.Sdk` 9.0.
+- `ExternalTokenManagement Authentication Requested but not configured correctly. 003` after a restart: in dry run, applications registered in `/_sim/` are kept in memory and end with the runtime. The token request answered `AADSTS700016` and the runtime log has the line `dataverse token refused: unknown application`. Declare the application in `dataverse.applications` or register it again.
+
+The sample below is a minimal hook for that case. `RequestClientCredentialsToken` is a method you write yourself: it posts a client-credentials request to the local authority's token endpoint and returns the `access_token`.
+
+```csharp
+sealed class LocalToken : IOverrideAuthHookWrapper
+{
+    // Return the access_token obtained from the local authority's token endpoint.
+    public string GetAuthToken(Uri connectedUri) => RequestClientCredentialsToken();
+}
+
+CrmServiceClient.AuthOverrideHook = new LocalToken();
+var client = new CrmServiceClient(new Uri("http://127.0.0.1"), useUniqueInstance: true);
+```
+
+The hook is a static property, so it applies to the whole process; set it before constructing the client. `GetAuthToken` returns the bare access token, without a `Bearer` prefix.
 
 ## Token behaviour
 

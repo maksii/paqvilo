@@ -3,10 +3,12 @@
 // (sim-trace-routes.mjs), a status route, a CSRF state route and a /_sim/events `trace` channel (createTraceChannel). The
 // event stream produces its spans once the channel is attached, so no step waits on time; with `endStream` the server
 // then drops the connection the way a stopping runtime does.
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +22,11 @@ const CSRF = 'invented-csrf';
 const START = Date.parse('2026-02-01T10:00:00.000Z');
 const CONTACT = 'c0ffee00-0000-4000-8000-000000000001';
 const RECORD = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+const UNKNOWN_ID = 'ffffffff-0000-4000-8000-000000000009';
+const SHOW_USAGE =
+  'trace show needs one TRACE_ID \\(or a unique prefix of at least 8 characters of the id\\), or --latest\\.';
 
-async function fixture(t, { endStream = false } = {}) {
+async function fixture(t, { endStream = false, failures = false } = {}) {
   let time = START;
   const traces = createTraceStore({ settings: { level: 'full' }, now: () => time });
   const page = traces.start({
@@ -84,6 +89,13 @@ async function fixture(t, { endStream = false } = {}) {
       );
       watched.end();
       traces.start({ kind: 'job', name: 'Invented job', module: 'jobs', async: true }).end();
+      // A browser probe answered 404 is an expected answer; the job step fails.
+      if (failures) {
+        traces
+          .start({ kind: 'http', name: 'GET /probe', module: 'portal' })
+          .end({ status: 'error', attributes: { browserProbe: true, statusCode: 404 } });
+        traces.start({ kind: 'job', name: 'Invented failing step', module: 'jobs' }).end({ status: 'error' });
+      }
       // Once the frames reach the socket, drop the connection the way a stopping runtime does.
       if (endStream) res.write(': closing\n\n', () => res.destroy());
       return;
@@ -164,7 +176,7 @@ test('list, show, spans, stats and export read the runtime trace store in one en
   const statsText = (await cli('stats', '--origin', origin)).stdout;
   assert.match(statsText, /^dataverse\s+1\s+0\s+3 ms/m);
   assert.match(statsText, /^Overall: 2 spans, 0 errors, p50 3 ms, p95 4 ms, max 4 ms\.$/m);
-  assert.match(statsText, /^Roots: 1 trace, 0 errors, p50 4 ms, p95 4 ms, max 4 ms\.$/m);
+  assert.match(statsText, /^Roots: 1 trace, 0 errors, p50 4 ms, p95 4 ms, max 4 ms, 0 failed\.$/m);
   const empty = (await cli('stats', '--kind', 'canvas', '--origin', origin)).stdout;
   assert.match(empty, /^0 spans from — to —\.$/m);
   assert.match(empty, /^Overall: 0 spans, 0 errors, p50 —, p95 —, max —\.$/m);
@@ -249,6 +261,7 @@ test('record-id, search over event messages and flush reach the runtime', async 
   const human = await cli('flush', '--origin', origin);
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /^Flushed every queued persisted line and trace stream frame\.$/m);
+  assert.match(human.stdout, /^Retained 1 trace, 2 spans /m);
   assert.match(human.stdout, /^Persistence: off; 0 lines written, 0 failed\.$/m);
   const watched = await cli('watch', '--count', '1', '--search', 'UPDATE X_ITEM', '--origin', origin, '--json');
   assert.equal(JSON.parse(watched.stdout).result.span.name, 'Update x_item');
@@ -338,11 +351,11 @@ test('every failure names its code', async (t) => {
     ['--order', 'order'],
   ])
     assert.equal((await refusal('list', flag, 'bogus', '--origin', origin)).error.parameter, parameter);
-  const unknown = await failure('show', 'invented-unknown', '--origin', origin);
-  assert.deepEqual(unknown.error, { code: 'TraceNotFound', message: 'No retained trace has the id invented-unknown.' });
-  const human = await cli('show', 'invented-unknown', '--origin', origin);
+  const unknown = await failure('show', UNKNOWN_ID, '--origin', origin);
+  assert.deepEqual(unknown.error, { code: 'TraceNotFound', message: `No retained trace has the id ${UNKNOWN_ID}.` });
+  const human = await cli('show', UNKNOWN_ID, '--origin', origin);
   assert.equal(human.status, 1);
-  assert.match(human.stderr, /No retained trace has the id invented-unknown/);
+  assert.match(human.stderr, new RegExp(`No retained trace has the id ${UNKNOWN_ID}`));
   const loud = await refusal('settings', '--level', 'loud', '--origin', origin);
   assert.equal(loud.error.code, 'InvalidTraceSettings');
   assert.doesNotMatch(loud.error.message, /Local runtime request failed/, 'the runtime message itself');
@@ -412,6 +425,14 @@ test('watch prints ended spans or traces that match its filters and stops after 
   assert.match(human.stdout, /^\S+ {2}ok {2}0 ms {2}1 span {2}0 errors {2}Invented job {2}trace \S+$/m);
 });
 
+// @test-kind contract: watch --has-errors reports failed steps, and a browser probe's 404 answer is not one
+test('watch --has-errors skips a browser probe answered 404 and shows the failed step', async (t) => {
+  const { origin } = await fixture(t, { failures: true });
+  const failing = await cli('watch', '--count', '1', '--has-errors', 'true', '--origin', origin, '--json');
+  assert.equal(failing.status, 0, failing.stderr);
+  assert.equal(JSON.parse(failing.stdout).result.span.name, 'Invented failing step');
+});
+
 test('watch ends cleanly with one stream ended line when the runtime stops', async (t) => {
   const { origin } = await fixture(t, { endStream: true });
   const watched = await cli('watch', '--status', 'ok', '--origin', origin);
@@ -437,9 +458,14 @@ test('the command rejects unknown flags, actions and misplaced options before co
   assert.equal(bogus.stdout, '');
   for (const [args, message] of [
     [['--bogus'], /--bogus/],
-    [[], /Usage: paqvilo mirage trace list\|show TRACE_ID/],
+    [[], /Usage: paqvilo mirage trace list\|show \(TRACE_ID\|PREFIX\|--latest/],
     [['inspect'], /Usage:/],
-    [['show'], /exactly one TRACE_ID/],
+    [['show'], new RegExp(SHOW_USAGE)],
+    [['show', 'abc'], new RegExp(SHOW_USAGE)],
+    [['show', UNKNOWN_ID, '--latest'], new RegExp(SHOW_USAGE)],
+    [['show', '--latest', '--page', '2'], /--page does not apply to trace show\./],
+    [['show', '--latest', '--count', '1'], /--count must be a positive integer/],
+    [['list', '--latest'], /--latest applies to trace show only/],
     [['list', 'extra'], /Unexpected argument: extra/],
     [['clear', '--kind', 'http'], /--kind filters list, spans, stats, export and watch only/],
     [['watch', '--page', '2'], /--page applies to list, spans, stats and export, not watch/],
@@ -449,7 +475,11 @@ test('the command rejects unknown flags, actions and misplaced options before co
     [['list', '--format', 'ndjson'], /--format applies to trace export only/],
     [['stats', '--limit', '5'], /--limit applies to trace export only/],
     [['list', '--origin', 'https://example.invalid'], /loopback origin/],
-    [['list', '--origin', 'http://127.0.0.1:1', '--site', 'invented'], /--origin or --config\/--site/],
+    [
+      ['list', '--origin', 'http://127.0.0.1:1', '--site', 'invented'],
+      /Use one of --origin, --config\/--site or --project\./,
+    ],
+    [['list', '--origin', 'http://127.0.0.1:1', '--project', 'invented.project.yml'], /Use one of --origin/],
   ]) {
     const value = await failure(...args);
     assert.equal(value.error.code, 'InvalidArguments', args.join(' '));
@@ -460,7 +490,11 @@ test('the command rejects unknown flags, actions and misplaced options before co
   assert.match(help.stdout, /paqvilo mirage trace .*--min-duration-ms N/);
   assert.match(help.stdout, /--sort start\|duration\|spans\|errors/);
   assert.match(help.stdout, /--format json\|ndjson\|otlp/);
-  assert.ok(help.stdout.includes('trace list|show TRACE_ID|spans|stats|settings|clear|flush|export|watch '));
+  assert.ok(
+    help.stdout.includes(
+      'trace list|show (TRACE_ID|PREFIX|--latest [filters])|spans|stats|settings|clear|flush|export|watch ',
+    ),
+  );
   assert.ok(help.stdout.includes('--record-id ID'));
   assert.ok(help.stdout.includes('--status ok|error|denied|cancelled|running'));
 });
@@ -537,4 +571,74 @@ test('connectRuntime().trace.subscribe follows the trace channel until the signa
   });
   await assert.rejects(failing.closed, /Invented listener failure/);
   assert.throws(() => client.trace.subscribe(null), TypeError);
+});
+
+test('show resolves --latest, a unique id prefix and the filters, and refuses an ambiguous or unknown id', async (t) => {
+  const { origin, page, traces } = await fixture(t);
+  const FIRST = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const SECOND = 'aaaaaaaa-0000-4000-8000-000000000002';
+  traces.start({ kind: 'http', name: 'GET /first', traceId: FIRST }).end();
+  traces.start({ kind: 'http', name: 'GET /second', traceId: SECOND }).end();
+  assert.match((await cli('show', '--latest', '--origin', origin)).stdout, /^GET \/second \[http\] ok 0 ms$/m);
+  const filtered = await cli('show', '--latest', '--host', 'power-pages', '--origin', origin);
+  assert.equal(filtered.status, 0, filtered.stderr);
+  assert.match(filtered.stdout, /^GET \/invented \[http\] ok 4 ms$/m);
+  const prefix = await cli('show', page.traceId.slice(0, 8), '--origin', origin);
+  assert.equal(prefix.status, 0, prefix.stderr);
+  assert.match(prefix.stdout, /^GET \/invented \[http\] ok 4 ms$/m);
+  assert.equal((await json('show', SECOND, '--origin', origin)).trace.traceId, SECOND);
+  const HYPHENATED = 'cccccccc-1111-4000-8000-000000000003';
+  traces.start({ kind: 'http', name: 'GET /hyphenated', traceId: HYPHENATED }).end();
+  assert.equal((await json('show', 'cccccccc-1111', '--origin', origin)).trace.traceId, HYPHENATED);
+
+  const ambiguous = await failure('show', 'aaaaaaaa', '--origin', origin);
+  assert.deepEqual(ambiguous.error, {
+    code: 'AmbiguousTraceId',
+    message: 'aaaaaaaa begins 2 retained trace ids; give more characters.',
+  });
+  const ambiguousHuman = await cli('show', 'aaaaaaaa', '--origin', origin);
+  assert.equal(ambiguousHuman.status, 1);
+  assert.equal(ambiguousHuman.stderr, 'aaaaaaaa begins 2 retained trace ids; give more characters.\n');
+  assert.deepEqual((await failure('show', 'bbbbbbbb', '--origin', origin)).error, {
+    code: 'TraceNotFound',
+    message: 'No retained trace has the id bbbbbbbb.',
+  });
+  assert.deepEqual((await failure('show', '--latest', '--host', 'standalone', '--origin', origin)).error, {
+    code: 'TraceNotFound',
+    message: 'No retained trace matches the filters.',
+  });
+});
+
+test('--project reaches the runtime its discovery record names and refuses a project without one', async (t) => {
+  const { origin } = await fixture(t);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'inv-trace-project-'));
+  ownedFixture(t).add(() => removeFixtureDirectory(dir));
+  const project = path.join(dir, 'invented.project.yml');
+  await fs.writeFile(project, '');
+  const discoveryRoot = path.join(dir, '.paqvilo', 'simulator');
+  await fs.mkdir(discoveryRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(discoveryRoot, `session-${process.pid}.json`),
+    JSON.stringify({ pid: process.pid, project, sourceDir: null, url: origin }),
+  );
+  assert.equal((await json('list', '--project', project)).total, 1);
+  assert.deepEqual((await failure('list', '--project', path.join(dir, 'other', 'invented.project.yml'))).error, {
+    code: 'RuntimeUnreachable',
+    message:
+      'No running runtime discovered for this project; start it with paqvilo mirage serve --project FILE or pass --origin.',
+  });
+});
+
+test('a failed step fails its activity: stats count it in Roots and list shows the failed steps', async (t) => {
+  const { origin, traces, page } = await fixture(t);
+  traces
+    .start({ kind: 'job', name: 'Invented failing step', traceId: page.traceId, parentSpanId: page.spanId })
+    .end({ status: 'error' });
+  assert.match((await cli('stats', '--origin', origin)).stdout, /^Roots: 1 trace, .*1 failed/m);
+  const failing = await cli('stats', '--has-errors', 'true', '--origin', origin);
+  assert.equal(failing.status, 0, failing.stderr);
+  const overall = /^Overall: (\d+) spans?, (\d+) errors?,/m.exec(failing.stdout);
+  assert.ok(overall, failing.stdout);
+  assert.ok(Number(overall[1]) > Number(overall[2]), failing.stdout);
+  assert.match((await cli('list', '--origin', origin)).stdout, /ok \(failed steps\)/);
 });

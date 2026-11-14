@@ -27,6 +27,7 @@ const PUBLIC_APP_ID = '6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e';
 const USER_OID = '0f1e2d3c-4b5a-4968-8778-6a5b4c3d2e1f';
 const APP_USER_OID = '1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9';
 const UNKNOWN_TENANT = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const UNKNOWN_CLIENT = '99999999-9999-4999-8999-999999999999';
 const TOKEN_V2 = `${ORIGIN}/${TENANT}/oauth2/v2.0/token`;
 const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
@@ -296,6 +297,50 @@ test('a wrong client secret answers 401 invalid_client with AADSTS7000215', () =
 test('an unknown client answers 400 unauthorized_client with AADSTS700016', () => {
   const { auth } = fixture();
   const res = call(auth, ccForm({ client_id: '99999999-9999-4999-8999-999999999999' }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'unauthorized_client');
+  assert.deepEqual(res.body.error_codes, [700016]);
+  assert.match(res.body.error_description, /^AADSTS700016: /);
+});
+
+// @test-kind contract: Paqvilo's diagnostic for an unknown client id
+test('an unknown client reports its id and grant to onUnknownClient, never the secret', () => {
+  const { applications, state } = fixture();
+  const reported = [];
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+    onUnknownClient: (details) => reported.push(details),
+  });
+  const res = call(auth, ccForm({ client_id: UNKNOWN_CLIENT, client_secret: 'invented-secret' }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'unauthorized_client');
+  assert.deepEqual(res.body.error_codes, [700016]);
+  assert.match(res.body.error_description, /^AADSTS700016: /);
+  assert.deepEqual(reported, [{ clientId: UNKNOWN_CLIENT, grant: 'client_credentials' }]);
+  assert.equal(JSON.stringify(reported).includes('invented-secret'), false);
+});
+
+// @test-kind contract: Paqvilo's diagnostic for an unknown client id
+test('a throwing onUnknownClient leaves the unknown-client answer unchanged', () => {
+  const { applications, state } = fixture();
+  let calls = 0;
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+    onUnknownClient: () => {
+      calls += 1;
+      throw new Error('diagnostic sink failed');
+    },
+  });
+  const res = call(auth, ccForm({ client_id: UNKNOWN_CLIENT }));
+  assert.equal(calls, 1);
   assert.equal(res.status, 400);
   assert.equal(res.body.error, 'unauthorized_client');
   assert.deepEqual(res.body.error_codes, [700016]);

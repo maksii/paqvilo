@@ -1354,7 +1354,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
   });
   const { page, errors } = await open(t, origin, '#health');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const strip = page.locator('.dm-strip a[href="#activity?result=error"] strong');
+  const strip = page.locator('.dm-strip a[href="#activity?hasErrors=true"] strong');
   await strip.waitFor();
   assert.equal(await strip.innerText(), '1', 'one failed activity, not four failed steps');
   assert.equal(

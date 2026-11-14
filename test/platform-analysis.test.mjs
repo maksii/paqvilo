@@ -373,6 +373,36 @@ test('separate portal roots never borrow settings or default roles from one anot
   assert.ok(!report.findings.some((finding) => finding.ruleId === 'PP-ROLE-001' || finding.ruleId === 'PP-CONFIG-001'));
 });
 
+// @test-kind contract: file labels do not depend on how sources were selected
+test('file labels do not depend on how sources were selected', (t) => {
+  const manifest = '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>';
+  const step =
+    '<SdkMessageProcessingStep><SdkMessageName>Update</SdkMessageName><FilteringAttributes>inv_name</FilteringAttributes><Stage>20</Stage><Mode>1</Mode></SdkMessageProcessingStep>';
+  const stepFiles = (report) =>
+    report.findings.filter(({ ruleId }) => ruleId === 'DV-PLUGIN-003').map(({ file }) => file);
+  const expected = ['solution/sdkmessageprocessingsteps/step.xml'];
+  const root = fixture(t, {
+    'web-files/a.html': '<p>Invented content</p>',
+    'solution/Other/Solution.xml': manifest,
+    'solution/sdkmessageprocessingsteps/step.xml': step,
+  });
+  assert.deepEqual(stepFiles(analyzeProject(root)), expected);
+  const portal = { id: 'portal-1', kind: 'portal', path: root };
+  const solution = { id: 'solution-2', kind: 'solution', path: path.join(root, 'solution') };
+  assert.deepEqual(stepFiles(analyzeProject(null, { sourceRoots: [portal, solution] })), expected);
+  assert.deepEqual(stepFiles(analyzeProject(null, { sourceRoots: [solution, portal] })), expected);
+  const sibling = fixture(t, {
+    'portal/web-files/a.html': '<p>Invented content</p>',
+    'solution/Other/Solution.xml': manifest,
+    'solution/sdkmessageprocessingsteps/step.xml': step,
+  });
+  const siblingRoots = [
+    { id: 'portal-1', kind: 'portal', path: path.join(sibling, 'portal') },
+    { id: 'solution-2', kind: 'solution', path: path.join(sibling, 'solution') },
+  ];
+  assert.deepEqual(stepFiles(analyzeProject(null, { sourceRoots: siblingRoots })), expected);
+});
+
 test('a declared Canvas package cannot borrow web-source completeness from an unrelated file', (t) => {
   const root = fixture(t, {
     'app.msapp': archive({ 'unsupported.json': '{"unknown":true}' }),

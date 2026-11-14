@@ -15,6 +15,7 @@ import {
   runtimeOptions,
   runtimeIdentity,
   settingOptions,
+  startupPresetChoice,
   registerSettingParser,
   pendingSettingParsers,
   withoutSettingParser,
@@ -77,6 +78,9 @@ const PRE_MIGRATION_CATALOGUE = [
 const PRE_MIGRATION_PROJECT_SETTINGS = [
   'dataPacks',
   'solutionOrder',
+  'preset',
+  'presetMode',
+  'presetConfiguration',
   'environmentVariables',
   'deploymentProfiles',
   'platform',
@@ -414,6 +418,47 @@ test('a project without dataverse leaves the catalogue site dataverse in force',
       .enabled,
     false,
     'an explicit project value still wins',
+  );
+});
+
+test('the startup preset comes from the command line, else the project file, else the catalogue site', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'project.json');
+  const text = JSON.stringify({
+    version: 2,
+    runtime: { kind: 'dataverse-api' },
+    solutions: [],
+    preset: 'invented-preset',
+  });
+  const project = await resolveProjectConfig(JSON.parse(text), file, { checkSources: false });
+  assert.equal(project.preset, 'invented-preset');
+  const unset = await resolveProjectConfig({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [] }, file, {
+    checkSources: false,
+  });
+  const fromProject = startupPresetChoice({}, { project });
+  assert.equal(fromProject.preset, 'invented-preset');
+  assert.equal(fromProject.from, 'project');
+  const fromCli = startupPresetChoice({ preset: 'cli-one' }, { project });
+  assert.equal(fromCli.preset, 'cli-one');
+  assert.equal(fromCli.from, 'cli');
+  const overCatalogue = startupPresetChoice({}, { project, catalogue: { preset: 'catalogue-one' } });
+  assert.equal(overCatalogue.preset, 'invented-preset', 'the project value wins over the catalogue site');
+  const fromSite = startupPresetChoice({}, { project: unset, catalogue: { preset: 'catalogue-one' } });
+  assert.equal(fromSite.preset, 'catalogue-one');
+  assert.equal(fromSite.from, 'catalogue');
+  const nothing = startupPresetChoice({}, {});
+  assert.equal(nothing.preset, null);
+  assert.equal(nothing.from, null);
+  assert.equal(nothing.presetMode, 'always');
+  assert.equal(nothing.presetConfiguration, 'data-only');
+  await assert.rejects(
+    resolveProjectConfig(
+      { version: 2, runtime: { kind: 'dataverse-api' }, solutions: [], preset: 'invented preset' },
+      file,
+      { checkSources: false },
+    ),
+    /preset must be a preset ID/,
   );
 });
 

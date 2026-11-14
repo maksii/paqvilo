@@ -363,7 +363,7 @@ assembly and static state.
 2. Open the original C# source and set breakpoints, including in constructors.
    Trigger the operation from the local app, portal or Dataverse client. The
    terminal prints the owned `paqvilo-plugin-host.exe` PID. Execution waits
-   before constructing the plug-in until a managed debugger attaches.
+   before constructing the plug-in until a managed debugger attaches. Each host's command line ends with `--label <project folder>@<runtime port>`; the process picker shows it and the debugger line prints it.
 3. Run **Mirage plug-in: attach .NET Framework** from VS Code's Run and Debug
    menu and select that PID. `paqvilo init --refresh-editor` generates this
    configuration and recommends Microsoft's C# extension. In an existing

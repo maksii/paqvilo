@@ -5733,7 +5733,11 @@ document.addEventListener(
       const failureText = failures.length
         ? ` ${failures.length} failed: ${failures.map(describeFailure).join('; ')}`
         : '';
-      notify(`Captured ${captured} files for ${paths.length} requested paths.${failureText}`, failures.length > 0);
+      const countOf = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+      notify(
+        `Captured ${countOf(captured, 'file')} for ${countOf(paths.length, 'requested path')}.${failureText}`,
+        failures.length > 0,
+      );
     } else {
       await request('/live/connect', {
         method: 'POST',

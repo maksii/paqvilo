@@ -190,6 +190,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
     writesFiles: [],
     failOn,
     ready: failOn === 'none' || (complete && !meetsThreshold),
+    verdict: analysisVerdict(complete, failOn, meetsThreshold),
     complete,
     sourceDigest: input.sourceDigest,
     sources: analysisSources,
@@ -227,6 +228,11 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
       ],
     },
   };
+}
+
+function analysisVerdict(complete, failOn, meetsThreshold) {
+  if (!complete) return 'incomplete';
+  return failOn === 'none' || !meetsThreshold ? 'ready' : 'error';
 }
 
 function evaluatedRuleIds(input, domains, findings) {
