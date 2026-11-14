@@ -149,6 +149,11 @@ $('apply').addEventListener('click', () => {
   if (selected) parameters.set(selected.name, $('parameters').value);
   launch();
 });
+// Once the bridge has connected, the server line keeps saying so; a later app event does not replace it.
+function serverEventText(kind) {
+  if (kind === 'bridge-ready') $('server').textContent = BRIDGE_CONNECTED;
+  else if ($('server').textContent !== BRIDGE_CONNECTED) $('server').textContent = APP_LOADED;
+}
 window.addEventListener('message', (message) => {
   const payload = message.data,
     event = payload?.event;
@@ -166,8 +171,7 @@ window.addEventListener('message', (message) => {
   const path = safePath(event.path);
   const prefix = `/_apps/code/${encodeURIComponent(selected.name)}/`;
   if (event.path != null && !path?.startsWith(prefix)) return;
-  if (event.kind === 'bridge-ready') $('server').textContent = BRIDGE_CONNECTED;
-  else if ($('server').textContent !== BRIDGE_CONNECTED) $('server').textContent = APP_LOADED;
+  serverEventText(event.kind);
   if (event.kind === 'bridge-ready') status.textContent = 'Bridge connected'; // NOSONAR: deprecated API kept for compatibility
   if (event.kind === 'bridge-error') status.textContent = 'Bridge initialization failed; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility
   if (event.kind === 'app-error') status.textContent = 'App error; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility

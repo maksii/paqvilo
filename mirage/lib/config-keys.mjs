@@ -617,13 +617,20 @@ export function runtimeIdentity(options = {}) {
   return identity;
 }
 
+/** Where the startup preset comes from: the command line, the project file, the catalogue site, or none. */
+function presetSource(args, project, catalogue) {
+  if (args.preset) return 'cli';
+  if (project?.preset) return 'project';
+  return catalogue?.preset ? 'catalogue' : null;
+}
+
 /**
  * The startup preset of a runtime started to serve (`mirage serve`, `mirage dev`): the command line, else the project
  * file, else the catalogue site. Other commands take commandLinePreset.
  */
 export function startupPresetChoice(args = {}, { project = null, catalogue = null } = {}) {
   const preset = args.preset ?? project?.preset ?? catalogue?.preset ?? null;
-  const from = args.preset ? 'cli' : project?.preset ? 'project' : catalogue?.preset ? 'catalogue' : null;
+  const from = presetSource(args, project, catalogue);
   return {
     preset,
     from,

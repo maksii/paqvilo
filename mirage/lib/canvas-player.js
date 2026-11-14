@@ -614,11 +614,15 @@
   }
   // The text input's TriggerOutput formula decides when typing reaches the app: on each keystroke (the default), after
   // half a second (Delayed, or DelayOutput true) or never before the commit (FocusOut). A commit runs OnChange.
+  function textInputTrigger(formula) {
+    if (/FocusOut/.test(formula)) return 'focusout';
+    return /Delayed/.test(formula) ? 'delayed' : 'keypress';
+  }
   function bindTextInputOutput(el, control, scope, p) {
     const formula =
       source.formulas?.find((row) => row.owner.endsWith(`.${control.name}`) && row.property === 'TriggerOutput')
         ?.text ?? '';
-    const trigger = /FocusOut/.test(formula) ? 'focusout' : /Delayed/.test(formula) ? 'delayed' : 'keypress';
+    const trigger = textInputTrigger(formula);
     const delay = p.DelayOutput === true || trigger === 'delayed' ? 500 : 0;
     let timer = null;
     // The text the app holds for this element: the value it was built with, then each value sent (dataset.sent, read by
@@ -687,16 +691,16 @@
   }
   // AccessibleLabel names the control. Images take their name from alt, containers and galleries have none, and a check
   // box without a label is named by its text. A graphic without a name is hidden unless it can be selected (role button).
-  const UNNAMED_KINDS = ['image', 'container', 'form', 'formviewer', 'card', 'gallery', 'addmedia'];
-  const HIDDEN_WITHOUT_NAME = ['icon', 'rectangle', 'circle', 'image'];
+  const UNNAMED_KINDS = new Set(['image', 'container', 'form', 'formviewer', 'card', 'gallery', 'addmedia']);
+  const HIDDEN_WITHOUT_NAME = new Set(['icon', 'rectangle', 'circle', 'image']);
   function styleControl(el, control, p, kind) {
     el.dataset.control = control.name;
     el.classList.add('canvas-control');
     const name =
       accessibleLabel(p) || (kind === 'checkbox' || kind === 'toggle' ? valueText(p.Text || p.Label).trim() : '');
-    if (name && !UNNAMED_KINDS.includes(kind)) el.setAttribute('aria-label', name);
+    if (name && !UNNAMED_KINDS.has(kind)) el.setAttribute('aria-label', name);
     else el.removeAttribute('aria-label');
-    if (!name && HIDDEN_WITHOUT_NAME.includes(kind) && el.getAttribute('role') !== 'button')
+    if (!name && HIDDEN_WITHOUT_NAME.has(kind) && el.getAttribute('role') !== 'button')
       el.setAttribute('aria-hidden', 'true');
     el.style.left = `${num(p.X, 0)}px`;
     el.style.top = `${num(p.Y, 0)}px`;
@@ -1115,9 +1119,10 @@
     const zoom = document.querySelector('[data-testid="canvas-zoom"]');
     const scroller = document.querySelector('.stage-scroll');
     const fit = document.querySelector('.canvas-fit');
-    const w = parseFloat(surface.style.width),
-      h = parseFloat(surface.style.height);
-    if (!(w > 0) || !(h > 0)) return;
+    const w = Number.parseFloat(surface.style.width),
+      h = Number.parseFloat(surface.style.height);
+    // Not (w > 0 and h > 0): a NaN size is not positive, so it also stops here.
+    if (!(w > 0 && h > 0)) return;
     // A hidden pane has no width: fitting to it would scale the stage to zero, so the current transform stays.
     if (scroller.clientWidth === 0) return;
     const s =

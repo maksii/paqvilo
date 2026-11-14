@@ -2423,8 +2423,9 @@ function executePooledClr(runtime, input, options, verified) {
             fail('Unexpected CLR debugger gate.', 'LocalPluginProtocol', 500);
           diagnostic({ code: 'PLUGIN_CLR_DEBUG_WAIT', pid: ownedPid, typeName: runtime.descriptor.typeName });
           const label = runtime.hostLabel?.() ?? null;
+          const labelArgument = label ? ` --label ${label}` : '';
           process.stderr.write(
-            `Mirage plug-in debugger: attach to paqvilo-plugin-host.exe PID ${ownedPid}${label ? ` --label ${label}` : ''} (${runtime.descriptor.typeName}). Waiting before plug-in construction; local debug deadline is 30 minutes.\n`,
+            `Mirage plug-in debugger: attach to paqvilo-plugin-host.exe PID ${ownedPid}${labelArgument} (${runtime.descriptor.typeName}). Waiting before plug-in construction; local debug deadline is 30 minutes.\n`,
           );
         } else if (message.kind === 'rpc') {
           let value, error;

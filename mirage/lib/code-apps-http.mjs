@@ -48,6 +48,8 @@ const BASE_CSP =
 const WORKBENCH_ASSETS = {
   'workbench.js': ['text/javascript; charset=utf-8', new URL('./code-apps-workbench.js', import.meta.url)],
   'workbench.css': ['text/css; charset=utf-8', new URL('./code-apps-workbench.css', import.meta.url)],
+  // Static code, no credential: the app clients import it after configure() (code-apps-client.js).
+  'trace-gesture.js': ['text/javascript; charset=utf-8', new URL('./trace-gesture.js', import.meta.url)],
 };
 // The admin sheets the loader page links; the code app page's CSP allows same-origin stylesheets only.
 const ADMIN_SHEETS = {

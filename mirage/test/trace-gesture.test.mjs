@@ -123,11 +123,17 @@ test('without a window the helper listens to nothing and sends the page headers'
   assert.deepEqual(trace.headersFor(PAGE), { 'X-Trace-Id': 'trace-page', 'X-Sim-Parent-Trace': 'span-page' });
 });
 
-test('the three single-page clients use the helper and carry no copy of its headers', async () => {
-  const clients = ['../lib/canvas-player.js', '../lib/code-apps-client.js', '../lib/model-driven/app.mjs'];
-  for (const path of clients) {
+test('the canvas player and model-driven client use the helper and carry no copy of its headers', async () => {
+  for (const path of ['../lib/canvas-player.js', '../lib/model-driven/app.mjs']) {
     const text = await readFile(new URL(path, import.meta.url), 'utf8');
     assert.match(text, /createGestureTrace\(\)/, `${path} creates its trace through the helper`);
     assert.doesNotMatch(text, /X-Sim-Parent-Request|X-Sim-Parent-Trace/, `${path} names no trace header itself`);
   }
+});
+
+test('the code app client is one file: no static import, and it names no gesture logic of its own', async () => {
+  const text = await readFile(new URL('../lib/code-apps-client.js', import.meta.url), 'utf8');
+  assert.match(text, /createGestureTrace\(\)/, 'the client creates its trace through the helper the runtime serves');
+  assert.ok(!/^\s*import\s/m.test(text), 'an app may serve the client as one URL, so it has no static import');
+  assert.doesNotMatch(text, /X-Sim-Parent-Request/, 'the client names no gesture header itself');
 });

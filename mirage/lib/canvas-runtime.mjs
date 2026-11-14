@@ -2264,6 +2264,9 @@ export function createCanvasApp({
     changed(key);
     log({ event: 'input', control: name, ...(scope.itemIndex !== undefined ? { item: scope.itemIndex } : {}) });
     if (!change) return undefined;
+    return inputBehaviours(name, next, scope, checked);
+  }
+  async function inputBehaviours(name, next, scope, checked) {
     const result = await behaviour(name, 'OnChange', scope);
     if (checked) await behaviour(name, next ? 'OnCheck' : 'OnUncheck', scope);
     return result;

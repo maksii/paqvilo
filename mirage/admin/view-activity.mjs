@@ -2229,10 +2229,8 @@ const detailTabs = (ctx, d, tree) => {
   const traces = traceLines(tree).length;
   const loaded = Boolean(logs && !logs.logs?.error && !logs.findings?.error);
   // The count covers the trace lines of the steps and, once loaded, the log lines and findings.
-  const logCount =
-    loaded || traces
-      ? ` (${traces + (loaded ? (logs.logs?.items?.length ?? 0) + (logs.findings?.diagnostics?.length ?? 0) : 0)})`
-      : '';
+  const loadedLines = loaded ? (logs.logs?.items?.length ?? 0) + (logs.findings?.diagnostics?.length ?? 0) : 0;
+  const logCount = loaded || traces ? ` (${traces + loadedLines})` : '';
   return DETAIL_TABS.filter(([id]) => id !== 'log' || logServed(ctx) || served(ctx, '/diagnostics')).map(
     ([id, label]) => ({
       id,

@@ -737,26 +737,33 @@ test('Errors & denied finds what failed in two clicks and toggles off; a Finding
   const toggle = page.locator('#activity-errors');
   await page.locator(`#activity-open-${denied.traceId}`).waitFor();
   assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
-  // Click 1: only errors and denials, in the address and as a chip.
+  // Click 1: only failed activities, in the address and as a chip.
   await toggle.click();
-  await page.waitForFunction(() => location.hash === '#activity?result=error%2Cdenied');
-  await page.locator('#activity-chip-result').waitFor();
+  await page.waitForFunction(() => location.hash === '#activity?hasErrors=true');
+  assert.match(await page.locator('#activity-chip-hasErrors').innerText(), /^Failed: true/);
   await page.locator('#activity-errors[aria-pressed="true"]').waitFor();
   // The list follows the chip once it reloaded: the ok read leaves it.
   await page.locator(`#activity-open-${ok.traceId}`).waitFor({ state: 'detached' });
   await page.locator(`#activity-open-${denied.traceId}`).waitFor();
-  const results = await page
-    .locator('table[data-table="activity-list"] tbody tr[data-activity-row] td:nth-child(2) .ui-badge:first-child')
-    .allInnerTexts();
-  assert.ok(results.length > 0 && results.every((text) => text === 'error' || text === 'denied'), results.join());
+  // An activity is failed when its root or a step ended in error or denied: a row whose root is ok shows its first failed step's error.
+  const rows = await page.locator('table[data-table="activity-list"] tbody tr[data-activity-row]').evaluateAll((trs) =>
+    trs.map((tr) => ({
+      result: tr.querySelector('td:nth-child(2) .ui-badge:first-child')?.textContent ?? '',
+      failedStep: tr.querySelector('.ui-trace-error') !== null,
+    })),
+  );
+  assert.ok(
+    rows.length > 0 && rows.every(({ result, failedStep }) => result === 'error' || result === 'denied' || failedStep),
+    JSON.stringify(rows),
+  );
   // A second click clears the filter and its chip.
   await toggle.click();
   await page.waitForFunction(() => location.hash === '#activity');
-  await page.locator('#activity-chip-result').waitFor({ state: 'detached' });
+  await page.locator('#activity-chip-hasErrors').waitFor({ state: 'detached' });
   await page.locator(`#activity-open-${ok.traceId}`).waitFor();
   // T1 from an unfiltered list: Errors & denied, then the refused activity, and Why reads first.
   await toggle.click();
-  await page.locator('#activity-chip-result').waitFor();
+  await page.locator('#activity-chip-hasErrors').waitFor();
   await page.locator(`#activity-open-${denied.traceId}`).click();
   await page.locator('#activity-why').waitFor();
   assert.match(await page.locator('#activity-why').innerText(), /^Why: /);

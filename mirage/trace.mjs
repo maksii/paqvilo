@@ -113,8 +113,10 @@ const actorText = (actor) => {
   return kind + '';
 };
 // failed (roots only) is the count of failed activities, appended after the max figure.
-const figuresLine = (label, value, unit, failed = null) =>
-  `${label}: ${plural(value.count, unit)}, ${plural(value.errors, 'error')}, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}${failed === null ? '' : `, ${failed} failed`}.`;
+const figuresLine = (label, value, unit, failed = null) => {
+  const failedText = failed === null ? '' : `, ${failed} failed`;
+  return `${label}: ${plural(value.count, unit)}, ${plural(value.errors, 'error')}, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}${failedText}.`;
+};
 
 function humanTrace(result) {
   const { trace } = result,
@@ -358,6 +360,11 @@ function validateTraceOptions(action, values) {
   if (values.utc && !['list', 'spans'].includes(action)) throw invalid('--utc applies to trace list and spans only.');
   for (const name of ['format', 'limit'])
     if (values[name] !== undefined && action !== 'export') throw invalid(`--${name} applies to trace export only.`);
+  validateRuntimeSource(values);
+}
+
+// The runtime comes from one of --origin, --config/--site or --project, and an origin must be loopback.
+function validateRuntimeSource(values) {
   if ([values.origin, values.config || values.site, values.project].filter(Boolean).length > 1)
     throw invalid('Use one of --origin, --config/--site or --project.');
   if (values.origin)

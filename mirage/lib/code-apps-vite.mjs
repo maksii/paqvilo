@@ -86,6 +86,7 @@ const MISSING_SOURCES = /^Sourcemap for "(.+)" points to missing source files$/;
 const ANSI_COLOUR = /\u001b\[[0-9;]*m/g;
 /** Vite's missing-source warnings for dependency modules are dropped; the app's own sources keep theirs. */
 export function quietDependencySourcemaps(logger) {
+  if (!logger) return;
   for (const method of ['warn', 'warnOnce']) {
     if (typeof logger[method] !== 'function') continue;
     const write = logger[method].bind(logger);

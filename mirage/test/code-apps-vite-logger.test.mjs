@@ -51,6 +51,10 @@ test('any other warning passes unchanged with its options', () => {
   ]);
 });
 
+test('a configuration without a logger is accepted without throwing', () => {
+  assert.doesNotThrow(() => quietDependencySourcemaps(undefined));
+});
+
 test('a logger with only warn is wrapped without throwing', () => {
   const calls = [];
   const logger = { warn: (message) => calls.push(message) };

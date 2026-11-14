@@ -10,8 +10,6 @@
 // Generated services retain the real SDK when the optional executor or Vite integration installs local data execution.
 // This lower-level throwing client is also available for application-owned service layers.
 
-import { createGestureTrace } from './trace-gesture.js';
-
 let base = null;
 let csrf = null;
 let generation = 0;
@@ -22,14 +20,23 @@ let appName = null;
 let context = null;
 // The getContext() answer's trace (X-Trace-Id, X-Sim-Span-Id): every later call joins it (docs/design/tracing.md).
 let trace = null;
-const gestureTrace = createGestureTrace();
+// The page's one gesture-trace helper (loadGestureTrace) and the origin of the runtime it was loaded from. Its window
+// listeners exist once per page, so later configure() calls reuse it.
+let gestureTrace = null;
+let gestureOrigin = null;
+
+// The page's own headers, as the helper maps them without a gesture (each one that has a value).
+const pageHeaders = (page) => ({
+  ...(page.traceId ? { 'X-Trace-Id': page.traceId } : {}),
+  ...(page.spanId ? { 'X-Sim-Parent-Trace': page.spanId } : {}),
+});
 
 function requestHeaders(body, binaryBody, headers) {
   return {
     accept: 'application/json',
     'x-paqvilo-code-app-session': sessionId,
     ...(csrf ? { 'x-sim-csrf': csrf } : {}),
-    ...(trace ? gestureTrace.headersFor(trace) : {}),
+    ...(trace ? (gestureTrace ? gestureTrace.headersFor(trace) : pageHeaders(trace)) : {}),
     ...(body === undefined ? {} : { 'content-type': binaryBody ? 'application/octet-stream' : 'application/json' }),
     ...headers,
   };
@@ -50,7 +57,23 @@ function parseCallResponse(response, bytes, text) {
   return { data: bytes ?? data, response };
 }
 
-export function configure({ app, origin = '', onEvent } = {}) {
+// The gesture helper lives in the Mirage runtime, not beside this file: an app may serve this client as one URL.
+// Without it (an older runtime, a refused import) calls carry the page's own trace headers.
+// A load that finishes after a newer configure() is ignored; `load` is the test seam for the dynamic import.
+async function loadGestureTrace(origin, load = (url) => import(/* @vite-ignore */ url)) {
+  const configured = generation;
+  try {
+    const module = await load(`${origin}/_apps/code/_assets/trace-gesture.js`);
+    if (configured !== generation) return;
+    // The helper's code is the same for every origin, so a page keeps the one object it already has.
+    gestureTrace ??= module.createGestureTrace();
+    gestureOrigin = origin;
+  } catch {
+    // A refused import leaves the calls on the page headers, or on the helper an earlier load supplied.
+  }
+}
+
+export function configure({ app, origin = '', onEvent, loadModule } = {}) {
   if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
   if (typeof origin !== 'string')
     throw new Error('Origin must be an HTTP(S) origin without a path, query, or fragment.');
@@ -81,10 +104,12 @@ export function configure({ app, origin = '', onEvent } = {}) {
   csrf = null;
   context = null;
   trace = null;
-  gestureTrace.reset();
+  gestureTrace?.reset();
   sessionId = crypto.randomUUID();
   observer = onEvent ?? null;
   generation++;
+  // The same origin keeps the page's helper; another origin loads its runtime's helper, which reuses the existing one.
+  if (!gestureTrace || gestureOrigin !== normalizedOrigin) loadGestureTrace(normalizedOrigin, loadModule);
 }
 
 async function call(path, { method = 'GET', body, headers = {}, binaryBody = false, binaryResponse = false } = {}) {
@@ -112,7 +137,7 @@ async function call(path, { method = 'GET', body, headers = {}, binaryBody = fal
       ...(body === undefined ? {} : { body: binaryBody ? body : JSON.stringify(body) }),
     });
     status = response.status;
-    gestureTrace.noteAnswer(response);
+    gestureTrace?.noteAnswer(response);
     const bytes = binaryResponse && response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
     const text = bytes === null ? await response.text() : '';
     // Reject stale results; an already-sent write cannot be rolled back by reconfiguration.
