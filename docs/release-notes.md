@@ -498,7 +498,8 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
   `scripts/parity-tags-legacy.json`, and that list only shrinks. See [test kinds](test-kinds.md).
 - When the SonarQube quality gate fails, the last step of its job prints the failed conditions and the open issues in
   new code.
-- `check:pr` reads the newest result of each check per workflow. The test-kind checker treats an insertion
+- `check:pr` reads the newest result of each check per workflow, and a matrix job cancelled before GitHub evaluated
+  its matrix is replaced by a newer run of the same workflow. The test-kind checker treats an insertion
   inside a `parity` test body as a change to it, reads runner modules that call `test(`, and runs from the staged
   snapshot. Pre-push accepts annotated tags, and `check:workflows` has pinned actionlint and ShellCheck assets
   for macOS and Linux arm64.

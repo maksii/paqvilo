@@ -34,8 +34,34 @@ function newestChecks(checks) {
   });
 }
 
+function runId(check) {
+  return /\/actions\/runs\/(\d+)\//.exec(check.detailsUrl ?? '')?.[1];
+}
+
+function isMatrixPlaceholder(check) {
+  const cancelled = check.status === 'COMPLETED' && check.conclusion === 'CANCELLED';
+  return (
+    check.__typename === 'CheckRun' && cancelled && (check.name ?? '').includes('${{') && runId(check) !== undefined
+  );
+}
+
+// A job cancelled before GitHub evaluated its matrix keeps its name template, which is never reported again,
+// so only a newer run of the same workflow can replace it.
+function isReplacedPlaceholder(check, checks) {
+  if (!isMatrixPlaceholder(check)) return false;
+  return checks.some(
+    (other) =>
+      other.__typename === 'CheckRun' &&
+      other.workflowName === check.workflowName &&
+      runId(other) !== undefined &&
+      runId(other) !== runId(check) &&
+      checkTime(other) > checkTime(check),
+  );
+}
+
 export function qualifyPullRequest(pr, expectedHead) {
-  const checks = newestChecks(pr.statusCheckRollup ?? []);
+  const rollup = pr.statusCheckRollup ?? [];
+  const checks = newestChecks(rollup).filter((check) => !isReplacedPlaceholder(check, rollup));
   const gates = ['CI gate', 'Security gate'];
   const reasons = [];
   if (!expectedHead || pr.headRefOid !== expectedHead) reasons.push('The PR head differs from the checked-out commit.');

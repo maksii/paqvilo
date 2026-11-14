@@ -287,6 +287,67 @@ test('a pending status context keeps its check blocked whatever its creation tim
   assert.ok(result.reasons.some((reason) => reason.includes('checks have not completed')));
 });
 
+const inRun = (runId, check) => ({ ...check, detailsUrl: `https://github.com/o/r/actions/runs/${runId}/job/7` });
+const template = 'Unit tests (Node 24, ${{ matrix.suite }})';
+const placeholder = inRun(1, timedRun(template, 'CANCELLED', '2026-11-01T10:00:00Z'));
+const securityGate = inRun(9, timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'));
+const laterRun = [
+  inRun(2, timedRun('Unit tests (Node 24, lense)', 'SUCCESS', '2026-11-01T10:01:00Z')),
+  inRun(2, timedRun('CI gate', 'SUCCESS', '2026-11-01T10:05:00Z')),
+];
+
+test('a matrix job cancelled before its matrix was evaluated is replaced by a newer run of its workflow', () => {
+  const report = qualifyPullRequest({ ...ready, statusCheckRollup: [placeholder, ...laterRun, securityGate] }, head);
+  assert.deepEqual(report.reasons, []);
+  assert.equal(report.ok, true);
+});
+
+test('a newer run of the same workflow still in progress keeps the replaced matrix job pending, not failed', () => {
+  const running = laterRun.map((check) => ({ ...check, status: 'IN_PROGRESS', conclusion: null }));
+  const report = qualifyPullRequest({ ...ready, statusCheckRollup: [placeholder, ...running, securityGate] }, head);
+  assert.equal(report.ok, false);
+  assert.ok(!report.reasons.some((reason) => reason.includes('unsuccessful')));
+  assert.ok(report.reasons.some((reason) => reason.includes('checks have not completed')));
+});
+
+test('an unevaluated matrix job still blocks unless a newer run of the same workflow reports', () => {
+  const sameRunGate = inRun(1, timedRun('CI gate', 'SUCCESS', '2026-11-01T10:00:30Z'));
+  const cases = {
+    'only another workflow has a newer run': [
+      placeholder,
+      sameRunGate,
+      securityGate,
+      inRun(5, timedRun('Lint', 'SUCCESS', '2026-11-01T10:06:00Z', 'Lint')),
+    ],
+    'the placeholder failed instead of being cancelled': [
+      { ...placeholder, conclusion: 'FAILURE' },
+      ...laterRun,
+      securityGate,
+    ],
+    'the placeholder names no run': [{ ...placeholder, detailsUrl: undefined }, ...laterRun, securityGate],
+    'the newer check names no run': [
+      placeholder,
+      sameRunGate,
+      securityGate,
+      timedRun('Unit tests (Node 24, lense)', 'SUCCESS', '2026-11-01T10:01:00Z'),
+    ],
+    'the newer check belongs to the same run': [
+      placeholder,
+      sameRunGate,
+      securityGate,
+      inRun(1, timedRun('Unit tests (Node 24, lense)', 'SUCCESS', '2026-11-01T10:01:00Z')),
+    ],
+  };
+  for (const [label, statusCheckRollup] of Object.entries(cases)) {
+    const report = qualifyPullRequest({ ...ready, statusCheckRollup }, head);
+    assert.equal(report.ok, false, label);
+    assert.ok(
+      report.reasons.some((reason) => reason.includes('unsuccessful')),
+      label,
+    );
+  }
+});
+
 test('a completed run with a timestamp before 2000 counts as newest and its failure still blocks', () => {
   const implausibleTime = {
     ...ready,

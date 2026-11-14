@@ -54,8 +54,10 @@ runtime matrices are skipped. Local commits trigger no hosted run. Do not use CI
 
 All PR edits, including description edits, run the applicable source checks and report the same required `CI gate`
 name. A metadata-only run with a different gate name can leave GitHub waiting for the required context despite an
-older successful run. Run `npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success;
-it requires the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
+older successful run. An edit right after a push leaves cancelled matrix jobs named by their template, and
+`check:pr` counts them as replaced once a newer run of that workflow reports on the head. Run
+`npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success; it requires
+the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
 
 Report vulnerabilities through [private reporting](https://github.com/maksii/paqvilo/blob/main/SECURITY.md). Alert triage decisions
 are recorded in [`.github/security/codeql-triage.json`](https://github.com/maksii/paqvilo/blob/main/.github/security/codeql-triage.json). A triage entry
