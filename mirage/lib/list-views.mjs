@@ -12,10 +12,10 @@ const canonical = (value) =>
     .toLowerCase();
 const attr = (value) =>
   String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 const VIEWS = { 756150000: 'year', 756150001: 'month', 756150002: 'week', 756150003: 'day' };
 const STYLES = { 756150000: 'full', 756150001: 'list' };
 const GUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -120,7 +120,7 @@ export function calendarResources({ websiteId, variant }) {
 /** Server markup of a calendar list (the native EntityListControl). */
 export function renderCalendarList({ list, calendar, websiteId, viewId, variant, culture = 'en-US' }) {
   const base = `/EntityList/Calendar/${canonical(websiteId)}/${canonical(list.id)}/${canonical(viewId)}`;
-  return `<div id="EntityListControl_${attr(canonical(list.id).replace(/-/g, ''))}">
+  return `<div id="EntityListControl_${attr(canonical(list.id).replaceAll('-', ''))}">
 \t<div class="entitylist" data-calendar-url="${attr(base)}" data-calendar-download-url="${attr(base)}/icalendar" data-view="calendar" data-calendar-template-path="/Areas/EntityList/tmpls/${variantPath(variant)}" lang="${attr(culture)}" data-calendar-style="${attr(calendar.style)}" data-calendar-initial-view="${attr(calendar.view)}" data-calendar-initial-date="${attr(calendar.initialDate)}">
 \t\t<div class="view"></div>
 \t</div>
@@ -172,8 +172,8 @@ export function calendarLanguageScript(culture = 'en-US') {
   ];
   // The client's first_day: 1 Monday, 2 Sunday.
   // The platform view renders CRLF lines with two blank lines before the month names.
-  return `\nif(!window.calendar_languages) {\n  window.calendar_languages = {};\n}\n\nwindow.calendar_languages[${JSON.stringify(culture)}] = {\n${lines.join('\n')}\n\n\n${names.join('\n\n')}\n\n  \n  first_day: ${firstDay === 7 ? 2 : 1}\n};\n`.replace(
-    /\n/g,
+  return `\nif(!window.calendar_languages) {\n  window.calendar_languages = {};\n}\n\nwindow.calendar_languages[${JSON.stringify(culture)}] = {\n${lines.join('\n')}\n\n\n${names.join('\n\n')}\n\n  \n  first_day: ${firstDay === 7 ? 2 : 1}\n};\n`.replaceAll(
+    '\n',
     '\r\n',
   );
 }
@@ -200,30 +200,38 @@ export function calendarEvents(rows, { calendar, idColumn, detailsUrl, idParamet
   for (const row of rows) {
     const startValue = Date.parse(scalar(row[calendar.start]) ?? '');
     if (!Number.isFinite(startValue)) continue;
-    const endValue = calendar.end ? Date.parse(scalar(row[calendar.end]) ?? '') : NaN;
+    const endValue = calendar.end ? Date.parse(scalar(row[calendar.end]) ?? '') : Number.NaN;
     const startMs = shift(startValue, calendar.startBehavior ?? 'UserLocal');
     const endMs = Number.isFinite(endValue) ? shift(endValue, calendar.endBehavior ?? 'UserLocal') : startMs;
-    if ((Number.isFinite(to) && startMs >= to) || (Number.isFinite(from) && endMs < from)) continue;
-    const id = canonical(row[idColumn]);
-    const organizer = calendar.organizer ? text(row[calendar.organizer]) : null;
-    events.push({
-      id,
-      class: 'event-info',
-      title: text(row[calendar.summary]) ?? '',
-      ...(detailsUrl
-        ? { url: `${detailsUrl}${detailsUrl.includes('?') ? '&' : '?'}${encodeURIComponent(idParameter)}=${id}` }
-        : {}),
-      start: startMs,
-      end: endMs,
-      description: calendar.description ? text(row[calendar.description]) : null,
-      location: calendar.location ? text(row[calendar.location]) : null,
-      ...(organizer ? { organizer: { name: organizer, email: null } } : {}),
-      isconversionrequired: calendar.timeZoneMode === 'specific' ? 'false' : 'true',
-      startdatebehavior: calendar.startBehavior ?? 'UserLocal',
-      enddatebehavior: calendar.endBehavior ?? 'UserLocal',
-    });
+    if (!eventOverlaps(startMs, endMs, from, to)) continue;
+    events.push(calendarEvent(row, { calendar, idColumn, detailsUrl, idParameter, startMs, endMs }));
   }
   return events.sort((a, b) => a.start - b.start);
+}
+
+function eventOverlaps(start, end, from, to) {
+  return !(Number.isFinite(to) && start >= to) && !(Number.isFinite(from) && end < from);
+}
+
+function calendarEvent(row, { calendar, idColumn, detailsUrl, idParameter, startMs, endMs }) {
+  const id = canonical(row[idColumn]);
+  const event = {
+    id,
+    class: 'event-info',
+    title: text(row[calendar.summary]) ?? '',
+  };
+  if (detailsUrl)
+    event.url = `${detailsUrl}${detailsUrl.includes('?') ? '&' : '?'}${encodeURIComponent(idParameter)}=${id}`;
+  event.start = startMs;
+  event.end = endMs;
+  event.description = calendar.description ? text(row[calendar.description]) : null;
+  event.location = calendar.location ? text(row[calendar.location]) : null;
+  const organizer = calendar.organizer ? text(row[calendar.organizer]) : null;
+  if (organizer) event.organizer = { name: organizer, email: null };
+  event.isconversionrequired = calendar.timeZoneMode === 'specific' ? 'false' : 'true';
+  event.startdatebehavior = calendar.startBehavior ?? 'UserLocal';
+  event.enddatebehavior = calendar.endBehavior ?? 'UserLocal';
+  return event;
 }
 
 const icsDate = (ms) =>
@@ -231,11 +239,15 @@ const icsDate = (ms) =>
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, 'Z');
+// Carriage returns become line breaks before the escape, so no bare CR reaches the output; other control
+// characters are dropped except the tab, which RFC 5545 allows in TEXT.
 const icsText = (value) =>
   String(value ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/[,;]/g, (c) => `\\${c}`);
+    .replaceAll(/\r\n?/g, '\n')
+    .replaceAll('\\', '\\\\')
+    .replaceAll('\n', String.raw`\n`)
+    .replaceAll(/[,;]/g, (c) => `\\${c}`)
+    .replaceAll(/\p{Cc}/gu, (c) => (c === '\t' ? c : ''));
 /** iCalendar download of the calendar events. */
 export function calendarIcs(events) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Paqvilo Mirage//Calendar//EN'];

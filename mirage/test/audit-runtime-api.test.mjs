@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,10 +7,10 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../api.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented\nadx_name: Runtime audit',
@@ -118,7 +119,7 @@ test('a legacy non-boolean externalAssets value cannot bypass confinement after 
   await app.store.compact();
   await app.close();
   const restarted = await createSimulator({ sourceDir: root, stateFile, watch: false });
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const status = await (await fetch(restarted.url + '/_sim/api/status')).json();
   assert.equal(status.confinePortalPages, true);
   assert.equal(status.externalAssets, false);
@@ -193,11 +194,17 @@ test('reset reuses project confinement defaults while returning runtime changes 
 
 test('both administration aliases use the JSON error contract when the origin is rejected', async (t) => {
   const { app } = await fixture(t);
+  const cases = [
+    [app.url, { origin: 'https://invented.invalid' }, 'AdminOriginRequired', /own address/],
+    [app.url, { host: 'invented.invalid' }, 'INVALID_REQUEST', /Host/],
+    [app.adminOrigin, { origin: 'https://invented.invalid' }, 'CrossOriginAdminRequest', /origin/],
+    [app.adminOrigin, { host: 'invented.invalid' }, 'INVALID_REQUEST', /Host/],
+  ];
   for (const prefix of ['/_sim/api', '/__sim/api'])
-    for (const headers of [{ origin: 'https://invented.invalid' }, { host: 'invented.invalid' }]) {
+    for (const [origin, headers, code, message] of cases) {
       const response = await new Promise((resolve, reject) => {
         http
-          .get(app.url + prefix + '/status', { headers }, (res) => {
+          .get(origin + prefix + '/status', { headers }, (res) => {
             let body = '';
             res.setEncoding('utf8');
             res.on('data', (chunk) => {
@@ -210,8 +217,8 @@ test('both administration aliases use the JSON error contract when the origin is
       assert.equal(response.status, 403);
       assert.match(response.headers['content-type'], /^application\/json/);
       const body = JSON.parse(response.body);
-      assert.equal(body.error.code, 'INVALID_REQUEST');
-      assert.match(body.error.message, /origin|Host/);
+      assert.equal(body.error.code, code);
+      assert.match(body.error.message, message);
     }
 });
 
@@ -221,10 +228,7 @@ test('failed source reload keeps the applied runtime and a later valid reload re
     file = path.join(root, 'Home.webpage.yml'),
     source = await fs.readFile(file, 'utf8');
   await fs.rm(file);
-  await assert.rejects(
-    app.reload(),
-    /recognised pages|recognized pages|No portal|no imported|no recognised|no recognized/i,
-  );
+  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognised in / });
   assert.equal(app.state().status.sourceFingerprint, before.status.sourceFingerprint);
   assert.equal(app.state().status.revision, before.status.revision);
   assert.match(await (await fetch(app.url)).text(), /Invented runtime audit/);
@@ -288,6 +292,6 @@ test('portal sessions remain isolated between concurrent runtimes and expire aft
   const port = Number(new URL(first.app.url).port);
   await first.app.close();
   const restarted = await createSimulator({ sourceDir: first.root, stateFile: first.stateFile, watch: false, port });
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.equal((await read(restarted)).signedIn, false);
 });

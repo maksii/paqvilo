@@ -1,3 +1,5 @@
+// @test-kind contract: verification reports and helpers produce the designed evidence, messages and failure states.
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,21 +7,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } from '../lense/commands/verify.mjs';
+import * as verifyModule from '../lense/commands/verify.mjs';
 import { createFixture, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
+  // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
   const fixture = createFixture();
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
-  t.after(() => {
-    fixture.cleanup();
-    fs.rmSync(stateDir, { recursive: true, force: true });
-  });
+  t.after(fixture.cleanup);
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const sourceDir = fixture.dir;
   const userDataDir = path.join(stateDir, 'browser');
   fs.mkdirSync(path.join(userDataDir, 'Profile 2'), { recursive: true });
   const cfg = {
     configDir: stateDir,
     stateDir,
-    sourceDir: fixture.dir,
+    sourceDir,
     siteName: 'fixture',
     envName: 'local',
     origin: 'http://127.0.0.1:1',
@@ -82,19 +85,23 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
 });
 
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
+  const removeAsync = fs.promises.rm;
   let temporary;
+  let cleanupAttempts = 0;
   t.after(() => {
     if (temporary) remove(temporary, { recursive: true, force: true });
     remove(stateDir, { recursive: true, force: true });
   });
-  t.mock.method(fs, 'rmSync', (file, options) => {
+  t.mock.method(fs.promises, 'rm', async (file, options) => {
     if (path.basename(file).startsWith('paqvilo-verify-')) {
       temporary = file;
+      cleanupAttempts++;
+      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       throw new Error('fixture cleanup failure');
     }
-    return remove(file, options);
+    return removeAsync(file, options);
   });
   const output = [];
   t.mock.method(console, 'log', (line) => output.push(line));
@@ -108,6 +115,8 @@ test('JSON verification emits one final failure report when temporary cleanup al
     site: { startPath: '/' },
   };
   assert.equal(await verify(cfg, { json: true }), 1);
+  assert.equal(cleanupAttempts, 1);
+  assert.equal(fs.existsSync(temporary), true);
   assert.equal(output.length, 1);
   const report = JSON.parse(output[0]);
   assert.equal(report.passed, false);
@@ -115,4 +124,15 @@ test('JSON verification emits one final failure report when temporary cleanup al
   assert.match(report.cleanup.errors[0], /fixture cleanup failure/);
   assert.match(report.error, /Cleanup incomplete/);
   assert.deepEqual(JSON.parse(fs.readFileSync(report.evidence.report, 'utf8')), report);
+});
+
+// @test-kind security: a sign-in redirect carries state and nonce values that verification output must not print.
+test('verify sign-in message names the page location without query or fragment values', () => {
+  const { redactedPageUrl } = verifyModule;
+  assert.equal(typeof redactedPageUrl, 'function');
+  const shown = redactedPageUrl('https://login.example.test/authorize?state=INVENTED&nonce=N#frag');
+  assert.equal(shown, 'https://login.example.test/authorize?[redacted]');
+  assert.doesNotMatch(shown, /INVENTED|frag/);
+  assert.equal(redactedPageUrl('https://login.example.test/authorize'), 'https://login.example.test/authorize');
+  assert.equal(redactedPageUrl('not a url?x=INVENTED'), '[redacted URL]');
 });

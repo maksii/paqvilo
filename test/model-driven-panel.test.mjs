@@ -1,17 +1,27 @@
+// @test-kind contract: the Lense model-driven panel's native comparison budgets, lease handling and Issues shape are Paqvilo's own designed behaviour, checked on owned loopback fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import {
   createModelDrivenPanelSources,
   modelDrivenPanelData,
   modelDrivenPanelUi,
 } from '../lense/model-driven-panel.mjs';
-import { modelDrivenComparisonAdmission } from '../lense/model-driven-inspector.mjs';
+import {
+  NATIVE_READ_GUARD_MS,
+  modelDrivenComparisonAdmission,
+  startModelDrivenInspector,
+} from '../lense/model-driven-inspector.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { createFixture } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:1';
+// Native response budgets of lense/model-driven-panel.mjs (kept private there): one observed asset and one session.
+const ASSET_BUDGET = 3 * 1024 * 1024;
+const SESSION_BUDGET = 16 * 1024 * 1024;
 const imported = (count = 1) => ({
   assets: new Map(
     Array.from({ length: count }, (_, index) => {
@@ -91,10 +101,10 @@ test('native response comparison is bounded by asset and session budgets, evicts
     undefined,
     'archive-only resources have no invented Git facts',
   );
-  assert.equal(sources.observe('x_0.js', Buffer.alloc(3 * 1024 * 1024 + 1)), false);
-  for (let i = 0; i < 7; i++) sources.observe(`x_${i}.js`, Buffer.alloc(3 * 1024 * 1024, i));
-  assert.ok(sources.observationSize().bytes <= 16 * 1024 * 1024);
-  assert.equal(sources.observationSize().resources, 5);
+  assert.equal(sources.observe('x_0.js', Buffer.alloc(ASSET_BUDGET + 1)), false);
+  for (let i = 0; i < 7; i++) sources.observe(`x_${i}.js`, Buffer.alloc(ASSET_BUDGET, i));
+  assert.ok(sources.observationSize().bytes <= SESSION_BUDGET);
+  assert.equal(sources.observationSize().resources, Math.floor(SESSION_BUDGET / ASSET_BUDGET));
   const next = imported(1);
   await sources.update(next);
   assert.equal(sources.observationSize().resources, 0, 'removed resources release native response memory');
@@ -127,6 +137,51 @@ test('internal comparison markers are stripped on invalid, expired, wrong-resour
   lease.release();
 });
 
+test('a native comparison lease is honoured however long the browser takes to answer, and only once', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const overlay = createModelDrivenOverlay({ origin, imported: imported(1) });
+  const lease = overlay.nativeRead('x_0.js');
+  const calls = [];
+  const answer = (token) => {
+    const headers = { 'x-paqvilo-native-comparison': token };
+    return overlay.handle({
+      request: () => ({
+        url: () => origin + '/WebResources/x_0.js',
+        method: () => 'GET',
+        headers: () => headers,
+      }),
+      removeRequestHeader(name) {
+        delete headers[name];
+      },
+      async fallback() {
+        calls.push('fallback');
+      },
+      async fulfill() {
+        calls.push('fulfill');
+      },
+    });
+  };
+  try {
+    t.mock.timers.tick(20000);
+    await answer(lease.token);
+    await answer(lease.token);
+    assert.deepEqual(calls, ['fallback', 'fulfill'], 'the lease reaches the native file once and then expires by use');
+  } finally {
+    lease.release();
+    t.mock.timers.reset();
+  }
+});
+
+test('the native read guard is a positive integer millisecond option with a 30 second default', async () => {
+  assert.equal(NATIVE_READ_GUARD_MS, 30_000);
+  for (const nativeReadGuardMs of [0, -1, 1.5, '1000', 2_147_483_648]) {
+    await assert.rejects(
+      startModelDrivenInspector({ page: {}, overlay: {}, cfg: {}, imported: {}, nativeReadGuardMs }),
+      /nativeReadGuardMs must be a positive integer/,
+    );
+  }
+});
+
 test('diagnostics and native warning/request failure types satisfy the shared Issues contract', () => {
   const state = {
     origin,
@@ -155,67 +210,98 @@ test('diagnostics and native warning/request failure types satisfy the shared Is
   );
 });
 
-test(
-  'overlapping real Git source updates retain only the latest catalogue and coalesce pending revisions',
-  { timeout: 15000 },
-  async (t) => {
-    const fixture = createFixture();
-    const owner = ownedFixture(t);
-    owner.remove(() => fixture.cleanup());
-    const firstFile = 'web-files/source-a.js';
-    const latestFile = 'web-files/source-b.js';
-    fixture.write(firstFile, 'window.sourceA = 1;');
-    fixture.write(latestFile, 'window.sourceB = 1;');
-    fixture.commit();
-    const catalogue = (name, file, body) => ({
-      assets: new Map([[name, { name, file: fixture.file(file), mime: 'text/javascript', data: Buffer.from(body) }]]),
-      layers: [{ dir: fixture.dir, documents: [] }],
-    });
-    const first = catalogue('x_a.js', firstFile, 'window.sourceA = 1;');
-    const sources = await createModelDrivenPanelSources(first);
-    let enter, release;
-    const entered = new Promise((resolve) => {
-      enter = resolve;
-    });
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    const read = GitBaseline.prototype.changedFilesAsync;
-    let reads = 0;
-    t.mock.method(GitBaseline.prototype, 'changedFilesAsync', async function (...args) {
-      reads++;
-      if (reads === 1) {
-        enter();
-        await gate;
-      }
-      return read.apply(this, args);
-    });
-    const updates = [];
-    owner.add(async () => {
-      release();
-      await Promise.all(updates);
-    });
-    updates.push(sources.update(first));
-    await entered;
-    for (let revision = 0; revision < 20; revision++) {
-      const body = `window.sourceB = ${revision + 2};`;
-      fixture.write(latestFile, body);
-      updates.push(sources.update(catalogue('x_b.js', latestFile, body)));
+test('overlapping real Git source updates retain only the latest catalogue and coalesce pending revisions', async (t) => {
+  const fixture = createFixture();
+  const owner = ownedFixture(t);
+  owner.remove(() => fixture.cleanup());
+  const firstFile = 'web-files/source-a.js';
+  const latestFile = 'web-files/source-b.js';
+  fixture.write(firstFile, 'window.sourceA = 1;');
+  fixture.write(latestFile, 'window.sourceB = 1;');
+  fixture.commit();
+  const catalogue = (name, file, body) => ({
+    assets: new Map([[name, { name, file: fixture.file(file), mime: 'text/javascript', data: Buffer.from(body) }]]),
+    layers: [{ dir: fixture.dir, documents: [] }],
+  });
+  const first = catalogue('x_a.js', firstFile, 'window.sourceA = 1;');
+  const sources = await createModelDrivenPanelSources(first);
+  let enter, release;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const read = GitBaseline.prototype.changedFilesAsync;
+  let reads = 0;
+  t.mock.method(GitBaseline.prototype, 'changedFilesAsync', async function (...args) {
+    reads++;
+    if (reads === 1) {
+      enter();
+      await gate;
     }
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(reads, 1, 'a pending Git read cannot publish a concurrent obsolete catalogue');
+    return read.apply(this, args);
+  });
+  const updates = [];
+  owner.add(async () => {
     release();
     await Promise.all(updates);
-    assert.equal(reads, 2, 'the running revision is followed by only the latest pending revision');
-    assert.deepEqual([...sources.state.facts.keys()], ['x_b.js']);
-    assert.doesNotThrow(() => sources.setScope('changed'));
-    assert.deepEqual([...sources.changed()], ['x_b.js']);
-    const diff = sources.diff('x_b.js', 'Online');
-    assert.equal(diff.ok, true);
-    assert.equal(diff.against, 'Git HEAD');
-    assert.ok(diff.added > 0, 'the latest actual source edit is compared with its committed Git bytes');
-  },
-);
+  });
+  updates.push(sources.update(first));
+  await entered;
+  for (let revision = 0; revision < 20; revision++) {
+    const body = `window.sourceB = ${revision + 2};`;
+    fixture.write(latestFile, body);
+    updates.push(sources.update(catalogue('x_b.js', latestFile, body)));
+  }
+  // No event marks an update that did not start a second read; one macrotask lets any update queued behind the
+  // gated read reach it. The final count below (exactly two reads) proves coalescing independently of this check.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1, 'a pending Git read cannot publish a concurrent obsolete catalogue');
+  release();
+  await Promise.all(updates);
+  assert.equal(reads, 2, 'the running revision is followed by only the latest pending revision');
+  assert.deepEqual([...sources.state.facts.keys()], ['x_b.js']);
+  assert.doesNotThrow(() => sources.setScope('changed'));
+  assert.deepEqual([...sources.changed()], ['x_b.js']);
+  const diff = sources.diff('x_b.js', 'Online');
+  assert.equal(diff.ok, true);
+  assert.equal(diff.against, 'Git HEAD');
+  assert.ok(diff.added > 0, 'the latest actual source edit is compared with its committed Git bytes');
+});
+
+test('a HEAD read Git does not answer leaves the Git state unknown and the next update reads it', async (t) => {
+  const fixture = createFixture();
+  ownedFixture(t).remove(() => fixture.cleanup());
+  fixture.write('web-files/source-a.js', 'window.sourceA = 1;');
+  fixture.commit();
+  const original = childProcess.execFile;
+  let silent = true;
+  // Only the HEAD read (rev-parse HEAD --abbrev-ref HEAD) gets no answer while silent; the baseline reads run the real Git.
+  const replaced = t.mock.method(childProcess, 'execFile', function (file, args, options, callback) {
+    if (!silent || !args.includes('--abbrev-ref')) return original.call(this, file, args, options, callback);
+    queueMicrotask(() => callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null })));
+    return {};
+  });
+  syncBuiltinESMExports();
+  ownedFixture(t).add(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const name = 'x_a.js';
+  const catalogue = {
+    assets: new Map([
+      [name, { name, file: fixture.file('web-files/source-a.js'), mime: 'text/javascript', data: Buffer.from('a') }],
+    ]),
+    layers: [{ dir: fixture.dir, documents: [] }],
+  };
+  const sources = await createModelDrivenPanelSources(catalogue);
+  assert.equal(sources.state.git, null);
+  assert.equal(sources.state.facts.get(name).baseline.available, true, 'the answered baseline stays usable');
+  silent = false;
+  await sources.update(catalogue);
+  assert.match(sources.state.git?.commit ?? '', /^[0-9a-f]{40,64}$/);
+});
 
 test('only exact owned resource locations become source links and browser positions become one-based', () => {
   const state = {

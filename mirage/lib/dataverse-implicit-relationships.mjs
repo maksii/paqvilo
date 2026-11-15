@@ -38,7 +38,7 @@ export function implicitRelationships(source, { existing = [] } = {}) {
     return [];
   const templates = [...REFERENCES];
   if (Object.values(source.fields ?? {}).some((field) => typeOf(field) === 'file'))
-    templates.push(['FileAttachments', 'fileattachment', 'objectid', 'Cascade', true, '1.0.0.0', 2]);
+    templates.push(['FileAttachments', 'fileattachment', 'objectid', 'Cascade', true, '1.0.0.0', 2]); // NOSONAR: version string or loopback address, not a network target
   // Enabling duplicate detection controls execution, not whether the platform back-reference schema exists.
   templates.push(
     ['DuplicateMatchingRecord', 'duplicaterecord', 'duplicaterecordid', 'Cascade', true, '1.0'],
@@ -46,23 +46,25 @@ export function implicitRelationships(source, { existing = [] } = {}) {
   );
   const names = new Set(existing.map((name) => String(name).toLowerCase()));
   return templates
-    .map(([suffix, entity, attribute, deletion, advancedFind = true, version = '1.0.0.0', behavior = 0]) => {
-      const name = `${source.logical}_${suffix}`;
-      return {
-        type: '1:N',
-        schemaName: name,
-        referencedEntity: source.logical,
-        referencedAttribute: source.idColumn,
-        referencingEntity: entity,
-        referencingAttribute: attribute,
-        referencedNav: name,
-        referencingNav: `${attribute}_${source.logical}`,
-        relationshipBehavior: behavior,
-        cascade: { delete: deletion },
-        isCustomRelationship: false,
-        isValidForAdvancedFind: advancedFind,
-        introducedVersion: version,
-      };
-    })
+    .map(
+      ([suffix, entity, attribute, deletion, advancedFind = true, version = '1.0.0.0', behavior = 0]) => /* NOSONAR */ {
+        const name = `${source.logical}_${suffix}`;
+        return {
+          type: '1:N',
+          schemaName: name,
+          referencedEntity: source.logical,
+          referencedAttribute: source.idColumn,
+          referencingEntity: entity,
+          referencingAttribute: attribute,
+          referencedNav: name,
+          referencingNav: `${attribute}_${source.logical}`,
+          relationshipBehavior: behavior,
+          cascade: { delete: deletion },
+          isCustomRelationship: false,
+          isValidForAdvancedFind: advancedFind,
+          introducedVersion: version,
+        };
+      },
+    )
     .filter((relationship) => !names.has(relationship.schemaName.toLowerCase()));
 }

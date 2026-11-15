@@ -43,6 +43,13 @@ const NOT_ECHOED = /^(?:access-control-.*|strict-transport-security)$/;
  */
 export function siteHeaders(portal, { confinement = null, kind = null } = {}) {
   const headers = {};
+  appendConfiguredHeaders(headers, portal);
+  appendPolicyHeaders(headers, portal, confinement);
+  appendObservedHeaders(headers, portal, kind);
+  return headers;
+}
+
+function appendConfiguredHeaders(headers, portal) {
   for (const [key, raw] of Object.entries(portal.settings ?? {})) {
     const match = /^http\/([a-z0-9][a-z0-9-]*)$/i.exec(key);
     if (!match) continue;
@@ -51,14 +58,19 @@ export function siteHeaders(portal, { confinement = null, kind = null } = {}) {
     const value = String((raw && typeof raw === 'object' ? raw.value : raw) ?? '').trim();
     if (value && !/[\r\n]/.test(value)) headers[name] = value;
   }
+}
+
+function appendPolicyHeaders(headers, portal, confinement) {
   headers['x-frame-options'] = String(siteSetting(portal, 'HTTP/X-Frame-Options') ?? '').trim() || 'SAMEORIGIN';
   const policies = [sitePolicy(portal).policy, confinement].filter(Boolean);
   if (policies.length) headers['content-security-policy'] = policies.length === 1 ? policies[0] : policies;
   const reportOnly = String(siteSetting(portal, 'HTTP/Content-Security-Policy-Report-Only') ?? '').trim();
   if (reportOnly && !/'nonce/i.test(reportOnly)) headers['content-security-policy-report-only'] = reportOnly;
+}
+
+function appendObservedHeaders(headers, portal, kind) {
   for (const [name, value] of Object.entries((kind && portal.observed?.headers?.[kind]) ?? {}))
     if (!Object.hasOwn(headers, name)) headers[name] = value;
-  return headers;
 }
 
 /**
@@ -133,7 +145,7 @@ export function platformResourceHeaders(
 
 /** RFC 5987 value-chars encoding (UTF-8 percent-encoding) of a header parameter such as filename*. */
 export const rfc5987 = (value) =>
-  encodeURIComponent(String(value)).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  encodeURIComponent(String(value)).replace(/['()*]/g, (c) => '%' + c.codePointAt(0).toString(16).toUpperCase());
 
 /**
  * Content-Disposition carrying a file name safely (RFC 6266): a quoted ASCII fallback where

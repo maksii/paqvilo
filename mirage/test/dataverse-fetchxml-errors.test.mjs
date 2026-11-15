@@ -1,3 +1,4 @@
+// @test-kind unproven: Local FetchXML error models on the Web API path; no native recording is replayed by these tests.
 // FetchXML errors on the Dataverse Web API path (?fetchXml=): malformed XML, a missing entity name,
 // an unknown condition operator and a column the metadata lacks answer the native codes and text.
 // The portal's FetchXML keeps its own rules.

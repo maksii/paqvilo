@@ -39,12 +39,193 @@ const metadataXml = (name) => {
 // Compare those values directly instead of serializing their contents on every
 // record-field lookup. Snapshot small structured values too so in-place edits
 // cannot reuse a stale catalogue simply because the row identity stayed equal.
-const rowStamp = (row) =>
-  Object.entries(row).map(([key, value]) => [
-    key,
-    typeof value,
-    value !== null && typeof value === 'object' ? JSON.stringify(value) : value,
-  ]);
+const stampedValue = (value) => (value !== null && typeof value === 'object' ? JSON.stringify(value) : value);
+const rowStamp = (row) => {
+  const keys = Object.keys(row),
+    values = [],
+    types = [];
+  for (const key of keys) {
+    const value = row[key];
+    values.push(stampedValue(value));
+    types.push(typeof value);
+  }
+  return { keys, values, types };
+};
+const rowMatches = (row, stamp) => {
+  if (!stamp) return false;
+  const keys = Object.keys(row);
+  if (keys.length !== stamp.keys.length) return false;
+  for (let field = 0; field < keys.length; field++) {
+    if (keys[field] !== stamp.keys[field]) return false;
+    const value = row[keys[field]];
+    if (typeof value !== stamp.types[field] || !Object.is(stampedValue(value), stamp.values[field])) return false;
+  }
+  return true;
+};
+const rowsMatch = (rows, stamps) =>
+  Boolean(stamps && rows.length === stamps.length && rows.every((row, index) => rowMatches(row, stamps[index])));
+const presenceStamp = (value) => new Set(Object.keys(value ?? {}).filter((key) => value[key]));
+const presenceMatches = (value, stamp) => {
+  let count = 0;
+  for (const key of Object.keys(value ?? {}))
+    if (value[key]) {
+      if (!stamp?.has(key)) return false;
+      count++;
+    }
+  return count === stamp?.size;
+};
+const mappingStamps = (mappings) => {
+  const stamps = new Map();
+  for (const name of Object.keys(mappings ?? {})) {
+    const mapping = mappings[name],
+      fields = new Map();
+    for (const field of Object.keys(mapping.fields ?? {}))
+      if (mapping.fields[field]?.columnMetadata) fields.set(field, rowStamp(mapping.fields[field]));
+    if (mapping.dataverseMetadata || fields.size)
+      stamps.set(name, { metadata: stampedValue(mapping.dataverseMetadata), fields });
+  }
+  return stamps;
+};
+const mappingFieldCount = (mapping, stamp) => {
+  let fields = 0;
+  for (const field of Object.keys(mapping.fields ?? {}))
+    if (mapping.fields[field]?.columnMetadata) {
+      if (!rowMatches(mapping.fields[field], stamp?.fields.get(field))) return -1;
+      fields++;
+    }
+  return fields;
+};
+const mappingsMatch = (mappings, stamps) => {
+  if (!stamps) return false;
+  let count = 0;
+  for (const name of Object.keys(mappings ?? {})) {
+    const mapping = mappings[name],
+      stamp = stamps.get(name),
+      fields = mappingFieldCount(mapping, stamp);
+    if (fields < 0) return false;
+    if (mapping.dataverseMetadata || fields) {
+      if (stamp?.fields.size !== fields || !Object.is(stampedValue(mapping.dataverseMetadata), stamp.metadata))
+        return false;
+      count++;
+    }
+  }
+  return count === stamps.size;
+};
+const layerFields = ['id', 'ownerSolutionId', 'uniqueName', 'solutionVersion', 'managed'];
+const layerStamp = (layer) => ({
+  values: layerFields.map((key) => layer[key]),
+  entries: (layer.entries ?? []).map(rowStamp),
+});
+const layerMatches = (layer, stamp) =>
+  Boolean(
+    stamp &&
+    layerFields.every((key, index) => Object.is(layer[key], stamp.values[index])) &&
+    rowsMatch(layer.entries ?? [], stamp.entries),
+  );
+// The column facts a mapping field supplies: its columnMetadata, or for a field the mapping declares only by type the
+// minimal facts of that type. A column the solution already declares keeps the solution's definition.
+const mappingFacts = (field, solutionField) => {
+  if (field?.columnMetadata) return field.columnMetadata;
+  if (solutionField || !field?.dataverseType) return null;
+  return { type: String(field.dataverseType).toLowerCase() };
+};
+const mappingFieldFacts = (base, name, mapping) =>
+  Object.entries(mapping?.fields ?? {}).some(([attribute, field]) =>
+    mappingFacts(field, base.entities?.[name]?.fields?.[attribute]),
+  );
+// Whether a base entity's mapping carries Dataverse metadata, or types a column the solution does not declare.
+const hasBaseMappingMetadata = (base, mappings) =>
+  Object.keys(base.entities ?? {}).some((name) => {
+    const mapping = mappings?.[name];
+    return Boolean(mapping) && (Boolean(mapping.dataverseMetadata) || mappingFieldFacts(base, name, mapping));
+  });
+// The columns of a table only a mapping declares: each field that carries column facts or a type.
+const mappedFields = (mapping, lcid) => {
+  const fields = {};
+  for (const [attribute, field] of Object.entries(mapping.fields ?? {})) {
+    const facts = mappingFacts(field, undefined);
+    if (!facts) continue;
+    const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    fields[attribute] = structuredClone({
+      ...field,
+      ...properties,
+      name: attribute,
+      label: pickLabel(properties.labels, lcid) ?? field.label ?? attribute,
+    });
+  }
+  return fields;
+};
+/** The metadata with each table that only a mapping declares listed by its mapped columns; the metadata itself when there is none. */
+function withMappedTables(metadata, mappings) {
+  const lcid = metadata.lcid ?? 1033;
+  const tables = Object.entries(mappings ?? {}).filter(
+    ([name, mapping]) => !metadata.entities?.[name] && mappingFieldFacts(metadata, name, mapping),
+  );
+  if (!tables.length) return metadata;
+  const entities = Object.fromEntries(
+    tables.map(([name, mapping]) => [name, { entity: name, fields: mappedFields(mapping, lcid) }]),
+  );
+  return { ...metadata, entities: { ...metadata.entities, ...entities } };
+}
+// The same keys, each bound to a value that `same` accepts for the pair of the old and the new value.
+const sameEntries = (previous, current, same = Object.is) => {
+  const names = Object.keys(current ?? {});
+  return names.length === Object.keys(previous).length && names.every((name) => same(previous[name], current[name]));
+};
+// A mapping field's snapshot: the field object, then each own key and its value in order, because mappedFields spreads
+// the whole field. A writer that replaces the field or changes any of its keys in place makes the snapshot differ.
+const fieldSnapshot = (field) =>
+  field && typeof field === 'object' ? [field, ...Object.entries(field).flat()] : [field];
+const fieldReads = (mapping) =>
+  Object.fromEntries(
+    Object.entries(mapping?.fields ?? {}).map(([attribute, field]) => [attribute, fieldSnapshot(field)]),
+  );
+// Whether two field snapshots hold the same values in the same order.
+const sameReads = (previous, current) =>
+  Array.isArray(previous) &&
+  previous.length === current.length &&
+  previous.every((value, index) => Object.is(value, current[index]));
+const sameTableReads = (previous, current) => Boolean(previous) && sameEntries(previous, current, sameReads);
+// The field reads of each table only a mapping declares, keyed by table name.
+const mappedTableReads = (metadata, mappings) =>
+  Object.fromEntries(
+    Object.entries(mappings ?? {})
+      .filter(([name]) => !metadata.entities?.[name])
+      .map(([name, mapping]) => [name, fieldReads(mapping)]),
+  );
+/**
+ * One memo of withMappedTables. While the revision function returns a value that is unchanged, and the metadata and the
+ * state are the objects of the previous call, the previous value is returned without reading any mapping. Otherwise the
+ * memo compares the mapping objects, the fields the mapped tables read and the metadata log, and rebuilds only when one
+ * differs. A null revision means the store cannot vouch for its content, so every call takes the comparison. The
+ * metadata is the overlay's result, which keeps its identity across ordinary record writes.
+ */
+export function createMappedTables({ revision } = {}) {
+  let last = null;
+  return (metadata, state) => {
+    const current = revision?.() ?? null;
+    if (current !== null && last?.metadata === metadata && last.state === state && last.revision === current)
+      return last.value;
+    const seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
+    const tables = mappedTableReads(metadata, state.mappings);
+    if (
+      last?.metadata !== metadata ||
+      last.seq !== seq ||
+      !sameEntries(last.mappings, state.mappings) ||
+      !sameEntries(last.tables, tables, sameTableReads)
+    )
+      last = {
+        metadata,
+        seq,
+        mappings: { ...state.mappings },
+        tables,
+        value: withMappedTables(metadata, state.mappings),
+      };
+    last.state = state;
+    last.revision = current;
+    return last.value;
+  };
+}
 
 /** Build one host-local overlay, never write exported files or run imported code.
  * Parsed documents are cached by immutable asset digest. Normal business-record
@@ -53,8 +234,24 @@ const rowStamp = (row) =>
 export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument = parseSchemaDocument } = {}) {
   const parsed = new Map();
   const readEpoch = new AsyncLocalStorage();
-  let previousBase, previousKey, previous;
-  const resolve = (base = {}, state = {}) => {
+  let previousBase, previousKey, previousRows, previousInputs, previous, mappingProbe;
+  // Whether a base entity's mapping carries Dataverse metadata, rescanned only when the base,
+  // the mapping set or its size, or the metadata log changes. Metadata writers log every
+  // column/table change; a solution import adds a layer, which takes the full path below.
+  const baseMappingMetadata = (base, state) => {
+    const mappings = state.mappings,
+      size = Object.keys(mappings ?? {}).length,
+      seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
+    if (
+      mappingProbe?.base !== base ||
+      mappingProbe.mappings !== mappings ||
+      mappingProbe.size !== size ||
+      mappingProbe.seq !== seq
+    )
+      mappingProbe = { base, mappings, size, seq, value: hasBaseMappingMetadata(base, mappings) };
+    return mappingProbe.value;
+  };
+  /* NOSONAR */ const resolve = (base = {}, state = {}) => {
     const epoch = readEpoch.getStore();
     const reusable = epoch && !epoch.closed && epoch.valid();
     if (epoch && !reusable) epoch.resolved = false;
@@ -74,17 +271,37 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       return value;
     };
     const layers = state.dataverse?.solutionAssets?.layers ?? [];
-    if (!layers.length && !Object.keys(state.dataverse?.sourceSolutionComponents?.baseline ?? {}).length)
-      return finish(base);
+    const baseline = state.dataverse?.sourceSolutionComponents?.baseline;
+    const payloads = state.dataverse?.solutionPayloads;
+    if (!layers.length && !Object.keys(baseline ?? {}).length && !baseMappingMetadata(base, state)) return finish(base);
     const rows = Object.fromEntries(
       ['systemform', 'savedquery', 'appmodule', 'sitemap'].map((table) => [table, state.tables?.[table] ?? []]),
     );
     const key = [
       layers.map((layer) => [layer.id, layer.ownerSolutionId]),
-      Object.entries(rows).map(([table, values]) => [table, values.map(rowStamp)]),
       state.dataverse?.metadataLog?.at(-1)?.seq ?? 0,
     ];
-    if (previousBase === base && isDeepStrictEqual(previousKey, key)) return finish(previous);
+    // Unchanged reads compare against the retained snapshot directly. Rebuilding
+    // a nested [key,type,value] tree for every component inflated first-use GC
+    // and retained memory even though a read epoch bounds the number of scans.
+    if (
+      previousBase === base &&
+      isDeepStrictEqual(previousKey, key) &&
+      Object.entries(rows).every(([table, values]) => rowsMatch(values, previousRows?.[table])) &&
+      mappingsMatch(state.mappings, previousInputs?.mappings) &&
+      presenceMatches(baseline, previousInputs?.baseline) &&
+      presenceMatches(payloads, previousInputs?.payloads) &&
+      layers.length === previousInputs?.layers.length &&
+      layers.every((layer, index) => layerMatches(layer, previousInputs.layers[index]))
+    )
+      return finish(previous);
+    const rowStamps = Object.fromEntries(Object.entries(rows).map(([table, values]) => [table, values.map(rowStamp)]));
+    const inputs = {
+      mappings: mappingStamps(state.mappings),
+      baseline: presenceStamp(baseline),
+      payloads: presenceStamp(payloads),
+      layers: layers.map(layerStamp),
+    };
     const active = new Set(layers.map((layer) => layer.id));
     for (const digest of parsed.keys()) if (!active.has(digest)) parsed.delete(digest);
     const scan = {
@@ -92,6 +309,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       diagnostics: [],
       order: 'explicit',
       layers: layers.map((layer, index) => {
+        if (!layerMatches(layer, previousInputs?.layers[index])) parsed.delete(layer.id);
         let documents = parsed.get(layer.id);
         if (!documents) {
           documents = layer.entries
@@ -150,9 +368,9 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       };
       const mapping = state.mappings?.[name];
       for (const [attribute, field] of Object.entries(mapping?.fields ?? {})) {
-        const facts = field.columnMetadata;
+        const facts = mappingFacts(field, entities[name].fields[attribute]);
         if (!facts) continue;
-        const { type: metadataType, ...properties } = facts;
+        const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
         entities[name].fields[attribute] = {
           ...entities[name].fields[attribute],
           ...field,
@@ -173,18 +391,19 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       if (!mapping) continue;
       const next = (entities[name] = { ...entity, fields: { ...entity.fields } });
       for (const [attribute, field] of Object.entries(mapping.fields ?? {})) {
-        if (!field.columnMetadata) continue;
-        const { type: metadataType, ...properties } = field.columnMetadata;
-        next.fields[attribute] = {
+        const facts = mappingFacts(field, next.fields[attribute]);
+        if (!facts) continue;
+        const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
+        next.fields[attribute] = structuredClone({
           ...next.fields[attribute],
           ...field,
           ...properties,
           name: attribute,
           label: pickLabel(properties.labels, base.lcid) ?? next.fields[attribute]?.label ?? attribute,
-          ...(!isDeepStrictEqual(field.columnMetadata, base.entities?.[name]?.fields?.[attribute]?.columnMetadata)
+          ...(!isDeepStrictEqual(facts, base.entities?.[name]?.fields?.[attribute]?.columnMetadata)
             ? { sourceOriginVerified: false }
             : {}),
-        };
+        });
       }
       next.label = pickLabel(mapping.dataverseMetadata?.labels?.DisplayName, base.lcid) ?? next.label;
       next.collectionLabel =
@@ -194,7 +413,10 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
         original &&
         (next.label !== original.label ||
           next.collectionLabel !== original.collectionLabel ||
-          !isDeepStrictEqual(Object.keys(next.fields).sort(), Object.keys(original.fields ?? {}).sort()) ||
+          !isDeepStrictEqual(
+            Object.keys(next.fields).sort(/* NOSONAR: preserve default string coercion */),
+            Object.keys(original.fields ?? {}).sort(/* NOSONAR: preserve default string coercion */),
+          ) ||
           Object.values(next.fields).some((field) => field.sourceOriginVerified === false))
       )
         next.sourceOriginVerified = false;
@@ -332,6 +554,8 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     }
     previousBase = base;
     previousKey = key;
+    previousRows = rowStamps;
+    previousInputs = inputs;
     previous = {
       ...base,
       entities,

@@ -1,3 +1,5 @@
+// @test-kind security: Protected credentials must remain encrypted, purpose-bound, and safe against failed writes.
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,19 +11,23 @@ import { PassThrough, Writable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { saveProtectedState, loadProtectedState } from '../lense/dataverse/index.mjs';
 import { protectSecret } from '../lense/dataverse/connection.mjs';
-test('protected JSON validates private location, bounded purpose and JSON without revealing values', async () => {
+test('protected JSON validates private location, bounded purpose and JSON without revealing values', async (t) => {
+  // A private directory: a regressed validation would otherwise write into the shared temporary folder.
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-invalid-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await assert.rejects(
-    saveProtectedState(path.join(os.tmpdir(), 'outside.json'), { password: 'sample' }, { purpose: 'fixture' }),
+    saveProtectedState(path.join(dir, 'outside.json'), { password: 'sample' }, { purpose: 'fixture' }),
     /ignored/,
   );
-  const file = path.join(os.tmpdir(), '.paqvilo', 'fixture.json');
+  const file = path.join(dir, '.paqvilo', 'fixture.json');
   await assert.rejects(saveProtectedState(file, { password: 'sample' }, { purpose: 'space invalid' }), /purpose/);
   await assert.rejects(saveProtectedState(file, { value: undefined }, { purpose: 'fixture' }), /plain acyclic JSON/);
   await assert.rejects(saveProtectedState(file, { value: Infinity }, { purpose: 'fixture' }), /plain acyclic JSON/);
   await assert.rejects(saveProtectedState(file, { value: 'x'.repeat(300000) }, { purpose: 'fixture' }), /size bound/);
+  await assert.rejects(fs.access(path.dirname(file)), { code: 'ENOENT' });
 });
 test('protected state has encrypted durable roundtrip, purpose binding and exclusive writes or explicit platform refusal', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protected-json-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, '.paqvilo', 'identity.json'),
     value = {
@@ -66,6 +72,33 @@ test('protected state has encrypted durable roundtrip, purpose binding and exclu
     await assert.rejects(protectSecret(ciphertext, true), {
       message: 'Windows credential encryption/decryption failed; no plaintext fallback.',
     });
+});
+
+// @test-kind security: A failed replacement must retain the original encrypted state and remove its temporary file.
+test('protected state retains ciphertext when Windows refuses replacement of a read-only destination', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows read-only destination semantics');
+    return;
+  }
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-readonly-'));
+  const file = path.join(dir, '.paqvilo', 'identity.json');
+  t.after(async () => {
+    await fs.chmod(file, 0o600).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const purpose = 'readonly-fixture';
+  await saveProtectedState(file, { original: true }, { purpose });
+  const original = await fs.readFile(file);
+  await fs.chmod(file, 0o400);
+  await assert.rejects(saveProtectedState(file, { replacement: true }, { purpose, exclusive: false }), {
+    code: 'EPERM',
+  });
+  assert.deepEqual(await fs.readFile(file), original);
+  assert.deepEqual(await fs.readdir(path.dirname(file)), ['identity.json']);
+  await fs.chmod(file, 0o600);
+  assert.deepEqual(await loadProtectedState(file, { purpose }), { original: true });
 });
 
 test('DPAPI tolerates cold startup past 15 seconds, remains bounded, and withholds failed output', async (t) => {

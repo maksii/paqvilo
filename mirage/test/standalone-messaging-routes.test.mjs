@@ -6,14 +6,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777791';
 const STEP = '77777777-7777-4777-8777-777777777792';
 const WIDGET = '77777777-7777-4777-8777-777777777793';
 
 async function solutionFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-messaging-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'standalone-messaging-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -78,13 +78,11 @@ test('a contract 2 step reaches /_sim/api/messages through a dry-run standalone 
   );
   await store.create('x_widget', { x_widgetid: WIDGET, x_name: 'Invented widget' }, { admin: true });
 
-  let messages = [];
-  for (let attempt = 0; attempt < 100 && !messages.length; attempt += 1) {
-    const response = await fetch(`${sim.url}/_sim/api/messages?entity=x-queue`);
-    assert.equal(response.status, 200);
-    messages = (await response.json()).messages;
-    if (!messages.length) await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  // The asynchronous step runs as committed work; settling the runtime drains it before the read.
+  await sim.settle();
+  const response = await fetch(`${sim.url}/_sim/api/messages?entity=x-queue`);
+  assert.equal(response.status, 200);
+  const { messages } = await response.json();
   assert.equal(messages.length, 1);
   assert.equal(messages[0].body.PrimaryEntityId, WIDGET);
   assert.equal(messages[0].properties.organizationUri, sim.dataverse.origin);

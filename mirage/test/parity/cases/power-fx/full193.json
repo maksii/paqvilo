@@ -1,0 +1,5780 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "full193",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "All 193 original language formulas evaluated by the unmodified official interpreter from Microsoft.PowerApps.CLI 2.13.1 in two independent processes with a fixed clock, Pacific time zone and en-US culture. Establishes each recorded result or check outcome for these formulas only; native Canvas, model-driven and Dataverse hosts are not claimed."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "e3959bf56437a4ba1ae7e88e06800d892a58e993c71a706da141a8ed38ccdcfb",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "e3959bf56437a4ba1ae7e88e06800d892a58e993c71a706da141a8ed38ccdcfb",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "existing-language-1",
+      "input": {
+        "expression": "1 + 2 * 3",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "1 + 2 * 3",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 7,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-2",
+      "input": {
+        "expression": "-2^2",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "-2^2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": -4,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-3",
+      "input": {
+        "expression": "2^3^2",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "2^3^2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 512,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-4",
+      "input": {
+        "expression": "20%",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "20%",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 0.2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-5",
+      "input": {
+        "expression": "\"a\" & 1 & true",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "\"a\" & 1 & true",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a1true",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-6",
+      "input": {
+        "expression": "0.1 + 0.2",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "0.1 + 0.2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 0.3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-7",
+      "input": {
+        "expression": "\"The \"\"quoted\"\" text\"",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "\"The \"\"quoted\"\" text\"",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "The \"quoted\" text",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-8",
+      "input": {
+        "expression": "$\"Sum: {1 + 2} {{x}}\"",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "$\"Sum: {1 + 2} {{x}}\"",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "Sum: 3 {x}",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-9",
+      "input": {
+        "expression": "/* c */ 1 // x",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "/* c */ 1 // x",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-10",
+      "input": {
+        "expression": "With({'a b': 2}, 'a b' * 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "With({'a b': 2}, 'a b' * 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 6,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-11",
+      "input": {
+        "expression": "Not(false) And !false",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Not(false) And !false",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-12",
+      "input": {
+        "expression": "true Or false && false",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "true Or false && false",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-13",
+      "input": {
+        "expression": "\"The\" in \"The keyboard\"",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "\"The\" in \"The keyboard\"",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-14",
+      "input": {
+        "expression": "\"the\" exactin \"The keyboard\"",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "\"the\" exactin \"The keyboard\"",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-15",
+      "input": {
+        "expression": "2 in [1, 2, 3]",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "2 in [1, 2, 3]",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-16",
+      "input": {
+        "expression": "{a: 1}.a",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "{a: 1}.a",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-17",
+      "input": {
+        "expression": "[1, 2].Value",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "[1, 2].Value",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-18",
+      "input": {
+        "expression": "Blank() = Blank()",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Blank() = Blank()",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-19",
+      "input": {
+        "expression": "Blank() + 1",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Blank() + 1",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-20",
+      "input": {
+        "expression": "If(1 > 2, \"a\", \"b\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "If(1 > 2, \"a\", \"b\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "b",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-21",
+      "input": {
+        "expression": "If(false, 1, false, 2, 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "If(false, 1, false, 2, 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-22",
+      "input": {
+        "expression": "Switch(2, 1, \"one\", 2, \"two\", \"other\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Switch(2, 1, \"one\", 2, \"two\", \"other\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "two",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-23",
+      "input": {
+        "expression": "And(true, 1 = 1)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "And(true, 1 = 1)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-24",
+      "input": {
+        "expression": "Or(false, false)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Or(false, false)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-25",
+      "input": {
+        "expression": "Not(true)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Not(true)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-26",
+      "input": {
+        "expression": "IfError(1, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1, 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-27",
+      "input": {
+        "expression": "IfError(1/0, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-28",
+      "input": {
+        "expression": "IfError(10, 20, 30)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(10, 20, 30)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 30,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-29",
+      "input": {
+        "expression": "IfError(10, 11, 20, 21, 300)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(10, 11, 20, 21, 300)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 300,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-30",
+      "input": {
+        "expression": "IsError(1/0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(1/0)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-31",
+      "input": {
+        "expression": "IsError(Blank())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Blank())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-32",
+      "input": {
+        "expression": "IsBlankOrError(Blank())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsBlankOrError(Blank())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-33",
+      "input": {
+        "expression": "IfError(1/0, FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, FirstError.Kind)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 13,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-34",
+      "input": {
+        "expression": "IfError(1/0, CountRows(AllErrors))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, CountRows(AllErrors))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-35",
+      "input": {
+        "expression": "With({a: 1, b: 0}, IfError(a/b, If(FirstError.Kind <> ErrorKind.Div0, Error(FirstError), -1)))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "With({a: 1, b: 0}, IfError(a/b, If(FirstError.Kind <> ErrorKind.Div0, Error(FirstError), -1)))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-36",
+      "input": {
+        "expression": "IfError(Error({Kind: ErrorKind.Validation, Message: \"bad\"}), FirstError.Message)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(Error({Kind: ErrorKind.Validation, Message: \"bad\"}), FirstError.Message)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "bad",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-37",
+      "input": {
+        "expression": "IfError(Error(\"custom\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(Error(\"custom\"), FirstError.Kind)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 1000,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-38",
+      "input": {
+        "expression": "IsError(Mid(\"abc\", 0, 1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Mid(\"abc\", 0, 1))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-39",
+      "input": {
+        "expression": "IsBlank(Blank())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsBlank(Blank())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-40",
+      "input": {
+        "expression": "IsBlank(\"\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsBlank(\"\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-41",
+      "input": {
+        "expression": "Coalesce(Blank(), \"\", \"a\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Coalesce(Blank(), \"\", \"a\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-42",
+      "input": {
+        "expression": "IsEmpty(Filter([1, 2], Value > 5))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsEmpty(Filter([1, 2], Value > 5))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-43",
+      "input": {
+        "expression": "Abs(-1) + Exp(0) + Ln(1) + Sqrt(4) + Power(2, 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Abs(-1) + Exp(0) + Ln(1) + Sqrt(4) + Power(2, 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 12,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-44",
+      "input": {
+        "expression": "IsError(Sqrt(-1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Sqrt(-1))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-45",
+      "input": {
+        "expression": "Round(1.005, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Round(1.005, 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1.01,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-46",
+      "input": {
+        "expression": "Round(-2.5, 0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Round(-2.5, 0)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-47",
+      "input": {
+        "expression": "RoundUp(2.1, 0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "RoundUp(2.1, 0)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-48",
+      "input": {
+        "expression": "RoundDown(-2.9, 0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "RoundDown(-2.9, 0)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-49",
+      "input": {
+        "expression": "Int(-2.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Int(-2.5)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-50",
+      "input": {
+        "expression": "Trunc(-2.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Trunc(-2.5)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-51",
+      "input": {
+        "expression": "Mod(-3, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Mod(-3, 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-52",
+      "input": {
+        "expression": "IsError(Mod(1, 0))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Mod(1, 0))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-53",
+      "input": {
+        "expression": "Value(\"10%\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(\"10%\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 0.1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-54",
+      "input": {
+        "expression": "Value(\"$ 12.34\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(\"$ 12.34\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 12.34,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-55",
+      "input": {
+        "expression": "Value(\"1,234.5\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1,234.5\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1234.5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-56",
+      "input": {
+        "expression": "IfError(Value(\"abc\"), -1)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(Value(\"abc\"), -1)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-57",
+      "input": {
+        "expression": "Decimal(\"1.5\") + Float(\"2\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Decimal(\"1.5\") + Float(\"2\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 3.5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-58",
+      "input": {
+        "expression": "Boolean(\"TRUE\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Boolean(\"TRUE\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-59",
+      "input": {
+        "expression": "Sum([1, 2, 3], Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Sum([1, 2, 3], Value)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 6,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-60",
+      "input": {
+        "expression": "Sum(1, 2, 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Sum(1, 2, 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 6,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-61",
+      "input": {
+        "expression": "Average(1, 2, 3, Blank())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Average(1, 2, 3, Blank())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-62",
+      "input": {
+        "expression": "IsError(Average(Blank()))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Average(Blank()))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-63",
+      "input": {
+        "expression": "Max(1, 5, 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Max(1, 5, 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-64",
+      "input": {
+        "expression": "Min([4, 2, 8], Value * 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Min([4, 2, 8], Value * 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 4,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-65",
+      "input": {
+        "expression": "Concat(Sequence(4, 0, 5), Value, \",\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Sequence(4, 0, 5), Value, \",\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "0,5,10,15",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-66",
+      "input": {
+        "expression": "0.1 + 0.2 = 0.3",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "0.1 + 0.2 = 0.3",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-67",
+      "input": {
+        "expression": "Sum(0.1, 0.2, 0.3) = 0.6",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Sum(0.1, 0.2, 0.3) = 0.6",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-68",
+      "input": {
+        "expression": "Value(\"0.1\") + Value(\"0.2\") = 0.3",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(\"0.1\") + Value(\"0.2\") = 0.3",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-69",
+      "input": {
+        "expression": "Text(9007199254740992 + 1)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(9007199254740992 + 1)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "9007199254740993",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-70",
+      "input": {
+        "expression": "Text(1/3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(1/3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "0.3333333333333333333333333333",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-71",
+      "input": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+            "severity": "Severe"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-72",
+      "input": {
+        "expression": "IfError(Value(\"1e400\"), -1)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(Value(\"1e400\"), -1)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-73",
+      "input": {
+        "expression": "IfError(1e400, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e400, 2)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-74",
+      "input": {
+        "expression": "IsError(DateValue(\"2023-02-30\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(DateValue(\"2023-02-30\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-75",
+      "input": {
+        "expression": "IsError(DateValue(\"13/01/2024\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(DateValue(\"13/01/2024\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-76",
+      "input": {
+        "expression": "IsError(TimeValue(\"25:00\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(TimeValue(\"25:00\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-77",
+      "input": {
+        "expression": "IsError(ForAll([1, 0], 1/Value))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(ForAll([1, 0], 1/Value))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-78",
+      "input": {
+        "expression": "IfError(ForAll([1, 0], 1/Value), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(ForAll([1, 0], 1/Value), FirstError.Kind)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-79",
+      "input": {
+        "expression": "Float(0.1) + Float(0.2) = 0.3",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Float(0.1) + Float(0.2) = 0.3",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-80",
+      "input": {
+        "expression": "Text(Mod(10.5, 3))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Mod(10.5, 3))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "1.5",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-81",
+      "input": {
+        "expression": "Round(1.23456789012345678901234567, 25) > 1.234567890123",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Round(1.23456789012345678901234567, 25) > 1.234567890123",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-82",
+      "input": {
+        "expression": "Text(1234.5678, \"#,##0.00\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(1234.5678, \"#,##0.00\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "1,234.57",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-83",
+      "input": {
+        "expression": "Text(0.123, \"0.0%\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(0.123, \"0.0%\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "12.3%",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-84",
+      "input": {
+        "expression": "Text(123, \"#\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(123, \"#\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "123",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-85",
+      "input": {
+        "expression": "Text(5, \"00\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(5, \"00\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "05",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-86",
+      "input": {
+        "expression": "Concatenate(Text(123, \"#\"), \"ab\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concatenate(Text(123, \"#\"), \"ab\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "123ab",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-87",
+      "input": {
+        "expression": "Concat(Concatenate([\"a\", \"b\"], \"!\"), Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Concatenate([\"a\", \"b\"], \"!\"), Value)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a!b!",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-88",
+      "input": {
+        "expression": "Left(\"Hello\", 2) & Mid(\"Hello\", 2, 3) & Right(\"Hello\", 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Left(\"Hello\", 2) & Mid(\"Hello\", 2, 3) & Right(\"Hello\", 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "Heelllo",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-89",
+      "input": {
+        "expression": "Len(\"Hello\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Len(\"Hello\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-90",
+      "input": {
+        "expression": "Trim(\"  a   b  \")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Trim(\"  a   b  \")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a b",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-91",
+      "input": {
+        "expression": "TrimEnds(\"  a   b  \")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "TrimEnds(\"  a   b  \")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a   b",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-92",
+      "input": {
+        "expression": "Upper(\"ab\") & Lower(\"CD\") & Proper(\"hello world\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Upper(\"ab\") & Lower(\"CD\") & Proper(\"hello world\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "ABcdHello World",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-93",
+      "input": {
+        "expression": "Substitute(\"Sales Cost\", \"Cost\", \"Price\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Substitute(\"Sales Cost\", \"Cost\", \"Price\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "Sales Price",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-94",
+      "input": {
+        "expression": "Substitute(\"Quarter 1, 2018\", \"1\", \"2\", 1)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Substitute(\"Quarter 1, 2018\", \"1\", \"2\", 1)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "Quarter 2, 2018",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-95",
+      "input": {
+        "expression": "Replace(\"abcdef\", 2, 3, \"X\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Replace(\"abcdef\", 2, 3, \"X\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "aXef",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-96",
+      "input": {
+        "expression": "Find(\"b\", \"abcb\", 3)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Find(\"b\", \"abcb\", 3)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 4,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-97",
+      "input": {
+        "expression": "IsBlank(Find(\"z\", \"abc\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsBlank(Find(\"z\", \"abc\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-98",
+      "input": {
+        "expression": "Concat(Split(\"a,b,c\", \",\"), Value, \"-\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Split(\"a,b,c\", \",\"), Value, \"-\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a-b-c",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-99",
+      "input": {
+        "expression": "Char(65)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Char(65)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "A",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-100",
+      "input": {
+        "expression": "StartsWith(\"Hello\", \"he\") && EndsWith(\"Hello\", \"LO\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "StartsWith(\"Hello\", \"he\") && EndsWith(\"Hello\", \"LO\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-101",
+      "input": {
+        "expression": "IsMatch(\"joan@contoso.com\", Match.Email)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsMatch(\"joan@contoso.com\", Match.Email)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-102",
+      "input": {
+        "expression": "IsMatch(\"986\", \"\\d+\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsMatch(\"986\", \"\\d+\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-103",
+      "input": {
+        "expression": "IsMatch(\"111-111-111\", \"\\d{3}-\\d{2}-\\d{4}\", MatchOptions.Complete)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsMatch(\"111-111-111\", \"\\d{3}-\\d{2}-\\d{4}\", MatchOptions.Complete)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-104",
+      "input": {
+        "expression": "IsMatch(\"123\", Match.MultipleDigits & Match.Period & Match.OptionalDigits, MatchOptions.Complete)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsMatch(\"123\", Match.MultipleDigits & Match.Period & Match.OptionalDigits, MatchOptions.Complete)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-105",
+      "input": {
+        "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").email",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").email",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "bob.jones@contoso.com",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-106",
+      "input": {
+        "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").StartMatch",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").StartMatch",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 11,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-107",
+      "input": {
+        "expression": "Match(\"The quick brown fox jumps over the lazy dog.\", \"THE\", MatchOptions.IgnoreCase).StartMatch",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Match(\"The quick brown fox jumps over the lazy dog.\", \"THE\", MatchOptions.IgnoreCase).StartMatch",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-108",
+      "input": {
+        "expression": "CountRows(MatchAll(\"The quick brown fox jumps over the lazy dog.\", \"the\", MatchOptions.IgnoreCase))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(MatchAll(\"The quick brown fox jumps over the lazy dog.\", \"the\", MatchOptions.IgnoreCase))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-109",
+      "input": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Invalid regular expression: Unclosed groups, too few closing parenthesis.",
+            "severity": "Severe"
+          },
+          {
+            "message": "The function 'IsMatch' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-110",
+      "input": {
+        "expression": "CountRows(Filter([1, 2, 3, 4], Value > 2))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Filter([1, 2, 3, 4], Value > 2))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-111",
+      "input": {
+        "expression": "LookUp([{a: 1, b: \"x\"}, {a: 2, b: \"y\"}], a = 2).b",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "LookUp([{a: 1, b: \"x\"}, {a: 2, b: \"y\"}], a = 2).b",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "y",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-112",
+      "input": {
+        "expression": "LookUp([{a: 1, b: \"x\"}], a = 1, b & \"!\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "LookUp([{a: 1, b: \"x\"}], a = 1, b & \"!\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "x!",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-113",
+      "input": {
+        "expression": "Concat(Sort([3, 1, 2], Value, SortOrder.Descending), Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Sort([3, 1, 2], Value, SortOrder.Descending), Value)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "321",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-114",
+      "input": {
+        "expression": "Concat(SortByColumns([{n: \"b\"}, {n: \"a\"}], \"n\"), n)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(SortByColumns([{n: \"b\"}, {n: \"a\"}], \"n\"), n)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "ab",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-115",
+      "input": {
+        "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}], n, SortOrder.Descending), n)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}], n, SortOrder.Descending), n)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "ba",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-116",
+      "input": {
+        "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}, {n: \"c\"}], n, [\"c\", \"a\", \"b\"]), n)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}, {n: \"c\"}], n, [\"c\", \"a\", \"b\"]), n)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "cab",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-117",
+      "input": {
+        "expression": "First([1,2]).Value + Last([1,2]).Value + Index([5,6,7], 2).Value",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "First([1,2]).Value + Last([1,2]).Value + Index([5,6,7], 2).Value",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 9,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-118",
+      "input": {
+        "expression": "CountRows(FirstN([1,2,3], 2)) + CountRows(LastN([1,2,3], 1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(FirstN([1,2,3], 2)) + CountRows(LastN([1,2,3], 1))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-119",
+      "input": {
+        "expression": "CountIf([1, 2, 3], Value >= 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountIf([1, 2, 3], Value >= 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-120",
+      "input": {
+        "expression": "Concat(Distinct([1, 1, 2], Value), Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Distinct([1, 1, 2], Value), Value)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "12",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-121",
+      "input": {
+        "expression": "First(AddColumns([{a: 1}], b, a * 2)).b",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "First(AddColumns([{a: 1}], b, a * 2)).b",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-122",
+      "input": {
+        "expression": "JSON(DropColumns([{a: 1, b: 2}], a))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(DropColumns([{a: 1, b: 2}], a))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "[{\"b\":2}]",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-123",
+      "input": {
+        "expression": "JSON(ShowColumns([{a: 1, b: 2}], a))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(ShowColumns([{a: 1, b: 2}], a))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "[{\"a\":1}]",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-124",
+      "input": {
+        "expression": "JSON(RenameColumns([{a: 1}], a, z))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(RenameColumns([{a: 1}], a, z))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "[{\"z\":1}]",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-125",
+      "input": {
+        "expression": "Concat(ForAll(Sequence(3), Value * 2), Value, \",\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(ForAll(Sequence(3), Value * 2), Value, \",\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "2,4,6",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-126",
+      "input": {
+        "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-127",
+      "input": {
+        "expression": "Concat(ForAll(Sequence(2) As Rank, Concat(ForAll(Sequence(2) As File, If(Mod(Rank.Value + File.Value, 2) = 1, \"X\", \".\")), Value) & \"|\"), Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(ForAll(Sequence(2) As Rank, Concat(ForAll(Sequence(2) As File, If(Mod(Rank.Value + File.Value, 2) = 1, \"X\", \".\")), Value) & \"|\"), Value)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": ".X|X.|",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-128",
+      "input": {
+        "expression": "With({x: 2}, x * ThisRecord.x)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "With({x: 2}, x * ThisRecord.x)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 4,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-129",
+      "input": {
+        "expression": "CountRows(Table({a: 1}, {a: 2}))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Table({a: 1}, {a: 2}))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-130",
+      "input": {
+        "expression": "Concat(Filter([{v: 1}, {v: 2}] As R, R.v > 1), v)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Concat(Filter([{v: 1}, {v: 2}] As R, R.v > 1), v)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "2",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-131",
+      "input": {
+        "expression": "Sum(Filter([{v: 1}, {v: 5}], v > 1), v)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Sum(Filter([{v: 1}, {v: 5}], v > 1), v)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-132",
+      "input": {
+        "expression": "JSON({a: 1, b: [1, 2]}, JSONFormat.FlattenValueTables)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON({a: 1, b: [1, 2]}, JSONFormat.FlattenValueTables)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "{\"a\":1,\"b\":[1,2]}",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-133",
+      "input": {
+        "expression": "JSON(Date(2019, 3, 31))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(Date(2019, 3, 31))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "\"2019-03-31\"",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-134",
+      "input": {
+        "expression": "Value(ParseJSON(\"{\"\"a\"\": {\"\"b\"\": 5}}\").a.b) + 1",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(ParseJSON(\"{\"\"a\"\": {\"\"b\"\": 5}}\").a.b) + 1",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 6,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-135",
+      "input": {
+        "expression": "Text(Index(ParseJSON(\"[\"\"x\"\",\"\"y\"\"]\"), 2))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Index(ParseJSON(\"[\"\"x\"\",\"\"y\"\"]\"), 2))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "y",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-136",
+      "input": {
+        "expression": "CountRows(Table(ParseJSON(\"[1,2,3]\")))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Table(ParseJSON(\"[1,2,3]\")))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-137",
+      "input": {
+        "expression": "IsError(ParseJSON(\"{\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(ParseJSON(\"{\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-138",
+      "input": {
+        "expression": "Boolean(ParseJSON(\"true\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Boolean(ParseJSON(\"true\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-139",
+      "input": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "phase": "evaluation",
+        "kind": "error",
+        "type": "ErrorValue",
+        "value": null,
+        "errors": [
+          {
+            "kind": "InvalidArgument",
+            "Message": "Invalid argument"
+          }
+        ],
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-140",
+      "input": {
+        "expression": "Len(Text(GUID()))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Len(Text(GUID()))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 36,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-141",
+      "input": {
+        "expression": "Language()",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Language()",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "en-US",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-142",
+      "input": {
+        "expression": "Text(DateAdd(Now(), 3), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), 3), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "18-07-2013 13:02",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-143",
+      "input": {
+        "expression": "Text(DateAdd(Now(), 4, TimeUnit.Hours), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), 4, TimeUnit.Hours), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "15-07-2013 17:02",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-144",
+      "input": {
+        "expression": "Text(DateAdd(Today(), 1, TimeUnit.Months), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Today(), 1, TimeUnit.Months), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "15-08-2013 00:00",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-145",
+      "input": {
+        "expression": "Text(DateAdd(Now(), -30, TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), -30, TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "15-07-2013 12:32",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-146",
+      "input": {
+        "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 170,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-147",
+      "input": {
+        "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"), TimeUnit.Months)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"), TimeUnit.Months)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 6,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-148",
+      "input": {
+        "expression": "DateDiff(Now(), Today(), TimeUnit.Minutes)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(Now(), Today(), TimeUnit.Minutes)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": -782,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-149",
+      "input": {
+        "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Hours)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Hours)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-150",
+      "input": {
+        "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Minutes)/60",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Minutes)/60",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 0.5,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-151",
+      "input": {
+        "expression": "Round(DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Seconds)/3600, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Round(DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Seconds)/3600, 2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 0.51,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-152",
+      "input": {
+        "expression": "DateDiff(Date(2024, 1, 1), Date(2025, 1, 1), TimeUnit.Quarters)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(Date(2024, 1, 1), Date(2025, 1, 1), TimeUnit.Quarters)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 4,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-153",
+      "input": {
+        "expression": "TimeZoneOffset()",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "TimeZoneOffset()",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 420,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-154",
+      "input": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "15-07-2013 20:02",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-155",
+      "input": {
+        "expression": "Hour(UTCNow())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Hour(UTCNow())",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'UTCNow' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-156",
+      "input": {
+        "expression": "Hour(Now())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Hour(Now())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 13,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-157",
+      "input": {
+        "expression": "Minute(Now()) + Second(Now())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Minute(Now()) + Second(Now())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-158",
+      "input": {
+        "expression": "Day(UTCToday())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Day(UTCToday())",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'UTCToday' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-159",
+      "input": {
+        "expression": "Month(Today())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Month(Today())",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 7,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-160",
+      "input": {
+        "expression": "IsToday(Now()) && !IsToday(DateAdd(Now(), 12))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsToday(Now()) && !IsToday(DateAdd(Now(), 12))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-161",
+      "input": {
+        "expression": "IsUTCToday(UTCNow())",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsUTCToday(UTCNow())",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'IsUTCToday' is an unknown or unsupported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'UTCNow' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-162",
+      "input": {
+        "expression": "Text(Now(), \"mm/dd/yyyy hh:mm:ss\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Now(), \"mm/dd/yyyy hh:mm:ss\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "07/15/2013 13:02:00",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-163",
+      "input": {
+        "expression": "Year(Date(2024, 2, 30)) * 100 + Month(Date(2024, 2, 30))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Year(Date(2024, 2, 30)) * 100 + Month(Date(2024, 2, 30))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 202403,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-164",
+      "input": {
+        "expression": "Weekday(Date(2024, 1, 1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Weekday(Date(2024, 1, 1))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-165",
+      "input": {
+        "expression": "Weekday(Date(2024, 1, 1), StartOfWeek.Monday)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Weekday(Date(2024, 1, 1), StartOfWeek.Monday)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-166",
+      "input": {
+        "expression": "ISOWeekNum(Date(2021, 1, 1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "ISOWeekNum(Date(2021, 1, 1))",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'ISOWeekNum' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-167",
+      "input": {
+        "expression": "WeekNum(Date(2021, 1, 3))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "WeekNum(Date(2021, 1, 3))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-168",
+      "input": {
+        "expression": "Text(DateTimeValue(\"2024-01-02T03:04:05Z\"), DateTimeFormat.UTC)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateTimeValue(\"2024-01-02T03:04:05Z\"), DateTimeFormat.UTC)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "2024-01-02T03:04:05.000Z",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-169",
+      "input": {
+        "expression": "Hour(DateTimeValue(\"2024-01-02T03:04:05Z\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Hour(DateTimeValue(\"2024-01-02T03:04:05Z\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 19,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-170",
+      "input": {
+        "expression": "Text(Date(2024, 3, 5), \"mmmm d, yyyy\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Date(2024, 3, 5), \"mmmm d, yyyy\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "March 5, 2024",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-171",
+      "input": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "2:05 PM",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-172",
+      "input": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "Tuesday, March 5, 2024",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-173",
+      "input": {
+        "expression": "Set(x, 5); x * 2",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Set(x, 5); x * 2",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Set' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'x' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'x' isn't recognized.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-174",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-175",
+      "input": {
+        "expression": "ClearCollect(c, {a: 9}); First(c).a",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "ClearCollect(c, {a: 9}); First(c).a",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'ClearCollect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-176",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Clear' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-177",
+      "input": {
+        "expression": "Patch({a: 1, b: 2}, {b: 3}).b",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Patch({a: 1, b: 2}, {b: 3}).b",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 3,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-178",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Invalid argument type (Error). Expecting a Record value instead.",
+            "severity": "Severe"
+          },
+          {
+            "message": "The function 'Patch' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-179",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Remove' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'Concat' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-180",
+      "input": {
+        "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'RemoveIf' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'Value' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-181",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Collect' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'UpdateIf' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'Sum' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-182",
+      "input": {
+        "expression": "UpdateContext({n: 4}); n + 1",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "UpdateContext({n: 4}); n + 1",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Expected operator. We expect an operator such as +, *, or & at this point in the formula.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'UpdateContext' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'n' isn't recognized.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-183",
+      "input": {
+        "expression": "JSON(Defaults([1]))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(Defaults([1]))",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'Defaults' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-184",
+      "input": {
+        "expression": "Trace(\"invented\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Trace(\"invented\")",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "Behavior function in a non-behavior property. You can't use this property to change values elsewhere in the app.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-185",
+      "input": {
+        "expression": "RandBetween(2,2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(2,2)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-186",
+      "input": {
+        "expression": "EncodeUrl(\"a b\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "EncodeUrl(\"a b\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "a%20b",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-187",
+      "input": {
+        "expression": "RGBA(255,0,128,0.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "RGBA(255,0,128,0.5)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "ColorValue",
+        "value": {
+          "R": 255,
+          "G": 0,
+          "B": 128,
+          "A": 128,
+          "IsKnownColor": false,
+          "IsEmpty": false,
+          "IsNamedColor": false,
+          "IsSystemColor": false,
+          "Name": "80ff0080"
+        },
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-188",
+      "input": {
+        "expression": "ColorValue(\"Red\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "ColorValue(\"Red\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "ColorValue",
+        "value": {
+          "R": 255,
+          "G": 0,
+          "B": 0,
+          "A": 255,
+          "IsKnownColor": false,
+          "IsEmpty": false,
+          "IsNamedColor": false,
+          "IsSystemColor": false,
+          "Name": "ffff0000"
+        },
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-189",
+      "input": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "ColorValue",
+        "value": {
+          "R": 177,
+          "G": 202,
+          "B": 227,
+          "A": 255,
+          "IsKnownColor": false,
+          "IsEmpty": false,
+          "IsNamedColor": false,
+          "IsSystemColor": false,
+          "Name": "ffb1cae3"
+        },
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-190",
+      "input": {
+        "expression": "CountRows(Search([{Name:\"Alpha\"},{Name:\"Beta\"}],\"PH\",Name))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Search([{Name:\"Alpha\"},{Name:\"Beta\"}],\"PH\",Name))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 1,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-191",
+      "input": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'DataSourceInfo' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'DataSourceInfo' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'Name' isn't recognized.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-192",
+      "input": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'Choices' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "existing-language-193",
+      "input": {
+        "expression": "IsError(Errors([1]))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Errors([1]))",
+        "phase": "check",
+        "diagnostics": [
+          {
+            "message": "'Errors' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

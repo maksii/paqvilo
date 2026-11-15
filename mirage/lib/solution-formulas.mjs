@@ -45,11 +45,8 @@ export function solutionFormulaResolver(documents, diagnostics) {
         ? /^\/?Formulas\/([^/\\:]+\.ya?ml)$/i.exec(reference)
         : null;
     const scopedKey = match ? `${entityDir.toLowerCase()}/${match[1].toLowerCase()}` : null;
-    const definition = match
-      ? files.has(scopedKey)
-        ? files.get(scopedKey)
-        : files.get(`*/${match[1].toLowerCase()}`)
-      : null;
+    let definition = null;
+    if (match) definition = files.has(scopedKey) ? files.get(scopedKey) : files.get(`*/${match[1].toLowerCase()}`);
     const expression = definition?.columns[attribute.name.toLowerCase()];
     if (expression) return { ...attribute, formulaDefinition: expression, formulaDefinitionSource: definition.source };
     diagnostics.push({

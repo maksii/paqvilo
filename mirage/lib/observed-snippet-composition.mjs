@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
-import { parse, parseFragment } from 'parse5';
+import { parse, parseFragment, serialize } from 'parse5';
 import { validateLivePath } from './live.mjs';
 import { validateFooterLogoMarkup } from './footer-capture.mjs';
-import { serialize } from 'parse5';
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const failure = (message) =>
   Object.assign(new Error(message), {
@@ -41,7 +40,7 @@ function childSource(markup) {
     for (const a of n.attrs ?? [])
       if (
         !['class', 'title', 'style', 'id', 'type', 'aria-label', 'aria-hidden'].includes(a.name) ||
-        (a.name === 'style' && !/^\s*display\s*:\s*none\s*;?\s*$/i.test(a.value))
+        (a.name === 'style' && !/^\s*display\s*:\s*none\s*(?:;\s*)?$/i.test(a.value))
       )
         throw failure('Observed action contains unsupported attributes.');
     for (const c of n.childNodes ?? []) visit(c);
@@ -61,7 +60,7 @@ export function observedSnippetComposition({ snippets, parentName, childName, ob
     parts = significant(observed),
     last = parts.at(-1);
   const observedStyle = last?.attrs?.find((a) => a.name === 'style')?.value;
-  if (observedStyle?.trim() && !/^\s*display\s*:\s*none\s*;?\s*$/i.test(observedStyle))
+  if (observedStyle?.trim() && !/^\s*display\s*:\s*none\s*(?:;\s*)?$/i.test(observedStyle))
     throw failure('Observed action has an unexpected style change.');
   if (
     !last ||
@@ -124,26 +123,9 @@ export function resolveSnippetComposition(snippets, key, profiles = [], { origin
     composition: { offset, childName: profile.childName },
   };
 }
-/** Explicit read-only native page observation; page HTML never enters the returned profile. */
-export async function captureObservedSnippetComposition(live, { portal, path, parentName, childName }) {
-  validateLivePath(path);
-  if (!live?.context || !live.origin) throw failure('A connected intended portal browser is required.');
-  if (/^\/(?:_api|__sim)(?:\/|$)/i.test(path)) throw failure('Composition observation requires a portal page.');
-  const response = await live.request(path, { method: 'GET' });
-  if (response.status !== 200 || !/^text\/html(?:;|$)/i.test(response.headers?.['content-type'] ?? ''))
-    throw failure('Composition observation requires an HTTP 200 HTML page.');
-  const html = Buffer.from(response.body, response.bodyEncoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
-  if (html.length > 5 * 1024 * 1024 || /\/(?:account\/login|signin)(?:[/?]|$)/i.test(response.url ?? ''))
-    throw failure('Composition observation is too large or redirected to sign-in.');
-  const candidates = [];
-  function visit(n) {
-    if (n.tagName) candidates.push(n);
-    for (const child of n.childNodes ?? []) visit(child);
-  }
-  visit(parse(html));
-  const parent = root(portal.snippets[parentName] ?? ''),
-    observed = [],
-    reasons = new Set();
+
+function matchingCompositions({ candidates, parent, portal, parentName, childName, live, path, reasons }) {
+  const observed = [];
   for (const node of candidates) {
     if (
       node.tagName !== parent.tagName ||
@@ -167,58 +149,85 @@ export async function captureObservedSnippetComposition(live, { portal, path, pa
       reasons.add(error.message);
     }
   }
+  return observed;
+}
+
+async function observeDynamically(live, path, portal, parent, parentName, childName) {
+  if (live.context.serviceWorkers?.().some((worker) => new URL(worker.url()).origin === live.origin))
+    throw failure('Dynamic observation cannot guarantee read-only requests while a portal service worker is active.');
+  const id = childSource(portal.snippets[childName]).attrs.find((a) => a.name === 'id').value;
+  if (!/^[\w:-]{1,160}$/.test(id)) throw failure('Observed action identifier cannot be safely selected.');
+  const selector =
+    parent.tagName +
+    parent.attrs
+      .filter((a) => ['class', 'id'].includes(a.name))
+      .map((a) => '[' + a.name + '=' + JSON.stringify(a.value) + ']')
+      .join('') +
+    ' > [id="' +
+    id +
+    '"]';
+  let page;
+  const blockedRequests = [];
+  try {
+    page = await live.context.newPage();
+    await page.route('**/*', (route) =>
+      ['GET', 'HEAD'].includes(route.request().method())
+        ? route.continue()
+        : (blockedRequests.push({
+            method: route.request().method(),
+            path: new URL(route.request().url()).pathname,
+          }),
+          route.abort()),
+    );
+    await page.goto(live.origin + path, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+    await page.locator(selector).waitFor({ state: 'attached', timeout: 10000 });
+    const final = new URL(page.url()),
+      expected = new URL(path, live.origin);
+    if (final.origin !== live.origin || final.pathname !== expected.pathname)
+      throw failure('Native composition page redirected away from the requested portal page.');
+    const markup = await page.locator(selector).evaluate((node) => node.parentElement.outerHTML);
+    const profile = observedSnippetComposition({
+      snippets: portal.snippets,
+      parentName,
+      childName,
+      observedMarkup: markup,
+      origin: live.origin,
+      pagePath: path,
+    });
+    return { profile, observation: { provider: 'native-browser-dom', blockedRequests } };
+  } finally {
+    await page?.close();
+  }
+}
+
+/** Explicit read-only native page observation; page HTML never enters the returned profile. */
+export async function captureObservedSnippetComposition(live, { portal, path, parentName, childName }) {
+  validateLivePath(path);
+  if (!live?.context || !live.origin) throw failure('A connected intended portal browser is required.');
+  if (/^\/(?:_api|__sim)(?:\/|$)/i.test(path)) throw failure('Composition observation requires a portal page.');
+  const response = await live.request(path, { method: 'GET' });
+  if (response.status !== 200 || !/^text\/html(?:;|$)/i.test(response.headers?.['content-type'] ?? ''))
+    throw failure('Composition observation requires an HTTP 200 HTML page.');
+  const html = Buffer.from(response.body, response.bodyEncoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
+  if (html.length > 5 * 1024 * 1024 || /\/(?:account\/login|signin)(?:[/?]|$)/i.test(response.url ?? ''))
+    throw failure('Composition observation is too large or redirected to sign-in.');
+  const candidates = [];
+  function visit(n) {
+    if (n.tagName) candidates.push(n);
+    for (const child of n.childNodes ?? []) visit(child);
+  }
+  visit(parse(html));
+  const parent = root(portal.snippets[parentName] ?? ''),
+    reasons = new Set(),
+    observed = matchingCompositions({ candidates, parent, portal, parentName, childName, live, path, reasons });
   let observation = { provider: 'native-page-html', blockedRequests: [] };
   if (observed.length === 0 && typeof live.context.newPage === 'function') {
-    if (live.context.serviceWorkers?.().some((worker) => new URL(worker.url()).origin === live.origin))
-      throw failure('Dynamic observation cannot guarantee read-only requests while a portal service worker is active.');
-    const id = childSource(portal.snippets[childName]).attrs.find((a) => a.name === 'id').value;
-    if (!/^[\w:-]{1,160}$/.test(id)) throw failure('Observed action identifier cannot be safely selected.');
-    const selector =
-      parent.tagName +
-      parent.attrs
-        .filter((a) => ['class', 'id'].includes(a.name))
-        .map((a) => '[' + a.name + '=' + JSON.stringify(a.value) + ']')
-        .join('') +
-      ' > [id="' +
-      id +
-      '"]';
-    let page;
-    const blockedRequests = [];
-    try {
-      page = await live.context.newPage();
-      await page.route('**/*', (route) =>
-        ['GET', 'HEAD'].includes(route.request().method())
-          ? route.continue()
-          : (blockedRequests.push({
-              method: route.request().method(),
-              path: new URL(route.request().url()).pathname,
-            }),
-            route.abort()),
-      );
-      await page.goto(live.origin + path, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-      await page.locator(selector).waitFor({ state: 'attached', timeout: 10000 });
-      const final = new URL(page.url()),
-        expected = new URL(path, live.origin);
-      if (final.origin !== live.origin || final.pathname !== expected.pathname)
-        throw failure('Native composition page redirected away from the requested portal page.');
-      const markup = await page.locator(selector).evaluate((node) => node.parentElement.outerHTML);
-      observed.push(
-        observedSnippetComposition({
-          snippets: portal.snippets,
-          parentName,
-          childName,
-          observedMarkup: markup,
-          origin: live.origin,
-          pagePath: path,
-        }),
-      );
-      observation = { provider: 'native-browser-dom', blockedRequests };
-    } finally {
-      await page?.close();
-    }
+    const dynamic = await observeDynamically(live, path, portal, parent, parentName, childName);
+    observed.push(dynamic.profile);
+    observation = dynamic.observation;
   }
   if (observed.length !== 1)
     throw failure(

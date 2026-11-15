@@ -5,12 +5,12 @@
  * when the platform's jQuery UI build is not available locally. */
 (() => {
   // One adapter per document: a repeated include only re-attaches the plugin.
-  const compat = (window.__ppSimCompat ||= {});
+  const compat = (globalThis.__ppSimCompat ||= {});
   if (compat.jqueryUiDialog) {
-    compat.jqueryUiDialog(window.jQuery);
+    compat.jqueryUiDialog(globalThis.jQuery);
     return;
   }
-  if (!window.jQuery) {
+  if (!globalThis.jQuery) {
     console.error('Local dialog compatibility requires jQuery.');
     return;
   }
@@ -29,7 +29,7 @@
     width: 300,
   };
   const fire = (state, name, event) => {
-    const $ = window.jQuery;
+    const $ = globalThis.jQuery;
     const callback = state.options[name];
     if (typeof callback === 'function') callback.call(state.element, event ?? $.Event(`dialog${name}`), {});
     // A DOM event reaches both jQuery handlers and addEventListener listeners.
@@ -131,7 +131,7 @@
   }
   function hide(state, event) {
     if (!state.open) return;
-    const $ = window.jQuery;
+    const $ = globalThis.jQuery;
     const before = $.Event('dialogbeforeClose');
     if (
       typeof state.options.beforeClose === 'function' &&
@@ -143,45 +143,50 @@
     state.open = false;
     fire(state, 'close', event);
   }
+  function initializeDialog(element, argument) {
+    let state = states.get(element);
+    if (state) {
+      // Re-initialising an existing dialog sets its options and opens it as jQuery UI's _init does.
+      Object.assign(state.options, argument ?? {});
+      render(state);
+    } else {
+      state = create(element, { ...defaults, ...argument });
+      states.set(element, state);
+    }
+    if (state.options.autoOpen !== false) show(state);
+    else if (!state.open) state.wrapper.style.display = 'none';
+  }
+  function runDialogCommand(command, args, element, state) {
+    if (!state) return;
+    if (command === 'open') show(state);
+    else if (command === 'close') hide(state);
+    else if (command === 'moveToTop')
+      state.wrapper.style.zIndex = String(Number(state.wrapper.style.zIndex || 1060) + 1);
+    else if (command === 'option') {
+      if (args.length === 2) state.options[args[0]] = args[1];
+      else if (args[0] && typeof args[0] === 'object') Object.assign(state.options, args[0]);
+      render(state);
+    } else if (command === 'destroy') {
+      hide(state);
+      element.classList.remove('ui-dialog-content', 'ui-widget-content');
+      state.placeholder.replaceWith(element);
+      state.wrapper.remove();
+      states.delete(element);
+    }
+  }
   const plugin = function (argument, ...args) {
     const command = typeof argument === 'string' ? argument : null;
     if (command === 'isOpen') return this.length ? Boolean(states.get(this[0])?.open) : false;
     if (command === 'instance') return this.length ? states.get(this[0]) : undefined;
     if (command === 'option' && args.length === 1 && typeof args[0] === 'string')
       return this.length ? states.get(this[0])?.options[args[0]] : undefined;
-    if (command === 'widget') return window.jQuery(this.length ? (states.get(this[0])?.wrapper ?? []) : []);
+    if (command === 'widget') return globalThis.jQuery(this.length ? (states.get(this[0])?.wrapper ?? []) : []);
     return this.each(function () {
-      const element = this;
-      let state = states.get(element);
       if (!command) {
-        if (state) {
-          // Re-initialising an existing dialog sets its options and opens it as jQuery UI's _init does.
-          Object.assign(state.options, argument ?? {});
-          render(state);
-        } else {
-          state = create(element, { ...defaults, ...(argument ?? {}) });
-          states.set(element, state);
-        }
-        if (state.options.autoOpen !== false) show(state);
-        else if (!state.open) state.wrapper.style.display = 'none';
+        initializeDialog(this, argument);
         return;
       }
-      if (!state) return;
-      if (command === 'open') show(state);
-      else if (command === 'close') hide(state);
-      else if (command === 'moveToTop')
-        state.wrapper.style.zIndex = String(Number(state.wrapper.style.zIndex || 1060) + 1);
-      else if (command === 'option') {
-        if (args.length === 2) state.options[args[0]] = args[1];
-        else if (args[0] && typeof args[0] === 'object') Object.assign(state.options, args[0]);
-        render(state);
-      } else if (command === 'destroy') {
-        hide(state);
-        element.classList.remove('ui-dialog-content', 'ui-widget-content');
-        state.placeholder.replaceWith(element);
-        state.wrapper.remove();
-        states.delete(element);
-      }
+      runDialogCommand(command, args, this, states.get(this));
     });
   };
   plugin.__ppSimCompat = true;
@@ -189,20 +194,27 @@
     if (typeof $?.fn?.jquery === 'string' && !$.fn.dialog) $.fn.dialog = plugin;
   };
   compat.jqueryUiDialog = attach;
-  attach(window.jQuery);
+  attach(globalThis.jQuery);
   watchJQuery(compat, attach);
-  ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).jqueryUiDialogMode = 'local-compatibility';
+  globalThis.__portalSimulation ||= {};
+  globalThis.__portalSimulation.compatibility ||= {};
+  globalThis.__portalSimulation.compatibility.jqueryUiDialogMode = 'local-compatibility';
   console.info('Local jQuery UI dialog compatibility active for source-used dialog behavior.');
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
-    (registry.jqueryWatchers ||= new Set()).add(attach);
+    let watchers = registry.jqueryWatchers;
+    if (!watchers) {
+      watchers = new Set();
+      registry.jqueryWatchers = watchers;
+    }
+    watchers.add(attach);
     if (registry.jqueryWatched) return;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-    let current = window.jQuery;
+    let current = globalThis.jQuery;
     try {
-      Object.defineProperty(window, 'jQuery', {
+      Object.defineProperty(globalThis, 'jQuery', {
         configurable: true,
         enumerable: true,
         get: () => current,

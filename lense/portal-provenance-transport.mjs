@@ -5,7 +5,20 @@ import { installPortalProvenanceRegistry } from './portal-element-provider.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
 
 const MAX_DESCRIPTOR_BYTES = 8 * 1024 * 1024;
-const COMMAND_MS = 3000;
+// A command or sideband read waits until it answers or the attachment is disposed (its page closed or interception
+// stopped). This guard only ends a wait on a live renderer or server that never answers, and that loss is reported.
+const COMMAND_HANG_MS = 30_000;
+
+/**
+ * Whether a sideband read failed because its browser context is closing. Playwright's BrowserContext.close() disposes
+ * the context's request context before it closes the pages: a read still in flight then fails with
+ * "apiRequestContext.<method>: Request context disposed." and reading an answer it dropped fails with
+ * "apiResponse.body: Response has been disposed", while the tab still answers. Playwright exports no class or code
+ * for either, so the first line of the message is matched after its API-name prefix.
+ */
+const CONTEXT_CLOSED_READ = /^(?:[\w.]+: )?(?:Request context disposed\.|Response has been disposed)$/;
+export const readEndedByContextClose = (error) =>
+  typeof error?.message === 'string' && CONTEXT_CLOSED_READ.test(error.message.split('\n', 1)[0]);
 
 /** Private CDP writers admit descriptors only into the response's actual frame/loader. */
 export function createPortalProvenanceTransport(context, configs, { onDescriptor, domProvenanceSlot } = {}) {
@@ -15,7 +28,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
   const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot })});`;
   return {
     slot,
-    async onAttach({ cdp, configure }) {
+    async onAttach({ cdp, configure, report }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
       const contexts = new Map(),
@@ -24,19 +37,32 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       const initialLoaders = new Map();
       let script,
         closed = false;
-      const send = async (method, params = {}) => {
+      const lost = (error) => {
+        if (!closed) report?.(error);
+      };
+      // A rejected command resolves to `rejected`; a command ended by disposal or the hang guard resolves to null.
+      const send = async (method, params = {}, rejected = null) => {
         let timer, onAbort;
         const aborted = new Promise((resolve) => {
-          timer = setTimeout(resolve, COMMAND_MS, null);
+          timer = setTimeout(() => {
+            lost(new Error(`${method} did not answer within ${COMMAND_HANG_MS} ms`));
+            resolve(null);
+          }, COMMAND_HANG_MS);
           onAbort = () => resolve(null);
           if (!controller.signal.aborted) controller.signal.addEventListener('abort', onAbort, { once: true });
         });
         try {
-          return await Promise.race([cdp.send(method, params).catch(() => null), aborted]);
+          return await Promise.race([cdp.send(method, params).catch(() => rejected), aborted]);
         } finally {
           clearTimeout(timer);
           controller.signal.removeEventListener('abort', onAbort);
         }
+      };
+      // A failed read is a loss only while its target still answers; closing the page, context or browser ends it quietly.
+      const gone = Symbol('gone');
+      const readLost = async (message, error) => {
+        if (closed || readEndedByContextClose(error) || (await send('Page.getFrameTree', {}, gone)) === gone) return;
+        lost(new Error(message));
       };
       const frames = (tree, map = new Map(), depth = 0) => {
         if (depth > 64 || map.size >= 256) return map;
@@ -139,7 +165,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       };
       const destroyed = ({ executionContextId }) => retire(executionContextId);
       const cleared = () => {
-        for (const id of [...contexts.keys()]) retire(id);
+        for (const id of [...contexts.keys()]) retire(id); // NOSONAR: snapshot copy guards against mutation while iterating
       };
       const requested = (event) => {
         if (closed || event.type !== 'Document') return;
@@ -184,7 +210,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           const answer = await context.request.get(descriptor.href, {
             headers: { 'x-paqvilo-provenance-access': access },
             maxRedirects: 0,
-            timeout: COMMAND_MS,
+            timeout: COMMAND_HANG_MS,
             failOnStatusCode: false,
           });
           try {
@@ -205,7 +231,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           } finally {
             await answer.dispose?.();
           }
-        })().catch(() => {});
+        })().catch((error) => readLost('the page provenance read did not complete', error));
       };
       const listeners = [
         ['Runtime.executionContextCreated', created],

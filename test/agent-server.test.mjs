@@ -1,15 +1,17 @@
+// @test-kind contract: agent API routes, limits, deadlines and redaction designed by Paqvilo
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { startAgentServer, redactText, redactUrl } from '../lense/agent-server.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 async function fixture(t, options = {}) {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-api-'));
+  const stateDir = tempDirSync('pp-agent-api-');
   const origin = 'https://portal.example';
   let address = `${origin}/chapter/?token=secret#private`;
   let closed = false;
@@ -87,12 +89,13 @@ async function fixture(t, options = {}) {
     options,
     runtime: { watching: true, debugPort: null },
   });
-  const discovery = await readDiscovery(server.discoveryFile);
-  assert.equal(discovery.endpoint, server.endpoint);
-  t.after(async () => {
+  // Registered before any assertion, so a failed discovery check still closes the server and removes its state.
+  ownedFixture(t).add(async () => {
     await server.close();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
+  const discovery = await readDiscovery(server.discoveryFile);
+  assert.equal(discovery.endpoint, server.endpoint);
   const call = (url, body, headers = {}) =>
     fetch(server.endpoint + url, {
       redirect: 'error',
@@ -125,6 +128,7 @@ async function fixture(t, options = {}) {
   };
 }
 
+// @test-kind security: the agent API is loopback and bearer-authenticated and refuses browser origins and forged hosts
 test('agent discovery is local and authenticated; browser origins and forged hosts are rejected', async (t) => {
   const fx = await fixture(t);
   assert.match(fx.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/);
@@ -160,6 +164,7 @@ test('agent discovery is local and authenticated; browser origins and forged hos
   assert.equal((await fx.call('/v1/evaluate', { expression: 'fetch("/write")' })).status, 404);
 });
 
+// @test-kind security: event history redacts URL values and secrets and captures only portal tabs
 test('bounded event history redacts URL values and secrets and captures external assets only from portal tabs', async (t) => {
   const fx = await fixture(t, { maxEvents: 6, panel: false });
   const request = {
@@ -204,6 +209,7 @@ test('bounded event history redacts URL values and secrets and captures external
   assert.equal((await fx.call('/v1/events?limit=501')).status, 400);
 });
 
+// @test-kind security: DOM output is redacted and navigation outside the portal origin is refused
 test('DOM inspection redacts content and resolves links against the document; page actions validate inputs', async (t) => {
   const fx = await fixture(t);
   const dom = await (await fx.call('/v1/pages/1/dom', { selector: 'table tr', limit: 10 })).json();
@@ -237,6 +243,7 @@ test('DOM inspection redacts content and resolves links against the document; pa
   assert.equal(fx.calls.length, beforeMalformed, 'null dimensions never reach the browser');
 });
 
+// @test-kind security: oversized requests are refused and a page that left the portal origin is no longer reachable
 test('oversized and malformed requests fail without retaining browser work; operations are serialized per page', async (t) => {
   const fx = await fixture(t);
   assert.equal((await fx.call('/v1/pages/1/dom', { selector: 'x'.repeat(33 * 1024) })).status, 413);
@@ -333,6 +340,7 @@ test('attached and explicitly disabled sessions never expose an agent server', a
   assert.equal(await startAgentServer({ session: { cfg: { agent: { enabled: false } } } }), null);
 });
 
+// @test-kind security: dialog events from a foreign origin are not reported and secrets in them are redacted
 test('dismissed dialog events are origin-confined and never answer browser dialogs', async (t) => {
   const fx = await fixture(t);
   fx.session.emit('dialog', {
@@ -361,6 +369,7 @@ test('dismissed dialog events are origin-confined and never answer browser dialo
   assert.equal(events[1].text, '');
 });
 
+// @test-kind security: URL and text redaction removes query values, fragments, credentials and token formats
 test('redaction strips query values, fragments, credentials and common credential formats', () => {
   assert.equal(
     redactUrl('https://name:password@example.com/a?token=secret#private'),
@@ -378,14 +387,31 @@ test('redaction strips query values, fragments, credentials and common credentia
   }
 });
 
-test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', () => {
+// @test-kind security: URL redaction of a hostile query stays bounded and retains no value
+test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', (t) => {
   const address =
     'https://name:private@portal.example/asset?' +
     Array.from({ length: 5000 }, (_, index) => `key${index}=private`).join('&') +
     '#private';
-  const before = performance.now();
+  // Each mutation of a URL's own searchParams reserializes the whole URL (quadratic in the parameter count).
+  // Count those mutations instead of timing them, so the bound does not depend on machine speed.
+  const attached = new WeakSet();
+  const searchParams = Object.getOwnPropertyDescriptor(URL.prototype, 'searchParams').get;
+  t.mock.getter(URL.prototype, 'searchParams', function () {
+    const params = searchParams.call(this);
+    attached.add(params);
+    return params;
+  });
+  let reserializations = 0;
+  for (const name of ['append', 'set', 'delete', 'sort']) {
+    const original = URLSearchParams.prototype[name];
+    t.mock.method(URLSearchParams.prototype, name, function (...args) {
+      if (attached.has(this)) reserializations++;
+      return original.apply(this, args);
+    });
+  }
   const result = redactUrl(address);
-  assert.ok(performance.now() - before < 1500, 'redaction must not repeatedly serialize thousands of query parameters');
+  assert.equal(reserializations, 0, 'redaction must not repeatedly serialize thousands of query parameters');
   assert.ok(result.length <= 2000);
   assert.equal(result.includes('private'), false);
   assert.deepEqual(
@@ -449,4 +475,192 @@ test('current document state excludes late failures from prior documents while p
     (await (await fx.call('/v1/events?after=' + cursor)).json()).events.map((entry) => entry.type),
     ['page-closed'],
   );
+});
+
+test('screenshot waits for the caller budget, not a fixed page deadline, and reports only that budget as a timeout', async (t) => {
+  const fx = await fixture(t);
+  // Timers are mocked, so a deadline fires only when the test ticks the clock; the screenshot itself is gated.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const reached = new EventEmitter();
+  fx.page.screenshot = () => new Promise((resolve) => reached.emit('entered', resolve));
+  const nextEntry = () => new Promise((resolve) => reached.once('entered', resolve));
+
+  const enteredFirst = nextEntry();
+  const first = fx.call('/v1/pages/1/screenshot', {});
+  const releaseFirst = await enteredFirst;
+  t.mock.timers.tick(16_000);
+  releaseFirst(Buffer.from('fake PNG'));
+  const response = await first;
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(await response.text(), 'fake PNG');
+
+  const enteredSecond = nextEntry();
+  const second = fx.call('/v1/pages/1/screenshot', { timeoutMs: 200 });
+  const entry = await Promise.race([enteredSecond, second]);
+  assert.equal(typeof entry, 'function', `screenshot did not start; HTTP ${entry.status}`);
+  t.mock.timers.tick(201);
+  const timedOut = await second;
+  assert.equal(timedOut.status, 504);
+  assert.equal((await timedOut.json()).error.code, 'action_timeout');
+  entry(Buffer.from('late PNG'));
+});
+
+test('screenshot sends the caller budget to Playwright, and close waits for a screenshot still running after its 504', async (t) => {
+  // The HTTP server is captured so the test can wait for its own 'close' event, which is the point where close has
+  // stopped accepting requests and is only left to finish its owned work.
+  const createServer = http.createServer;
+  let httpServer;
+  t.mock.method(http, 'createServer', (...args) => (httpServer = createServer(...args)));
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settings = [];
+  let enteredScreenshot;
+  const entered = new Promise((resolve) => {
+    enteredScreenshot = resolve;
+  });
+  let releaseScreenshot;
+  fx.page.screenshot = (options) => {
+    settings.push(options);
+    enteredScreenshot();
+    return new Promise((resolve) => {
+      releaseScreenshot = resolve;
+    });
+  };
+
+  const response = fx.call('/v1/pages/1/screenshot', { timeoutMs: 1500 });
+  await entered;
+  try {
+    // The caller budget elapses while the screenshot runs: the server answers 504 and the screenshot is still running.
+    t.mock.timers.tick(1500);
+    const timedOut = await response;
+    assert.equal(settings[0].timeout, 1500, 'Playwright must end the screenshot at the caller budget');
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+
+    // Close must not finish while the screenshot is still running; it finishes once the screenshot settles.
+    const closing = fx.close();
+    await once(httpServer, 'close');
+    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a screenshot still ran');
+    releaseScreenshot(Buffer.from('late PNG'));
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false);
+  } finally {
+    // A failed assertion must not leave close waiting on this screenshot.
+    releaseScreenshot(Buffer.from('late PNG'));
+  }
+});
+
+test('close waits for a navigation still running after its 504', async (t) => {
+  // The HTTP server is captured so the test can wait for its own 'close' event, which is the point where close has
+  // stopped accepting requests and is only left to finish its owned work.
+  const createServer = http.createServer;
+  let httpServer;
+  t.mock.method(http, 'createServer', (...args) => (httpServer = createServer(...args)));
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settings = [];
+  let enteredNavigation;
+  const entered = new Promise((resolve) => {
+    enteredNavigation = resolve;
+  });
+  let releaseNavigation;
+  fx.page.goto = (url, options) => {
+    settings.push(options);
+    enteredNavigation();
+    return new Promise((resolve) => {
+      releaseNavigation = resolve;
+    });
+  };
+
+  const response = fx.call('/v1/pages/1/navigate', { url: '/x', timeoutMs: 1500 });
+  await entered;
+  try {
+    // The caller budget plus the server's 50 ms allowance elapses while the navigation runs: the server answers 504 and
+    // the navigation is still running.
+    t.mock.timers.tick(1550);
+    const timedOut = await response;
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+    assert.equal(settings[0].timeout, 1500, 'Playwright must end the navigation at the caller budget');
+
+    // Close must not finish while the navigation is still running; it finishes once the navigation settles.
+    const closing = fx.close();
+    await once(httpServer, 'close');
+    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a navigation still ran');
+    releaseNavigation({ status: () => 200 });
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false);
+  } finally {
+    // A failed assertion must not leave close waiting on this navigation.
+    releaseNavigation({ status: () => 200 });
+  }
+});
+
+test('close does not wait for a screenshot whose page-size read never answers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const fx = await fixture(t);
+  let enteredRead;
+  const reading = new Promise((resolve) => {
+    enteredRead = resolve;
+  });
+  let settleRead;
+  // The page-size read never answers, as on a page paused at a breakpoint. Its own deadline is the caller budget.
+  fx.page.evaluate = () => {
+    enteredRead();
+    return new Promise((resolve) => {
+      settleRead = resolve;
+    });
+  };
+  const response = fx.call('/v1/pages/1/screenshot', { timeoutMs: 1500 });
+  try {
+    await reading;
+    t.mock.timers.tick(1500);
+    const timedOut = await response;
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+
+    // Close ends the open connection on its own bound; it does not wait for the read that never answers.
+    const closing = fx.close();
+    t.mock.timers.tick(250);
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false, 'close waited for a page read with no deadline');
+  } finally {
+    // Releases the read after the assertions, so the page operation ends and nothing is left running.
+    settleRead({ width: 600, height: 400 });
+  }
+});
+
+test('close does not wait for an evaluate-based request that never settles; the server closes its connection', async (t) => {
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let evaluateCalled;
+  const evaluating = new Promise((resolve) => {
+    evaluateCalled = resolve;
+  });
+  let settleEvaluate;
+  // A page evaluate that never answers, as on a page paused in the debugger.
+  fx.page.evaluate = () => {
+    evaluateCalled();
+    return new Promise((resolve) => {
+      settleEvaluate = resolve;
+    });
+  };
+  const outcome = fx.call('/v1/pages/1/dom', {}).then(
+    () => 'answered',
+    (error) => error,
+  );
+  await evaluating;
+  try {
+    // Evaluate-based operations have no deadline of their own, so close() does not track them. Its own bound on the
+    // open connection is a timer that the tick fires; the server then destroys that connection.
+    const closing = fx.close();
+    t.mock.timers.tick(250);
+    await closing;
+    const result = await outcome;
+    assert.notEqual(result, 'answered', 'the pending evaluate must not be answered after close');
+    assert.ok(result instanceof TypeError, `the connection must be closed, got ${result}`);
+  } finally {
+    // Releases the evaluate after the assertions, so the page operation ends and nothing is left running.
+    settleEvaluate();
+  }
 });

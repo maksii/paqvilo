@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's Web API write semantics (validation, relationship writes, cascades, keys) as designed runtime behaviour, not a native capture
 // Web API write semantics: representations validated before writing, relationship
 // writes through the update pipeline, delete cascades, numeric bounds and choice values.
 import test from 'node:test';
@@ -7,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const SETTINGS = {
@@ -136,7 +137,7 @@ function fixture({ cascadeDelete } = {}) {
 }
 
 async function start(t, { state = fixture(), settings = SETTINGS } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-write-semantics-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-write-semantics-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Write semantics\n');
   await fs.writeFile(path.join(directory, 'sitesetting.yml'), settingsYaml(settings));
@@ -394,4 +395,17 @@ test('invalid exported state or status options use the state/status validation c
     );
     assert.deepEqual(rows('account'), before, 'failed state/status input must not change rows or versions');
   }
+});
+
+test('a PATCH upsert whose key is not a GUID answers 400 and stores no row; an existing non-GUID row still updates', async (t) => {
+  const state = fixture();
+  state.tables.tag.push({ tagid: 'i1', name: 'Ink' });
+  const { json, rows } = await start(t, { state });
+  const before = rows('account');
+  const refused = await json('/_api/accounts(notaguid)', { method: 'PATCH', body: { name: 'Stray' } });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.error.code, '9004010A');
+  assert.deepEqual(rows('account'), before, 'no row was stored under the non-GUID key');
+  assert.equal((await json('/_api/tags(i1)', { method: 'PATCH', body: { name: 'Ink 2' } })).status, 204);
+  assert.equal(rows('tag').find((row) => row.tagid === 'i1').name, 'Ink 2');
 });

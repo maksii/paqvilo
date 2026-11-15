@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -65,13 +66,13 @@ test('source-filled spacer and readonly controls preserve native two-column form
     res.end('<script src="/date-runtime.js"></script>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     // A preconnected socket that never sent a request would hold server.close open.
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await assert.doesNotReject(() => page.locator('#source-regulatory').waitFor({ state: 'visible' }));

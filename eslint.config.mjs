@@ -2,12 +2,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
 import globals from 'globals';
-import importX, { createNodeResolver } from 'eslint-plugin-import-x';
+import noUnresolved from 'eslint-plugin-import-x/rules/no-unresolved';
+import named from 'eslint-plugin-import-x/rules/named';
+import defaultImport from 'eslint-plugin-import-x/rules/default';
+import { meta as importMeta } from 'eslint-plugin-import-x/meta';
+import { createNodeResolver } from 'eslint-plugin-import-x/node-resolver';
 import node from 'eslint-plugin-n';
 import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+// Load the configured rules directly: the package's aggregate entry also loads unused
+// rules that depend on the removed minimatch.makeRe API. These are the same rule modules.
+const importX = { meta: importMeta, rules: { 'no-unresolved': noUnresolved, named, default: defaultImport } };
 const relative = (file) => path.relative(root, file).replaceAll('\\', '/');
 const nodeResolver = createNodeResolver();
 
@@ -25,10 +32,10 @@ const browserResolver = {
     ) {
       return nodeResolver.resolve(`../../mirage/admin/${specifier.slice(2)}`, importer);
     }
-    if (/^mirage\/admin\//.test(source) && /^\.\/(?:persona-search|persona-picker-view)\.mjs$/.test(specifier)) {
+    if (source.startsWith('mirage/admin/') && /^\.\/(?:persona-search|persona-picker-view)\.mjs$/.test(specifier)) {
       return nodeResolver.resolve(`../lib/${specifier.slice(2)}`, importer);
     }
-    if (/^mirage\/test-browser\//.test(source) && /^\/(?:_apps\/)?assets\/controls\.mjs$/.test(specifier)) {
+    if (source.startsWith('mirage/test-browser/') && /^\/(?:_apps\/)?assets\/controls\.mjs$/.test(specifier)) {
       return nodeResolver.resolve(path.join(root, 'mirage/lib/model-driven/controls.mjs'), importer);
     }
     if (

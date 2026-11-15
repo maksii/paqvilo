@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "guarantee": "An inactive persisted model-driven record reports ui.getFormType() as4.",
+  "inactiveFormType": 4,
+  "captures": [
+    {
+      "sha256": "9fd1afb6c45f30586f5a5f02793aa03e3ed4a23a76a69f41825f5f7120eab16b",
+      "property": "before.formType",
+      "value": 4
+    },
+    {
+      "sha256": "de2f0b2e4602ae5d19ec7c9751b9b74de41a1e1920edfc60b16f789906e6531a",
+      "property": "initial.formType",
+      "value": 4
+    }
+  ],
+  "producers": [
+    {
+      "file": "capture-inactive-native.mjs",
+      "sha256": "67778e6756ca523b7b70d4e505f9802014cbc141cc4470e869265f471f47d9c8"
+    },
+    {
+      "file": "check-inactive-unlock-native.mjs",
+      "sha256": "f404e88ca488a3388f2fbf839ddccc663ed8f83263492bcec6cf82aa077f317d"
+    }
+  ]
+}

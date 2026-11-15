@@ -1,20 +1,108 @@
+// @test-kind contract: Synthetic reader-mode configuration, diagnostic defaults and local write atomicity; native case assertions are tagged separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
 import { DataError } from '../lib/data.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 import { webApiErrorResponse } from '../lib/webapi-handler.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from '../lib/webapi-error-details.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { parseExactJson } from '../lib/exact-numeric.mjs';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const prefix =
   "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : ";
-async function fixture(t, mode) {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-reader-error-'));
+// Exact request inputs are authored here and independently checked against each protected capture.
+// This keeps fixture data on the assertion side of the loopback HTTP boundary.
+const nativeReaderRequests = [
+  ['POST', '{"quantity":1.5}'],
+  ['PATCH', '{"quantity":1.5}'],
+  ['POST', '{"quantity":"invalid-A"}'],
+  ['PATCH', '{"quantity":"invalid-A"}'],
+  ['POST', '{"quantity":true}'],
+  ['PATCH', '{"quantity":true}'],
+  ['POST', '{"quantity":{}}'],
+  ['PATCH', '{"quantity":{}}'],
+  ['POST', '{"quantity":[]}'],
+  ['PATCH', '{"quantity":[]}'],
+  ['POST', '{"enabled":"invalid-A"}'],
+  ['PATCH', '{"enabled":"invalid-A"}'],
+  ['POST', '{"amount":"2.25"}'],
+  ['PATCH', '{"amount":"2.25"}'],
+  ['POST', '{"day":"invalid-date-A"}'],
+  ['PATCH', '{"day":"invalid-date-A"}'],
+  ['POST', '{"day":"invalid-date-A"}'],
+  ['PATCH', '{"day":"invalid-date-A"}'],
+  ['POST', '{"title":2}'],
+  ['PATCH', '{"title":2}'],
+  ['POST', '{"quantity":2.5}'],
+  ['PATCH', '{"quantity":2.5}'],
+  ['POST', '{"quantity":"invalid-B"}'],
+  ['PATCH', '{"quantity":"invalid-B"}'],
+  ['POST', '{"quantity":false}'],
+  ['PATCH', '{"quantity":false}'],
+  ['POST', '{"quantity":{}}'],
+  ['PATCH', '{"quantity":{}}'],
+  ['POST', '{"quantity":[]}'],
+  ['PATCH', '{"quantity":[]}'],
+  ['POST', '{"enabled":"invalid-B"}'],
+  ['PATCH', '{"enabled":"invalid-B"}'],
+  ['POST', '{"amount":"3.75"}'],
+  ['PATCH', '{"amount":"3.75"}'],
+  ['POST', '{"day":"invalid-date-B"}'],
+  ['PATCH', '{"day":"invalid-date-B"}'],
+  ['POST', '{"day":"invalid-date-B"}'],
+  ['PATCH', '{"day":"invalid-date-B"}'],
+  ['POST', '{"title":3}'],
+  ['PATCH', '{"title":3}'],
+];
+const nativeGatewayRequests = [
+  ['PATCH', '"textOne"'],
+  ['PATCH', '"frobOne"'],
+  ['PATCH', '"noneOne"'],
+  ['PATCH', '"anotherOne"'],
+  ['PATCH', '"true"'],
+  ['PATCH', '"false"'],
+  ['PATCH', '"null"'],
+  ['PATCH', '"True"'],
+  ['PATCH', '"False"'],
+  ['PATCH', '"Null"'],
+  ['PATCH', '"  text"'],
+  ['PATCH', '"17"'],
+  ['PATCH', '"-17"'],
+  ['PATCH', '"1.5"'],
+  ['PATCH', '"[]"'],
+  ['PATCH', '"[1]"'],
+  ['PATCH', '"{}"'],
+  ['PATCH', '"{\\"invented_unknown_lexer\\":1}"'],
+  ['PATCH', '"\\"nested\\""'],
+  ['PATCH', '""'],
+  ['PATCH', 'true'],
+  ['PATCH', 'false'],
+  ['PATCH', 'null'],
+  ['PATCH', '17'],
+  ['PATCH', '[]'],
+  ['POST', '{"amount":[7]}'],
+  ['PATCH', '{"amount":[7]}'],
+  ['PATCH', '"textTwo"'],
+  ['PATCH', '"frobTwo"'],
+  ['PATCH', '"noneTwo"'],
+  ['PATCH', '"anotherTwo"'],
+  ['POST', '{"amount":[8]}'],
+  ['PATCH', '{"amount":[8]}'],
+  ['POST', '{"amount":{"title":"first-object"}}'],
+  ['PATCH', '{"amount":{"title":"first-object"}}'],
+  ['POST', '{"amount":{"title":"second-object"}}'],
+  ['PATCH', '{"amount":{"title":"second-object"}}'],
+];
+const fixturePorts = new WeakMap();
+async function fixture(t, mode, observed = {}, row = {}) {
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-reader-error-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(source, 'website.yml'),
@@ -27,7 +115,7 @@ async function fixture(t, mode) {
   const app = await createSimulator({
     sourceDir: source,
     watch: false,
-    observed: { webApiErrorDetails: mode, evidence: 'Invented loopback reader fixture' },
+    observed: { webApiErrorDetails: mode, evidence: 'Invented loopback reader fixture', ...observed },
     initial: {
       mappings: {
         probe: {
@@ -43,25 +131,242 @@ async function fixture(t, mode) {
             enabled: { dataverseType: 'bit' },
             day: { dataverseType: 'datetime' },
             externalid: { dataverseType: 'uniqueidentifier' },
+            secret: { dataverseType: 'nvarchar' },
           },
         },
       },
-      tables: { probe: [{ probeid: id, title: 'Original', quantity: 2 }] },
+      tables: { probe: [{ probeid: id, title: 'Original', quantity: 2, ...row }] },
       settings: { permissionMode: 'permissive' },
     },
   });
   ownedFixture(t).add(() => app.close());
-  // app.state() clones the whole state, so send() reads the token once per runtime.
+  const origin = new URL(app.url);
+  assert.equal(origin.protocol, 'http:');
+  assert.equal(origin.hostname, '127.0.0.1');
+  assert.equal(origin.pathname, '/');
+  assert.equal(origin.search, '');
+  assert.equal(origin.hash, '');
+  assert.equal(origin.username, '');
+  assert.equal(origin.password, '');
+  const port = Number(origin.port);
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+  fixturePorts.set(app, port);
   return app;
 }
 async function send(app, raw, { method = 'PATCH', contentType = 'application/json' } = {}) {
-  const response = await fetch(app.url + '/_api/probes' + (method === 'POST' ? '' : '(' + id + ')'), {
-    method,
-    headers: { 'content-type': contentType, __RequestVerificationToken: app.csrf },
-    body: raw,
+  const port = fixturePorts.get(app);
+  if (!port || !['POST', 'PATCH'].includes(method))
+    throw new Error('Expected an owned loopback fixture and write method');
+  const result = await new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: '/_api/probes' + (method === 'POST' ? '' : '(' + id + ')'),
+        method,
+        headers: {
+          'content-type': contentType,
+          'content-length': Buffer.byteLength(raw),
+          __RequestVerificationToken: app.csrf,
+        },
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('error', reject);
+        response.on('end', () => {
+          try {
+            resolve({
+              status: response.statusCode,
+              body: response.statusCode === 204 ? null : JSON.parse(Buffer.concat(chunks).toString('utf8')),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.on('error', reject);
+    request.end(raw);
   });
-  return { status: response.status, body: response.status === 204 ? null : await response.json() };
+  return result;
 }
+
+test('reader fixture requests reject unowned external and scheme-relative origins', async (t) => {
+  let received = 0;
+  const trap = http.createServer((_request, response) => {
+    received++;
+    response.end();
+  });
+  await new Promise((resolve) => trap.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(
+    () => new Promise((resolve, reject) => trap.close((error) => (error ? reject(error) : resolve()))),
+  );
+  const port = trap.address().port;
+  for (const url of [`http://127.0.0.1:${port}`, `//127.0.0.1:${port}`, 'https://example.invalid']) {
+    await assert.rejects(send({ url, csrf: 'test' }, '{'), /owned loopback fixture/);
+  }
+  assert.equal(received, 0);
+});
+
+// @test-kind observation: two authenticated native write cohorts (2026-11-08) recorded in fixtures/webapi-native-portal-write-wire.json as 230 successful POST/PATCH hash records each; request bodies and origin, set and owned IDs are not recorded as replay input, so not a replay case.
+test('observed ordinary writes reproduce the native entity identifiers and204 content headers', async (t) => {
+  const app = await fixture(t, 'odata-wrapper', {
+    webApiWriteResponse: 'portal-classic',
+    evidence: 'Paired native write-wire proof in webapi-native-portal-write-wire.json',
+  });
+  for (const method of ['POST', 'PATCH']) {
+    // @test-kind observation: per-method projection of the same native write cohorts in fixtures/webapi-native-portal-write-wire.json (hash records, requests not recorded); not a replay case.
+    await t.test(method, async () => {
+      const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-write-wire.json', import.meta.url));
+      assert.equal(
+        createHash('sha256').update(bytes).digest('hex'),
+        '9c0339c731e5b20f19f387c7499c3db0ed14189503e46d0dd905ae369d976ebe',
+      );
+      const proof = JSON.parse(bytes),
+        writtenId = method === 'POST' ? '00000000-0000-4000-8000-000000000002' : id;
+      assert.equal(proof.captures.length, 2);
+      assert.ok(proof.captures.every((capture) => capture.methodCounts[method] > 0));
+      const response = await fetch(app.url + '/_api/probes' + (method === 'POST' ? '' : '(' + id + ')'), {
+        method,
+        headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf },
+        body: JSON.stringify({ ...(method === 'POST' ? { probeid: writtenId } : {}), title: 'Wire fixture' }),
+      });
+      assert.equal(response.status, proof.expected.status);
+      assert.equal(await response.text(), proof.expected.body);
+      assert.equal(response.headers.get('content-type'), proof.expected.contentType);
+      assert.equal(response.headers.get('entityid'), proof.expected.entityId.replace('__OWNED_ID__', writtenId));
+      assert.equal(
+        response.headers.get('odata-entityid'),
+        proof.expected.odataEntityId
+          .replace('__ORIGIN__', app.url)
+          .replace('__SET__', 'probes')
+          .replace('__OWNED_ID__', writtenId),
+      );
+    });
+  }
+});
+
+test('write-header observations leave default and unrelated204 routes unchanged', async (t) => {
+  const app = await fixture(t, 'diagnostic');
+  const response = await fetch(app.url + '/_api/probes(' + id + ')', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf },
+    body: '{"title":"Default"}',
+  });
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(response.headers.get('entityid'), null);
+  assert.equal(response.headers.get('odata-entityid'), app.url + '/_api/probes(' + id + ')');
+  const observed = await fixture(t, 'odata-wrapper', { webApiWriteResponse: 'portal-classic' });
+  const removed = await fetch(observed.url + '/_api/probes(' + id + ')', {
+    method: 'DELETE',
+    headers: { __RequestVerificationToken: observed.csrf },
+  });
+  assert.equal(removed.status, 204);
+  assert.equal(removed.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.throws(
+    () => observedConfig({ webApiWriteResponse: 'unknown', evidence: 'Invented invalid profile' }),
+    /webApiWriteResponse/,
+  );
+  assert.throws(() => observedConfig({ webApiWriteResponse: 'portal-classic' }), /evidence/);
+});
+
+// @test-kind observation: two authenticated native read cohorts (2026-11-08): fixtures/webapi-native-portal-read-wire.json records exact read bodies and the hidden lookup response with origin and owned-record placeholders, while the requests are keyed to private owned records; not a replay case.
+test('observed record reads reproduce exact native JSON formatting and hidden lookup redaction', async (t) => {
+  const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-read-wire.json', import.meta.url));
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '8d321522efccbc41fcf99c63ef7524a1b72052245ee16894a3c76f4b6e504c8f',
+  );
+  const proof = JSON.parse(bytes),
+    title = JSON.parse(proof.reads.nonempty).value[0].title;
+  const app = await fixture(
+    t,
+    'odata-wrapper',
+    {
+      webApiReadResponse: 'jsonnet-indented',
+      webApiGlobalMetadataVersion: '123456',
+      evidence: 'Paired native record JSON capsule; metadata version is explicitly configured source data',
+    },
+    { title, versionnumber: 17 },
+  );
+  for (const variant of ['nonempty', 'empty']) {
+    // @test-kind observation: exact nonempty and empty read bodies in fixtures/webapi-native-portal-read-wire.json use placeholders bound to a private owned record and origin; not a replay case.
+    await t.test(variant, async () => {
+      assert.equal(
+        createHash('sha256').update(bytes).digest('hex'),
+        '8d321522efccbc41fcf99c63ef7524a1b72052245ee16894a3c76f4b6e504c8f',
+      );
+      const query = new URLSearchParams({
+        $select: 'title',
+        ...(variant === 'empty' ? { $filter: "title eq 'missing invented fixture'" } : {}),
+      });
+      const expected = proof.reads[variant]
+        .replaceAll('__ORIGIN__', app.url)
+        .replaceAll('__OWNED_ID__', id)
+        .replaceAll('__ROW_VERSION__', '17')
+        .replaceAll('__METADATA_VERSION__', '123456');
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const response = await fetch(app.url + '/_api/probes?' + query, {
+          headers: { __RequestVerificationToken: app.csrf },
+        });
+        assert.equal(response.status, 200);
+        assert.equal(await response.text(), expected, 'all JSON bytes and the unmodified row version remain exact');
+      }
+    });
+  }
+  // @test-kind observation: hidden lookup response in fixtures/webapi-native-portal-read-wire.json is bound to the same private read request; not a replay case.
+  await t.test('hidden lookup', () => {
+    assert.equal(
+      createHash('sha256').update(bytes).digest('hex'),
+      '8d321522efccbc41fcf99c63ef7524a1b72052245ee16894a3c76f4b6e504c8f',
+    );
+    const result = webApiErrorResponse(
+      new DataError('The referenced record does not exist.', 404, 'InvalidLookup', {
+        innerCode: '0x80040217',
+        hideInner: true,
+      }),
+      {
+        innerError: true,
+        innerErrorScope: 'all-errors',
+        cdsErrorCode: 'cdscode',
+        cdsErrorMessage: 'Common Data Service error occurred.',
+      },
+    );
+    assert.deepEqual({ status: result.status, body: result.body }, proof.hiddenLookup);
+  });
+});
+
+test('read JSON observations preserve defaults, unrelated responses and exact numeric tokens', async (t) => {
+  const app = await fixture(t, 'diagnostic');
+  const response = await fetch(app.url + '/_api/probes?$select=title', {
+    headers: { __RequestVerificationToken: app.csrf },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.text()).includes('\n'), false);
+  const observed = await fixture(t, 'odata-wrapper', { webApiReadResponse: 'jsonnet-indented' });
+  const failure = await send(observed, '{');
+  assert.equal(failure.status, 400);
+  assert.throws(
+    () => observedConfig({ webApiReadResponse: 'unknown', evidence: 'Invented invalid profile' }),
+    /webApiReadResponse/,
+  );
+  assert.throws(() => observedConfig({ webApiReadResponse: 'jsonnet-indented' }), /evidence/);
+  const exact = await fixture(
+    t,
+    'odata-wrapper',
+    { webApiReadResponse: 'jsonnet-indented' },
+    parseExactJson('{"amount":9007199254740993.125}'),
+  );
+  const numeric = await fetch(exact.url + '/_api/probes?$select=amount', {
+    headers: { __RequestVerificationToken: exact.csrf },
+  });
+  assert.equal(numeric.status, 200);
+  const numericText = await numeric.text();
+  assert.ok(numericText.includes('"amount": 9007199254740993.125'));
+  assert.doesNotMatch(numericText, /\$type/);
+});
 
 test('observed reader messages preserve native classes and causes without changing rejected writes', async (t) => {
   const app = await fixture(t, 'odata-wrapper'),
@@ -108,16 +413,67 @@ test('observed reader messages preserve native classes and causes without changi
       "Microsoft.OData.ODataException: Cannot convert the literal 'invalid' to the expected type 'Edm.Guid'. ---> System.FormatException: Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).",
     ],
   ];
-  for (const [raw, message] of cases)
+  const nativeTypedCases = [];
+  for (const [index, [raw, message]] of cases.entries())
     for (const method of ['POST', 'PATCH']) {
-      const result = await send(app, raw, { method });
-      assert.equal(result.status, 400, raw);
-      assert.equal(result.body.error.code, '9004010D');
-      assert.equal(result.body.error.innererror.message, prefix + message, raw);
-      assert.equal(result.body.error.innererror.code, '0x80048d19');
-      assert.equal(Object.hasOwn(result.body.error.innererror, 'type'), false);
+      if ([0, 2, 4, 7].includes(index)) {
+        // @test-kind observation: fixtures/webapi-native-portal-reader.json records these raw requests and error facets on an invented probes schema, but the field types and odata-wrapper host settings are typed in this test; not a replay case.
+        await t.test('native existing typed cause ' + method + ' ' + raw, async () => {
+          assert.equal(
+            createHash('sha256')
+              .update(await fs.readFile(new URL('./fixtures/webapi-native-portal-reader.json', import.meta.url)))
+              .digest('hex'),
+            '5256a83e1629b5da9f40cd29fa9827e4086d41218accb9f23f4719be639f8590',
+          );
+          assert.equal(
+            createHash('sha256')
+              .update(JSON.stringify([0, 2, 4, 7].map((index) => cases[index])))
+              .digest('hex'),
+            'cc27588cdaecc5a813a2919a9c5a87e84f3c4745933ce2d530b540aa3d62fd9c',
+          );
+          assert.equal(
+            createHash('sha256').update(prefix).digest('hex'),
+            '3810dd3287ba340cb0b23d8039e13f536267249dcf85dda22106a9a9b2c53de1',
+          );
+          nativeTypedCases.push([raw, method]);
+          const result = await send(app, raw, { method });
+          assert.equal(result.status, 400, raw);
+          assert.equal(result.body.error.code, '9004010D');
+          assert.equal(
+            result.body.error.innererror.message,
+            (method === 'POST' ? prefix.replace("Entity :''", "Entity :'probes'") : prefix) + message,
+            raw,
+          );
+          assert.equal(result.body.error.innererror.code, '0x80048d19');
+          assert.equal(Object.hasOwn(result.body.error.innererror, 'type'), false);
+        });
+      } else {
+        const result = await send(app, raw, { method });
+        assert.equal(result.status, 400, raw);
+        assert.equal(result.body.error.code, '9004010D');
+        assert.equal(
+          result.body.error.innererror.message,
+          (method === 'POST' ? prefix.replace("Entity :''", "Entity :'probes'") : prefix) + message,
+          raw,
+        );
+        assert.equal(result.body.error.innererror.code, '0x80048d19');
+        assert.equal(Object.hasOwn(result.body.error.innererror, 'type'), false);
+      }
       assert.deepEqual(app.store.snapshot().tables, baseline);
     }
+  // @test-kind observation: completeness check of the typed reader universe against fixtures/webapi-native-portal-reader.json; the case inputs and host settings are typed in this test, not replayed.
+  await t.test('qualified original typed-reader universe executes completely', () => {
+    assert.deepEqual(nativeTypedCases, [
+      ['{"quantity":1.5}', 'POST'],
+      ['{"quantity":1.5}', 'PATCH'],
+      ['{"quantity":"oops"}', 'POST'],
+      ['{"quantity":"oops"}', 'PATCH'],
+      ['{"amount":"1.2"}', 'POST'],
+      ['{"amount":"1.2"}', 'PATCH'],
+      ['{"title":42}', 'POST'],
+      ['{"title":42}', 'PATCH'],
+    ]);
+  });
   const accepted = await send(
     app,
     '{"quantity":"3","ratio":"12.5","enabled":"false","title":"<script>synthetic</script>"}',
@@ -130,9 +486,45 @@ test('observed reader messages preserve native classes and causes without changi
   assert.equal(row.title, '<script>synthetic</script>');
 });
 
+test('authenticated native portal reader cohorts reproduce selected HTTP error facets', async (t) => {
+  const app = await fixture(t, 'odata-wrapper', {
+    webApiCdsErrorMessage: 'Common Data Service error occurred.',
+    webApiCdsErrorCode: 'cdscode',
+    webApiInnerError: 'all-errors',
+    webApiRequestBody: 'portal-classic',
+    webApiInvalidDate: 'crm-minimum',
+    evidence:
+      'Two authenticated native2026-11-08 captures; protected webapi-native-portal-reader.json records the exact selected guarantees.',
+  });
+  const baseline = app.store.snapshot().tables;
+  for (let index = 0; index < 40; index++)
+    // @test-kind observation: fixtures/webapi-native-portal-reader.json records 40 raw requests and selected error facets on an invented probes schema; the odata-wrapper host settings and field types are typed in this test, so the cases are not replay cases.
+    await t.test('native portal reader case ' + index, async () => {
+      const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-reader.json', import.meta.url));
+      assert.equal(
+        createHash('sha256').update(bytes).digest('hex'),
+        '5256a83e1629b5da9f40cd29fa9827e4086d41218accb9f23f4719be639f8590',
+      );
+      const expected = JSON.parse(bytes).cases[index];
+      const [method, raw] = nativeReaderRequests[index];
+      assert.equal(method, expected.method);
+      assert.equal(raw, expected.raw);
+      const result = await send(app, raw, { method });
+      assert.equal(result.status, expected.expected.status, expected.id);
+      assert.deepEqual(result.body.error, expected.expected.error, expected.id);
+      assert.deepEqual(Object.keys(result.body.error), Object.keys(expected.expected.error), expected.id);
+    });
+  assert.deepEqual(
+    app.store.snapshot().tables,
+    baseline,
+    'local failed-write atomicity remains a separate contract assertion',
+  );
+});
+
 test('bounded observed raw-body errors do not widen unsupported JSON grammar or mutate data', async (t) => {
   const app = await fixture(t, 'odata-wrapper'),
     baseline = app.store.snapshot().tables;
+  const provenInputs = [];
   for (const [raw, message] of [
     ['{', 'System.ArgumentException: Stream was not readable.'],
     ['{"title":', 'System.ArgumentException: Stream was not readable.'],
@@ -150,13 +542,40 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     ],
     ['"text"', "Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'text'."],
     ['true', 'Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content.'],
+    ['false', 'Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content.'],
   ]) {
-    const result = await send(app, raw);
-    assert.equal(result.status, 400);
-    assert.equal(result.body.error.innererror.message, prefix + message);
+    // @test-kind observation: raw-root errors from two authenticated gateway lexer captures (2026-11-08) in fixtures/webapi-native-portal-gateway.json; the portal settings and raw inputs are typed in this test. Lexer cohorts reproduce false with the same unrecognized-token cause; not a replay case.
+    await t.test('native existing raw root ' + raw, async () => {
+      const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
+      assert.equal(
+        createHash('sha256').update(bytes).digest('hex'),
+        'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
+      );
+      const proof = JSON.parse(bytes),
+        native = [...proof.originalRoots, ...proof.cases].find((entry) => entry.raw === raw);
+      assert.ok(native, 'input is bound to an authored native case');
+      const result = await send(app, raw);
+      assert.equal(result.status, 400);
+      assert.equal(result.status, native.expected.status);
+      assert.equal(result.body.error.innererror.message, prefix + message);
+      assert.equal(result.body.error.innererror.message, native.expected.body.error.innererror.message);
+      assert.equal(result.body.error.innererror.code, '0x80048d19');
+      provenInputs.push(raw);
+    });
     assert.deepEqual(app.store.snapshot().tables, baseline);
   }
-  for (const raw of ['false', '[1]', '{"title": invalid}']) {
+  // @test-kind observation: completeness of the raw-root guarantees against fixtures/webapi-native-portal-gateway.json originalRoots; inputs and settings are typed in this test, not replayed.
+  await t.test('native raw-root proof bindings cover every original guarantee', async () => {
+    const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
+    assert.equal(
+      createHash('sha256').update(bytes).digest('hex'),
+      'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
+    );
+    const proof = JSON.parse(bytes);
+    assert.equal(proof.originalRoots.length, 7);
+    assert.deepEqual(provenInputs.toSorted(), [...proof.originalRoots.map((entry) => entry.raw), 'false'].toSorted());
+  });
+  for (const raw of ['[1]', '{"title": invalid}']) {
     const result = await send(app, raw);
     assert.equal(result.status, 400);
     assert.doesNotMatch(result.body.error.innererror.message, /InnerException/);
@@ -167,9 +586,7 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     '{"quantity":9007199254740993}',
     '{"quantity":1e100}',
     '{"quantity":0.00000000000000000000000000001}',
-    '{"amount":[]}',
     '{"title":true}',
-    '{"enabled":"unrecognized"}',
   ]) {
     const result = await send(app, raw);
     assert.equal(result.status, 400);
@@ -180,6 +597,48 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     );
     assert.deepEqual(app.store.snapshot().tables, baseline);
   }
+  const provenPrimitiveCases = [
+    [
+      '{"amount":[]}',
+      "An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected.",
+    ],
+    ['{"enabled":"unrecognized"}', 'String was not recognized as a valid Boolean.'],
+  ];
+  const provenPrimitiveExecutions = [];
+  for (const [raw, fragment] of provenPrimitiveCases) {
+    // @test-kind observation: invalid Boolean-string and primitive StartArray fragments from fixtures/webapi-native-portal-reader.json and fixtures/webapi-native-portal-gateway.json; inputs and host settings are typed in this test, not replay cases.
+    await t.test('native existing primitive fragment ' + raw, async () => {
+      assert.equal(
+        createHash('sha256')
+          .update(await fs.readFile(new URL('./fixtures/webapi-native-portal-reader.json', import.meta.url)))
+          .digest('hex'),
+        '5256a83e1629b5da9f40cd29fa9827e4086d41218accb9f23f4719be639f8590',
+      );
+      assert.equal(
+        createHash('sha256')
+          .update(await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url)))
+          .digest('hex'),
+        'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
+      );
+      assert.equal(
+        createHash('sha256').update(JSON.stringify(provenPrimitiveCases)).digest('hex'),
+        '8c46331bd500b894a25098310825c9fb9aff893b84ff1a2e3304122c38cab2c1',
+      );
+      const result = await send(app, raw);
+      assert.equal(result.status, 400);
+      assert.match(result.body.error.innererror.message, /InnerException/);
+      assert.ok(result.body.error.innererror.message.includes(fragment));
+      provenPrimitiveExecutions.push([raw, fragment]);
+    });
+    assert.deepEqual(app.store.snapshot().tables, baseline);
+  }
+  // @test-kind observation: completeness check of the two typed primitive-fragment cases against fixtures/webapi-native-portal-reader.json and fixtures/webapi-native-portal-gateway.json; not a replay case.
+  await t.test('both original primitive fragments execute', () => {
+    assert.equal(
+      createHash('sha256').update(JSON.stringify(provenPrimitiveExecutions)).digest('hex'),
+      '8c46331bd500b894a25098310825c9fb9aff893b84ff1a2e3304122c38cab2c1',
+    );
+  });
   assert.equal(odataConversionDetails(null, 'Edm.Int32', 'quantity'), null);
   assert.equal(odataConversionDetails(2, 'Edm.Int64', 'quantity', { numericLexeme: '2' }), null);
   const empty = await send(app, '');
@@ -192,6 +651,145 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
   });
   assert.equal(unsupportedHeader.status, 400);
   assert.doesNotMatch(unsupportedHeader.body.error.innererror.message, /IEEE754Compatible/);
+  assert.deepEqual(app.store.snapshot().tables, baseline);
+});
+
+test('authenticated gateway lexer and actual changed-input reader holdouts reproduce native selected facets', async (t) => {
+  const app = await fixture(t, 'odata-wrapper', {
+    webApiCdsErrorMessage: 'Common Data Service error occurred.',
+    webApiCdsErrorCode: 'cdscode',
+    webApiInnerError: 'all-errors',
+    webApiRequestBody: 'portal-classic',
+    evidence:
+      'Two gateway lexer rounds plus two corrected enabled-object rounds; protected webapi-native-portal-gateway.json binds native source and response hashes.',
+  });
+  const proven = [];
+  for (let index = 0; index < 37; index++) {
+    // @test-kind observation: fixtures/webapi-native-portal-gateway.json records raw requests and selected error facets on an invented schema; the odata-wrapper host settings and field aliases are typed in this test, so the cases are not replay cases.
+    await t.test('native gateway case ' + index, async () => {
+      const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
+      assert.equal(
+        createHash('sha256').update(bytes).digest('hex'),
+        'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
+      );
+      const entry = JSON.parse(bytes).cases[index];
+      const [method, raw] = nativeGatewayRequests[index];
+      assert.equal(method, entry.method);
+      assert.equal(raw, entry.raw);
+      const result = await send(app, raw, { method });
+      assert.equal(result.status, entry.expected.status, entry.id);
+      assert.deepEqual(result.body, entry.expected.body, entry.id);
+      if (result.body?.error)
+        assert.deepEqual(Object.keys(result.body.error), Object.keys(entry.expected.body.error), entry.id);
+      proven.push(entry.id);
+    });
+    const row = app.store.snapshot().tables.probe[0];
+    assert.equal(row.title, 'Original', 'local authored-field atomicity is independently retained');
+    assert.equal(row.quantity, 2);
+  }
+  // @test-kind observation: completeness and checksum binding of the typed gateway case definitions to fixtures/webapi-native-portal-gateway.json; not a replay case.
+  await t.test('native gateway proof bindings cover every case', async () => {
+    const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
+    assert.equal(
+      createHash('sha256').update(bytes).digest('hex'),
+      'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
+    );
+    const cases = JSON.parse(bytes).cases;
+    assert.equal(cases.length, 37);
+    assert.deepEqual(
+      proven,
+      cases.map((entry) => entry.id),
+    );
+  });
+});
+
+// @test-kind security: Decoding an observed gateway object string preserves field-level checks and prevents forbidden or private writes.
+test('encoded object strings retain ordinary field and private-column denial before any mutation', async (t) => {
+  // Native accepted and persisted this forbidden-column transport twice; the local security boundary deliberately remains stricter.
+  const nativeBytes = await fs.readFile(
+    new URL('./fixtures/webapi-native-portal-security-divergence.json', import.meta.url),
+  );
+  assert.equal(
+    createHash('sha256').update(nativeBytes).digest('hex'),
+    '0204166be7f21f1de3256556c56e1889cf37d2631fc2b2aff23787d5461d0dc4',
+  );
+  const nativeProof = JSON.parse(nativeBytes);
+  assert.equal(nativeProof.source.knownStringColumn, true);
+  assert.equal(nativeProof.source.webApiEnabledColumn, false);
+  assert.equal(nativeProof.captures.length, 2);
+  assert.ok(
+    nativeProof.captures.every(
+      (capture) => capture.nativeStatus === 204 && capture.independentlyVerifiedStoredValueEqualsSubmitted,
+    ),
+  );
+  const app = await fixture(t, 'odata-wrapper', { webApiRequestBody: 'portal-classic' }),
+    baseline = app.store.snapshot().tables;
+  for (const value of [
+    { secret: 'forbidden' },
+    { __sim_private: 'forbidden' },
+    { title: 'would-write', secret: 'forbidden' },
+  ]) {
+    const result = await send(app, JSON.stringify(JSON.stringify(value)));
+    assert.equal(result.status, 403);
+    assert.deepEqual(app.store.snapshot().tables, baseline);
+  }
+});
+
+test('gateway object decoding is explicit and an allowed empty update preserves authored fields', async (t) => {
+  const app = await fixture(t, 'odata-wrapper', { webApiRequestBody: 'portal-classic' });
+  const defaultApp = await fixture(t, 'diagnostic');
+  assert.equal((await send(defaultApp, JSON.stringify('{}'))).status, 400);
+  const diagnosticsOnly = await fixture(t, 'odata-wrapper');
+  const diagnosticsBaseline = diagnosticsOnly.store.snapshot().tables;
+  assert.equal((await send(diagnosticsOnly, JSON.stringify('{}'))).status, 400);
+  assert.equal((await send(diagnosticsOnly, JSON.stringify('{"title":"must not write"}'))).status, 400);
+  assert.deepEqual(diagnosticsOnly.store.snapshot().tables, diagnosticsBaseline);
+  assert.throws(
+    () => observedConfig({ webApiRequestBody: 'unknown', evidence: 'Invented invalid request profile' }),
+    /webApiRequestBody/,
+  );
+  assert.throws(() => observedConfig({ webApiRequestBody: 'portal-classic' }), /evidence/);
+  assert.equal((await send(app, JSON.stringify('{}'))).status, 204);
+  const row = app.store.snapshot().tables.probe[0];
+  assert.equal(row.probeid, id);
+  assert.equal(row.title, 'Original');
+  assert.equal(row.quantity, 2);
+});
+
+// @test-kind security: Formatting a denied encoded unknown-schema property performs no record query or mutation and preserves known forbidden-field403 and ordinary unknown-field403.
+test('encoded unknown-schema formatting rejects before row access while normal write guards keep precedence', async (t) => {
+  const app = await fixture(t, 'odata-wrapper', { webApiRequestBody: 'portal-classic' });
+  const baseline = app.store.snapshot().tables;
+  assert.equal((await send(app, '{"unknown":1}')).status, 403);
+  const calls = [];
+  for (const method of [
+    'get',
+    'query',
+    'queryCore',
+    'tableRows',
+    'createRecord',
+    'updateRecord',
+    'upsertRecord',
+    'createRecordAsync',
+    'upsertRecordAsync',
+    'removeRecord',
+    'removeRecordAsync',
+  ]) {
+    const original = app.store[method];
+    if (typeof original !== 'function') continue;
+    app.store[method] = function (...args) {
+      if (args[0] === 'probe') calls.push(method);
+      return original.apply(this, args);
+    };
+  }
+  const encoded = await send(app, JSON.stringify(JSON.stringify({ unknown: 1 })));
+  assert.equal(encoded.status, 400);
+  assert.equal(encoded.body.error.innererror.code, '0x80048d19');
+  assert.ok(encoded.body.error.innererror.message.includes("Invalid property 'unknown'"));
+  assert.deepEqual(calls, []);
+  assert.deepEqual(app.store.snapshot().tables, baseline);
+  assert.equal((await send(app, JSON.stringify(JSON.stringify({ unknown: 1, secret: 'forbidden' })))).status, 403);
+  assert.deepEqual(calls, []);
   assert.deepEqual(app.store.snapshot().tables, baseline);
 });
 

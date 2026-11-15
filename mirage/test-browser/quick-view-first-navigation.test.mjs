@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 test('a bound quick view frame abandons its first navigation and loads the replacement', async (t) => {
   const compat = await fs.readFile(new URL('../lib/crmentityformview-compat.js', import.meta.url), 'utf8');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const quick = [];
   let tokenRequests = 0;

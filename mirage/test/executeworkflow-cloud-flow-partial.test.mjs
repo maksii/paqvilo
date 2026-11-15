@@ -1,5 +1,6 @@
 // ExecuteWorkflow on an exported cloud flow: each connector write is its own boundary, so a later failed action fails the
 // job but keeps the earlier completed write (mirage/docs/operations.md; the HTTP and trigger paths behave the same).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -7,6 +8,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { workflowExtension } from '../lib/dataverse-workflows.mjs';
+import { clientCredentialsCall } from './support/web-api.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777741';
 const SECRET_VAR = 'PAQVILO_EXECUTE_CLOUD_FLOW_SECRET';
@@ -125,28 +127,8 @@ test("ExecuteWorkflow on a cloud flow whose second action fails keeps the first 
       }),
     ],
   });
-  t.after(() => api.close());
-  const token = await (
-    await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-      method: 'POST',
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: APP_ID,
-        client_secret: process.env[SECRET_VAR],
-        scope: `${api.origin}/.default`,
-      }),
-    })
-  ).json();
-  const call = (method, suffix, body) =>
-    fetch(`${api.origin}/api/data/v9.2/${suffix}`, {
-      method,
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        authorization: `Bearer ${token.access_token}`,
-        ...(body ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
+  ownedFixture(t).add(() => api.close());
+  const call = await clientCredentialsCall(api, APP_ID, process.env[SECRET_VAR]);
 
   const started = await call('POST', `workflows(${FLOW})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, { EntityId: WIDGET });
   assert.equal(started.status, 200, await started.clone().text());

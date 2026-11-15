@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise model driven action runner with local fixtures; no native capture establishes the behaviour they assert.
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -99,8 +100,8 @@ async function fixture(t) {
       };
       const blocked = waits.get('record');
       if (blocked) {
-        blocked.pending = true;
         blocked.release = () => send(body);
+        blocked.requested?.();
         return;
       }
       return send(body);
@@ -298,9 +299,13 @@ test('client overrides restore exact states and autosave guard blocks only 70 wi
   assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 0);
 });
 
+// @test-kind contract: late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute
 test('late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute', async (t) => {
   const { page, origin, waits } = await fixture(t);
   const blocked = {};
+  const requested = new Promise((resolve) => {
+    blocked.requested = resolve;
+  });
   waits.set('record', blocked);
   const pending = page.evaluate(runModelDrivenAction, {
     origin,
@@ -310,7 +315,7 @@ test('late server results cancel after record navigation and retired, foreign or
     requestId: 'slow',
   });
   await page.waitForFunction(() => window.nativeFixture.idReads > 1);
-  while (!blocked.pending) await new Promise((resolve) => setTimeout(resolve, 5));
+  await requested;
   await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
   blocked.release();
   assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
@@ -406,6 +411,7 @@ test('owned target lifetime restores fields and guards after SPA navigation whil
   assert.equal(await page.evaluate(() => window.nativeFixture.closedPanes), 1);
 });
 
+// @test-kind contract: explicit stop waiting cancels pending SDK work without discarding owned form adjustments
 test('explicit stop waiting cancels pending SDK work without discarding owned form adjustments', async (t) => {
   const { page, run } = await fixture(t);
   await run('form:god-mode');
@@ -429,6 +435,7 @@ test('explicit stop waiting cancels pending SDK work without discarding owned fo
   assert.equal((await pending).status, 'cancelled');
 });
 
+// @test-kind contract: explicit action lifetime clears displayed values after a same-URL record change without cancelling a fresh dispatch
 test('explicit action lifetime clears displayed values after a same-URL record change without cancelling a fresh dispatch', async (t) => {
   const { page, run } = await fixture(t);
   const originalUrl = page.url();
@@ -481,7 +488,8 @@ test('native main-form requests acknowledge dispatch without waiting for quick-c
     window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     window.nativeFormRejects[0](Error('STALE_NATIVE_ERROR'));
   });
-  await page.waitForTimeout(30);
+  // The runner reports late native errors from a promise-microtask chain. This later evaluation
+  // is a separate task, so the stale rejection has been fully handled before it reads the count.
   assert.equal(await page.evaluate(() => window.nativeFormFollowups.length), 1);
 });
 
@@ -505,6 +513,7 @@ test('maker and admin navigation preserve an actual Default-prefixed environment
   assert.equal(await page.evaluate(() => window.nativeFixture.opened.length), 2);
 });
 
+// @test-kind contract: native action reads cancel bounded decoded streams before unbounded text allocation
 test('native action reads cancel bounded decoded streams before unbounded text allocation', async (t) => {
   const { page, run } = await fixture(t);
   await page.evaluate(() => {

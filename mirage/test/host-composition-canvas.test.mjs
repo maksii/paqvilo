@@ -1,18 +1,18 @@
 // Project `canvas` configuration (canvas-source.mjs canvasSettings): enabled false unmounts the /_apps/canvas/ surface and
 // reports it disabled; canvas.sources adds project apps to the inventory; a missing path is CANVAS_SOURCE_MISSING.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator, preflight } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
 
 test('Solution canvas metadata, payload and metadata-only overlay agree between host and both preflights', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-fidelity-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-fidelity-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
   for (const [relative, bytes] of Object.entries({
@@ -54,14 +54,14 @@ test('Solution canvas metadata, payload and metadata-only overlay agree between 
   const running = await sim.preflight({ strict: true, scenario: { id: 'logic', requires: ['canvas:app/x_app'] } });
   for (const report of [offline, running]) {
     assert.ok(report.requirements.some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
-    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'placeholder'));
+    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'satisfied'));
     assert.ok(!report.requirements.some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
   }
 });
 
-async function start(t, canvas, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+async function start(owner, canvas, options = {}) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-canvas-'));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -82,12 +82,12 @@ async function start(t, canvas, options = {}) {
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     connections: options.connections,
   });
-  ownedFixture(t).add(() => sim.close());
+  owner.add(() => sim.close());
   return sim;
 }
 
 test('canvas.enabled false unmounts /_apps/canvas/ and reports the surface disabled', async (t) => {
-  const sim = await start(t, { enabled: false });
+  const sim = await start(ownedFixture(t), { enabled: false });
   const response = await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } });
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'CanvasAppsDisabled');
@@ -95,29 +95,17 @@ test('canvas.enabled false unmounts /_apps/canvas/ and reports the surface disab
   assert.ok(sim.state().diagnostics.some((entry) => entry.code === 'CANVAS_DISABLED'));
 });
 
-test('canvas.sources adds a project canvas app to the inventory', async (t) => {
-  const sim = await start(t, { sources: ['apps/fx_invented'] });
-  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
-  assert.deepEqual(
-    listing.apps.map((app) => [app.uniqueName, app.screens]),
-    [['fx_invented', 1]],
-  );
-  assert.equal(sim.state().capabilities.canvas, 'behaviour');
-  const report = await sim.preflight();
-  assert.ok(report.modules.some((record) => record.name === 'canvasapp:fx_invented' && record.level === 'behaviour'));
-  // A project canvas app gets the canvas:app row a Solution app gets, and the rendering boundary row.
-  const rows = Object.fromEntries(
-    report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row.status]),
-  );
-  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'placeholder' });
-  // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
-  const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
-  assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+// The two project-app tests only read, so they share one host: a project app with a table and a connector data source.
+const closers = [],
+  removers = [];
+after(async () => {
+  await drainFixture(closers);
+  await drainFixture(removers);
 });
-
-test('the system map connects a canvas app to staff, records, Power Fx, connectors and its connection, and security to the store', async (t) => {
-  const sim = await start(
-    t,
+let projectApp;
+const projectAppHost = () =>
+  (projectApp ??= start(
+    { add: (close) => closers.push(close), remove: (rm) => removers.push(rm) },
     { sources: ['apps/fx_invented'] },
     {
       connections: { Svc: { provider: 'fixture' } },
@@ -137,7 +125,30 @@ test('the system map connects a canvas app to staff, records, Power Fx, connecto
         ].join('\n'),
       },
     },
+  ));
+
+test('canvas.sources adds a project canvas app to the inventory', async () => {
+  const sim = await projectAppHost();
+  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
+  assert.deepEqual(
+    listing.apps.map((app) => [app.uniqueName, app.screens]),
+    [['fx_invented', 1]],
   );
+  assert.equal(sim.state().capabilities.canvas, 'behaviour');
+  const report = await sim.preflight();
+  assert.ok(report.modules.some((record) => record.name === 'canvasapp:fx_invented' && record.level === 'behaviour'));
+  // A project canvas app gets the canvas:app row a Solution app gets, and the rendering boundary row.
+  const rows = Object.fromEntries(
+    report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row.status]),
+  );
+  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'satisfied' });
+  // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
+  const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
+  assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+});
+
+test('the system map connects a canvas app to staff, records, Power Fx, connectors and its connection, and security to the store', async () => {
+  const sim = await projectAppHost();
   const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
   const ids = new Set(dashboard.nodes.map((node) => node.id)),
     pairs = dashboard.edges.map((edge) => `${edge.from}>${edge.to}`);
@@ -156,7 +167,7 @@ test('the system map connects a canvas app to staff, records, Power Fx, connecto
 });
 
 test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing preflight requirement', async (t) => {
-  const sim = await start(t, { sources: ['apps/does-not-exist.msapp'] });
+  const sim = await start(ownedFixture(t), { sources: ['apps/does-not-exist.msapp'] });
   assert.ok(
     sim
       .state()
@@ -172,7 +183,7 @@ test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing prefli
 });
 
 test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-pp-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-canvas-pp-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
@@ -202,4 +213,143 @@ test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too',
   assert.equal(status.capabilities.canvas, 'disabled');
   const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
   assert.equal(dashboard.nodes.find((node) => node.id === 'app:canvas')?.status, 'disabled');
+});
+
+test('Solution and project canvas rendering preflight includes incomplete project source', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-coverage-'));
+  const owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
+  for (const [relative, bytes] of Object.entries({
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/CanvasApps/x_app.meta.xml':
+      '<CanvasApp><Name>x_app</Name><CanvasAppId>77777777-7777-4777-8777-777777777777</CanvasAppId></CanvasApp>',
+    'solution/CanvasApps/x_app_DocumentUri.msapp': payload,
+    'project/Src/HomeScreen.pa.yaml': HOME,
+    'project/Src/App.pa.yaml': 'App: [',
+  })) {
+    const file = path.join(root, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, bytes);
+  }
+  const options = {
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: [path.join(root, 'solution')],
+    projectRoot: root,
+    canvas: { sources: ['project'] },
+    port: 0,
+    watch: false,
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  };
+  const offline = await preflight(options);
+  const sim = await createSimulator(options);
+  owner.add(() => sim.close());
+  for (const report of [offline, await sim.preflight()]) {
+    const rows = Object.fromEntries(
+      report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row]),
+    );
+    assert.equal(rows['canvas:app/x_app'].status, 'satisfied');
+    assert.equal(rows['canvas:app/project'].status, 'unsupported');
+    assert.equal(rows['canvas:app/project'].reason, 'CANVAS_SOURCE_YAML_INVALID');
+    assert.equal(rows['canvas:rendering'].status, 'unsupported');
+  }
+});
+
+test('configured extracted canvas media survives inventory and host composition', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/fx_invented'] },
+    {
+      files: { 'apps/fx_invented/Assets/icon.png': Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/fx_invented`)).json();
+  assert.equal(inventory.assets['icon.png'], '/_apps/canvas/fx_invented/assets/icon.png');
+  const response = await fetch(sim.url + inventory.assets['icon.png']);
+  assert.equal(response.status, 200);
+  assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [137, 80, 78, 71, 13, 10, 26, 10]);
+});
+
+async function solutionWithCanvasMedia(t, assets) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-solution-media-'));
+  const owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const payload = writeSolutionAssetEntries([{ name: 'Src/Home.pa.yaml', data: Buffer.from(HOME) }, ...assets]);
+  for (const [name, body] of Object.entries({
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName></SolutionManifest></ImportExportXml>',
+    'solution/CanvasApps/x_app.meta.xml': '<CanvasApp><Name>x_app</Name></CanvasApp>',
+    'solution/CanvasApps/x_app_DocumentUri.msapp': payload,
+  })) {
+    const file = path.join(root, name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, body);
+  }
+  const sim = await createSimulator({
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: [path.join(root, 'solution')],
+    projectRoot: root,
+    port: 0,
+    watch: false,
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  });
+  owner.add(() => sim.close());
+  return sim;
+}
+
+test('Solution canvas media survives payload layering and host composition', async (t) => {
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const sim = await solutionWithCanvasMedia(t, [{ name: 'Assets/icon.png', data: bytes }]);
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/x_app`)).json();
+  assert.equal(inventory.assets['icon.png'], '/_apps/canvas/x_app/assets/icon.png');
+  const response = await fetch(sim.url + inventory.assets['icon.png']);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+});
+
+test('legacy exported option names survive configured source host composition', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/legacy'] },
+    {
+      files: {
+        'apps/legacy/Src/Home.fx.yaml': 'Home As screen:\n  Label1 As label:\n    Text: ="x"\n',
+        'apps/legacy/DataSources/item.json': JSON.stringify([
+          {
+            Name: 'x_state',
+            Type: 'OptionSetInfo',
+            DisplayName: 'Status (Items)',
+            OptionSetInfoNameMapping: { 0: 'Active', 1: 'Inactive' },
+          },
+        ]),
+      },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/legacy`)).json();
+  assert.deepEqual(inventory.enums, { 'Status (Items)': { Active: 0, Inactive: 1 } });
+});
+
+test('unavailable project media diagnostics survive into host inventory', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/fx_invented'] },
+    {
+      files: { 'apps/fx_invented/Assets/too-large.png': Buffer.alloc(8 * 1024 * 1024 + 1) },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/fx_invented`)).json();
+  assert.equal(inventory.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+  assert.equal(Object.keys(inventory.assets).length, 0);
+});
+
+test('unavailable Solution media diagnostics survive into host inventory', async (t) => {
+  const sim = await solutionWithCanvasMedia(t, [
+    { name: 'Assets/Images/large.png', data: Buffer.alloc(8 * 1024 * 1024 + 1) },
+  ]);
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/x_app`)).json();
+  assert.equal(inventory.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+  assert.equal(Object.keys(inventory.assets).length, 0);
 });

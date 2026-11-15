@@ -1,14 +1,18 @@
+// @test-kind contract: the demo copy and its refusal messages are Paqvilo's own designed CLI behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { cpSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { prepareDemo } from '../lense/commands/demo.mjs';
+import { parseDemoOptions, prepareDemo } from '../lense/commands/demo.mjs';
+import { tempDir } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 test('demo copies an editable project, preserves source edits on repeat and refuses unrelated folders', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-'));
+  const root = await tempDir('paqvilo-demo-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, 'example');
   assert.equal((await prepareDemo(directory)).created, true);
@@ -17,11 +21,13 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal((await prepareDemo(directory)).created, false);
   assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-  assert.ok(!manifest.devDependencies.paqvilo.startsWith('file:'));
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies.paqvilo, toolkit.version, 'the copy depends on this published toolkit version');
   assert.match(manifest.devDependencies.yaml, /^\d/);
   assert.match(manifest.devDependencies['playwright-core'], /^\d/);
-  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
+  for (const name of ['code-app:mirage', 'code-app:dev']) assert.equal(manifest.scripts[name], example.scripts[name]);
   for (const dependency of ['yaml', 'playwright-core']) {
     assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
     assert.equal(example.devDependencies[dependency], toolkit.dependencies[dependency]);
@@ -63,13 +69,27 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), guidance);
   await fs.access(path.join(directory, '.vscode/launch.json'));
   await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
+  const cliDirectory = path.join(root, 'cli-example');
   const scaffold = execFileSync(
     process.execPath,
-    [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'demo', '--scaffold', '--dir', directory],
-    { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    [
+      fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
+      'mirage',
+      'demo',
+      '--scaffold',
+      '--dir',
+      cliDirectory,
+    ],
+    { cwd: root, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, windowsHide: true },
   );
   assert.match(scaffold, /No runtime was started/);
   assert.match(scaffold, /paqvilo-demo\.code-workspace/);
+  const cliManifest = JSON.parse(await fs.readFile(path.join(cliDirectory, 'package.json'), 'utf8'));
+  assert.equal(cliManifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
+  for (const name of ['code-app:mirage', 'code-app:dev'])
+    assert.equal(cliManifest.scripts[name], example.scripts[name]);
+  await fs.access(path.join(cliDirectory, 'code-app/server.mjs'));
+  await fs.access(path.join(cliDirectory, 'code-app/solution/Entities/x_item/Entity.xml'));
   assert.deepEqual(await fs.readdir(path.join(directory, '.paqvilo')), ['demo.json']);
   await fs.access(path.join(directory, 'solution/Entities/Account/Entity.xml'));
   await fs.access(path.join(directory, 'metadata/Other/Relationships.xml'));
@@ -88,6 +108,14 @@ test('demo copies an editable project, preserves source edits on repeat and refu
     'deployment/demo-data.zip',
     'deployment/configure.mjs',
     'code-solution/Other/Solution.xml',
+    'code-app/server.mjs',
+    'code-app/mirage.mjs',
+    'code-app/app.js',
+    'code-app/index.html',
+    'code-app/power.config.json',
+    'code-app/solution/Other/Solution.xml',
+    'code-app/solution/Entities/x_item/Entity.xml',
+    'test/baseline-code-app-sdk.test.mjs',
     'components/pcf-field-types/ExampleAccountFields/index.ts',
     'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml',
   ]) {
@@ -102,4 +130,185 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   await assert.rejects(prepareDemo(unrelated), /No files were changed/);
   assert.deepEqual(await fs.readdir(unrelated), ['important.txt']);
   await assert.rejects(prepareDemo(path.join(unrelated, 'important.txt')), /regular directory/);
+});
+
+test('an interrupted demo copy leaves no folder behind and the next run succeeds', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  let copies = 0;
+  const interrupted = (source, destination, options) => {
+    copies += 1;
+    if (copies === 3) throw new Error('Simulated interruption during the copy');
+    return cpSync(source, destination, options);
+  };
+  await assert.rejects(prepareDemo(directory, { copy: interrupted }), /Simulated interruption/);
+  assert.deepEqual(await fs.readdir(root), [], 'neither the target nor a staging folder remains');
+  assert.equal((await prepareDemo(directory)).created, true);
+  await fs.access(path.join(directory, '.paqvilo/demo.json'));
+});
+
+test('a demo copy fills an empty target folder', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  await fs.mkdir(directory);
+  assert.equal((await prepareDemo(directory)).created, true);
+  await fs.access(path.join(directory, '.paqvilo/demo.json'));
+  assert.deepEqual(await fs.readdir(root), ['example']);
+});
+
+test('a leftover partial copy is named in the refusal and is never deleted', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  const leftover = path.join(root, 'example.partial-4242');
+  await fs.mkdir(directory);
+  await fs.mkdir(leftover);
+  await fs.writeFile(path.join(directory, 'important.txt'), 'Keep me');
+  await fs.writeFile(path.join(leftover, 'half.txt'), 'partial');
+  await assert.rejects(prepareDemo(directory), (error) => {
+    assert.match(error.message, /No files were changed/);
+    assert.match(error.message, /example\.partial-4242\. It can be deleted\./);
+    return true;
+  });
+  assert.deepEqual(await fs.readdir(directory), ['important.txt']);
+  assert.deepEqual(await fs.readdir(leftover), ['half.txt']);
+});
+
+const lockedRename = (code) => async () => {
+  throw Object.assign(new Error(`${code}: the staging folder is held`), { code });
+};
+
+test('a staging folder held briefly by another program is renamed into place after retries', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  const realRename = fs.rename;
+  let calls = 0;
+  const rename = (from, to) => {
+    calls += 1;
+    return calls <= 2 ? lockedRename('EPERM')() : realRename(from, to);
+  };
+  const waits = [];
+  const wait = async (ms) => {
+    waits.push(ms);
+  };
+  assert.equal((await prepareDemo(directory, { rename, wait })).created, true);
+  await fs.access(path.join(directory, '.paqvilo/demo.json'));
+  assert.equal(calls, 3);
+  assert.equal(waits.length, 2);
+  assert.deepEqual(await fs.readdir(root), ['example']);
+});
+
+test('a staging folder that stays locked fails after five attempts, names both folders and is removed', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  let calls = 0;
+  const rename = (...args) => {
+    calls += 1;
+    return lockedRename('EBUSY')(...args);
+  };
+  const waits = [];
+  const wait = async (ms) => {
+    waits.push(ms);
+  };
+  await assert.rejects(prepareDemo(directory, { rename, wait }), (error) => {
+    assert.match(error.message, /after 5 attempts/);
+    assert.ok(error.message.includes(directory), 'the message names the target folder');
+    assert.match(error.message, /example\.partial-\d+/, 'the message names the staging folder');
+    assert.equal(error.cause.code, 'EBUSY');
+    return true;
+  });
+  assert.equal(calls, 5);
+  assert.equal(waits.length, 4);
+  assert.deepEqual(await fs.readdir(root), [], 'the staging folder is removed');
+});
+
+test('a rename failure with another error code is not retried', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  let calls = 0;
+  const rename = (...args) => {
+    calls += 1;
+    return lockedRename('ENOTEMPTY')(...args);
+  };
+  const waits = [];
+  const wait = async (ms) => {
+    waits.push(ms);
+  };
+  await assert.rejects(prepareDemo(directory, { rename, wait }), { code: 'ENOTEMPTY' });
+  assert.equal(calls, 1);
+  assert.equal(waits.length, 0);
+  assert.deepEqual(await fs.readdir(root), []);
+});
+
+// Expected values were captured from the demo parser before it moved to the shared option parsing.
+const DEMO_PARSE_TABLE = [
+  ['no arguments', [], { values: { dir: './paqvilo-example' }, positionals: [] }],
+  ['--dir with a value', ['--dir', './invented'], { values: { dir: './invented' }, positionals: [] }],
+  [
+    '--browser with a value',
+    ['--browser', 'chrome'],
+    { values: { dir: './paqvilo-example', browser: 'chrome' }, positionals: [] },
+  ],
+  [
+    '--debug-port with a value',
+    ['--debug-port', '9222'],
+    { values: { dir: './paqvilo-example', 'debug-port': '9222' }, positionals: [] },
+  ],
+  ['--headless flag', ['--headless'], { values: { dir: './paqvilo-example', headless: true }, positionals: [] }],
+  ['--scaffold flag', ['--scaffold'], { values: { dir: './paqvilo-example', scaffold: true }, positionals: [] }],
+  ['-h flag', ['-h'], { values: { dir: './paqvilo-example', help: true }, positionals: [] }],
+  ['--help flag', ['--help'], { values: { dir: './paqvilo-example', help: true }, positionals: [] }],
+  [
+    'a repeated --dir keeps the last value',
+    ['--dir', 'one', '--dir', 'two'],
+    { values: { dir: 'two' }, positionals: [] },
+  ],
+  ['an unknown option', ['--bogus'], { error: 'ERR_PARSE_ARGS_UNKNOWN_OPTION' }],
+  ['a missing value', ['--dir'], { error: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' }],
+  ['a positional argument', ['extra'], { error: 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL' }],
+];
+
+test('demo option parsing keeps its accepted options, defaults, repeated values and errors', () => {
+  for (const [name, args, expected] of DEMO_PARSE_TABLE) {
+    if (expected.error) {
+      assert.throws(() => parseDemoOptions(args), { code: expected.error }, name);
+      continue;
+    }
+    const parsed = parseDemoOptions(args);
+    assert.deepEqual({ ...parsed.values }, expected.values, name);
+    assert.deepEqual(parsed.positionals, expected.positionals, name);
+  }
+});
+
+const demoCli = fileURLToPath(new URL('../lense/commands/demo.mjs', import.meta.url));
+const DEMO_CLI_TABLE = [
+  ['--help', ['--help'], 0, /^Usage: paqvilo mirage demo/],
+  ['-h', ['-h'], 0, /^Usage: paqvilo mirage demo/],
+  ['a repeated option before --help', ['--dir', 'one', '--dir', 'two', '--help'], 0, /^Usage: paqvilo mirage demo/],
+  ['an unknown option', ['--bogus'], 1, '--bogus'],
+  ['a missing value', ['--dir'], 1, '--dir'],
+  ['a positional argument', ['extra'], 1, 'extra'],
+];
+
+test('demo command prints help and parse errors with the same exit codes and messages', () => {
+  for (const [name, args, status, expected] of DEMO_CLI_TABLE) {
+    const result = spawnSync(process.execPath, [demoCli, ...args], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
+    assert.equal(result.status, status, name);
+    if (status) {
+      // The product's own prefix and the offending token; Node's sentence is not part of the contract.
+      assert.ok(result.stderr.startsWith('Mirage demo: '), name);
+      assert.ok(result.stderr.includes(expected), name);
+    } else {
+      assert.match(result.stdout, expected, name);
+    }
+  }
 });

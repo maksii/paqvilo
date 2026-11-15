@@ -15,6 +15,7 @@ npm install
 npm run schema:prepare
 npm run data:prepare
 npm run stress:prepare
+npm run sdk:build
 npm test
 npm run test:browser
 npm run data:plan

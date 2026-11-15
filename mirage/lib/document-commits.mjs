@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-/** Observe committed Chromium documents without treating hash/history changes as replacement. */
-export async function observeDocumentCommits(page, cdp, { document, commit }) {
+/** Observe committed Chromium documents without treating hash/history changes as replacement.
+ * `document` labels early requests; optional `ready` also requires the CDP identity and loader baseline. */
+export async function observeDocumentCommits(page, cdp, { document, commit, ready }) {
   const suffix = randomUUID().replaceAll('-', '');
   const browserBinding = '__paqviloDocumentCdp' + suffix;
   const frameBinding = '__paqviloDocumentFrame' + suffix;
@@ -19,23 +20,52 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     if (!pairs.has(token) && pairs.size >= 2048) pairs.delete(pairs.keys().next().value);
     return pairs.get(token) ?? {};
   };
+  const currentContext = (pair) =>
+    pair.context && sessions.get(pair.session)?.contexts.get(pair.executionContextId) === pair.context;
   const join = (token) => {
-    const pair = pairs.get(token);
-    if (!pair?.frame || !pair.frameId) return;
-    documents.set(pair.frameId, { frame: pair.frame, token });
+    const pair = pairs.get(token),
+      record = sessions.get(pair?.session);
+    if (
+      !pair?.frame ||
+      !pair.frameId ||
+      !record?.initialized ||
+      !record.loaders.get(pair.frameId) ||
+      !currentContext(pair)
+    )
+      return;
+    const previous = documents.get(pair.frameId);
+    if (previous?.token !== token) documents.set(pair.frameId, { frame: pair.frame, token });
     pairs.delete(token);
+    if (previous?.token !== token) ready?.(pair.frame, token);
   };
-  const navigated = (frame) => {
+  const joinSession = (session, frameId) => {
+    for (const [token, pair] of pairs)
+      if (pair.session === session && (!frameId || pair.frameId === frameId)) join(token);
+  };
+  const navigated = (frame, session, restored = false) => {
     if (disposed) return;
+    const record = sessions.get(session),
+      ownedLoader = record?.loaders.get(frame.id);
+    // A commit can precede context destruction. Retire those contexts immediately, but
+    // do not invalidate an OOPIF's initial snapshot or BFCache contexts announced before restore.
+    if (!restored && record?.initialized && ownedLoader && ownedLoader !== frame.loaderId)
+      for (const [id, context] of record.contexts) if (context.frameId === frame.id) record.contexts.delete(id);
+    record?.loaders.set(frame.id, frame.loaderId);
     const previous = loaders.get(frame.id);
     loaders.set(frame.id, frame.loaderId);
-    if (!previous || previous === frame.loaderId) return;
-    const replaced = documents.get(frame.id);
-    if (replaced) commit(replaced.frame, replaced.token);
+    if (previous && previous !== frame.loaderId) {
+      const replaced = documents.get(frame.id);
+      if (replaced) {
+        documents.delete(frame.id);
+        commit(replaced.frame, replaced.token);
+      }
+    }
+    joinSession(session, frame.id);
   };
   const forgetFrame = (frameId, frame) => {
     documents.delete(frameId);
     loaders.delete(frameId);
+    for (const record of sessions.values()) record.loaders.delete(frameId);
     for (const [token, pair] of pairs)
       if (pair.frameId === frameId || (frame && pair.frame === frame)) pairs.delete(token);
   };
@@ -43,6 +73,11 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     if (disposed) return;
     const pair = pairFor(token);
     if (!pair) return;
+    if (pair.session && !currentContext(pair)) {
+      pairs.delete(token);
+      return;
+    }
+    // Label early requests even while the independent CDP target is still attaching.
     document(frame, token);
     pairs.set(token, { ...pair, frame });
     join(token);
@@ -58,27 +93,45 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
       session,
       owner,
       frameId: null,
+      initialized: false,
+      contexts,
+      loaders: new Map(),
       cleanup: () => {
         for (const [name, handler] of listeners) session.off(name, handler);
         contexts.clear();
+        record.loaders.clear();
+        for (const [token, pair] of pairs) if (pair.session === session) pairs.delete(token);
         void session.send('Runtime.removeBinding', { name: browserBinding }).catch(() => {});
       },
     };
     sessions.set(session, record);
     on('Runtime.executionContextCreated', ({ context }) => {
-      if (context.auxData?.isDefault) contexts.set(context.id, context.auxData.frameId);
+      if (context.auxData?.isDefault) {
+        // Keep the context object too: a new document may reuse the numeric context id.
+        contexts.set(context.id, { frameId: context.auxData.frameId });
+        // Restored BFCache documents retain their token, but their contexts are announced again.
+        // Invoke through CDP: a pageshow listener in the main world is blocked by script-disabled
+        // sandboxes even when it was installed by an init script, producing a spurious page error.
+        void session
+          .send('Runtime.evaluate', {
+            expression: `globalThis[${JSON.stringify(reportBinding)}]?.()`,
+            contextId: context.id,
+          })
+          .catch(() => {});
+      }
     });
     on('Runtime.executionContextDestroyed', ({ executionContextId }) => contexts.delete(executionContextId));
     on('Runtime.executionContextsCleared', () => contexts.clear());
     on('Runtime.bindingCalled', ({ name, payload, executionContextId }) => {
       if (name !== browserBinding || disposed) return;
-      const frameId = contexts.get(executionContextId),
+      const context = contexts.get(executionContextId),
+        frameId = context?.frameId,
         pair = pairFor(payload);
       if (!frameId || !pair) return;
-      pairs.set(payload, { ...pair, frameId });
+      pairs.set(payload, { ...pair, frameId, session, context, executionContextId });
       join(payload);
     });
-    on('Page.frameNavigated', ({ frame }) => navigated(frame));
+    on('Page.frameNavigated', ({ frame, type }) => navigated(frame, session, type === 'BackForwardCacheRestore'));
     on('Page.frameDetached', ({ frameId, reason }) => {
       if (reason !== 'swap') forgetFrame(frameId);
     });
@@ -97,10 +150,14 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
       const { frameTree } = await session.send('Page.getFrameTree');
       record.frameId = frameTree.frame.id;
       const remember = (node) => {
-        navigated(node.frame);
+        navigated(node.frame, session);
         for (const child of node.childFrames ?? []) remember(child);
       };
       remember(frameTree);
+      // Keep current tokens pending until this target's own snapshot has seeded its loader.
+      // A historical child entry in the parent target cannot establish OOPIF readiness.
+      record.initialized = true;
+      joinSession(session);
       // OOPIF attachment can follow its initialization script; repeat the identity handshake.
       if (owner) await owner.evaluate((name) => window[name]?.(), reportBinding).catch(() => {});
     } catch (cause) {
@@ -172,11 +229,8 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
           if (typeof window[browserBinding] === 'function') window[browserBinding](token);
           void window[frameBinding](token).catch(() => {});
         };
-        Object.defineProperty(window, reportBinding, { value: report });
+        Object.defineProperty(globalThis, reportBinding, { value: report });
         report();
-        window.addEventListener('pageshow', (event) => {
-          if (event.persisted) report();
-        });
       },
       { browserBinding, frameBinding, reportBinding },
     );

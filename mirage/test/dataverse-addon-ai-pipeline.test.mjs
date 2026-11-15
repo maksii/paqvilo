@@ -1,5 +1,6 @@
 // AddToFeedbackLoop writes its row through the record pipeline: a create hook registered on the feedback table sees the write,
 // and a hook that refuses it leaves no row behind.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -44,7 +45,7 @@ async function start(t, { veto = false } = {}) {
     },
   };
   const api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, spy] });
-  t.after(() => api.close());
+  ownedFixture(t).add(() => api.close());
   const token = (
     await (
       await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own create dialogs, lookups and grid refresh behaviour (designed runtime)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,12 +9,13 @@ import { parse } from 'parse5';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { loopbackServer } from './shared-browser.mjs';
 
 // A record form with a Create related record action whose target form opens
 // in a modal, and the record state hiding the inapplicable state action.
 test('create related record opens the target form dialog; the record state hides its state action', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-create-related-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-create-related-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const actions = [
     { Type: 'DeactivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Close entry' }] },
@@ -173,8 +175,9 @@ test('create related record opens the target form dialog; the record state hides
     `/_portal/modal-form-template-path/11111111-2222-4333-8444-555555555555?id=${id}&entityformid=note-form&languagecode=1033`,
   );
   assert.equal(await modal.getAttribute('aria-label'), ' Create related record');
-  const child = page.frames().find((frame) => frame.url() === app.url + src);
-  assert.ok(child, 'the target dialog has its own loaded document');
+  // The click sets the frame source and shows the dialog in one step; the frame commits its document later.
+  const child = await (await modal.locator('iframe').elementHandle()).contentFrame();
+  await child.waitForURL(app.url + src);
   await child.locator('#title').waitFor();
   const target = await child.locator('script[data-paqvilo-mirage-form-config]').evaluate((node) => {
     const config = JSON.parse(node.textContent);
@@ -191,4 +194,101 @@ test('create related record opens the target form dialog; the record state hides
       .evaluate((node) => JSON.parse(node.getAttribute('data-form-layout')).EntityName),
     'sample',
   );
+});
+
+const LOOKUP_LAYOUT = {
+  Id: 'view-1',
+  ViewName: 'First',
+  Configuration: { ViewDisplayName: 'First' },
+  Columns: [{ LogicalName: 'name', Name: 'Name', Width: 100, WidthAsPercent: 100 }],
+  Base64SecureConfiguration: 'secure-1',
+  SortExpression: 'name ASC',
+};
+const LOOKUP_PAGE = `<!doctype html><html lang="en"><head><title>Lookup</title></head><body>
+<div id="antiforgerytoken"><input type="hidden" name="__RequestVerificationToken" value="token"></div>
+<div class="entity-lookup" data-lookup-datafieldname="owner">
+  <section class="modal-lookup"><div class="entity-grid" data-get-url="/grid-data" data-defer-loading="true" data-select-mode="Single" data-view-layouts='${JSON.stringify([LOOKUP_LAYOUT])}'><div class="view-grid"></div><div class="view-pagination"></div></div><div class="modal-footer"><button class="new-value">Create owner</button></div></section>
+  <section class="modal modal-lookup-create-form" aria-hidden="true" style="display:none"><div class="form-loading">Loading form</div><iframe data-page="/form"></iframe><button data-dismiss="modal">Cancel</button></section>
+</div>
+<script src="/jquery.js"></script><script src="/grid.js"></script></body></html>`;
+
+async function openAndCancelCreate(page) {
+  await page.locator('.new-value').click();
+  const dialog = page.locator('.modal-lookup-create-form');
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+}
+
+// Each cancelled create must not keep its success listener, so one successful create refreshes the lookup once.
+test('a cancelled lookup create dialog leaves no success listener behind, so one create refreshes the lookup once', async (t) => {
+  const grid = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
+  const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
+  const { server } = await loopbackServer(t, (request, response) => {
+    if (request.url === '/jquery.js' || request.url === '/grid.js') {
+      response.setHeader('content-type', 'text/javascript');
+      response.end(request.url === '/grid.js' ? grid : jquery);
+      return;
+    }
+    if (request.url === '/grid-data') {
+      request.resume();
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ Records: [], ItemCount: 0 }));
+      return;
+    }
+    response.setHeader('content-type', 'text/html');
+    response.end(
+      request.url.startsWith('/form') ? '<form id="EntityFormControl"><input aria-label="Name"></form>' : LOOKUP_PAGE,
+    );
+  });
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  // Counts the grid's own POSTs in the page. jQuery sends them through XMLHttpRequest, so the count is final once the
+  // refresh's request event has been delivered: the listeners of one message dispatch run synchronously.
+  await context.addInitScript(() => {
+    window.__gridPosts = 0;
+    const open = XMLHttpRequest.prototype.open,
+      send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__gridPost = method.toUpperCase() === 'POST' && new URL(url, location.href).pathname === '/grid-data';
+      return open.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function (...args) {
+      if (this.__gridPost) window.__gridPosts++;
+      return send.apply(this, args);
+    };
+  });
+  const page = await context.newPage(),
+    errors = [],
+    refreshes = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/grid-data') refreshes.push(request.url());
+  });
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await openAndCancelCreate(page);
+  await openAndCancelCreate(page);
+  // The create form reports success to the page; the listener of the open dialog runs once.
+  await page.locator('.new-value').click();
+  await page.locator('.modal-lookup-create-form').waitFor({ state: 'visible' });
+  const refreshed = page.waitForRequest(
+    (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/grid-data',
+  );
+  const posted = page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        window.addEventListener('message', () => resolve(), { once: true });
+        window.postMessage(
+          JSON.stringify({ type: 'Success', id: '00000000-0000-4000-8000-000000000002' }),
+          location.origin,
+        );
+      }),
+  );
+  await Promise.all([refreshed, posted]);
+  assert.equal(await page.evaluate(() => window.__gridPosts), 1);
+  assert.equal(refreshes.length, 1);
+  assert.equal(await page.locator('.modal-lookup-create-form').evaluate((node) => node.style.display), 'none');
+  assert.deepEqual(errors, []);
 });

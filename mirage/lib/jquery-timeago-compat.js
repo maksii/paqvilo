@@ -1,8 +1,11 @@
 // Relative-date surface used by the platform's postpreform and moment locale bundles.
 (function ($) {
   if (!$ || $.timeago) return;
-  const parse = (value) =>
-    value instanceof Date ? value : new Date(typeof value === 'number' ? value : String(value).trim());
+  const parse = (value) => {
+    if (value instanceof Date) return value;
+    const dateValue = typeof value === 'number' ? value : String(value).trim();
+    return new Date(dateValue);
+  };
   const strings = {
     prefixAgo: null,
     prefixFromNow: null,
@@ -37,6 +40,21 @@
   timeago.parse = parse;
   timeago.datetime = (element) => parse(element.getAttribute(timeago.isTime(element) ? 'datetime' : 'title'));
   timeago.isTime = (element) => element.tagName?.toLowerCase() === 'time';
+  const wordsFor = (seconds, minutes, hours, days, years) => {
+    let key, n;
+    if (seconds < 45) [key, n] = ['seconds', Math.round(seconds)];
+    else if (seconds < 90) [key, n] = ['minute', 1];
+    else if (minutes < 45) [key, n] = ['minutes', Math.round(minutes)];
+    else if (minutes < 90) [key, n] = ['hour', 1];
+    else if (hours < 24) [key, n] = ['hours', Math.round(hours)];
+    else if (hours < 42) [key, n] = ['day', 1];
+    else if (days < 30) [key, n] = ['days', Math.round(days)];
+    else if (days < 45) [key, n] = ['month', 1];
+    else if (days < 365) [key, n] = ['months', Math.round(days / 30)];
+    else if (years < 1.5) [key, n] = ['year', 1];
+    else [key, n] = ['years', Math.round(years)];
+    return [key, n];
+  };
   timeago.inWords = (distance) => {
     if (!timeago.settings.allowPast && !timeago.settings.allowFuture)
       throw new Error('timeago allowPast and allowFuture settings cannot both be false.');
@@ -47,28 +65,7 @@
       hours = minutes / 60,
       days = hours / 24,
       years = days / 365;
-    const [key, n] =
-      seconds < 45
-        ? ['seconds', Math.round(seconds)]
-        : seconds < 90
-          ? ['minute', 1]
-          : minutes < 45
-            ? ['minutes', Math.round(minutes)]
-            : minutes < 90
-              ? ['hour', 1]
-              : hours < 24
-                ? ['hours', Math.round(hours)]
-                : hours < 42
-                  ? ['day', 1]
-                  : days < 30
-                    ? ['days', Math.round(days)]
-                    : days < 45
-                      ? ['month', 1]
-                      : days < 365
-                        ? ['months', Math.round(days / 30)]
-                        : years < 1.5
-                          ? ['year', 1]
-                          : ['years', Math.round(years)];
+    const [key, n] = wordsFor(seconds, minutes, hours, days, years);
     const text = String(typeof s[key] === 'function' ? s[key](n, distance) : (s[key] ?? strings[key])).replace(
       /%d/i,
       String(s.numbers?.[n] ?? n),
@@ -124,4 +121,4 @@
   $(function () {
     $('abbr.timeago,time.timeago').timeago();
   });
-})(window.jQuery);
+})(globalThis.jQuery);

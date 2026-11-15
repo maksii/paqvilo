@@ -8,6 +8,7 @@ import os from 'node:os';
 import { scanSolutionSources, buildSolutionSchema, tableFields, seedPresetBody } from '../lib/solution-schema.mjs';
 import { attributeMetadata } from '../lib/attribute-metadata.mjs';
 import { requestTimeZone, userLocalDate, formatDotNetDate } from '../lib/native-services.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const common = (custom) =>
   `<RequiredLevel>none</RequiredLevel><DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask><ValidForUpdateApi>1</ValidForUpdateApi><ValidForReadApi>1</ValidForReadApi><ValidForCreateApi>1</ValidForCreateApi><IsCustomField>${custom}</IsCustomField><IsAuditEnabled>${custom}</IsAuditEnabled><IsSecured>0</IsSecured><IntroducedVersion>1.0.0.0</IntroducedVersion><IsCustomizable>1</IsCustomizable><IsRenameable>1</IsRenameable><CanModifySearchSettings>1</CanModifySearchSettings><CanModifyRequirementLevelSettings>1</CanModifyRequirementLevelSettings><CanModifyAdditionalSettings>1</CanModifyAdditionalSettings><SourceType>0</SourceType><IsSearchable>0</IsSearchable><IsFilterable>0</IsFilterable><IsRetrievable>0</IsRetrievable><IsLocalizable>0</IsLocalizable>`;
@@ -43,7 +44,7 @@ const colorSet = `<optionset Name="sample_color" localizedName="Color"><OptionSe
 )}</optionset>`;
 
 async function schemaOf(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-data-formatting-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-data-formatting-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, body] of Object.entries({
     'Entities/sample_thing/Entity.xml': entity,
@@ -316,7 +317,7 @@ test("grid money values carry the record currency's symbol and precision", async
 test('records created through the store get the same column defaults as seeded rows', async (t) => {
   const { importSolutionData, applySolutionData } = await import('../lib/solution-data.mjs');
   const { DataStore } = await import('../lib/data.mjs');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-record-defaults-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-record-defaults-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, body] of Object.entries({
     'Entities/sample_thing/Entity.xml': entity,

@@ -7,7 +7,7 @@ export function parseDataverseTop(value, { occurrences = 1 } = {}) {
   const raw = String(value);
   let first = 0,
     last = raw.length;
-  const white = (at) => raw.charCodeAt(at) === 32 || (raw.charCodeAt(at) >= 9 && raw.charCodeAt(at) <= 13);
+  const white = (at) => raw.codePointAt(at) === 32 || (raw.codePointAt(at) >= 9 && raw.codePointAt(at) <= 13);
   while (first < last && white(first)) first++;
   while (last > first && white(last - 1)) last--;
   const text = raw.slice(first, last),

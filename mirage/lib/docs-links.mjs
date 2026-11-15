@@ -38,6 +38,7 @@ const DOCS = Object.freeze({
   stateStorage: 'mirage/docs/state-storage.md',
   bootstrap: 'mirage/docs/bootstrap-and-sources.md',
   runtimePerformance: 'mirage/docs/runtime-performance.md',
+  tracing: 'mirage/docs/tracing.md',
 });
 
 const label = (path) =>
@@ -56,7 +57,11 @@ export function docsLinks(version, repositoryUrl) {
     .replace(/^git\+/, '')
     .replace(/\.git$/, '')
     .replace(/\/$/, '');
-  const base = repository ? `${repository}/blob/${plainRelease(version) ? `v${version}` : 'main'}/` : '';
+  let base = '';
+  if (repository) {
+    const ref = plainRelease(version) ? 'v' + version : 'main';
+    base = `${repository}/blob/${ref}/`;
+  }
   return Object.fromEntries(
     Object.entries(DOCS).map(([key, path]) => [key, { href: base ? base + path : null, path, label: label(path) }]),
   );

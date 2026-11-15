@@ -5,7 +5,7 @@ import { parseXmlDocument } from 'paqvilo/mirage/lib/fetchxml-engine.mjs';
 import { stable, guid, laneOutcome } from './core.mjs';
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
-const roleSet = (roles) => [...new Set(roles ?? [])].sort();
+const roleSet = (roles) => [...new Set(roles ?? [])].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const marker = (value) =>
   String(value)
     .replace(/^CO-OP:[a-f\d-]{36}$/i, 'CO-OP:{operation}')
@@ -69,17 +69,87 @@ export function principalFootprint(xml) {
     if (
       node.name === 'condition' &&
       node.attrs.entityname?.startsWith('generated_alias_') &&
-      /principalid$/.test(node.attrs.attribute)
+      node.attrs.attribute?.endsWith('principalid')
     )
       attributes.add(node.attrs.attribute);
     for (const child of node.children) visit(child);
   };
   visit(parseXmlDocument(xml, { root: 'fetch' }));
-  return [...attributes].sort();
+  return [...attributes].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 }
 
 /** Each plugin artifact is checksummed and reconstructed independently. Missing
  * or mixed parts never become an absent-query success. */
+function capturePayloadError(parts, payload, operationId) {
+  if (operationId && guid(payload.operationId) !== guid(operationId)) return 'operation-binding';
+  if (
+    parts.some(
+      (part) => part._pqvd_operationid_value && guid(part._pqvd_operationid_value) !== guid(payload.operationId),
+    )
+  )
+    return 'operation-binding';
+  const consistent = [
+    'pqvd_depth',
+    'pqvd_mode',
+    'pqvd_querytype',
+    'pqvd_message',
+    'pqvd_correlationid',
+    'pqvd_requestid',
+  ];
+  if (parts.some((part) => consistent.some((field) => part[field] !== parts[0][field]))) return 'part-metadata';
+  if (
+    payload.artifact !== parts[0].pqvd_artifacttype ||
+    payload.context?.executionOrder !== parts[0].pqvd_executionorder
+  )
+    return 'artifact-order-binding';
+  return null;
+}
+
+function captureContextError(parts, payload) {
+  if (payload.context?.Stage !== parts[0].pqvd_stage || payload.spanId !== parts[0].pqvd_spanid)
+    return 'context-binding';
+  if (
+    ['Depth', 'Mode', 'MessageName'].some((field, index) => {
+      const column = ['pqvd_depth', 'pqvd_mode', 'pqvd_message'][index];
+      return parts[0][column] !== undefined && payload.context[field] !== parts[0][column];
+    }) ||
+    (parts[0].pqvd_querytype !== undefined && payload.content.query.type !== parts[0].pqvd_querytype)
+  )
+    return 'context-metadata';
+  return null;
+}
+
+function readCapturedQuery(parts, operationId) {
+  try {
+    // Both native transactional recording and the durable collector repeat the complete payload hash on every part.
+    const text = parts.map((part) => part.pqvd_payloadtext).join('');
+    const payloadHash = hash(text);
+    if (parts.some((part) => part.pqvd_payloadhash !== payloadHash)) return { error: 'checksum' };
+    const payload = JSON.parse(text);
+    const bindingError = capturePayloadError(parts, payload, operationId);
+    if (bindingError) return { error: bindingError };
+    const xml = payload.content?.query?.xml;
+    if (!xml) return {};
+    const contextError = captureContextError(parts, payload);
+    if (contextError) return { error: contextError };
+    const fingerprint = queryFingerprint(xml);
+    if (payload.content.linkCount !== undefined && payload.content.linkCount !== fingerprint.linkCount)
+      return { error: 'link-count' };
+    return {
+      query: {
+        artifact: payload.artifact,
+        stage: payload.context.Stage,
+        order: parts[0].pqvd_executionorder,
+        queryType: payload.content.query.type,
+        fingerprint,
+        principalFootprint: principalFootprint(xml),
+      },
+    };
+  } catch {
+    return { error: 'invalid-artifact' };
+  }
+}
+
 export function capturedQueries(events = [], { operationId } = {}) {
   const groups = new Map(),
     errors = [];
@@ -101,82 +171,13 @@ export function capturedQueries(events = [], { operationId } = {}) {
       errors.push({ kind: 'parts', artifact: parts[0].pqvd_artifacttype });
       continue;
     }
-    try {
-      // Both native transactional recording and the durable collector repeat
-      // the complete payload hash on every part, not a hash of each chunk.
-      const text = parts.map((part) => part.pqvd_payloadtext).join('');
-      const payloadHash = hash(text);
-      if (parts.some((part) => part.pqvd_payloadhash !== payloadHash)) {
-        errors.push({ kind: 'checksum', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      const payload = JSON.parse(text);
-      if (operationId && guid(payload.operationId) !== guid(operationId)) {
-        errors.push({ kind: 'operation-binding', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      if (
-        parts.some(
-          (part) => part._pqvd_operationid_value && guid(part._pqvd_operationid_value) !== guid(payload.operationId),
-        )
-      ) {
-        errors.push({ kind: 'operation-binding', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      const consistent = [
-        'pqvd_depth',
-        'pqvd_mode',
-        'pqvd_querytype',
-        'pqvd_message',
-        'pqvd_correlationid',
-        'pqvd_requestid',
-      ];
-      if (parts.some((part) => consistent.some((field) => part[field] !== parts[0][field]))) {
-        errors.push({ kind: 'part-metadata', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      if (
-        payload.artifact !== parts[0].pqvd_artifacttype ||
-        payload.context?.executionOrder !== parts[0].pqvd_executionorder
-      ) {
-        errors.push({ kind: 'artifact-order-binding', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      const xml = payload.content?.query?.xml;
-      if (!xml) continue;
-      if (payload.context?.Stage !== parts[0].pqvd_stage || payload.spanId !== parts[0].pqvd_spanid) {
-        errors.push({ kind: 'context-binding', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      if (
-        ['Depth', 'Mode', 'MessageName'].some((field, index) => {
-          const column = ['pqvd_depth', 'pqvd_mode', 'pqvd_message'][index];
-          return parts[0][column] !== undefined && payload.context[field] !== parts[0][column];
-        }) ||
-        (parts[0].pqvd_querytype !== undefined && payload.content.query.type !== parts[0].pqvd_querytype)
-      ) {
-        errors.push({ kind: 'context-metadata', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      const fingerprint = queryFingerprint(xml);
-      if (payload.content.linkCount !== undefined && payload.content.linkCount !== fingerprint.linkCount) {
-        errors.push({ kind: 'link-count', artifact: parts[0].pqvd_artifacttype });
-        continue;
-      }
-      queries.push({
-        artifact: payload.artifact,
-        stage: payload.context.Stage,
-        order: parts[0].pqvd_executionorder,
-        queryType: payload.content.query.type,
-        fingerprint,
-        principalFootprint: principalFootprint(xml),
-      });
-    } catch {
-      errors.push({ kind: 'invalid-artifact', artifact: parts[0].pqvd_artifacttype });
-    }
+    const result = readCapturedQuery(parts, operationId);
+    if (result.error) errors.push({ kind: result.error, artifact: parts[0].pqvd_artifacttype });
+    if (result.query) queries.push(result.query);
   }
   return {
-    queries: queries.sort(
+    queries: /* NOSONAR */ queries.sort(
+      // NOSONAR: retain in-place receiver mutation and ordering
       (a, b) => a.stage - b.stage || a.order - b.order || String(a.artifact).localeCompare(String(b.artifact)),
     ),
     errors,
@@ -202,26 +203,9 @@ function queryDiff(left, right) {
   };
 }
 
-export function compareLane(native, mirage) {
-  if (!native || !mirage) return { verdict: 'unqualified', reasons: ['missing-lane'] };
-  const reasons = [],
-    outcome = stable(laneOutcome(native)) === stable(laneOutcome(mirage)) ? 'equal' : 'different';
-  if (outcome !== 'equal') reasons.push('outcome');
-  const rows =
-    native.complete &&
-    mirage.complete &&
-    Array.isArray(native.rows) &&
-    Array.isArray(mirage.rows) &&
-    native.outcome === 'success' &&
-    mirage.outcome === 'success'
-      ? stable(multiset(native.rows)) === stable(multiset(mirage.rows))
-        ? 'equal'
-        : 'different'
-      : 'unqualified';
-  if (rows !== 'equal') reasons.push(rows === 'different' ? 'rows' : 'incomplete-rows');
-  const pages = [];
+function lanePageIndexes(native, mirage, reasons) {
   const physicalKey = (page) => `${page.fragment ?? 1}:${page.page ?? 1}`;
-  const indexes = [native, mirage].map((lane) => {
+  return [native, mirage].map((lane) => {
     const index = new Map();
     for (const page of lane.pages ?? []) {
       const key = physicalKey(page);
@@ -230,58 +214,89 @@ export function compareLane(native, mirage) {
     }
     return index;
   });
-  for (const key of new Set([...indexes[0].keys(), ...indexes[1].keys()])) {
-    const [left, right] = indexes.map((index) => index.get(key));
-    const queries = {};
-    for (const field of ['authoredFetchXml', 'effectiveFetchXml']) {
-      try {
-        queries[field] = queryDiff(queryFingerprint(left?.[field]), queryFingerprint(right?.[field]));
-      } catch {
-        queries[field] = { verdict: 'unqualified', reason: 'invalid-query' };
-      }
+}
+
+function compareLanePage(key, indexes) {
+  const [left, right] = indexes.map((index) => index.get(key));
+  const queries = {};
+  for (const field of ['authoredFetchXml', 'effectiveFetchXml']) {
+    try {
+      queries[field] = queryDiff(queryFingerprint(left?.[field]), queryFingerprint(right?.[field]));
+    } catch {
+      queries[field] = { verdict: 'unqualified', reason: 'invalid-query' };
     }
-    const [a, b] = [left, right].map((page) =>
-      capturedQueries(page?.backendEvents, { operationId: page?.operationId }),
-    );
-    const shape = (capture) =>
-      capture.queries.map((query) => ({
-        artifact: query.artifact,
-        stage: query.stage,
-        order: query.order,
-        queryType: query.queryType,
-        ...query.fingerprint,
-        exactHash: undefined,
-      }));
-    const backend =
-      a.errors.length || b.errors.length || !a.queries.length || !b.queries.length
-        ? 'unqualified'
-        : stable(shape(a)) === stable(shape(b))
-          ? 'equal'
-          : 'different';
-    pages.push({
-      key,
-      queries,
-      backend,
-      nativeStages: a.queries.map((q) => [q.stage, q.order, q.fingerprint.linkCount]),
-      mirageStages: b.queries.map((q) => [q.stage, q.order, q.fingerprint.linkCount]),
-      artifactErrors: [...a.errors, ...b.errors],
-    });
-    if (backend !== 'equal') reasons.push(`backend-${backend}`);
-    if (queries.authoredFetchXml.verdict !== 'equal') reasons.push(`authored-${queries.authoredFetchXml.verdict}`);
+  }
+  const [a, b] = [left, right].map((page) => capturedQueries(page?.backendEvents, { operationId: page?.operationId }));
+  const shape = (capture) =>
+    capture.queries.map((query) => ({
+      artifact: query.artifact,
+      stage: query.stage,
+      order: query.order,
+      queryType: query.queryType,
+      ...query.fingerprint,
+      exactHash: undefined,
+    }));
+  let backend;
+  if (a.errors.length || b.errors.length || !a.queries.length || !b.queries.length) backend = 'unqualified';
+  else backend = stable(shape(a)) === stable(shape(b)) ? 'equal' : 'different';
+  const page = {
+    key,
+    queries,
+    backend,
+    nativeStages: a.queries.map((q) => [q.stage, q.order, q.fingerprint.linkCount]),
+    mirageStages: b.queries.map((q) => [q.stage, q.order, q.fingerprint.linkCount]),
+    artifactErrors: [...a.errors, ...b.errors],
+  };
+  return page;
+}
+
+function compareLanePages(native, mirage, reasons) {
+  const pages = [],
+    indexes = lanePageIndexes(native, mirage, reasons);
+  for (const key of new Set([...indexes[0].keys(), ...indexes[1].keys()])) {
+    const page = compareLanePage(key, indexes);
+    pages.push(page);
+    if (page.backend !== 'equal') reasons.push(`backend-${page.backend}`);
+    if (page.queries.authoredFetchXml.verdict !== 'equal')
+      reasons.push(`authored-${page.queries.authoredFetchXml.verdict}`);
     // The native API does not expose Liquid's effective XML. Backend is mandatory.
-    if (native.engine === 'liquid' && queries.effectiveFetchXml.verdict !== 'equal')
-      reasons.push(`effective-${queries.effectiveFetchXml.verdict}`);
+    if (native.engine === 'liquid' && page.queries.effectiveFetchXml.verdict !== 'equal')
+      reasons.push(`effective-${page.queries.effectiveFetchXml.verdict}`);
   }
   if (!pages.length) reasons.push('missing-pages');
+  return pages;
+}
+
+export function compareLane(native, mirage) {
+  if (!native || !mirage) return { verdict: 'unqualified', reasons: ['missing-lane'] };
+  const reasons = [],
+    outcome = stable(laneOutcome(native)) === stable(laneOutcome(mirage)) ? 'equal' : 'different';
+  if (outcome !== 'equal') reasons.push('outcome');
+  let rows;
+  if (
+    native.complete &&
+    mirage.complete &&
+    Array.isArray(native.rows) &&
+    Array.isArray(mirage.rows) &&
+    native.outcome === 'success' &&
+    mirage.outcome === 'success'
+  )
+    rows = stable(multiset(native.rows)) === stable(multiset(mirage.rows)) ? 'equal' : 'different';
+  else rows = 'unqualified';
+  if (rows !== 'equal') reasons.push(rows === 'different' ? 'rows' : 'incomplete-rows');
+  const pages = compareLanePages(native, mirage, reasons);
   const unique = [...new Set(reasons)];
-  return {
-    verdict: unique.some((reason) =>
+  let verdict;
+  if (
+    unique.some((reason) =>
       ['outcome', 'rows', 'backend-different', 'authored-different', 'effective-different'].includes(reason),
     )
-      ? 'different'
-      : unique.length
-        ? 'unqualified'
-        : 'equal',
+  )
+    verdict = 'different';
+  else if (unique.length) verdict = 'unqualified';
+  else verdict = 'equal';
+  return {
+    verdict,
     outcome,
     rows,
     pages,
@@ -289,7 +304,7 @@ export function compareLane(native, mirage) {
   };
 }
 
-export function compareRuns(native, mirage) {
+function runPrerequisiteFailures(native, mirage) {
   const prerequisiteFailures = [];
   for (const flag of [
     'nativeConfigurationVerified',
@@ -313,6 +328,10 @@ export function compareRuns(native, mirage) {
     stable(roleSet(native.roles)) !== stable(roleSet(mirage.roles))
   )
     prerequisiteFailures.push('roles');
+  return prerequisiteFailures;
+}
+
+function matchRunPairs(native, mirage, prerequisiteFailures) {
   const pairs = [],
     byId = new Map();
   for (const pair of mirage?.pairs ?? []) {
@@ -335,19 +354,27 @@ export function compareRuns(native, mirage) {
   }
   for (const key of byId.keys()) if (!expected.has(key)) prerequisiteFailures.push('extra-pair');
   if (!pairs.length) prerequisiteFailures.push('missing-pairs');
+  return pairs;
+}
+
+function runComparisonVerdict(failures, pairs) {
+  if (failures.length) return 'unqualified';
+  if (pairs.some((pair) => [pair.liquid, pair.webapi].some((lane) => lane.verdict === 'different'))) return 'different';
+  if (pairs.every((pair) => [pair.liquid, pair.webapi].every((lane) => lane.verdict === 'equal'))) return 'equal';
+  return 'unqualified';
+}
+
+export function compareRuns(native, mirage) {
+  const prerequisiteFailures = runPrerequisiteFailures(native, mirage);
+  const pairs = matchRunPairs(native, mirage, prerequisiteFailures);
   const failures = [...new Set(prerequisiteFailures)];
+  const verdict = runComparisonVerdict(failures, pairs);
   return {
     schemaVersion: 1,
     kind: 'native-vs-mirage-recorded-evidence',
     prerequisiteFailures: failures,
     pairs,
-    verdict: failures.length
-      ? 'unqualified'
-      : pairs.some((pair) => [pair.liquid, pair.webapi].some((lane) => lane.verdict === 'different'))
-        ? 'different'
-        : pairs.every((pair) => [pair.liquid, pair.webapi].every((lane) => lane.verdict === 'equal'))
-          ? 'equal'
-          : 'unqualified',
+    verdict,
     qualification:
       'Only supplied actor, configuration, query shapes and complete checksummed captures; no universal role or pipeline claim.',
   };

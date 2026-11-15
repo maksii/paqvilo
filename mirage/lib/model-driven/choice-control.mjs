@@ -8,6 +8,15 @@ export function renderChoice(
   value,
   { multiple = false, options = field.options ?? [], allowEmpty = true } = {},
 ) {
+  const valuesFor = (value) => {
+    if (multiple) {
+      if (Array.isArray(value)) return [...value];
+      if (value == null || value === '') return [];
+      return String(value).split(',').map(Number);
+    }
+    if (value == null) return [];
+    return [value];
+  };
   const element = document.createElement('div');
   element.className = `choice-control${multiple ? ' choice-multiple' : ''}`;
   const primary = document.createElement('input');
@@ -32,21 +41,14 @@ export function renderChoice(
   list.hidden = true;
   if (multiple) list.setAttribute('aria-multiselectable', 'true');
   primary.setAttribute('aria-controls', list.id);
-  const values = multiple
-    ? Array.isArray(value)
-      ? [...value]
-      : value == null || value === ''
-        ? []
-        : String(value).split(',').map(Number)
-    : value == null
-      ? []
-      : [value];
-  const entries = multiple
-    ? [{ all: true, label: 'Select all' }, ...options]
-    : allowEmpty
-      ? [{ value: null, label: '--Select--' }, ...options]
-      : options;
-  let selected = values,
+  const values = valuesFor(value);
+  const entriesForOptions = () => {
+    if (multiple) return [{ all: true, label: 'Select all' }, ...options];
+    if (allowEmpty) return [{ value: null, label: '--Select--' }, ...options];
+    return options;
+  };
+  let entries = entriesForOptions(),
+    selected = values,
     active = -1,
     outside,
     typed = '',
@@ -86,7 +88,9 @@ export function renderChoice(
         : selected
             .map((value) => options.find((option) => same(option.value, value))?.label ?? String(value))
             .join('; ');
-    primary.placeholder = list.hidden ? '---' : multiple ? 'Select or search options' : '--Select--';
+    if (list.hidden) primary.placeholder = '---';
+    else if (multiple) primary.placeholder = 'Select or search options';
+    else primary.placeholder = '--Select--';
     element.classList.toggle('has-choices', multiple && selected.length > 0);
     chips.hidden = !multiple || !selected.length;
     summary.textContent = multiple
@@ -205,39 +209,40 @@ export function renderChoice(
   const choose = (index) => {
     const entry = entries[index];
     if (!alive || !entry || primary.disabled) return;
-    selected = multiple
-      ? entry.all
-        ? chosen(entry)
-          ? []
-          : options.map((option) => option.value)
-        : chosen(entry)
-          ? selected.filter((value) => !same(value, entry.value))
-          : [...selected, entry.value]
-      : entry.value == null
-        ? []
-        : [entry.value];
+    if (multiple) {
+      if (entry.all) {
+        if (chosen(entry)) selected = [];
+        else selected = options.map((option) => option.value);
+      } else if (chosen(entry)) selected = selected.filter((value) => !same(value, entry.value));
+      else selected = [...selected, entry.value];
+    } else if (entry.value == null) selected = [];
+    else selected = [entry.value];
     update();
     if (!multiple) close();
     primary.focus();
     notify();
   };
-  for (const [index, entry] of entries.entries()) {
-    const option = document.createElement('div');
-    option.id = `${list.id}-${index}`;
-    option.setAttribute('role', 'option');
-    option.setAttribute('aria-label', entry.label);
-    option.textContent = entry.label;
-    if (entry.all) {
-      option.className = 'choice-select-all';
-      const count = document.createElement('span');
-      count.textContent = `${options.length} items`;
-      count.setAttribute('aria-hidden', 'true');
-      option.append(count);
+  const renderOptions = () => {
+    list.replaceChildren();
+    for (const [index, entry] of entries.entries()) {
+      const option = document.createElement('div');
+      option.id = `${list.id}-${index}`;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-label', entry.label);
+      option.textContent = entry.label;
+      if (entry.all) {
+        option.className = 'choice-select-all';
+        const count = document.createElement('span');
+        count.textContent = `${options.length} items`;
+        count.setAttribute('aria-hidden', 'true');
+        option.append(count);
+      }
+      option.addEventListener('pointerdown', (event) => event.preventDefault());
+      option.addEventListener('click', () => choose(index));
+      list.append(option);
     }
-    option.addEventListener('pointerdown', (event) => event.preventDefault());
-    option.addEventListener('click', () => choose(index));
-    list.append(option);
-  }
+  };
+  renderOptions();
   primary.addEventListener('beforeinput', (event) => {
     if (!multiple) event.preventDefault();
   });
@@ -255,76 +260,92 @@ export function renderChoice(
   });
   primary.addEventListener('click', () => (list.hidden ? open() : close()));
   primary.addEventListener('blur', close);
-  primary.addEventListener('keydown', (event) => {
+  const navigateChoices = (event) => {
+    event.preventDefault();
+    const wasClosed = list.hidden;
+    open();
+    const visible = [...list.children].flatMap((option, index) => (option.hidden ? [] : [index])),
+      position = visible.indexOf(active);
+    if (event.key === 'Home') active = visible[0];
+    else if (event.key === 'End') active = visible.at(-1);
+    else {
+      let change = 0;
+      if (!wasClosed) change = event.key === 'ArrowDown' ? 1 : -1;
+      active = visible[Math.max(0, Math.min(visible.length - 1, position + change))];
+    }
+    keyboardActive = true;
+    update();
+    revealActive();
+  };
+  const typeToChoose = (event) => {
+    event.preventDefault();
+    open();
+    typed += event.key.toLocaleLowerCase();
+    clearTimeout(typingTimer);
+    typingTimer = setTimeout(() => {
+      typed = '';
+    }, 700);
+    const index = entries.findIndex((entry) => String(entry.label).toLocaleLowerCase().startsWith(typed));
+    if (index >= 0) {
+      active = index;
+      keyboardActive = true;
+      update();
+      revealActive();
+    }
+  };
+  const dismissChoiceOnKey = (event) => {
     if (event.key === 'Tab') {
       close();
-      return;
+      return true;
     }
     if (event.key === 'Escape' && !list.hidden) {
       event.preventDefault();
       event.stopPropagation();
       close();
-      return;
+      return true;
     }
+    return false;
+  };
+  const activateChoiceOnKey = (event) => {
+    if (!(event.key === 'Enter' || (event.key === ' ' && !multiple))) return false;
+    event.preventDefault();
+    if (list.hidden) open();
+    else choose(active);
+    return true;
+  };
+  const handleChoiceKeydown = (event) => {
+    if (dismissChoiceOnKey(event)) return;
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-      event.preventDefault();
-      const wasClosed = list.hidden;
-      open();
-      const visible = [...list.children].flatMap((option, index) => (option.hidden ? [] : [index])),
-        position = visible.indexOf(active);
-      active =
-        event.key === 'Home'
-          ? visible[0]
-          : event.key === 'End'
-            ? visible.at(-1)
-            : visible[
-                Math.max(
-                  0,
-                  Math.min(visible.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)),
-                )
-              ];
-      keyboardActive = true;
-      update();
-      revealActive();
+      navigateChoices(event);
       return;
     }
-    if (event.key === 'Enter' || (event.key === ' ' && !multiple)) {
-      event.preventDefault();
-      if (list.hidden) open();
-      else choose(active);
-    } else if (!multiple && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      event.preventDefault();
-      open();
-      typed += event.key.toLocaleLowerCase();
-      clearTimeout(typingTimer);
-      typingTimer = setTimeout(() => {
-        typed = '';
-      }, 700);
-      const index = entries.findIndex((entry) => String(entry.label).toLocaleLowerCase().startsWith(typed));
-      if (index >= 0) {
-        active = index;
-        keyboardActive = true;
-        update();
-        revealActive();
-      }
-    }
-  });
+    if (activateChoiceOnKey(event)) return;
+    if (!multiple && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) typeToChoose(event);
+  };
+  primary.addEventListener('keydown', handleChoiceKeydown);
   element.append(primary, chips, summary, chevron, list);
   update();
   return {
     element,
     primary,
-    read: () => (multiple ? (selected.length ? [...selected] : null) : (selected[0] ?? null)),
+    read: () => {
+      if (multiple) {
+        if (selected.length) return [...selected];
+        return null;
+      }
+      return selected[0] ?? null;
+    },
+    setOptions(next) {
+      options = next.map((option) => ({ ...option }));
+      entries = entriesForOptions();
+      keyboardActive = false;
+      renderOptions();
+      filterOptions(true);
+      update();
+      if (!list.hidden) position();
+    },
     setValue(value) {
-      selected = multiple
-        ? Array.isArray(value)
-          ? [...value]
-          : value == null || value === ''
-            ? []
-            : String(value).split(',').map(Number)
-        : value == null
-          ? []
-          : [value];
+      selected = valuesFor(value);
       update();
     },
     setDisabled(disabled) {

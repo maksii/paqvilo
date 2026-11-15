@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Invented items</title>
+  </head>
+  <body>
+    <h1>Invented items</h1>
+    <p id="context">Loading context…</p>
+    <form id="create">
+      <label>Item name <input name="name" required /></label><button>Create</button>
+    </form>
+    <ul id="items"></ul>
+    <button id="connector">Try connector</button>
+    <p id="status" role="status"></p>
+    <script type="importmap">
+      { "imports": { "paqvilo/mirage/lib/code-apps-client.js": "/mirage-client.js" } }
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

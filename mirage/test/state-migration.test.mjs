@@ -1,6 +1,7 @@
+// @test-kind contract: scenario refresh is Paqvilo's designed three-way merge; no native capture is involved
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { migrateScenarioState, mergeAssetManifests } from '../lib/state-migration.mjs';
+import { migrateScenarioState, mergeAssetManifests, markStagedUpgrades } from '../lib/state-migration.mjs';
 
 test('migration adds declared relationships without replacing existing mapping choices', () => {
   const existing = {
@@ -138,6 +139,31 @@ test('three-way migration preserves local edits, new records and deletions while
   assert.deepEqual({ current, legacy, latest }, before);
 });
 
+test('migration keeps every plug-in and permission rule without an id, in order, and repeats to the same state', () => {
+  const plugin = (entity) => ({ entity, defaults: { owner: entity } });
+  const permission = (entity) => ({ entity, scope: 'global', operations: ['read'] });
+  const current = {
+    mappings: {},
+    tables: {},
+    plugins: [plugin('contact'), plugin('account'), plugin('lead')],
+    permissions: [permission('contact'), permission('account')],
+    settings: { permissionMode: 'enforce' },
+  };
+  const latest = { tables: {}, plugins: [], permissions: [] };
+  const before = structuredClone({ current, latest });
+  const once = migrateScenarioState(current, { latest }).state;
+  assert.deepEqual(once.plugins, current.plugins);
+  assert.deepEqual(once.permissions, current.permissions);
+  const twice = migrateScenarioState(once, { latest }).state;
+  assert.deepEqual(twice, once);
+  const withFresh = migrateScenarioState(current, {
+    latest: { ...latest, plugins: [plugin('contact'), plugin('invoice')], permissions: [permission('account')] },
+  }).state;
+  assert.deepEqual(withFresh.plugins, [plugin('contact'), plugin('account'), plugin('lead'), plugin('invoice')]);
+  assert.deepEqual(withFresh.permissions, current.permissions);
+  assert.deepEqual({ current, latest }, before);
+});
+
 test('asset manifest migration retains custom paths and separate origins; baseline wins matching pairs', () => {
   const current = {
     version: 1,
@@ -161,4 +187,47 @@ test('asset manifest migration retains custom paths and separate origins; baseli
   assert.deepEqual({ current, baseline }, before);
   assert.deepEqual(mergeAssetManifests(null, baseline), baseline);
   assert.throws(() => mergeAssetManifests({ version: 2, assets: [] }, baseline), /Invalid migration asset manifest/);
+});
+
+// A state saved before the holding marker existed: the staged holding solution is a row with no record against its base.
+const solutionRows = () => [
+  { solutionid: 'base-id', uniquename: 'new_sample', parentsolutionid: null },
+  { solutionid: 'holding-id', uniquename: 'new_sample_Upgrade', parentsolutionid: null },
+  { solutionid: 'orphan-id', uniquename: 'new_other_Upgrade', parentsolutionid: null },
+];
+
+test('a staged holding solution with no marker gets the marker of its base, and an orphan named _Upgrade gets none', () => {
+  const state = markStagedUpgrades({ tables: { solution: solutionRows() } });
+  assert.deepEqual(state.dataverse, { holdingSolutions: { 'holding-id': 'base-id' }, holdingMarkersMigrated: true });
+});
+
+test('marking staged upgrades is idempotent and leaves a state that already records its holding solutions unchanged', () => {
+  const once = markStagedUpgrades({ tables: { solution: solutionRows() } });
+  assert.deepEqual(markStagedUpgrades(structuredClone(once)), once);
+  const recorded = markStagedUpgrades({
+    tables: { solution: solutionRows() },
+    dataverse: { holdingSolutions: { 'holding-id': 'other-base' } },
+  });
+  assert.deepEqual(recorded.dataverse.holdingSolutions, { 'holding-id': 'other-base' });
+  assert.equal(recorded.dataverse.holdingMarkersMigrated, true);
+});
+
+test('a state with no staged holding solution records only that the migration ran', () => {
+  const state = markStagedUpgrades({ tables: { solution: [solutionRows()[0]] } });
+  assert.deepEqual(state.dataverse, { holdingMarkersMigrated: true });
+});
+
+// The name-based migration runs once per state: the flag records that it ran, and a flagged state never adopts a solution by its name.
+const flagged = (solutions) => ({ tables: { solution: solutions }, dataverse: { holdingMarkersMigrated: true } });
+
+test('a flagged state does not adopt an ordinary solution that has the holding name', () => {
+  const state = markStagedUpgrades(flagged(solutionRows().slice(0, 2)));
+  assert.deepEqual(state.dataverse, { holdingMarkersMigrated: true });
+});
+
+test('an empty state gets the flag, so a solution imported later under the holding name is never adopted', () => {
+  const state = markStagedUpgrades({ tables: { solution: [] } });
+  assert.deepEqual(state.dataverse, { holdingMarkersMigrated: true });
+  state.tables.solution.push(...solutionRows().slice(0, 2));
+  assert.deepEqual(markStagedUpgrades(state).dataverse, { holdingMarkersMigrated: true });
 });

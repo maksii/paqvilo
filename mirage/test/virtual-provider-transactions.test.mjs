@@ -2,6 +2,7 @@
 // stage 30, the operation's core transaction stage. A provider with begin/commit/rollback is enlisted
 // once per outermost transaction and rolled back with it whatever fails; a provider without the contract keeps its write and the
 // rollback names the row.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, validateVirtualTableProviders } from '../lib/dataverse-virtual-providers.mjs';
@@ -80,7 +81,7 @@ async function setup(t, { transactional }) {
       ],
     }),
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await server.close();
   });

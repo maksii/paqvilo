@@ -6,7 +6,8 @@ import path from 'node:path';
 import { createModelDrivenOverlay, readModelDrivenResourceMap } from '../lense/model-driven.mjs';
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sidecar-'));
+  // realpath: os.tmpdir() can be an 8.3 short path on Windows, and the report must not leak the long form either.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sidecar-')));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   const file = path.join(root, 'bundle.js'),
     config = path.join(root, 'mapping.json');

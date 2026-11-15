@@ -3,12 +3,11 @@
 // API keeps every digit of an exact decimal.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { stringify } from 'yaml';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { createCanvasApp, createCanvasRuntime } from '../lib/canvas-runtime.mjs';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
-import { fixtureApp, organization } from './canvas-runtime-fixture.mjs';
+import { fixtureApp, organization, serveCanvas } from './canvas-runtime-fixture.mjs';
 
 const files = {
   'Src/App.pa.yaml': stringify({
@@ -115,15 +114,8 @@ test('the driver API keeps every digit of an exact decimal', async (t) => {
     principal: () => org.admin,
     csrf: () => 'fx-token',
   });
-  const server = http.createServer((req, res) => {
-    if (!handler(req, res)) {
-      res.writeHead(418);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/_apps/api/canvas/fx_inventedcanvas`, {
+  const base = await serveCanvas(t, handler);
+  const response = await fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': 'fx-token' },
     body: JSON.stringify({

@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 
 function install({ origin, channel, stateName, names, maxBytes }) {
-  if (window !== window.top || location.origin !== origin || globalThis[stateName]) return;
-  if (names.some((name) => Object.prototype.hasOwnProperty.call(globalThis, name)))
-    throw Error('An owned page API name is already present.');
+  if (window !== window.top || location.origin !== origin || globalThis[stateName]) return; // NOSONAR: retain the original WindowProxy top-frame guard independently of the mutable globalThis alias.
+  if (names.some((name) => Object.hasOwn(globalThis, name)))
+    throw new Error('An owned page API name is already present.');
   let sequence = 0;
   const pending = new Map();
   const state = {
@@ -12,16 +12,12 @@ function install({ origin, channel, stateName, names, maxBytes }) {
       if (!entry) return;
       pending.delete(packet.id);
       clearTimeout(entry.timer);
-      if (packet.expiresAt < Date.now()) {
-        entry.reject(Error('The owned page reply expired.'));
-        return;
-      }
-      packet.failed ? entry.reject(Error('The owned page request failed.')) : entry.resolve(packet.value);
+      packet.failed ? entry.reject(new Error('The owned page request failed.')) : entry.resolve(packet.value);
     },
     dispose() {
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
-        entry.reject(Error('The owned page connection closed.'));
+        entry.reject(new Error('The owned page connection closed.'));
       }
       pending.clear();
       for (const name of names) if (globalThis[name]?.ownedChannel === channel) delete globalThis[name];
@@ -36,19 +32,19 @@ function install({ origin, channel, stateName, names, maxBytes }) {
   for (const name of names) {
     const fn = (...args) =>
       new Promise((resolve, reject) => {
-        if (location.origin !== origin) return reject(Error('The owned page changed origin.'));
+        if (location.origin !== origin) return reject(new Error('The owned page changed origin.'));
         let body;
         const id = ++sequence;
         try {
           body = JSON.stringify({ id, name, args });
         } catch {
-          return reject(Error('The owned page request is not JSON.'));
+          return reject(new Error('The owned page request is not JSON.'));
         }
         if (new TextEncoder().encode(body).length > maxBytes)
-          return reject(Error('The owned page request is too large.'));
+          return reject(new Error('The owned page request is too large.'));
         const timer = setTimeout(() => {
           pending.delete(id);
-          reject(Error('The owned page request timed out.'));
+          reject(new Error('The owned page request timed out.'));
         }, 20000);
         pending.set(id, { resolve, reject, timer });
         try {
@@ -56,7 +52,7 @@ function install({ origin, channel, stateName, names, maxBytes }) {
         } catch {
           clearTimeout(timer);
           pending.delete(id);
-          reject(Error('The owned page connection is unavailable.'));
+          reject(new Error('The owned page connection is unavailable.'));
         }
       });
     Object.defineProperty(fn, 'ownedChannel', { value: channel });
@@ -72,7 +68,7 @@ export async function createOwnedPageBindings(
   const expected = new URL(origin).origin;
   const entries = Object.entries(bindings);
   if (entries.some(([name, callback]) => !/^[A-Za-z_$][\w$]{0,100}$/.test(name) || typeof callback !== 'function'))
-    throw Error('Invalid owned page binding.');
+    throw new Error('Invalid owned page binding.');
   const suffix = randomBytes(16).toString('hex');
   const channel = '__paqviloOwned_' + suffix,
     stateName = '__paqviloOwnedState_' + suffix;
@@ -80,6 +76,27 @@ export async function createOwnedPageBindings(
   const contexts = new Map(),
     callbacks = new Map(entries);
   const pendingCalls = new Set();
+  // Callback invocations that close() waits for, so no page work outlives the binding.
+  const running = new Set();
+  // Pending replies to the page. Replies still in flight end when the session detaches; the call timeout is the hang
+  // guard for a session that does not end them.
+  const replies = new Set();
+  const controller = new AbortController();
+  const track = (promise) => {
+    running.add(promise);
+    promise.finally(() => running.delete(promise)).catch(() => {});
+    return promise;
+  };
+  // Waits for the promises, but at most one call timeout, the bound a call already has. Used for callbacks that ignore
+  // their signal and for replies that a session never ends.
+  const settleWithinCallTimeout = async (promises) => {
+    let timer;
+    const guard = new Promise((resolve) => {
+      timer = setTimeout(resolve, callTimeout);
+    });
+    await Promise.race([Promise.allSettled(promises), guard]);
+    clearTimeout(timer);
+  };
   let mainFrame,
     script,
     closed = false,
@@ -97,18 +114,18 @@ export async function createOwnedPageBindings(
     } catch {
       packet = { id: packet.id, failed: true };
     }
-    await bounded(
-      () =>
-        session.send('Runtime.callFunctionOn', {
-          executionContextId: context.id,
-          functionDeclaration: 'function(key,packet){globalThis[key]?.deliver(packet)}',
-          arguments: [{ value: stateName }, { value: { ...packet, expiresAt: Date.now() + 1500 } }],
-          returnByValue: true,
-        }),
-      1500,
-    ).catch(() => {});
+    try {
+      await session.send('Runtime.callFunctionOn', {
+        executionContextId: context.id,
+        functionDeclaration: 'function(key,packet){globalThis[key]?.deliver(packet)}',
+        arguments: [{ value: stateName }, { value: packet }],
+        returnByValue: true,
+      });
+    } catch {
+      // A failed delivery leaves the page's own call timer to settle the request.
+    }
   };
-  const called = async (event) => {
+  const handleCall = async (event) => {
     if (event.name !== channel || closed || Buffer.byteLength(event.payload) > maxBytes) return;
     const context = contexts.get(event.executionContextId);
     if (!context?.auxData?.isDefault || context.auxData.frameId !== mainFrame || context.origin !== expected) return;
@@ -122,44 +139,48 @@ export async function createOwnedPageBindings(
       return;
     if (inFlight >= 32) return reply(context, { id: packet.id, failed: true });
     inFlight++;
+    let settled;
     try {
       let timer, cancel;
       const deadline = new Promise((_, reject) => {
-        cancel = () => reject(Error('Owned page call ended.'));
+        cancel = () => reject(new Error('Owned page call ended.'));
         timer = setTimeout(cancel, callTimeout);
       });
       pendingCalls.add(cancel);
       let value;
       try {
-        value = await Promise.race([
+        const work = track(
           Promise.resolve().then(() =>
-            callbacks.get(packet.name)({ page, frame: page.mainFrame(), context: page.context() }, ...packet.args),
+            callbacks.get(packet.name)(
+              { page, frame: page.mainFrame(), context: page.context(), signal: controller.signal },
+              ...packet.args,
+            ),
           ),
-          deadline,
-        ]);
+        );
+        value = await Promise.race([work, deadline]);
       } finally {
         clearTimeout(timer);
         pendingCalls.delete(cancel);
       }
-      await reply(context, { id: packet.id, value });
+      settled = { id: packet.id, value };
     } catch {
-      await reply(context, { id: packet.id, failed: true });
+      settled = { id: packet.id, failed: true };
     } finally {
       inFlight--;
     }
+    await reply(context, settled);
+  };
+  const called = (event) => {
+    const call = handleCall(event);
+    replies.add(call);
+    call.finally(() => replies.delete(call)).catch(() => {});
   };
   session.on('Runtime.executionContextCreated', contextsCreated);
   session.on('Runtime.executionContextDestroyed', contextsDestroyed);
   session.on('Runtime.executionContextsCleared', cleared);
   session.on('Page.frameNavigated', navigated);
   session.on('Runtime.bindingCalled', called);
-  const bounded = (operation, timeout = 500) => {
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(Error('Owned page cleanup timed out.')), timeout);
-    });
-    return Promise.race([Promise.resolve().then(operation), deadline]).finally(() => clearTimeout(timer));
-  };
+  // Cleanup waits for each protocol command to settle; a slow browser is not a failed retirement.
   const close = async () => {
     if (closed) return;
     closed = true;
@@ -169,14 +190,17 @@ export async function createOwnedPageBindings(
     session.off('Runtime.executionContextsCleared', cleared);
     session.off('Page.frameNavigated', navigated);
     for (const cancel of pendingCalls) cancel();
+    controller.abort();
+    await settleWithinCallTimeout(running);
     if (page.isClosed()) {
       contexts.clear();
+      await settleWithinCallTimeout(replies);
       return;
     }
     const failures = [];
     const drain = async (operation) => {
       try {
-        await bounded(operation);
+        await operation();
       } catch (error) {
         failures.push(error);
       }
@@ -203,12 +227,13 @@ export async function createOwnedPageBindings(
         const response = await session.send('Runtime.evaluate', {
           expression: `globalThis[${JSON.stringify(stateName)}]?.dispose();delete globalThis[${JSON.stringify(channel)}]`,
         });
-        if (response.exceptionDetails) throw Error('Owned page wrapper cleanup failed.');
+        if (response.exceptionDetails) throw new Error('Owned page wrapper cleanup failed.');
       });
       await drain(() => session.send('Runtime.removeBinding', { name: channel }));
     }
     contexts.clear();
     await drain(() => session.detach());
+    await settleWithinCallTimeout(replies);
     if (failures.length === 1) throw failures[0];
     if (failures.length) throw new AggregateError(failures, 'Owned page binding cleanup failed.');
   };
@@ -222,13 +247,13 @@ export async function createOwnedPageBindings(
     const installed = await session.send('Runtime.evaluate', {
       expression: source,
     });
-    if (installed.exceptionDetails) throw Error('Owned page wrapper installation failed.');
+    if (installed.exceptionDetails) throw new Error('Owned page wrapper installation failed.');
   } catch (error) {
     try {
       await close();
-    } catch (cleanup) {
+    } catch (error_) {
       throw new AggregateError(
-        [error, cleanup],
+        [error, error_],
         'Owned page binding initialization and cleanup failed.',
         // eslint-disable-next-line preserve-caught-error -- Both caught errors are preserved in errors; the cause remains the initiating failure.
         { cause: error },

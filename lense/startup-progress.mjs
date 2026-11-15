@@ -1,6 +1,13 @@
 import fs from 'node:fs/promises';
 
 const runtimePhases = new Set([
+  'runtime-module-load',
+  'runtime-module-ready',
+  'context-configuration',
+  'context-solution-import',
+  'context-portal-import',
+  'context-pack-binding',
+  'context-ready',
   'configuration',
   'portal-import',
   'solution-import',
@@ -14,7 +21,8 @@ const runtimePhases = new Set([
 ]);
 
 /** Read only bounded, explicitly typed progress records; never forward arbitrary child log content. */
-export async function readStartupPhases(file, cursor = { offset: 0, remainder: '' }) {
+export async function readStartupPhases(file, cursor) {
+  if (cursor === undefined) cursor = { offset: 0, remainder: '' };
   const handle = await fs.open(file, 'r');
   try {
     const { size } = await handle.stat();
@@ -74,11 +82,14 @@ export function startupProgress({
     // Bound retained diagnostics during a long interactive session.
     if (events.length === 128) events.shift();
     events.push(event);
-    write(
-      structured
-        ? JSON.stringify(event)
-        : `startup     ${phase}${detail ? ` · ${detail}` : ''} (${(event.totalElapsedMs / 1000).toFixed(1)}s total; ${(event.phaseElapsedMs / 1000).toFixed(1)}s phase)${status === 'waiting' ? '…' : ''}`,
-    );
+    if (structured) write(JSON.stringify(event));
+    else {
+      const detailText = detail ? ` · ${detail}` : '';
+      const waitingMark = status === 'waiting' ? '…' : '';
+      write(
+        `startup     ${phase}${detailText} (${(event.totalElapsedMs / 1000).toFixed(1)}s total; ${(event.phaseElapsedMs / 1000).toFixed(1)}s phase)${waitingMark}`,
+      );
+    }
   };
   emit('started');
   const timer = setInterval(() => {
@@ -118,8 +129,73 @@ export function startupProgress({
   };
 }
 
+// Start-up page waits end on observed progress. Both limits are hang guards: a page that keeps making progress is
+// never failed by the silence guard, and the total cap is the last resort. A message names the guard that fired.
+export const STARTUP_PAGE_SILENCE_MS = 120_000;
+export const STARTUP_PAGE_CAP_MS = 600_000;
+
+/** The start-up page wait takes its silence guard from `--startup-timeout` when the option is given. */
+export function startupWaitOptions(args, options) {
+  return { ...options, silenceMs: args['startup-timeout'] === undefined ? undefined : Number(args['startup-timeout']) };
+}
+
+/** Only the host of a pending request may appear in a message: paths and query values stay out of it. */
+function requestHost(request) {
+  try {
+    return new URL(request.url()).host || 'unknown';
+  } catch {
+    /* A request without a parseable URL is summarised as unknown. */
+    return 'unknown';
+  }
+}
+
+function pendingSummary(requests) {
+  const count = requests.size;
+  const hosts = [...new Set([...requests.values()].map((record) => record.host))].toSorted((a, b) =>
+    a.localeCompare(b, 'en'),
+  );
+  const where = hosts.length ? ` on ${hosts.slice(0, 5).join(', ')}` : '';
+  return `${count} pending request${count === 1 ? '' : 's'}${where}`;
+}
+
+/** Resolves after `ms`, or as soon as `cancelled` settles; the timer is cleared on either path. */
+function pauseUnlessCancelled(ms, cancelled) {
+  let timer;
+  const elapsed = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return Promise.race([cancelled, elapsed]).finally(() => clearTimeout(timer));
+}
+
+// A Playwright timeout on a start-up step is the total cap ending the wait, so the error names the step and the time.
+function capStepError(error, { step, capMs, capAt, requests }) {
+  if (error?.name !== 'TimeoutError') return error;
+  const waited = Date.now() - (capAt - capMs);
+  return new Error(
+    `Initial page ${step} did not finish: the ${capMs} ms cap guard ended the wait after ${waited} ms with ${pendingSummary(requests)}. This is a hang guard, not a limit on a page that keeps making progress; inspect pending requests and sign-in in the browser.`,
+  );
+}
+
+/** Throws the guard that fired: silence with requests pending first, then the total cap. */
+function throwSettleGuard({ requests, silentSince, settleStarted, silenceMs, capMs, capAt }) {
+  const now = Date.now();
+  if (requests.size && now - silentSince >= silenceMs)
+    throw new Error(
+      `Initial page requests made no progress for ${now - silentSince} ms: the ${silenceMs} ms silence guard ended the wait with ${pendingSummary(requests)}. This is a hang guard, not a limit on a page that keeps making progress; inspect pending requests and sign-in in the browser.`,
+    );
+  if (now >= capAt)
+    throw new Error(
+      `Initial page requests did not settle: the ${capMs} ms cap guard ended the wait after ${now - settleStarted} ms with ${pendingSummary(requests)}. This is a hang guard, not a limit on a page that keeps making progress; inspect pending requests and sign-in in the browser.`,
+    );
+}
+
+// A guard that is not a finite positive duration would never fire, or would end the wait at once.
+function requirePositiveMs(ms, name) {
+  if (!Number.isFinite(ms) || ms <= 0) throw new Error(`${name} must be a positive number of milliseconds.`);
+}
+
 /** Navigation completion is separate from application readiness; no arbitrary live-page readiness is inferred. */
-export async function waitForStartupPage(
+/* NOSONAR: preserve request lifecycle and cancellation await boundaries */ export async function waitForStartupPage(
   page,
   url,
   {
@@ -128,16 +204,22 @@ export async function waitForStartupPage(
     signal,
     modelDriven = false,
     nativeModelDriven = false,
-    timeout = 120000,
+    timeout,
+    silenceMs = STARTUP_PAGE_SILENCE_MS,
+    capMs = timeout ?? STARTUP_PAGE_CAP_MS,
   } = {},
 ) {
+  requirePositiveMs(silenceMs, 'silenceMs');
+  requirePositiveMs(capMs, 'capMs');
   let cancelled = false;
-  const deadline = Date.now() + timeout,
+  const capAt = Date.now() + capMs,
     requests = new Map(),
     navigations = new Map();
   let idleSince = Date.now(),
+    progressAt = idleSince,
     sequence = 0;
   const started = (request) => {
+    progressAt = Date.now();
     if (!['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch'].includes(request.resourceType())) return;
     let frame = null;
     try {
@@ -146,11 +228,12 @@ export async function waitForStartupPage(
       /* Worker/unknown ownership remains pending until its terminal event. */
     }
     const order = ++sequence;
-    requests.set(request, { frame, order });
+    requests.set(request, { frame, order, host: requestHost(request) });
     if (frame && request.isNavigationRequest?.()) navigations.set(frame, order);
     idleSince = Date.now();
   };
   const finished = (request) => {
+    progressAt = Date.now();
     if (requests.delete(request)) idleSince = Date.now();
   };
   const committed = (frame) => {
@@ -167,7 +250,18 @@ export async function waitForStartupPage(
     navigations.delete(frame);
     idleSince = Date.now();
   };
-  const remaining = () => Math.max(1, deadline - Date.now());
+  const remaining = () => Math.max(1, capAt - Date.now());
+  const stepFailed = (step) => (error) => {
+    throw capStepError(error, { step, capMs, capAt, requests });
+  };
+  // Closing the browser is the user's stop at any step; the context's close event is the signal for it.
+  const context = page.context?.();
+  let contextClosed = false;
+  const onContextClose = () => {
+    contextClosed = true;
+  };
+  context?.on?.('close', onContextClose);
+  const browserGone = () => contextClosed || context?.browser?.()?.isConnected?.() === false;
   page.on('request', started);
   page.on('requestfinished', finished);
   page.on('requestfailed', finished);
@@ -186,7 +280,9 @@ export async function waitForStartupPage(
   try {
     if (signal?.aborted) return false;
     progress?.phase('document navigation');
-    const navigation = page.goto(url, { waitUntil: 'domcontentloaded', timeout }).then(() => 'document');
+    const navigation = page
+      .goto(url, { waitUntil: 'domcontentloaded', timeout: remaining() })
+      .then(() => 'document', stepFailed('navigation'));
     if ((await Promise.race([cancelledResult, navigation])) === 'cancelled') return false;
     if (modelDriven && new URL(page.url()).pathname === '/main.aspx') {
       progress?.phase('application data', 'waiting for catalogue, staff identity and initial view');
@@ -194,7 +290,7 @@ export async function waitForStartupPage(
         .waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState), null, {
           timeout: remaining(),
         })
-        .then(() => 'application');
+        .then(() => 'application', stepFailed('application readiness'));
       if ((await Promise.race([cancelledResult, readiness])) === 'cancelled') return false;
       const state = await page.evaluate(() => ({
         state: document.documentElement.dataset.mirageAppState,
@@ -213,7 +309,7 @@ export async function waitForStartupPage(
       if (
         (await Promise.race([
           cancelledResult,
-          page.waitForLoadState('load', { timeout: remaining() }).then(() => 'loaded'),
+          page.waitForLoadState('load', { timeout: remaining() }).then(() => 'loaded', stepFailed('load')),
         ])) === 'cancelled'
       )
         return false;
@@ -221,17 +317,19 @@ export async function waitForStartupPage(
       // resource streams are not a readiness protocol (and CDP can omit worker
       // terminal events). Only Mirage exposes the explicit app-state contract.
       // A native target completes document navigation without asserting usability.
+      const settleStarted = Date.now();
       while (!nativeModelDriven && (requests.size || Date.now() - idleSince < 100)) {
-        if (Date.now() >= deadline)
-          throw new Error(
-            `Initial page requests did not settle within ${timeout}ms; inspect pending requests and sign-in in the browser.`,
-          );
-        if (
-          (await Promise.race([
-            cancelledResult,
-            new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining()))),
-          ])) === 'cancelled'
-        )
+        // A closed page is a stop: the caller reports it and the command ends normally.
+        if (page.isClosed?.()) return false;
+        throwSettleGuard({
+          requests,
+          silentSince: Math.max(progressAt, settleStarted),
+          settleStarted,
+          silenceMs,
+          capMs,
+          capAt,
+        });
+        if ((await pauseUnlessCancelled(Math.min(50, capAt - Date.now()), cancelledResult)) === 'cancelled')
           return false;
       }
       progress?.complete(
@@ -242,11 +340,12 @@ export async function waitForStartupPage(
     }
     return !cancelled;
   } catch (error) {
-    // Browser close can reject an in-flight Playwright wait before its context
-    // close event resolves `stopped`; that user action still ends dev normally.
-    if (cancelled || page.isClosed?.() || page.context?.()?.browser()?.isConnected() === false) return false;
+    // A browser or page close rejects an in-flight Playwright wait, and the page can report closed before its context
+    // reports its own close. Either is the user's stop.
+    if (cancelled || browserGone() || page.isClosed?.()) return false;
     throw error;
   } finally {
+    context?.off?.('close', onContextClose);
     signal?.removeEventListener('abort', onAbort);
     page.off('request', started);
     page.off('requestfinished', finished);

@@ -4,12 +4,31 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 
-export function startMcpServer({ command, args = [], env = process.env, cwd, onStderr = () => {} }) {
-  const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isResponse = (message) => !('method' in message) && ('result' in message || 'error' in message);
+
+export function startMcpServer({
+  command,
+  args = [],
+  env = process.env,
+  cwd,
+  onStderr = () => {},
+  spawnProcess = spawn,
+  // A bridge that has not exited this long after its input ended is hung: it is asked to end, after the same time again
+  // it is killed, and close waits for its exit throughout.
+  closeGuardMs = 60_000,
+}) {
+  const child = spawnProcess(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   const pending = new Map();
   let nextId = 0,
     failure = null,
-    closePromise;
+    closePromise,
+    closeGuard;
+  // The hang guard's first expiry asks the bridge to end and arms the second, which kills it.
+  const endHungChild = () => {
+    child.kill();
+    closeGuard = setTimeout(() => child.kill('SIGKILL'), closeGuardMs);
+  };
   const stop = (error) => {
     failure ??= error;
     for (const { reject, timer } of pending.values()) {
@@ -31,6 +50,13 @@ export function startMcpServer({ command, args = [], env = process.env, cwd, onS
     resolveExit();
   });
   child.stdin.on('error', () => stop(new Error('MCP process input closed.')));
+  // The server's requests use its own id space: ping is answered, any other request is refused, and none of them
+  // settles a pending call of this client.
+  const answerServerRequest = ({ id, method }) => {
+    if (id === undefined) return;
+    const reply = method === 'ping' ? { result: {} } : { error: { code: -32601, message: 'Method not found' } };
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, ...reply }) + '\n');
+  };
   const lines = readline.createInterface({ input: child.stdout });
   lines.on('line', (line) => {
     let message;
@@ -39,7 +65,10 @@ export function startMcpServer({ command, args = [], env = process.env, cwd, onS
     } catch {
       return;
     }
-    if (message.id !== undefined && pending.has(message.id)) {
+    // Valid JSON that is not a JSON-RPC object (null, a number, a string, an array) is malformed output as well.
+    if (!isObject(message)) return;
+    if (message.method !== undefined) answerServerRequest(message);
+    else if (isResponse(message) && pending.has(message.id)) {
       const { resolve, reject, timer } = pending.get(message.id);
       clearTimeout(timer);
       pending.delete(message.id);
@@ -48,6 +77,9 @@ export function startMcpServer({ command, args = [], env = process.env, cwd, onS
       else resolve(message.result);
     }
   });
+  // Without output no reply can arrive. A child that already exited is unaffected; a live one is ended, so the exit
+  // handler settles every pending call instead of leaving it to its timeout.
+  lines.on('close', () => child.kill());
   child.stderr.on('data', (chunk) => onStderr(String(chunk)));
   const request = (method, params = {}, timeout = 60000) =>
     new Promise((resolve, reject) => {
@@ -90,26 +122,22 @@ export function startMcpServer({ command, args = [], env = process.env, cwd, onS
       return (await request('tools/list', {}, 60000)).tools ?? [];
     },
     close() {
-      return (closePromise ??= (async () => {
-        stop(new Error('MCP client closed.'));
-        try {
-          child.stdin.end();
-        } catch {
-          /* already closed */
-        }
-        let timer;
-        try {
-          const exited = await Promise.race([
-            exit.then(() => true),
-            new Promise((resolve) => {
-              timer = setTimeout(() => resolve(false), 5000);
-            }),
-          ]);
-          if (!exited) child.kill();
-        } finally {
-          clearTimeout(timer);
-        }
-      })());
+      if (closePromise == null)
+        closePromise = (async () => {
+          stop(new Error('MCP client closed.'));
+          try {
+            child.stdin.end();
+          } catch {
+            /* already closed */
+          }
+          closeGuard = setTimeout(endHungChild, closeGuardMs);
+          try {
+            await exit;
+          } finally {
+            clearTimeout(closeGuard);
+          }
+        })();
+      return closePromise;
     },
   };
 }

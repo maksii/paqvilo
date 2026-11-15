@@ -3,72 +3,13 @@
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { label, stringColumn as column, tableBody, startAdminApi } from './support/web-api.mjs';
 import { readSolutionZip } from '../lib/solution-schema.mjs';
-import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { zipOf, solutionImportJob } from '../lib/dataverse-solutions.mjs';
 
-const APP = '55555555-5555-4555-8555-555555555555';
-const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
-const column = (schema, extra = {}) => ({
-  '@odata.type': '#Microsoft.Dynamics.CRM.StringAttributeMetadata',
-  SchemaName: schema,
-  DisplayName: label(schema),
-  FormatName: { Value: 'Text' },
-  ...extra,
-});
-const tableBody = (schema) => ({
-  '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
-  SchemaName: schema,
-  DisplayName: label(schema),
-  DisplayCollectionName: label(schema + 's'),
-  Description: label(''),
-  OwnershipType: 'OrganizationOwned',
-  IsActivity: false,
-  HasActivities: false,
-  HasNotes: false,
-  Attributes: [column('fx_Name', { IsPrimaryName: true, MaxLength: 100 })],
-});
-
-let counter = 0;
 async function server(owner) {
-  const variable = `PAQ_OWNERSHIP_SECRET_${process.pid}_${++counter}`;
-  process.env[variable] = 'invented-secret';
   const store = await new DataStore({ state: emptyState() }).init();
-  const settings = dataverseSettings({
-    enabled: true,
-    tds: { enabled: false },
-    applications: [
-      { appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
-    ],
-  });
-  const api = await startDataverseApi({ store, settings, log: () => {} });
-  owner.after(async () => {
-    delete process.env[variable];
-    await api.close();
-  });
-  const token = (
-    await (
-      await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-        method: 'POST',
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: APP,
-          client_secret: 'invented-secret',
-          scope: `${api.origin}/.default`,
-        }),
-      })
-    ).json()
-  ).access_token;
-  const request = async (method, path, body, headers = {}) => {
-    const response = await fetch(`${api.origin}/api/data/v9.2${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    return { status: response.status, json: text ? JSON.parse(text) : null };
-  };
+  const { request } = await startAdminApi(owner, store);
   return { store, request };
 }
 
@@ -78,28 +19,35 @@ let zip;
 before(async () => {
   const closers = [];
   const src = await server({ after: (fn) => closers.push(fn) });
-  await src.request('POST', '/publishers', {
-    uniquename: 'fx_pub',
-    friendlyname: 'Fx',
-    customizationprefix: 'fx',
-    customizationoptionvalueprefix: 10000,
-  });
+  const created = (response) => assert.equal(response.status, 204, JSON.stringify(response.json));
+  created(
+    await src.request('POST', '/publishers', {
+      uniquename: 'fx_pub',
+      friendlyname: 'Fx',
+      customizationprefix: 'fx',
+      customizationoptionvalueprefix: 10000,
+    }),
+  );
   const pub = (await src.request('GET', "/publishers?$select=publisherid&$filter=uniquename eq 'fx_pub'")).json.value[0]
     .publisherid;
-  await src.request('POST', '/solutions', {
-    uniquename: 'fx_base',
-    friendlyname: 'fx_base',
-    version: '1.0.0.0',
-    'publisherid@odata.bind': `/publishers(${pub})`,
-  });
+  created(
+    await src.request('POST', '/solutions', {
+      uniquename: 'fx_base',
+      friendlyname: 'fx_base',
+      version: '1.0.0.0',
+      'publisherid@odata.bind': `/publishers(${pub})`,
+    }),
+  );
   const H = { 'MSCRM.SolutionUniqueName': 'fx_base' };
-  await src.request('POST', '/EntityDefinitions', tableBody('fx_widget'), H);
+  created(await src.request('POST', '/EntityDefinitions', tableBody('fx_widget'), H));
   for (const name of ['fx_Code', 'fx_Note'])
-    await src.request(
-      'POST',
-      "/EntityDefinitions(LogicalName='fx_widget')/Attributes",
-      column(name, { MaxLength: 20 }),
-      H,
+    created(
+      await src.request(
+        'POST',
+        "/EntityDefinitions(LogicalName='fx_widget')/Attributes",
+        column(name, { MaxLength: 20 }),
+        H,
+      ),
     );
   assert.equal(
     (
@@ -182,9 +130,10 @@ test('managed-imported tables, columns and keys report IsManaged and refuse DELE
   assert.equal(table.json.error.code, '0x8004f013');
   assert.ok(dst.store.state.mappings.fx_widget?.fields?.fx_note);
   // The uninstall owns the layer: it removes the components.
-  assert.equal((await dst.request('POST', '/UninstallSolutionAsync', { SolutionUniqueName: 'fx_base' })).status, 200);
-  for (let i = 0; i < 100 && dst.store.state.mappings.fx_widget; i++)
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  const started = await dst.request('POST', '/UninstallSolutionAsync', { SolutionUniqueName: 'fx_base' });
+  assert.equal(started.status, 200);
+  const job = await solutionImportJob({ store: dst.store }, started.json.AsyncOperationId);
+  assert.equal(job.statuscode, 30, job.message);
   assert.equal(dst.store.state.mappings.fx_widget, undefined);
 });
 

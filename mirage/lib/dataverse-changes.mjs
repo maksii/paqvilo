@@ -29,7 +29,7 @@ function stamp(ms) {
 /** Dataverse escapes only a few characters in the token and keeps lowercase hex. */
 export function encodeDeltaToken(token) {
   return encodeURIComponent(token)
-    .replace(/!/g, '%21')
+    .replaceAll('!', '%21')
     .replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
 }
 

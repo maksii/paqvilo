@@ -195,11 +195,11 @@ export async function prerequisiteReadiness({
     version: nodeVersion,
     minimumMajor: 24,
     minimumVersion: MINIMUM_NODE,
-    ready: Boolean(parts && parts[0] === 24 && (parts[1] > 22 || (parts[1] === 22 && parts[2] >= 1))),
+    ready: Boolean(parts?.[0] === 24 && (parts[1] > 22 || (parts[1] === 22 && parts[2] >= 1))),
   };
   const result = probeGit
     ? probeGit()
-    : spawnSync('git', ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    : spawnSync('git', ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
   const git = {
     ready: result.status === 0,
     version: result.status === 0 ? result.stdout.trim() : null,
@@ -214,37 +214,84 @@ export async function prerequisiteReadiness({
   };
 }
 
-async function main() {
-  let options;
+function readOptions() {
   try {
-    ({ values: options } = parseArgs({
+    const { values: options } = parseArgs({
       options: { check: { type: 'boolean' }, json: { type: 'boolean' }, browser: { type: 'string' } },
-    }));
+    });
     if (options.json && !options.check)
       throw new Error('--json requires --check so machine-readable setup never installs dependencies');
     if (options.browser && !['msedge', 'chrome', 'chromium'].includes(options.browser))
       throw new Error('--browser must be msedge, chrome or chromium');
+    return { options };
   } catch (error) {
     if (process.argv.includes('--json'))
       console.log(
         JSON.stringify({ schemaVersion: 1, command: 'setup', offline: true, ready: false, error: error.message }),
       );
     else console.error(`paqvilo: ${error.message}; use --check for an offline readiness check.`);
-    return 1;
+    return { error };
   }
+}
+function verifyResolvedDependencies(root, result) {
+  if (!result.ready) return;
+  try {
+    for (const project of result.projects) {
+      const require = createRequire(path.join(root, project.directory, 'package.json'));
+      for (const name of project.dependencies) require(name);
+    }
+  } catch {
+    result.ready = false;
+    result.reason = 'locked dependencies are incomplete. Run npm run setup.';
+  }
+}
+function printReadinessReport(options, result, prerequisites, report) {
+  if (options.json) console.log(JSON.stringify(report, null, 2));
+  else {
+    console.log(`paqvilo: ${result.reason}`);
+    const nodeStatus = prerequisites.node.ready
+      ? 'ready'
+      : `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line required`;
+    console.log(`Node ${prerequisites.node.version}: ${nodeStatus}`);
+    console.log(`Git: ${prerequisites.git.version ?? prerequisites.git.error}`);
+    if (prerequisites.browser)
+      console.log(
+        `${prerequisites.browser.channel}: ${prerequisites.browser.path ?? 'executable not found in standard installation paths'} (presence only; not launched)`,
+      );
+  }
+}
+function reportMissingPrerequisite(prerequisites, browser) {
+  let missing = `${browser} browser executable`;
+  if (!prerequisites.node.ready) missing = `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line`;
+  else if (!prerequisites.git.ready) missing = 'Git on PATH';
+  console.error(`paqvilo: missing prerequisite: ${missing}`);
+}
+function installProjects(root, projects) {
+  const args = ['ci', '--ignore-scripts', '--no-audit', '--no-fund'];
+  for (const project of projects) {
+    if (project.ready) continue;
+    const cwd = path.resolve(root, project.directory);
+    const installation =
+      process.platform === 'win32'
+        ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm ${args.join(' ')}`], {
+            cwd,
+            stdio: 'inherit',
+            windowsHide: true,
+          })
+        : spawnSync('npm', args, { cwd, stdio: 'inherit' }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    if (installation.error)
+      console.error(`paqvilo: ${project.name} dependency installation failed: ${installation.error.message}`);
+    if (installation.status !== 0) return installation.status ?? 1;
+  }
+  return 0;
+}
+async function main() {
+  const parsed = readOptions();
+  if (parsed.error) return 1;
+  const { options } = parsed;
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const result = dependencyReadiness(root);
-  if (result.ready) {
-    try {
-      for (const project of result.projects) {
-        const require = createRequire(path.join(root, project.directory, 'package.json'));
-        for (const name of project.dependencies) require(name);
-      }
-    } catch {
-      result.ready = false;
-      result.reason = 'locked dependencies are incomplete. Run npm run setup.';
-    }
-  }
+  verifyResolvedDependencies(root, result);
   const prerequisites = await prerequisiteReadiness({ browser: options.browser });
   const report = {
     schemaVersion: 1,
@@ -255,24 +302,11 @@ async function main() {
     prerequisites,
   };
   if (options.check) {
-    if (options.json) console.log(JSON.stringify(report, null, 2));
-    else {
-      console.log(`paqvilo: ${result.reason}`);
-      console.log(
-        `Node ${prerequisites.node.version}: ${prerequisites.node.ready ? 'ready' : `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line required`}`,
-      );
-      console.log(`Git: ${prerequisites.git.version ?? prerequisites.git.error}`);
-      if (prerequisites.browser)
-        console.log(
-          `${prerequisites.browser.channel}: ${prerequisites.browser.path ?? 'executable not found in standard installation paths'} (presence only; not launched)`,
-        );
-    }
+    printReadinessReport(options, result, prerequisites, report);
     return report.ready ? 0 : 1;
   }
   if (!prerequisites.ready) {
-    console.error(
-      `paqvilo: missing prerequisite: ${!prerequisites.node.ready ? `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line` : !prerequisites.git.ready ? 'Git on PATH' : `${options.browser} browser executable`}`,
-    );
+    reportMissingPrerequisite(prerequisites, options.browser);
     return 1;
   }
   if (result.ready) {
@@ -283,23 +317,7 @@ async function main() {
     console.error(`paqvilo: ${result.reason}`);
     return 1;
   }
-  const args = ['ci', '--ignore-scripts', '--no-audit', '--no-fund'];
-  for (const project of result.projects) {
-    if (project.ready) continue;
-    const cwd = path.resolve(root, project.directory);
-    const installation =
-      process.platform === 'win32'
-        ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm ${args.join(' ')}`], {
-            cwd,
-            stdio: 'inherit',
-            windowsHide: true,
-          })
-        : spawnSync('npm', args, { cwd, stdio: 'inherit' });
-    if (installation.error)
-      console.error(`paqvilo: ${project.name} dependency installation failed: ${installation.error.message}`);
-    if (installation.status !== 0) return installation.status ?? 1;
-  }
-  return 0;
+  return installProjects(root, result.projects);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))

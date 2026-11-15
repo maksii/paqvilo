@@ -1,6 +1,25 @@
 import { guidKey, scalar } from './dataverse-values.mjs';
 import { fieldValue } from './fetchxml-engine.mjs';
 
+function buildRowIndex(rows, column) {
+  const index = new Map();
+  index.fallback = [];
+  index.positions = new Map(rows.map((row, position) => [row, position]));
+  for (const row of rows) {
+    const raw = scalar(fieldValue(row, column));
+    const key = guidKey(raw);
+    // Invented fixtures may use non-GUID identifiers. Keep their original
+    // comparison/coercion behavior through the complete predicate.
+    if (!key) {
+      if (raw != null && raw !== '') index.fallback.push(row);
+      continue;
+    }
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(row);
+  }
+  return index;
+}
+
 /** One render owns this cache. It caches evaluation inputs, never query results. */
 export class FetchRenderCache {
   constructor() {
@@ -49,24 +68,13 @@ export class FetchRenderCache {
     const wanted = guidKey(scalar(value));
     if (!wanted) return rows;
     let columns = this.indexes.get(rows);
-    if (!columns) this.indexes.set(rows, (columns = new Map()));
+    if (!columns) {
+      columns = new Map();
+      this.indexes.set(rows, columns);
+    }
     let index = columns.get(column);
     if (!index) {
-      index = new Map();
-      index.fallback = [];
-      index.positions = new Map(rows.map((row, position) => [row, position]));
-      for (const row of rows) {
-        const raw = scalar(fieldValue(row, column));
-        const key = guidKey(raw);
-        // Invented fixtures may use non-GUID identifiers. Keep their original
-        // comparison/coercion behavior through the complete predicate.
-        if (!key) {
-          if (raw != null && raw !== '') index.fallback.push(row);
-          continue;
-        }
-        if (!index.has(key)) index.set(key, []);
-        index.get(key).push(row);
-      }
+      index = buildRowIndex(rows, column);
       columns.set(column, index);
     }
     const matches = index.get(wanted) ?? [];

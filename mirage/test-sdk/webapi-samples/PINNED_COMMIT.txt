@@ -6,4 +6,6 @@ Clone location: .paqvilo/sdk-gates/PowerApps-Samples (ignored; untrusted, never 
 Clone command:
   git clone --depth 1 --filter=blob:none --sparse -c core.longpaths=true https://github.com/microsoft/PowerApps-Samples.git D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples
   git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples sparse-checkout set dataverse/webapi/CSharp-NETx/WebAPIService
-  git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples rev-parse HEAD
+  git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples fetch --depth 1 origin 8e42f87026f4c93d7e468f28416f5852375d325a
+  git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples checkout --detach 8e42f87026f4c93d7e468f28416f5852375d325a
+The gate refuses a clone whose HEAD differs from the commit above.

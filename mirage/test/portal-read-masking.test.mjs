@@ -3,13 +3,9 @@
 // reading principal, which is the site's application user in the standard model and the visitor's mapped Dataverse user in the
 // enhanced model, with masking rules applied because a portal read never sends UnMaskedData.
 import test from 'node:test';
+import { simulatorFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const SITE = '78787878-7878-4787-8787-787878787878',
   MEMBER = '78787878-7878-4787-8787-787878787801';
@@ -128,20 +124,13 @@ const initial = () => ({
 });
 
 async function site(t, state) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-read-masking-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  for (const [name, body] of Object.entries(files(state))) {
-    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
-    await fs.writeFile(path.join(dir, name), body);
-  }
-  const sim = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
+  const sim = await simulatorFixture(t, {
+    prefix: 'portal-read-masking-',
+    files: files(state),
     port: 0,
     watch: false,
     initial: initial(),
   });
-  ownedFixture(t).add(() => sim.close());
   const headers = signInHeaders(sim, 'alex');
   const page = async () => (await (await fetch(sim.url + '/', { headers })).text()).match(/<li>.*?<\/li>/g);
   const api = async (route) => {

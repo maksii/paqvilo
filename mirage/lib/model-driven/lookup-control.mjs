@@ -1,6 +1,36 @@
 import { icon, navigationIcon } from './icons.mjs';
 
 let nextId = 0;
+
+function handleLookupEscape(event, { popup, close }) {
+  if (popup.hidden) return;
+  event.preventDefault();
+  event.stopPropagation();
+  close();
+}
+
+function handleLookupArrow(event, state) {
+  const { popup, context, load, browse, found, results, render } = state;
+  if (popup.hidden) {
+    if (context.lookupSuggestions) void load();
+    else void browse();
+    return;
+  }
+  const active = Math.max(0, Math.min(found.length - 1, state.getActive() + (event.key === 'ArrowDown' ? 1 : -1)));
+  state.setActive(active);
+  render();
+  const row = results.children[active]?.getBoundingClientRect(),
+    viewport = results.getBoundingClientRect();
+  if (row?.top < viewport.top) results.scrollTop -= viewport.top - row.top;
+  else if (row?.bottom > viewport.bottom) results.scrollTop += row.bottom - viewport.bottom;
+}
+
+function handleLookupEnter(event, { popup, found, active, choose }) {
+  if (popup.hidden) return;
+  event.preventDefault();
+  if (found[active]) choose(found[active]);
+}
+
 export function renderLookup(field, value, context) {
   const element = document.createElement('div');
   element.className = 'lookup';
@@ -245,31 +275,35 @@ export function renderLookup(field, value, context) {
     if (typeof context.lookupSuggestions === 'function' && open()) {
       const token = sequence;
       timer = setTimeout(() => {
-        if (token === sequence) load();
+        if (token === sequence) void load();
       }, 250);
     }
   });
   primary.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !popup.hidden) {
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    } else if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
-      event.preventDefault();
-      if (popup.hidden) {
-        if (context.lookupSuggestions) load();
-        else browse();
-        return;
-      }
-      active = Math.max(0, Math.min(found.length - 1, active + (event.key === 'ArrowDown' ? 1 : -1)));
-      render();
-      const row = results.children[active]?.getBoundingClientRect(),
-        viewport = results.getBoundingClientRect();
-      if (row?.top < viewport.top) results.scrollTop -= viewport.top - row.top;
-      else if (row?.bottom > viewport.bottom) results.scrollTop += row.bottom - viewport.bottom;
-    } else if (event.key === 'Enter' && !popup.hidden) {
-      event.preventDefault();
-      if (found[active]) choose(found[active]);
+    switch (event.key) {
+      case 'Escape':
+        handleLookupEscape(event, { popup, close });
+        break;
+      case 'ArrowDown':
+      case 'ArrowUp':
+        event.preventDefault();
+        handleLookupArrow(event, {
+          popup,
+          context,
+          load,
+          browse,
+          found,
+          results,
+          render,
+          getActive: () => active,
+          setActive: (value) => {
+            active = value;
+          },
+        });
+        break;
+      case 'Enter':
+        handleLookupEnter(event, { popup, found, active, choose });
+        break;
     }
   });
   clear.addEventListener('click', () => {
@@ -286,8 +320,8 @@ export function renderLookup(field, value, context) {
   find.addEventListener('click', () => {
     if (context.lookupSuggestions) {
       primary.focus();
-      load();
-    } else browse();
+      void load();
+    } else void browse();
   });
   advanced.addEventListener('click', browse);
   element.append(badge, primary, clear, find, popup);

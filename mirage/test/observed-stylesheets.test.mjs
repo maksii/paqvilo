@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { captureObservedStylesheets, resolveObservedStylesheet } from '../lib/observed-stylesheets.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const origin = 'https://portal.example';
 test('explicit mapped native stylesheet is served only while source/cache/origin bindings match', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-observed-style-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-observed-style-'));
   try {
     const sourceDir = path.join(dir, 'source');
     await fs.mkdir(sourceDir);
@@ -102,7 +103,7 @@ test('explicit mapped native stylesheet is served only while source/cache/origin
   }
 });
 test('stylesheet observation fails closed for unmapped/scripts/nonCSS and never issues writes', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-observed-style-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-observed-style-'));
   try {
     const file = path.join(dir, 'app.js');
     await fs.writeFile(file, 'alert(1)');

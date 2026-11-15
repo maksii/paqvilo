@@ -1,3 +1,4 @@
+import { canvasRenderingGaps } from './canvas-rendering.mjs';
 // Read-only index over the sources the existing loaders already produced (Solution scan, schema, metadata, workflows,
 // optional portal). Nothing is re-read or rewritten; consumers ask the graph which source of a component is in effect
 // and what a run still requires.
@@ -11,11 +12,234 @@ import { viewColumnPrerequisites } from './model-driven/view-prerequisites.mjs';
 
 const SURFACES = { portal: 'portalRendering', 'model-driven': 'staff', canvas: 'canvas' }; // host surface of each hostSurfaceNodes kind
 const SECRET_TYPE = 100000005; // environmentvariabledefinition type Secret (secret-resolver.mjs SECRET_TYPE)
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const norm = (value) =>
   String(value ?? '')
     .trim()
     .toLowerCase();
 const canonical = (value) => norm(value).replace(/[{}]/g, '');
+
+function addLayerNodes(add, layers) {
+  for (const layer of layers)
+    add({
+      kind: 'layer',
+      key: layer.name,
+      version: layer.solution?.version ?? null,
+      layer: layer.index,
+      solution: layer.name,
+      source: layer.dir,
+      format: layer.format ?? 'xml',
+    });
+}
+
+function addTableNodes(add, schema) {
+  for (const table of Object.values(schema.tables ?? {})) {
+    const last = table.layers?.at(-1);
+    add({
+      kind: 'table',
+      key: table.logicalName,
+      layer: last?.layer ?? null,
+      solution: last?.solution ?? null,
+      source: last?.file ?? table.sources?.[0] ?? null,
+      level: table.origin === 'solution' ? 'behaviour' : 'contract',
+    });
+  }
+}
+
+function addEnvironmentVariableNodes(add, schema, solutionData, bindings) {
+  const localValues = new Map(
+    Object.entries(bindings.environmentVariables ?? {}).map(([name, value]) => [norm(name), value]),
+  );
+  for (const variable of schema.environmentVariables ?? solutionData.environmentVariables ?? [])
+    add({
+      kind: 'environmentvariable',
+      key: variable.schemaName,
+      source: variable.source ?? null,
+      type: variable.type ?? null,
+      required: variable.isRequired !== false,
+      hasValue: localValues.has(norm(variable.schemaName)) || variable.value != null || variable.defaultValue != null,
+    });
+}
+
+function addConnectionReferenceNodes(add, schema, solutionData, bindings, layerOf) {
+  const bound = new Map(
+    (bindings.connectionReferences ?? []).map((reference) => [norm(reference.logicalName), reference]),
+  );
+  for (const reference of solutionData.connectionReferences ?? schema.connectionReferences ?? []) {
+    const layer = layerOf(reference.layer);
+    add({
+      kind: 'connectionreference',
+      key: reference.logicalName,
+      layer: reference.layer ?? null,
+      solution: layer?.name ?? null,
+      source: reference.source ?? null,
+      dependencies: reference.connectorId
+        ? [{ component: 'connector', name: String(reference.connectorId).split('/').at(-1) }]
+        : [],
+      bound: Boolean(bound.get(norm(reference.logicalName))?.connectionId),
+    });
+  }
+}
+
+function addMetadataNodes(add, metadata) {
+  for (const [kind, rows] of [
+    ['form', metadata.forms],
+    ['view', metadata.views],
+  ])
+    for (const row of rows ?? [])
+      add({
+        kind,
+        key: row.id,
+        name: row.name ?? row.id,
+        source: row.file ?? null,
+        dependencies: row.entity ? [{ component: 'table', name: row.entity }] : [],
+      });
+}
+
+function addWorkflowNodes(add, workflows) {
+  for (const [id, workflow] of workflows ?? [])
+    add({
+      kind: 'workflow',
+      key: id,
+      name: workflow.name ?? id,
+      source: workflow.file ?? null,
+      active: workflow.active !== false,
+    });
+}
+
+function addInventoryNodes(add, inventory) {
+  for (const record of inventory.filter((item) => item.component !== 'connectionreference'))
+    add({
+      kind: record.component,
+      key: record.name,
+      alias: record.id,
+      name: record.name,
+      version: record.version,
+      layer: record.layer,
+      solution: record.solution,
+      source: record.source,
+      level: record.level,
+      dependencies: record.dependencies,
+      reason: record.reason,
+      componentType: record.componentType,
+      inventory: true,
+      variants: record.variants ?? 1,
+      ...(record.sources ? { sources: record.sources } : {}),
+      ...(record.contributions ? { contributions: record.contributions } : {}),
+      sourceMissing: record.sourceMissing === true,
+      diagnostics: [...(record.diagnostics ?? []), ...(record.canvas?.diagnostics ?? [])],
+    });
+}
+
+function addPortalPageNodes(add, portal) {
+  for (const page of portal?.pages ?? [])
+    add({ kind: 'webpage', key: page.id, name: page.name ?? page.id, source: page.metadata?._file ?? null });
+}
+
+function connectionRequirementRow(node) {
+  return {
+    id: node.id,
+    kind: node.kind,
+    source: node.source,
+    status: node.bound ? 'satisfied' : 'missing',
+    reason: node.bound ? null : 'SOLUTION_CONNREF_UNBOUND',
+  };
+}
+
+function environmentRequirementRow(node) {
+  if (Number(node.type) === SECRET_TYPE)
+    return {
+      id: node.id,
+      kind: node.kind,
+      source: node.source,
+      status: 'secret',
+      reason: 'ENVIRONMENT_VARIABLE_SECRET',
+      provider: 'secret-resolver',
+    };
+  const missing = !node.hasValue && node.required;
+  return {
+    id: node.id,
+    kind: node.kind,
+    source: node.source,
+    status: missing ? 'missing' : 'satisfied',
+    reason: missing ? 'ENVIRONMENT_VARIABLE_NO_VALUE' : null,
+  };
+}
+
+function inventoryRequirementRow(node) {
+  return {
+    id: node.id,
+    kind: node.kind,
+    source: node.source,
+    status: node.kind === 'canvasapp' ? 'placeholder' : 'unsupported',
+    reason: node.reason ?? null,
+  };
+}
+
+function requirementRow(node) {
+  if (node.kind === 'connectionreference') return connectionRequirementRow(node);
+  if (node.kind === 'environmentvariable') return environmentRequirementRow(node);
+  if (node.kind === 'workflow' && !node.active)
+    return { id: node.id, kind: node.kind, source: node.source, status: 'disabled', reason: 'WORKFLOW_INACTIVE' };
+  if (node.sourceMissing)
+    return {
+      id: node.id,
+      kind: node.kind,
+      source: node.source,
+      status: 'missing',
+      reason: 'SOLUTION_COMPONENT_SOURCE_MISSING',
+    };
+  if (node.diagnostics?.some((item) => item.severity === 'error'))
+    return {
+      id: node.id,
+      kind: node.kind,
+      source: node.source,
+      status: 'unsupported',
+      reason: node.diagnostics.find((item) => item.severity === 'error').code,
+    };
+  if (node.level === 'inventory' && node.kind !== 'mobileofflineprofile') return inventoryRequirementRow(node);
+  return null;
+}
+
+function appendInventoryRequirements(node, rows, resolve) {
+  if (!node.inventory) return;
+  for (const dependency of node.dependencies ?? []) {
+    if (dependency.missing) continue;
+    const target = resolve(dependency.component, dependency.name);
+    if (target && (target.kind !== 'connectionreference' || target.bound)) continue;
+    rows.push({
+      id: `${dependency.component}:${canonical(dependency.name)}`,
+      kind: dependency.component,
+      source: node.source,
+      status: 'missing',
+      reason: 'INVENTORY_DEPENDENCY_UNRESOLVED',
+      dependent: node.id,
+    });
+  }
+}
+
+function appendMissingDependencyRows(rows, missing, resolve) {
+  for (const { layer, required, dependent } of missing) {
+    const kind = COMPONENT_BY_TYPE[required.type] ?? `type:${required.type}`;
+    const key = required.schemaName ?? required.id ?? '';
+    const provided =
+      (required.schemaName && resolve(kind, required.schemaName)) ||
+      (required.id && resolve(kind, required.id)) ||
+      null;
+    rows.push({
+      id: `${kind}:${canonical(key)}`,
+      kind,
+      source: layer.manifestFile ?? layer.dir,
+      status: provided ? 'satisfied' : 'missing',
+      reason: provided ? null : 'SOLUTION_MISSING_DEPENDENCY',
+      layer: layer.name,
+      ...(dependent ? { dependent: dependent.schemaName ?? dependent.id ?? null } : {}),
+    });
+  }
+}
 
 /**
  * Build the graph. Node: `{ kind, id: '<kind>:<key>', name, version, layer, solution, source, level, dependencies }`.
@@ -79,101 +303,16 @@ export function buildSourceGraph({
   };
   const layers = scan?.layers ?? [];
   const layerOf = (index) => layers.find((layer) => layer.index === index);
-  for (const layer of layers)
-    add({
-      kind: 'layer',
-      key: layer.name,
-      version: layer.solution?.version ?? null,
-      layer: layer.index,
-      solution: layer.name,
-      source: layer.dir,
-      format: layer.format ?? 'xml',
-    });
   const schema = solutionData.schema ?? {};
-  for (const table of Object.values(schema.tables ?? {})) {
-    const last = table.layers?.at(-1);
-    add({
-      kind: 'table',
-      key: table.logicalName,
-      layer: last?.layer ?? null,
-      solution: last?.solution ?? null,
-      source: last?.file ?? table.sources?.[0] ?? null,
-      level: table.origin === 'solution' ? 'behaviour' : 'contract',
-    });
-  }
-  const localValues = new Map(
-    Object.entries(bindings.environmentVariables ?? {}).map(([name, value]) => [norm(name), value]),
-  );
-  for (const variable of schema.environmentVariables ?? solutionData.environmentVariables ?? [])
-    add({
-      kind: 'environmentvariable',
-      key: variable.schemaName,
-      source: variable.source ?? null,
-      type: variable.type ?? null,
-      required: variable.isRequired !== false,
-      hasValue: localValues.has(norm(variable.schemaName)) || variable.value != null || variable.defaultValue != null,
-    });
-  const bound = new Map(
-    (bindings.connectionReferences ?? []).map((reference) => [norm(reference.logicalName), reference]),
-  );
-  for (const reference of solutionData.connectionReferences ?? schema.connectionReferences ?? []) {
-    const layer = layerOf(reference.layer);
-    add({
-      kind: 'connectionreference',
-      key: reference.logicalName,
-      layer: reference.layer ?? null,
-      solution: layer?.name ?? null,
-      source: reference.source ?? null,
-      dependencies: reference.connectorId
-        ? [{ component: 'connector', name: String(reference.connectorId).split('/').at(-1) }]
-        : [],
-      bound: Boolean(bound.get(norm(reference.logicalName))?.connectionId),
-    });
-  }
-  for (const [kind, rows] of [
-    ['form', metadata.forms],
-    ['view', metadata.views],
-  ])
-    for (const row of rows ?? [])
-      add({
-        kind,
-        key: row.id,
-        name: row.name ?? row.id,
-        source: row.file ?? null,
-        dependencies: row.entity ? [{ component: 'table', name: row.entity }] : [],
-      });
-  for (const [id, workflow] of workflows ?? [])
-    add({
-      kind: 'workflow',
-      key: id,
-      name: workflow.name ?? id,
-      source: workflow.file ?? null,
-      active: workflow.active !== false,
-    });
+  addLayerNodes(add, layers);
+  addTableNodes(add, schema);
+  addEnvironmentVariableNodes(add, schema, solutionData, bindings);
+  addConnectionReferenceNodes(add, schema, solutionData, bindings, layerOf);
+  addMetadataNodes(add, metadata);
+  addWorkflowNodes(add, workflows);
   // Connection references come from the merged schema above (with their binding); other inventory records are added as listed.
-  for (const record of (scan?.inventory ?? []).filter((item) => item.component !== 'connectionreference'))
-    add({
-      kind: record.component,
-      key: record.name,
-      alias: record.id,
-      name: record.name,
-      version: record.version,
-      layer: record.layer,
-      solution: record.solution,
-      source: record.source,
-      level: record.level,
-      dependencies: record.dependencies,
-      reason: record.reason,
-      componentType: record.componentType,
-      inventory: true,
-      variants: record.variants ?? 1,
-      ...(record.sources ? { sources: record.sources } : {}),
-      ...(record.contributions ? { contributions: record.contributions } : {}),
-      sourceMissing: record.sourceMissing === true,
-      diagnostics: [...(record.diagnostics ?? []), ...(record.canvas?.diagnostics ?? [])],
-    });
-  for (const page of portal?.pages ?? [])
-    add({ kind: 'webpage', key: page.id, name: page.name ?? page.id, source: page.metadata?._file ?? null });
+  addInventoryNodes(add, scan?.inventory ?? []);
+  addPortalPageNodes(add, portal);
   hostSurfaceNodes(add, {
     portal,
     metadata,
@@ -243,109 +382,24 @@ export function buildSourceGraph({
       }));
       for (const node of nodes.values()) {
         // A host-surface gap row names its surface (capability-report.mjs scopes it with a scenario naming the surface).
-        if (node.requirement) {
+        const requirement = node.requirement;
+        if (requirement) {
           rows.push({
             id: node.id,
             kind: node.kind,
             source: node.source,
-            ...node.requirement,
+            ...requirement,
             surface: SURFACES[node.kind] ?? null,
           });
           continue;
         }
-        if (node.kind === 'connectionreference')
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: node.bound ? 'satisfied' : 'missing',
-            reason: node.bound ? null : 'SOLUTION_CONNREF_UNBOUND',
-          });
-        else if (node.kind === 'environmentvariable' && Number(node.type) === SECRET_TYPE)
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: 'secret',
-            reason: 'ENVIRONMENT_VARIABLE_SECRET',
-            provider: 'secret-resolver',
-          });
-        else if (node.kind === 'environmentvariable') {
-          const missing = !node.hasValue && node.required;
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: missing ? 'missing' : 'satisfied',
-            reason: missing ? 'ENVIRONMENT_VARIABLE_NO_VALUE' : null,
-          });
-        } else if (node.kind === 'workflow' && !node.active)
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: 'disabled',
-            reason: 'WORKFLOW_INACTIVE',
-          });
-        else if (node.sourceMissing)
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: 'missing',
-            reason: 'SOLUTION_COMPONENT_SOURCE_MISSING',
-          });
-        else if (node.diagnostics?.some((item) => item.severity === 'error'))
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: 'unsupported',
-            reason: node.diagnostics.find((item) => item.severity === 'error').code,
-          });
-        // A mobile offline profile is reported by its model-driven:offline/<profile> row (hostSurfaceNodes).
-        else if (node.level === 'inventory' && node.kind !== 'mobileofflineprofile')
-          rows.push({
-            id: node.id,
-            kind: node.kind,
-            source: node.source,
-            status: node.kind === 'canvasapp' ? 'placeholder' : 'unsupported',
-            reason: node.reason ?? null,
-          });
+        const row = requirementRow(node);
+        if (row) rows.push(row);
         // Inventory dependencies; `missing: true` ones come from the Solution manifest and are reported below.
-        if (node.inventory)
-          for (const dependency of node.dependencies ?? []) {
-            if (dependency.missing) continue;
-            const target = resolve(dependency.component, dependency.name);
-            if (target && (target.kind !== 'connectionreference' || target.bound)) continue;
-            rows.push({
-              id: `${dependency.component}:${canonical(dependency.name)}`,
-              kind: dependency.component,
-              source: node.source,
-              status: 'missing',
-              reason: 'INVENTORY_DEPENDENCY_UNRESOLVED',
-              dependent: node.id,
-            });
-          }
+        appendInventoryRequirements(node, rows, resolve);
       }
-      for (const { layer, required, dependent } of missing) {
-        const kind = COMPONENT_BY_TYPE[required.type] ?? `type:${required.type}`;
-        const key = required.schemaName ?? required.id ?? '';
-        const provided =
-          (required.schemaName && resolve(kind, required.schemaName)) ||
-          (required.id && resolve(kind, required.id)) ||
-          null;
-        rows.push({
-          id: `${kind}:${canonical(key)}`,
-          kind,
-          source: layer.manifestFile ?? layer.dir,
-          status: provided ? 'satisfied' : 'missing',
-          reason: provided ? null : 'SOLUTION_MISSING_DEPENDENCY',
-          layer: layer.name,
-          ...(dependent ? { dependent: dependent.schemaName ?? dependent.id ?? null } : {}),
-        });
-      }
-      return rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      appendMissingDependencyRows(rows, missing, resolve);
+      return rows.sort((a, b) => Number(a.id > b.id) - Number(a.id < b.id));
     },
     /** The diagnostics that explain requirement rows: loader failures and portal findings that carry a requirement. */
     diagnostics() {
@@ -370,7 +424,7 @@ export function buildSourceGraph({
   };
   // Identity of what is in effect: ids, layers, versions and levels (never source paths or values).
   const digest = createHash('sha256');
-  for (const id of [...nodes.keys()].sort()) {
+  for (const id of [...nodes.keys()].sort(/* NOSONAR: preserve default string coercion */)) {
     const node = nodes.get(id);
     digest.update(JSON.stringify([id, node.layer, node.version, node.level])).update('\n');
   }
@@ -382,32 +436,259 @@ const field = (record, name) => record?.[`adx_${name}`] ?? record?.[`mspp_${name
 // A Document Locations subgrid on a Solution form (Learn, power-pages/configure/manage-sharepoint-documents).
 const DOCUMENT_GRID = /<TargetEntityType>\s*sharepointdocumentlocation\s*<\/TargetEntityType>/i;
 
+function addHostedDashboardNodes(inventory, nodes, hosted, unrendered) {
+  for (const record of inventory.filter((record) => record.component === 'dashboard' && hosted.has(record.id))) {
+    const node = nodes?.get(`dashboard:${canonical(record.name)}`);
+    if (!node) continue;
+    if (unrendered(hosted.get(record.id)).length) node.reason = 'MD_DASHBOARD_COMPONENT_UNSUPPORTED';
+    else Object.assign(node, { level: 'behaviour', reason: null });
+  }
+}
+
+function dashboardNavigationNode(add, app, item, dashboard, gaps) {
+  add({
+    kind: 'model-driven',
+    key: `dashboard/${app.uniqueName ?? app.id}/${item.id ?? item.dashboard}`,
+    name: dashboard?.name ?? item.dashboard ?? item.id,
+    level: dashboard && !gaps.length ? 'behaviour' : 'inventory',
+    source: dashboard?.sourceFile ?? app.sourceFile ?? null,
+    requirement: chooseLazily(
+      () => !dashboard,
+      () => ({
+        status: 'unsupported',
+        reason: 'MD_NAV_DASHBOARD',
+        level: 'inventory',
+        message: 'The dashboard definition is not in the sources.',
+      }),
+      () =>
+        chooseLazily(
+          () => gaps.length,
+          () => ({
+            status: 'unsupported',
+            reason: 'MD_DASHBOARD_COMPONENT_UNSUPPORTED',
+            level: 'inventory',
+            components: gaps,
+            message: `Not rendered locally: ${gaps.join('; ')}.`,
+          }),
+          () => ({ status: 'satisfied', reason: null, level: 'behaviour' }),
+        ),
+    ),
+  });
+}
+
+function* navigationItems(app) {
+  for (const area of app.navigation ?? [])
+    for (const group of area.groups ?? []) for (const item of group.items ?? []) yield item;
+}
+
+function addDashboardNavigationNodes(add, apps, unrendered) {
+  for (const app of apps)
+    for (const item of navigationItems(app)) {
+      if (item.code !== 'MD_NAV_DASHBOARD') continue;
+      const dashboard = item.dashboard
+        ? (app.dashboards ?? []).find((candidate) => candidate.id === item.dashboard)
+        : app.dashboards?.[0];
+      dashboardNavigationNode(add, app, item, dashboard, dashboard ? unrendered(dashboard) : []);
+    }
+}
+
+function addPortalFindingNodes(add, portal) {
+  for (const finding of portal?.diagnostics ?? []) {
+    const requirement = finding.requirement;
+    if (requirement)
+      add({
+        kind: 'portal',
+        key: requirement.id.replace(/^portal:/, ''),
+        level: requirement.level,
+        requirement: {
+          status: requirement.status,
+          reason: finding.code,
+          level: requirement.level,
+          ...(finding.message ? { message: finding.message } : {}),
+        },
+      });
+  }
+}
+
+function addSharepointDocumentNode(add, portal, metadata) {
+  if (!portal) return;
+  const owners = [
+    ...(portal.forms ?? []).map((form) => form.metadata),
+    ...(portal.records ?? []).filter((record) => record.kind === 'advancedformstep'),
+  ]
+    .filter(Boolean)
+    .map((record) => ({
+      entity: String(field(record, 'entityname') ?? '').toLowerCase(),
+      form: field(record, 'formname'),
+    }))
+    .filter((owner) => owner.entity && owner.form);
+  const forms = (metadata?.forms ?? []).filter(
+    (form) =>
+      DOCUMENT_GRID.test(form.xml ?? '') &&
+      owners.some((owner) => owner.entity === form.entity && [form.name, form.id].includes(owner.form)),
+  );
+  if (forms.length)
+    add({
+      kind: 'portal',
+      key: 'sharepoint-documents',
+      level: 'contract',
+      source: forms[0].file ?? null,
+      forms: forms.map((form) => form.id),
+      requirement: { status: 'unsupported', reason: 'PORTAL_SHAREPOINT_DOCUMENTS_LOCAL', level: 'contract' },
+    });
+}
+
+function addCustomPageNode(add, app, item, inventory) {
+  // The shell's rule (model-driven/solution.mjs customPageResolution): the app's own type-300 component and a canvas app in the sources.
+  const resolved = customPageResolution(
+    app,
+    item.page,
+    inventory.filter((record) => record.component === 'canvasapp' && record.name).map((record) => record.name),
+  );
+  add({
+    kind: 'model-driven',
+    key: `custom-page/${app.uniqueName ?? app.id}/${item.id ?? item.page}`,
+    name: item.page ?? item.id,
+    level: resolved.supported ? 'behaviour' : 'inventory',
+    source: app.sourceFile ?? null,
+    requirement: !resolved.supported
+      ? { status: 'unsupported', reason: 'MD_NAV_CUSTOM_PAGE', level: 'inventory', message: resolved.reason }
+      : {
+          status: 'placeholder',
+          reason: 'CANVAS_NOT_RENDERED',
+          level: 'behaviour',
+          message: "The custom page's canvas app runs headlessly; the page is not rendered.",
+        },
+  });
+}
+
+function addCustomPageNodes(add, apps, inventory) {
+  for (const app of apps)
+    for (const item of navigationItems(app))
+      if (item.code === 'MD_NAV_CUSTOM_PAGE') addCustomPageNode(add, app, item, inventory);
+}
+
+function addPcfNodes(add, portal, clientResources) {
+  for (const control of clientResources?.pcf?.controls ?? []) {
+    const admission = pcfAdmission(control, { platformLibraries: clientResources.pcf.platformLibraries ?? [] });
+    if (admission.code === 'PCF_VIRTUAL_UNSUPPORTED')
+      add({
+        kind: 'model-driven',
+        key: `pcf/${control.name}`,
+        name: control.name,
+        level: 'contract',
+        requirement: { status: 'unsupported', reason: admission.code, level: 'contract' },
+      });
+    // The Power Pages host renders any Solution code component by name and supplies no platform libraries (code-components.mjs).
+    // ponytail: one row per Solution control a portal could render; per-reference detection in pages and forms is the upgrade.
+    if (portal && pcfAdmission(control).code === 'PCF_VIRTUAL_UNSUPPORTED')
+      add({
+        kind: 'portal',
+        key: `pcf/${control.name}`,
+        name: control.name,
+        level: 'contract',
+        requirement: { status: 'unsupported', reason: 'PCF_VIRTUAL_UNSUPPORTED', level: 'contract' },
+      });
+  }
+}
+
+function profileGaps(profile, relationships) {
+  return Array.isArray(profile.items)
+    ? offlineProfileGaps(profile, { hierarchical: (table) => hierarchicalIn(relationships, table) })
+    : [{ entity: null, reason: 'The profile items could not be read from the sources.' }];
+}
+
+function addOfflineProfileNodes(add, profiles, relationships) {
+  for (const profile of profiles) {
+    const gaps = profileGaps(profile, relationships);
+    add({
+      kind: 'model-driven',
+      key: `offline/${profile.name}`,
+      name: profile.name,
+      level: gaps.length ? 'contract' : 'behaviour',
+      source: profile.source ?? null,
+      requirement: gaps.length
+        ? {
+            status: 'unsupported',
+            reason: 'MD_OFFLINE_FILTER_UNSUPPORTED',
+            level: 'contract',
+            items: gaps.map((gap) => gap.entity),
+            message: gaps.map((gap) => gap.reason).join(' '),
+          }
+        : { status: 'satisfied', reason: null, level: 'behaviour' },
+    });
+  }
+}
+
+function missingOfflineProfile(app, profiles) {
+  return (app.components ?? []).some(
+    (component) =>
+      component.type === 161 &&
+      !profiles.some(
+        (profile) =>
+          (profile.id && profile.id === component.id) ||
+          (component.entity && component.entity === profile.name.toLowerCase()),
+      ),
+  );
+}
+
+function addMissingOfflineProfileNodes(add, apps, profiles) {
+  for (const app of apps)
+    if (missingOfflineProfile(app, profiles))
+      add({
+        kind: 'model-driven',
+        key: `offline/${app.uniqueName ?? app.id}`,
+        name: app.uniqueName ?? app.id,
+        level: 'inventory',
+        source: app.sourceFile ?? null,
+        requirement: {
+          status: 'unsupported',
+          reason: 'MD_OFFLINE_PROFILE_MISSING',
+          level: 'inventory',
+          message: 'The app names a mobile offline profile that is not in the sources.',
+        },
+      });
+}
+
 /**
- * Canvas apps (canvas-runtime.mjs hosts their logic headlessly): canvas:app/<name> is satisfied when every control is
- * hosted, else unsupported (CANVAS_CONTROL_UNSUPPORTED) naming the controls; canvas:rendering is the documented boundary
- * (apps are never rendered: placeholder at inventory) while there is a canvas app. One rule for Solution inventory apps
+ * Canvas apps: canvas:app/<name> describes hosted logic; canvas:rendering describes the bounded local HTML player
+ * at contract fidelity. Unknown controls and unreadable sources remain explicit rendering gaps. One rule for Solution inventory apps
  * (hostSurfaceNodes) and project canvas.sources apps (canvasRequirementRows, merged by organization-host.mjs preflight).
  */
 function canvasNodes(records = []) {
   const apps = records.filter((record) => record.component === 'canvasapp'),
     nodes = [];
-  for (const record of apps.filter((item) => item.level === 'behaviour')) {
+  for (const record of apps) {
     const gaps = (record.unsupported ?? []).map((item) => `${item.screen}.${item.name} (${item.control})`);
+    const sourceGaps = record.sourceDiagnostics ?? [];
     nodes.push({
       kind: 'canvas',
       key: `app/${record.name}`,
       name: record.name,
       level: 'behaviour',
       source: record.source ?? null,
-      requirement: gaps.length
-        ? {
-            status: 'unsupported',
-            reason: 'CANVAS_CONTROL_UNSUPPORTED',
-            level: 'inventory',
-            components: gaps,
-            message: `Not hosted by the canvas runtime: ${gaps.join('; ')}.`,
-          }
-        : { status: 'satisfied', reason: null, level: 'behaviour' },
+      requirement: chooseLazily(
+        () => record.level !== 'behaviour' || sourceGaps.length,
+        () => ({
+          status: 'unsupported',
+          reason: sourceGaps[0]?.code ?? record.reason ?? 'CANVAS_SOURCE_NO_PAYAML',
+          level: 'inventory',
+          components: sourceGaps.map((item) => item.source ?? item.code),
+          message: 'Canvas source is incomplete or unreadable; coverage cannot be established.',
+        }),
+        () =>
+          chooseLazily(
+            () => gaps.length,
+            () => ({
+              status: 'unsupported',
+              reason: 'CANVAS_CONTROL_UNSUPPORTED',
+              level: 'inventory',
+              components: gaps,
+              message: `Not hosted by the canvas runtime: ${gaps.join('; ')}.`,
+            }),
+            () => ({ status: 'satisfied', reason: null, level: 'behaviour' }),
+          ),
+      ),
     });
   }
   if (apps.length)
@@ -415,13 +696,18 @@ function canvasNodes(records = []) {
       kind: 'canvas',
       key: 'rendering',
       name: 'Canvas rendering',
-      level: 'inventory',
+      level: 'contract',
       source: null,
       requirement: {
-        status: 'placeholder',
-        reason: 'CANVAS_NOT_RENDERED',
-        level: 'inventory',
-        message: 'Canvas apps run headlessly at /_apps/canvas/<app>; screens are not rendered.',
+        status: apps.every(
+          (app) => app.level === 'behaviour' && !app.sourceDiagnostics?.length && !canvasRenderingGaps(app).length,
+        )
+          ? 'satisfied'
+          : 'unsupported',
+        reason: 'CANVAS_RENDERING_BASELINE',
+        level: 'contract',
+        message:
+          'The local HTML player renders admitted controls at /_apps/canvas/<app>. Rendering approximations, unreadable sources and unsupported contracts remain explicit gaps; this verdict does not establish native Power Apps visual fidelity.',
       },
     });
   return nodes;
@@ -476,186 +762,18 @@ function hostSurfaceNodes(
       (app.dashboards ?? []).map((dashboard) => [dashboard.id, dashboard]),
     ),
   );
-  for (const record of inventory.filter((record) => record.component === 'dashboard' && hosted.has(record.id))) {
-    const node = nodes?.get(`dashboard:${canonical(record.name)}`);
-    if (!node) continue;
-    if (unrendered(hosted.get(record.id)).length) node.reason = 'MD_DASHBOARD_COMPONENT_UNSUPPORTED';
-    else Object.assign(node, { level: 'behaviour', reason: null });
-  }
-  for (const app of metadata?.modelDrivenApps ?? [])
-    for (const area of app.navigation ?? [])
-      for (const group of area.groups ?? [])
-        for (const item of group.items ?? []) {
-          if (item.code !== 'MD_NAV_DASHBOARD') continue;
-          const dashboard = item.dashboard
-            ? (app.dashboards ?? []).find((candidate) => candidate.id === item.dashboard)
-            : app.dashboards?.[0];
-          const gaps = dashboard ? unrendered(dashboard) : [];
-          add({
-            kind: 'model-driven',
-            key: `dashboard/${app.uniqueName ?? app.id}/${item.id ?? item.dashboard}`,
-            name: dashboard?.name ?? item.dashboard ?? item.id,
-            level: dashboard && !gaps.length ? 'behaviour' : 'inventory',
-            source: dashboard?.sourceFile ?? app.sourceFile ?? null,
-            requirement: !dashboard
-              ? {
-                  status: 'unsupported',
-                  reason: 'MD_NAV_DASHBOARD',
-                  level: 'inventory',
-                  message: 'The dashboard definition is not in the sources.',
-                }
-              : gaps.length
-                ? {
-                    status: 'unsupported',
-                    reason: 'MD_DASHBOARD_COMPONENT_UNSUPPORTED',
-                    level: 'inventory',
-                    components: gaps,
-                    message: `Not rendered locally: ${gaps.join('; ')}.`,
-                  }
-                : { status: 'satisfied', reason: null, level: 'behaviour' },
-          });
-        }
-  for (const finding of portal?.diagnostics ?? []) {
-    const requirement = finding.requirement;
-    if (requirement)
-      add({
-        kind: 'portal',
-        key: requirement.id.replace(/^portal:/, ''),
-        level: requirement.level,
-        requirement: {
-          status: requirement.status,
-          reason: finding.code,
-          level: requirement.level,
-          ...(finding.message ? { message: finding.message } : {}),
-        },
-      });
-  }
-  if (portal) {
-    const owners = [
-      ...(portal.forms ?? []).map((form) => form.metadata),
-      ...(portal.records ?? []).filter((record) => record.kind === 'advancedformstep'),
-    ]
-      .filter(Boolean)
-      .map((record) => ({
-        entity: String(field(record, 'entityname') ?? '').toLowerCase(),
-        form: field(record, 'formname'),
-      }))
-      .filter((owner) => owner.entity && owner.form);
-    const forms = (metadata?.forms ?? []).filter(
-      (form) =>
-        DOCUMENT_GRID.test(form.xml ?? '') &&
-        owners.some((owner) => owner.entity === form.entity && [form.name, form.id].includes(owner.form)),
-    );
-    if (forms.length)
-      add({
-        kind: 'portal',
-        key: 'sharepoint-documents',
-        level: 'contract',
-        source: forms[0].file ?? null,
-        forms: forms.map((form) => form.id),
-        requirement: { status: 'unsupported', reason: 'PORTAL_SHAREPOINT_DOCUMENTS_LOCAL', level: 'contract' },
-      });
-  }
-  for (const app of metadata?.modelDrivenApps ?? [])
-    for (const area of app.navigation ?? [])
-      for (const group of area.groups ?? [])
-        for (const item of group.items ?? [])
-          if (item.code === 'MD_NAV_CUSTOM_PAGE') {
-            // The shell's rule (model-driven/solution.mjs customPageResolution): the app's own type-300 component and a canvas app in the sources.
-            const resolved = customPageResolution(
-              app,
-              item.page,
-              inventory
-                .filter((record) => record.component === 'canvasapp' && record.name)
-                .map((record) => record.name),
-            );
-            add({
-              kind: 'model-driven',
-              key: `custom-page/${app.uniqueName ?? app.id}/${item.id ?? item.page}`,
-              name: item.page ?? item.id,
-              level: resolved.supported ? 'behaviour' : 'inventory',
-              source: app.sourceFile ?? null,
-              requirement: !resolved.supported
-                ? { status: 'unsupported', reason: 'MD_NAV_CUSTOM_PAGE', level: 'inventory', message: resolved.reason }
-                : {
-                    status: 'placeholder',
-                    reason: 'CANVAS_NOT_RENDERED',
-                    level: 'behaviour',
-                    message: "The custom page's canvas app runs headlessly; the page is not rendered.",
-                  },
-            });
-          }
-  for (const control of clientResources?.pcf?.controls ?? []) {
-    const admission = pcfAdmission(control, { platformLibraries: clientResources.pcf.platformLibraries ?? [] });
-    if (admission.code === 'PCF_VIRTUAL_UNSUPPORTED')
-      add({
-        kind: 'model-driven',
-        key: `pcf/${control.name}`,
-        name: control.name,
-        level: 'contract',
-        requirement: { status: 'unsupported', reason: admission.code, level: 'contract' },
-      });
-    // The Power Pages host renders any Solution code component by name and supplies no platform libraries (code-components.mjs).
-    // ponytail: one row per Solution control a portal could render; per-reference detection in pages and forms is the upgrade.
-    if (portal && pcfAdmission(control).code === 'PCF_VIRTUAL_UNSUPPORTED')
-      add({
-        kind: 'portal',
-        key: `pcf/${control.name}`,
-        name: control.name,
-        level: 'contract',
-        requirement: { status: 'unsupported', reason: 'PCF_VIRTUAL_UNSUPPORTED', level: 'contract' },
-      });
-  }
+  addHostedDashboardNodes(inventory, nodes, hosted, unrendered);
+  addDashboardNavigationNodes(add, metadata?.modelDrivenApps ?? [], unrendered);
+  addPortalFindingNodes(add, portal);
+  addSharepointDocumentNode(add, portal, metadata);
+  addCustomPageNodes(add, metadata?.modelDrivenApps ?? [], inventory);
+  addPcfNodes(add, portal, clientResources);
   // Mobile offline (model-driven/offline.mjs): a profile whose items the simulator evaluates is satisfied; one with a filter it
   // cannot evaluate names the items (MD_OFFLINE_FILTER_UNSUPPORTED); an app naming a profile (component type 161) the
   // sources do not hold is keyed by the app (MD_OFFLINE_PROFILE_MISSING).
   const profiles = inventory.filter((record) => record.component === 'mobileofflineprofile');
-  for (const profile of profiles) {
-    const gaps = Array.isArray(profile.items)
-      ? offlineProfileGaps(profile, { hierarchical: (table) => hierarchicalIn(relationships, table) })
-      : [{ entity: null, reason: 'The profile items could not be read from the sources.' }];
-    add({
-      kind: 'model-driven',
-      key: `offline/${profile.name}`,
-      name: profile.name,
-      level: gaps.length ? 'contract' : 'behaviour',
-      source: profile.source ?? null,
-      requirement: gaps.length
-        ? {
-            status: 'unsupported',
-            reason: 'MD_OFFLINE_FILTER_UNSUPPORTED',
-            level: 'contract',
-            items: gaps.map((gap) => gap.entity),
-            message: gaps.map((gap) => gap.reason).join(' '),
-          }
-        : { status: 'satisfied', reason: null, level: 'behaviour' },
-    });
-  }
-  for (const app of metadata?.modelDrivenApps ?? [])
-    if (
-      (app.components ?? []).some(
-        (component) =>
-          component.type === 161 &&
-          !profiles.some(
-            (profile) =>
-              (profile.id && profile.id === component.id) ||
-              (component.entity && component.entity === profile.name.toLowerCase()),
-          ),
-      )
-    )
-      add({
-        kind: 'model-driven',
-        key: `offline/${app.uniqueName ?? app.id}`,
-        name: app.uniqueName ?? app.id,
-        level: 'inventory',
-        source: app.sourceFile ?? null,
-        requirement: {
-          status: 'unsupported',
-          reason: 'MD_OFFLINE_PROFILE_MISSING',
-          level: 'inventory',
-          message: 'The app names a mobile offline profile that is not in the sources.',
-        },
-      });
+  addOfflineProfileNodes(add, profiles, relationships);
+  addMissingOfflineProfileNodes(add, metadata?.modelDrivenApps ?? [], profiles);
 }
 
 /** Load the Solution (and optional portal) sources once and return their graph. Public: `paqvilo/mirage`. */

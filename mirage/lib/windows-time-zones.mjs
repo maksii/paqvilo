@@ -47,7 +47,7 @@ const PAIRS = `Dateline Standard Time=Etc/GMT+12|UTC-11=Etc/GMT+11|Aleutian Stan
 /** Windows time-zone id -> IANA zone name. */
 export const WINDOWS_TIME_ZONES = Object.freeze(
   Object.fromEntries(
-    PAIRS.replace(/\n/g, '')
+    PAIRS.replaceAll('\n', '')
       .split('|')
       .map((pair) => pair.split('=')),
   ),

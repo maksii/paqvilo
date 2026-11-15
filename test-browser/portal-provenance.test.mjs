@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -20,7 +21,7 @@ after(() => browser?.close());
 const scope = { documentId: 'document', frameId: 'frame', uiEpoch: 1, sourceRevision: 'current' };
 async function pageFixture(t, script = '', { csp = false, source: authoredSource = null, templates = {} } = {}) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const slot = '__inventedPortalProvenance',
     secret = 'backend-only-invented-nonce';
   await context.addInitScript(installPortalProvenanceRegistry, { slot, secret });
@@ -197,7 +198,7 @@ test('a detached original is unavailable and reattachment preserves its unchange
 
 test('native browser navigation to a bare template receives trace proof while fetch callers retain unmarked bytes', async (t) => {
   const fx = inspectionFixture();
-  t.after(fx.cleanup);
+  ownedFixture(t).remove(fx.cleanup);
   fs.writeFileSync(
     path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'),
     '<article><button id="actual">Local</button></article>',
@@ -207,9 +208,9 @@ test('native browser navigation to a bare template receives trace proof while fe
     stateFile: path.join(fx.work, 'state.json'),
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const slot = '__actualPortalProof',
     secret = 'actual-backend-nonce';
   await context.addInitScript(installPortalProvenanceRegistry, { slot, secret });
@@ -248,7 +249,7 @@ test('native browser navigation to a bare template receives trace proof while fe
 
 test('inline script proof hashes match actual CDP source after HTML newline and Unicode decoding', async (t) => {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const source =
     '<html><head><meta charset="utf-8"></head><body><script>const label="Ž🙂";\r\nwindow.provenanceUnicode=true;</script></body></html>';
   const metadata = { id: 'unicode', kind: 'webtemplate', name: 'Unicode' };
@@ -283,7 +284,7 @@ test('inline script proof hashes match actual CDP source after HTML newline and 
 
 test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF resources', async (t) => {
   const fx = inspectionFixture();
-  t.after(fx.cleanup);
+  ownedFixture(t).remove(fx.cleanup);
   fs.writeFileSync(
     path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'),
     '<script src="/widget.js"></script><button id="asset-target">Local</button>',
@@ -297,9 +298,9 @@ test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF
     stateFile: path.join(fx.work, 'state.json'),
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage(),
     cdp = await context.newCDPSession(page),
     scripts = [];
@@ -326,7 +327,7 @@ test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF
 
 test('actual PCF render hosts retain private semantic ownership through toolkit ID assignment while authored lookalikes cannot claim it', async (t) => {
   const fx = inspectionFixture();
-  t.after(fx.cleanup);
+  ownedFixture(t).remove(fx.cleanup);
   const directory = path.join(fx.solution, 'Controls/x_Corpus.Card');
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(
@@ -352,14 +353,14 @@ test('actual PCF render hosts retain private semantic ownership through toolkit 
     watch: false,
     sourceMaps: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage(),
     cdp = await context.newCDPSession(page);
   const transport = createPortalProvenanceTransport(context, [{ origin: app.url, mirage: true }]);
   const attached = await transport.onAttach({ cdp, configure: (method, params) => cdp.send(method, params) });
-  t.after(() => attached.dispose());
+  ownedFixture(t).add(() => attached.dispose());
   await cdp.send('Network.enable');
   const response = await page.goto(app.url);
   assert.equal(

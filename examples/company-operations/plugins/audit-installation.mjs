@@ -33,7 +33,7 @@ for (const a of assemblies) {
   for (const type of a.types) types.push(id(`type/${a.name}.${type}`));
 }
 const steps = await c.list(
-  `sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,stage,rank,mode,statecode,statuscode,_sdkmessagefilterid_value,_eventhandler_value,configuration&$filter=${types.map((t) => `_eventhandler_value eq ${t}`).join(' or ')}`,
+  `sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,stage,rank,mode,statecode,statuscode,_sdkmessagefilterid_value,_eventhandler_value,configuration&$filter=${types.map((t) => '_eventhandler_value eq ' + t).join(' or ')}`,
 );
 const querySteps = steps.filter((s) => s.name.includes('IncomingQueryObserver'));
 const trust = querySteps.map((s) => JSON.parse(s.configuration));

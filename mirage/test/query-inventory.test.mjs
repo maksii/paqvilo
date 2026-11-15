@@ -4,9 +4,10 @@ import fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { inventoryPortalQueries } from '../query-inventory.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('query inventory accepts any portal source path and reports static bounds plus unresolved Liquid', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-query-inventory-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-query-inventory-'));
   try {
     const templates = join(root, 'web-templates');
     await fs.mkdir(templates, { recursive: true });
@@ -44,7 +45,7 @@ test('query inventory accepts any portal source path and reports static bounds p
 });
 
 test('query inventory imports enhanced solution template components with source provenance', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-query-inventory-enhanced-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-query-inventory-enhanced-'));
   try {
     const templateDir = join(root, 'web-templates', 'sample');
     await fs.mkdir(templateDir, { recursive: true });
@@ -70,7 +71,7 @@ test('query inventory imports enhanced solution template components with source 
 });
 
 test('an existing empty portal source returns an honest zero-template inventory', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-query-inventory-empty-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-query-inventory-empty-'));
   try {
     const result = await inventoryPortalQueries(root);
     assert.equal(result.sourceFiles, 0);

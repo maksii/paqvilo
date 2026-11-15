@@ -1,0 +1,149 @@
+{
+  "scope": "Repeated SQL Server 2022 engine controls; no Dataverse TDS transport claim",
+  "results": [
+    {
+      "outcome": "result",
+      "id": "legacy-string-alias",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "abc",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT 'abc' = 1"
+    },
+    {
+      "outcome": "result",
+      "id": "legacy-unicode-alias",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "abc",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT N'abc' = 1"
+    },
+    {
+      "outcome": "result",
+      "id": "legacy-bracket-alias",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "abc",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT [abc] = 1"
+    },
+    {
+      "outcome": "result",
+      "id": "legacy-quoted-alias",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "abc",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT \"abc\" = 1"
+    },
+    {
+      "outcome": "result",
+      "id": "legacy-identifier-alias",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "abc",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT abc = 1"
+    },
+    {
+      "outcome": "sql-error",
+      "id": "legacy-double-alias",
+      "query": "SELECT 'abc' = 1 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'AS'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    }
+  ]
+}

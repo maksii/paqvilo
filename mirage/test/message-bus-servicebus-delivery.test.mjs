@@ -1,14 +1,15 @@
+// @test-kind unproven: local model of Service Bus service endpoint delivery; no native capture cited
 // A Dataverse service endpoint (contract 2 queue, 5 topic) mapped to a servicebus-emulator provider delivers through the core
 // AMQP bus (dataverse-webhooks.mjs serviceEndpointDelivery → bus.send) to the loopback fake broker.
 // A synchronous step runs inside its operation on the asynchronous pipeline (data.mjs createRecordAsync): the send is awaited and
 // a failed send fails the operation.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { serviceEndpointDelivery } from '../lib/dataverse-webhooks.mjs';
 import {
   createLocalMessageBus,
@@ -16,13 +17,7 @@ import {
   mappedEntities,
   messagingSettings,
 } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
 
 const KEY = 'invented-key-7f3a9c',
@@ -112,6 +107,9 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
     settings: settings.sb,
     entities: mappedEntities(settings, 'sb'),
     env,
+    // No wall-clock bound: the in-process broker answers every request, and a missing answer is ended by the runner's
+    // --test-timeout.
+    timeoutMs: null,
   });
   const messaging = {
     bus: createLocalMessageBus({ store }),
@@ -120,30 +118,8 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
     organizationUri: 'https://invented.example.test',
   };
   const webhooks = serviceEndpointDelivery(store, { messaging });
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity: table, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, table) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
-  t.after(async () => {
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
+  ownedFixture(t).add(async () => {
     delete process.env[variable];
     await runner.close();
     await api.close();

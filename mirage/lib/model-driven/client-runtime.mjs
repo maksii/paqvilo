@@ -3,30 +3,78 @@
 import { ANONYMOUS_STAFF_CONTEXT, staffFormatting } from './pcf-runtime.mjs';
 
 const loadedLibraries = new Map();
-const normalizeLibrary = (value) => String(value ?? '').replace(/^\$webresource:/i, '');
+export const normalizeClientLibrary = (value) => String(value ?? '').replace(/^\$webresource:/i, '');
 const blockedNames = new Set(['__proto__', 'prototype', 'constructor']);
 const unsupported = (name) => {
   throw new Error(`Mirage client API does not support ${name}.`);
 };
-const bounded = (value, path) =>
+const isSingleValuedRelationship = (candidate, name) => candidate.many === false && candidate.from === name;
+const isLookupTarget = (entity, match, relationship, tables) =>
+  tables[entity]?.entitySet === match?.[1] && (!relationship?.entity || relationship.entity === entity);
+function writeLookupValue(key, value, data, values, table, tables) {
+  const navigation = key.slice(0, -11),
+    relationship = table?.relationships?.[navigation];
+  const name = relationship?.many === false ? relationship.from : navigation;
+  const field = table?.fields?.[name];
+  if (field?.type !== 'lookup' || relationship?.many === true)
+    unsupported(`Xrm.WebApi lookup binding ${navigation}; import its single-valued relationship metadata`);
+  if (
+    !relationship &&
+    Object.values(table?.relationships ?? {}).some((candidate) => isSingleValuedRelationship(candidate, name))
+  )
+    unsupported(`Xrm.WebApi lookup binding ${navigation}; use its exported navigation-property name`);
+  const match =
+    value === null
+      ? null
+      : typeof value === 'string' && /^\/([A-Z]\w*)\(([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})\)$/i.exec(value);
+  if (value !== null && !match) throw new Error('Xrm.WebApi lookup binding requires a local entity-set record path.');
+  const targets = (field.targets ?? []).filter((entity) => isLookupTarget(entity, match, relationship, tables));
+  if (value !== null && targets.length !== 1)
+    throw new Error(`Xrm.WebApi lookup binding ${navigation} does not resolve an imported target.`);
+  if (Object.hasOwn(values, name) || Object.hasOwn(data, name))
+    throw new Error(`Xrm.WebApi provides conflicting values for ${name}.`);
+  values[name] = value === null ? null : { id: match[2].toLowerCase(), entity: targets[0] };
+}
+function writeMultiSelectValue(key, value, values) {
+  if (!/^\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)*\s*$/.test(value))
+    throw new Error(`Xrm.WebApi ${key} requires comma-separated choice values.`);
+  values[key] = value.split(',').map(Number);
+}
+function entityFunctionValue(value, host, recordPath) {
+  const entity = value.entityType ?? String(value['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+  const id = value.id ?? (entity && host.tables?.[entity] ? value[host.tables[entity].idColumn] : undefined);
+  return JSON.stringify(entity && id ? { '@odata.id': recordPath({ entityType: entity, id }) } : value);
+}
+function enumFunctionValue(value, type) {
+  const name = typeof value === 'number' ? type.enumProperties?.find((entry) => entry.value === value)?.name : value;
+  if (name === undefined) throw executeError(`Xrm.WebApi.execute: ${value} is not a member of ${type.typeName}.`, 400);
+  return `${type.typeName}'${name}'`;
+}
+const matchingClientEvent = (event, name, attribute) =>
+  event.active !== false && event.name === name && (name !== 'onchange' || event.attribute === attribute);
+const enabledClientHandler = (handler) => handler.enabled !== false;
+function* matchingRegisteredHandlers(host, name, attribute) {
+  for (const event of host.extensions?.trusted === true ? (host.form.clientEvents ?? []) : [])
+    if (matchingClientEvent(event, name, attribute))
+      for (const handler of event.handlers ?? []) if (enabledClientHandler(handler)) yield handler;
+}
+const bounded = (value, path, absent = new Set()) =>
   new Proxy(value, {
     get(target, key) {
       if (typeof key === 'symbol' || key === 'then') return Reflect.get(target, key);
-      if (!Object.hasOwn(target, key)) return unsupported(`${path}.${key}`);
+      if (!Object.hasOwn(target, key)) return absent.has(key) ? undefined : unsupported(`${path}.${key}`);
       return target[key];
     },
   });
-const collection = (items) =>
+const collection = (items, matches = (item, key) => item.getName() === key, missing) =>
   bounded(
     {
-      get: (key) =>
-        key === undefined
-          ? items
-          : typeof key === 'number'
-            ? items[key]
-            : typeof key === 'function'
-              ? items.filter(key)
-              : items.find((item) => item.getName() === key),
+      get: (key) => {
+        if (key === undefined) return items;
+        if (typeof key === 'number') return key >= items.length ? null : items[key];
+        if (typeof key === 'function') return items.filter(key);
+        return items.find((item) => matches(item, key)) ?? missing;
+      },
       getLength: () => items.length,
       forEach: (callback) => items.forEach(callback),
     },
@@ -83,7 +131,7 @@ export function loadClientLibrary(
       ),
     );
   const resource = extensions.resources?.find(
-    (resource) => normalizeLibrary(resource.name) === normalizeLibrary(name) && resource.type === 'script',
+    (resource) => normalizeClientLibrary(resource.name) === normalizeClientLibrary(name) && resource.type === 'script',
   );
   if (!resource)
     return Promise.reject(new Error(`Exported script ${name} is not available in the imported Solution resources.`));
@@ -97,17 +145,8 @@ export function loadClientLibrary(
         const script = document.createElement('script');
         script.src = url.href;
         script.async = false;
-        const timeout = setTimeout(() => {
-          script.remove();
-          loadedLibraries.delete(url.href);
-          reject(new Error(`Timed out loading exported script ${name}.`));
-        }, 15000);
-        script.onload = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
+        script.onload = () => resolve();
         script.onerror = () => {
-          clearTimeout(timeout);
           loadedLibraries.delete(url.href);
           script.remove();
           reject(new Error(`Could not load exported script ${name}.`));
@@ -125,39 +164,9 @@ function writeData(data, table, tables) {
   for (const [key, value] of Object.entries(data)) {
     if (blockedNames.has(key)) throw new Error('Xrm.WebApi column name is invalid.');
     if (key.endsWith('@odata.bind')) {
-      const navigation = key.slice(0, -11),
-        relationship = table?.relationships?.[navigation];
-      const name = relationship?.many === false ? relationship.from : navigation;
-      const field = table?.fields?.[name];
-      if (field?.type !== 'lookup' || relationship?.many === true)
-        unsupported(`Xrm.WebApi lookup binding ${navigation}; import its single-valued relationship metadata`);
-      if (
-        !relationship &&
-        Object.values(table?.relationships ?? {}).some(
-          (candidate) => candidate.many === false && candidate.from === name,
-        )
-      )
-        unsupported(`Xrm.WebApi lookup binding ${navigation}; use its exported navigation-property name`);
-      const match =
-        value === null
-          ? null
-          : typeof value === 'string' &&
-            /^\/([A-Za-z][\w]*)\(([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})\)$/i.exec(value);
-      if (value !== null && !match)
-        throw new Error('Xrm.WebApi lookup binding requires a local entity-set record path.');
-      const targets = (field.targets ?? []).filter(
-        (entity) =>
-          tables[entity]?.entitySet === match?.[1] && (!relationship?.entity || relationship.entity === entity),
-      );
-      if (value !== null && targets.length !== 1)
-        throw new Error(`Xrm.WebApi lookup binding ${navigation} does not resolve an imported target.`);
-      if (Object.hasOwn(values, name) || Object.hasOwn(data, name))
-        throw new Error(`Xrm.WebApi provides conflicting values for ${name}.`);
-      values[name] = value === null ? null : { id: match[2].toLowerCase(), entity: targets[0] };
+      writeLookupValue(key, value, data, values, table, tables);
     } else if (table?.fields?.[key]?.type === 'multiselect' && typeof value === 'string') {
-      if (!/^\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)*\s*$/.test(value))
-        throw new Error(`Xrm.WebApi ${key} requires comma-separated choice values.`);
-      values[key] = value.split(',').map(Number);
+      writeMultiSelectValue(key, value, values);
     } else values[key] = value;
   }
   return values;
@@ -190,6 +199,30 @@ const executeError = (message, status, code) =>
     ...(/^0x[\da-f]+$/i.test(String(code ?? '')) ? { errorCode: Number.parseInt(code, 16) } : {}),
   });
 const boundaryOf = (value) => /boundary=("?)([^";\r\n]+)\1/i.exec(String(value ?? ''))?.[2];
+function embeddedBatchResponse(response) {
+  const status = /^HTTP\/1\.1 (\d{3})([^\r\n]*)/.exec(response);
+  if (!status) return null;
+  const tail = response.slice(status[0].length);
+  const lineEnding = /^\r?\n/.exec(tail);
+  if (tail && !lineEnding) return null;
+  const remainder = tail.slice(lineEnding?.[0].length ?? 0);
+  const separator = /\r?\n\r?\n/.exec(remainder);
+  const headers = separator ? remainder.slice(0, separator.index) : remainder;
+  return {
+    status: Number(status[1]),
+    statusText: status[2].trim(),
+    headers: Object.fromEntries(
+      headers
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => [
+          line.slice(0, line.indexOf(':')).trim().toLowerCase(),
+          line.slice(line.indexOf(':') + 1).trim(),
+        ]),
+    ),
+    body: separator ? remainder.slice(separator.index + separator[0].length) : '',
+  };
+}
 /** The embedded responses of a $batch answer, split on the declared boundaries only (a nested change set recurses):
  * each is "HTTP/1.1 <status> <text>", its headers, a blank line and its body. */
 export function batchResponses(body, boundary) {
@@ -206,22 +239,8 @@ export function batchResponses(body, boundary) {
       result.push(...batchResponses(rest, nested));
       continue;
     }
-    const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest);
-    if (match)
-      result.push({
-        status: Number(match[1]),
-        statusText: match[2].trim(),
-        headers: Object.fromEntries(
-          String(match[3] ?? '')
-            .split(/\r?\n/)
-            .filter(Boolean)
-            .map((line) => [
-              line.slice(0, line.indexOf(':')).trim().toLowerCase(),
-              line.slice(line.indexOf(':') + 1).trim(),
-            ]),
-        ),
-        body: match[4] ?? '',
-      });
+    const parsed = embeddedBatchResponse(rest);
+    if (parsed) result.push(parsed);
   }
   return result;
 }
@@ -251,20 +270,11 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       : value;
   const functionValue = (value, type) => {
     if (value === null || value === undefined) return 'null';
-    if (type?.structuralProperty === 3) {
-      const name =
-        typeof value === 'number' ? type.enumProperties?.find((entry) => entry.value === value)?.name : value;
-      if (name === undefined)
-        throw executeError(`Xrm.WebApi.execute: ${value} is not a member of ${type.typeName}.`, 400);
-      return `${type.typeName}'${name}'`;
-    }
+    if (type?.structuralProperty === 3) return enumFunctionValue(value, type);
     if (type?.structuralProperty === 5 && typeof value === 'object') {
-      const entity =
-        value.entityType ?? String(value['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
-      const id = value.id ?? (entity && host.tables?.[entity] ? value[host.tables[entity].idColumn] : undefined);
-      return JSON.stringify(entity && id ? { '@odata.id': recordPath({ entityType: entity, id }) } : value);
+      return entityFunctionValue(value, host, recordPath);
     }
-    if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+    if (typeof value === 'string') return `'${value.replaceAll("'", "''")}'`;
     if (value instanceof Date) return value.toISOString();
     return typeof value === 'object' ? JSON.stringify(value) : String(value);
   };
@@ -273,61 +283,46 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       throw executeError('Xrm.WebApi.execute Create and Update need a payload object.', 400);
     return request.payload;
   };
-  function toHttp(request) {
-    const meta = typeof request?.getMetadata === 'function' ? request.getMetadata() : null;
-    if (
-      !meta ||
-      typeof meta.operationName !== 'string' ||
-      !meta.operationName ||
-      ![0, 1, 2].includes(meta.operationType)
-    )
-      throw executeError(
-        'Xrm.WebApi.execute requires a request whose getMetadata() gives operationName and operationType 0, 1 or 2.',
-        400,
-      );
-    const { operationName: name, operationType: type, boundParameter, parameterTypes = {} } = meta;
-    const json = (body) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (type === 2) {
-      if (name === 'Create')
-        return { method: 'POST', path: `${API_ROOT}/${tableOf(request.etn).entitySet}`, ...json(payloadOf(request)) };
-      if (name === 'Retrieve')
-        return {
-          method: 'GET',
-          path: `${API_ROOT}/${recordPath(request.entityReference)}${request.columns?.length ? `?$select=${request.columns.map(encodeURIComponent).join(',')}` : ''}`,
-        };
-      if (name === 'Update')
-        return {
-          method: 'PATCH',
-          path: `${API_ROOT}/${recordPath({ entityType: request.etn, id: request.id })}`,
-          ...json(payloadOf(request)),
-        };
-      if (name === 'Delete') return { method: 'DELETE', path: `${API_ROOT}/${recordPath(request.entityReference)}` };
-      if (name === 'Associate' || name === 'Disassociate') {
-        if (typeof request.relationship !== 'string' || !/^[A-Za-z_]\w*$/.test(request.relationship))
-          throw executeError(`Xrm.WebApi.execute ${name} needs a relationship name.`, 400);
-        const target = `${API_ROOT}/${recordPath(request.target)}/${request.relationship}`;
-        if (name === 'Disassociate')
-          return { method: 'DELETE', path: `${target}(${bareId(request.relatedEntityId)})/$ref` };
-        if (!Array.isArray(request.relatedEntities) || request.relatedEntities.length !== 1)
-          throw executeError(
-            'Xrm.WebApi.execute Associate sends one related record per request locally; use executeMultiple for several.',
-            400,
-          );
-        return {
-          method: 'POST',
-          path: `${target}/$ref`,
-          ...json({ '@odata.id': `${API_ROOT}/${recordPath(request.relatedEntities[0])}` }),
-        };
-      }
-      throw executeError(`Xrm.WebApi.execute does not know the CRUD operation ${name}.`, 400);
+  const crudHttp = (request, name, json, retrieveSelect) => {
+    if (name === 'Create')
+      return { method: 'POST', path: `${API_ROOT}/${tableOf(request.etn).entitySet}`, ...json(payloadOf(request)) };
+    if (name === 'Retrieve')
+      return {
+        method: 'GET',
+        path: `${API_ROOT}/${recordPath(request.entityReference)}${retrieveSelect(request)}`,
+      };
+    if (name === 'Update')
+      return {
+        method: 'PATCH',
+        path: `${API_ROOT}/${recordPath({ entityType: request.etn, id: request.id })}`,
+        ...json(payloadOf(request)),
+      };
+    if (name === 'Delete') return { method: 'DELETE', path: `${API_ROOT}/${recordPath(request.entityReference)}` };
+    if (name === 'Associate' || name === 'Disassociate') {
+      if (typeof request.relationship !== 'string' || !/^[A-Za-z_]\w*$/.test(request.relationship))
+        throw executeError(`Xrm.WebApi.execute ${name} needs a relationship name.`, 400);
+      const target = `${API_ROOT}/${recordPath(request.target)}/${request.relationship}`;
+      if (name === 'Disassociate')
+        return { method: 'DELETE', path: `${target}(${bareId(request.relatedEntityId)})/$ref` };
+      if (!Array.isArray(request.relatedEntities) || request.relatedEntities.length !== 1)
+        throw executeError(
+          'Xrm.WebApi.execute Associate sends one related record per request locally; use executeMultiple for several.',
+          400,
+        );
+      return {
+        method: 'POST',
+        path: `${target}/$ref`,
+        ...json({ '@odata.id': `${API_ROOT}/${recordPath(request.relatedEntities[0])}` }),
+      };
     }
+    throw executeError(`Xrm.WebApi.execute does not know the CRUD operation ${name}.`, 400);
+  };
+  const operationHttp = ({ request, name, type, boundParameter, parameterTypes, json, actionValue, functionValue }) => {
     if (!/^[A-Za-z_][\w.]*$/.test(name)) throw executeError('Xrm.WebApi.execute operation name is invalid.', 400);
-    const bound =
-      boundParameter === 'entity'
-        ? `${recordPath(request.entity)}/Microsoft.Dynamics.CRM.${name}`
-        : boundParameter == null
-          ? name
-          : null;
+    let bound;
+    if (boundParameter === 'entity') bound = `${recordPath(request.entity)}/Microsoft.Dynamics.CRM.${name}`;
+    else if (boundParameter == null) bound = name;
+    else bound = null;
     if (!bound)
       throw executeError(
         `Xrm.WebApi.execute bound parameter ${boundParameter} is not supported; use null or entity.`,
@@ -348,11 +343,33 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       .join('&');
     return {
       method: 'GET',
-      path: `${API_ROOT}/${bound}(${aliases.map(([key, alias]) => `${key}=${alias}`).join(',')})${query ? `?${query}` : ''}`,
+      path: `${API_ROOT}/${bound}(${aliases.map(([key, alias]) => key + '=' + alias).join(',')})${query ? '?' + query : ''}`,
     };
+  };
+  function toHttp(request) {
+    const meta = typeof request?.getMetadata === 'function' ? request.getMetadata() : null;
+    if (
+      !meta ||
+      typeof meta.operationName !== 'string' ||
+      !meta.operationName ||
+      ![0, 1, 2].includes(meta.operationType)
+    )
+      throw executeError(
+        'Xrm.WebApi.execute requires a request whose getMetadata() gives operationName and operationType 0, 1 or 2.',
+        400,
+      );
+    const { operationName: name, operationType: type, boundParameter, parameterTypes = {} } = meta;
+    const json = (body) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const retrieveSelect = (request) =>
+      request.columns?.length ? '?$select=' + request.columns.map(encodeURIComponent).join(',') : '';
+    if (type === 2) return crudHttp(request, name, json, retrieveSelect);
+    return operationHttp({ request, name, type, boundParameter, parameterTypes, json, actionValue, functionValue });
   }
   const response = (http, result) => {
-    const text = typeof result.body === 'string' ? result.body : result.body == null ? '' : JSON.stringify(result.body);
+    let text;
+    if (typeof result.body === 'string') text = result.body;
+    else if (result.body == null) text = '';
+    else text = JSON.stringify(result.body);
     if (result.status >= 400) {
       let error;
       try {
@@ -450,16 +467,7 @@ export function createWebApiExecute(host, assertLive = () => {}) {
  * dashboard") and rejects with DashboardPageUnsupported when the sources hold no such dashboard. */
 export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dashboards = []) {
   const type = pageInput?.pageType;
-  if (type === 'custom') {
-    if (typeof pageInput.name !== 'string' || !pageInput.name.trim())
-      throw new Error('navigateTo needs the logical name of the custom page in name.');
-    // Documented for custom pages: "The recordId parameter must be a GUID".
-    if (
-      pageInput.recordId !== undefined &&
-      !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))
-    )
-      throw new Error('navigateTo: the custom page recordId must be a GUID.');
-  }
+  validateCustomPage(type, pageInput);
   const dashboard =
     type === 'dashboard' &&
     (pageInput.dashboardId
@@ -470,44 +478,13 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
       new Error(`Dashboard ${pageInput.dashboardId || '(default)'} is not in this app's Solution sources.`),
       { code: 'DashboardPageUnsupported' },
     );
-  if (!['entityrecord', 'entitylist', 'webresource', 'dashboard', 'custom'].includes(type))
-    throw new Error('navigateTo needs pageType entityrecord, entitylist, webresource, dashboard or custom.');
-  if (!['webresource', 'dashboard', 'custom'].includes(type) && !Object.hasOwn(tables, pageInput.entityName ?? ''))
-    throw new Error(`navigateTo: table ${pageInput.entityName ?? ''} is not imported.`);
-  if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName))
-    throw new Error('navigateTo needs a webresourceName for a web resource page.');
+  validatePageType(type);
+  validatePageTable(type, pageInput, tables);
+  validatePageDetails(type, pageInput, tables);
   const options = navigationOptions ?? {};
   if (![undefined, 1, 2].includes(options.target) || ![undefined, 1, 2].includes(options.position))
     throw new Error('navigateTo target must be 1 (inline) or 2 (dialog) and position 1 (center) or 2 (side).');
-  const input =
-    type === 'entityrecord'
-      ? {
-          pageType: type,
-          entityName: pageInput.entityName,
-          ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}),
-          ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}),
-          ...(pageInput.data ? { data: pageInput.data } : {}),
-        }
-      : type === 'entitylist'
-        ? {
-            pageType: type,
-            entityName: pageInput.entityName,
-            ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}),
-          }
-        : type === 'dashboard'
-          ? { pageType: type, dashboardId: dashboard.id }
-          : type === 'custom'
-            ? {
-                pageType: type,
-                name: pageInput.name.trim(),
-                ...(pageInput.entityName ? { entityName: String(pageInput.entityName) } : {}),
-                ...(pageInput.recordId !== undefined ? { recordId: bareId(pageInput.recordId) } : {}),
-              }
-            : {
-                pageType: type,
-                webresourceName: pageInput.webresourceName,
-                ...(pageInput.data !== undefined ? { data: String(pageInput.data) } : {}),
-              };
+  const input = pageRequestInput(type, pageInput, dashboard);
   return [
     input,
     {
@@ -520,56 +497,397 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
   ];
 }
 
-export function createFormClientRuntime(host) {
-  let live = true,
+function validateCustomPage(type, pageInput) {
+  if (type !== 'custom') return;
+  if (typeof pageInput.name !== 'string' || !pageInput.name.trim())
+    throw new Error('navigateTo needs the logical name of the custom page in name.');
+  // Documented for custom pages: "The recordId parameter must be a GUID".
+  if (
+    pageInput.recordId !== undefined &&
+    !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))
+  )
+    throw new Error('navigateTo: the custom page recordId must be a GUID.');
+}
+
+function validatePageType(type) {
+  if (!['entityrecord', 'entitylist', 'webresource', 'dashboard', 'custom'].includes(type))
+    throw new Error('navigateTo needs pageType entityrecord, entitylist, webresource, dashboard or custom.');
+}
+
+function validatePageTable(type, pageInput, tables) {
+  if (!['webresource', 'dashboard', 'custom'].includes(type) && !Object.hasOwn(tables, pageInput.entityName ?? ''))
+    throw new Error(`navigateTo: table ${pageInput.entityName ?? ''} is not imported.`);
+  if (
+    type === 'entityrecord' &&
+    pageInput.formId &&
+    tables[pageInput.entityName]?.metadata !== 'lazy' &&
+    Array.isArray(tables[pageInput.entityName]?.forms) &&
+    !tables[pageInput.entityName].forms.some((form) => bareId(form.id) === bareId(pageInput.formId))
+  )
+    throw Object.assign(new Error('The requested form is unavailable in the imported source forms.'), {
+      code: 'FormUnavailable',
+    });
+}
+
+function validatePageDetails(type, pageInput, tables) {
+  if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName))
+    throw new Error('navigateTo needs a webresourceName for a web resource page.');
+  if (
+    type === 'entityrecord' &&
+    pageInput.tabName !== undefined &&
+    (typeof pageInput.tabName !== 'string' || !pageInput.tabName.trim() || pageInput.tabName.length > 256)
+  )
+    throw new Error('navigateTo tabName must name an exported form tab.');
+  validatePageViews(type, pageInput, tables);
+}
+
+function validatePageViews(type, pageInput, tables) {
+  if (type === 'entitylist' && pageInput.viewType !== undefined && pageInput.viewType !== 'savedquery')
+    throw Object.assign(
+      new Error(
+        pageInput.viewType === 'userquery'
+          ? 'Personal views are not available in the imported model-driven view catalogue.'
+          : 'navigateTo viewType must be savedquery or userquery.',
+      ),
+      { code: pageInput.viewType === 'userquery' ? 'PersonalViewUnsupported' : 'InvalidViewType' },
+    );
+  if (
+    type === 'entitylist' &&
+    pageInput.viewId &&
+    Array.isArray(tables[pageInput.entityName]?.views) &&
+    !tables[pageInput.entityName].views.some((view) => bareId(view.id) === bareId(pageInput.viewId))
+  )
+    throw Object.assign(new Error('The selected saved view is not imported.'), { code: 'ViewUnavailable' });
+}
+
+/* NOSONAR */ function pageRequestInput(type, pageInput, dashboard) {
+  let input;
+  if (type === 'entityrecord')
+    input = {
+      pageType: type,
+      entityName: pageInput.entityName,
+      ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}),
+      ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}),
+      ...(pageInput.tabName !== undefined ? { tabName: pageInput.tabName } : {}),
+      ...(pageInput.data ? { data: pageInput.data } : {}),
+    };
+  else if (type === 'entitylist')
+    input = {
+      pageType: type,
+      entityName: pageInput.entityName,
+      ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}),
+      ...(pageInput.viewType !== undefined ? { viewType: pageInput.viewType } : {}),
+    };
+  else if (type === 'dashboard') input = { pageType: type, dashboardId: dashboard.id };
+  else if (type === 'custom')
+    input = {
+      pageType: type,
+      name: pageInput.name.trim(),
+      ...(pageInput.entityName ? { entityName: String(pageInput.entityName) } : {}),
+      ...(pageInput.recordId !== undefined ? { recordId: bareId(pageInput.recordId) } : {}),
+    };
+  else
+    input = {
+      pageType: type,
+      webresourceName: pageInput.webresourceName,
+      ...(pageInput.data !== undefined ? { data: String(pageInput.data) } : {}),
+    };
+  return input;
+}
+
+export function createFormClientRuntime(hostInput) {
+  let host = hostInput,
+    live = true,
     depth = 0,
     saving = false;
+  // Captured once: detach() replaces host, and the form notification is still shown and cleared after that.
+  const formNotification = hostInput.notification;
+  // The save-and-new chains still running; a chain that ends in a failure stays here, so settled() rejects.
+  const savedChains = new Set();
   const activeEvents = new Map();
   const assertLive = () => {
     if (!live) throw new Error('This form context has been disposed.');
   };
-  const client = (value, path) =>
+  // Promise-returning members report a disposed context as a rejection; synchronous members throw it.
+  const ASYNC_MEMBERS = new Set([
+    'save',
+    'refresh',
+    'retrieveRecord',
+    'retrieveMultipleRecords',
+    'createRecord',
+    'updateRecord',
+    'deleteRecord',
+    'execute',
+    'executeMultiple',
+  ]);
+  const guarded = (key, entry) => {
+    if (!ASYNC_MEMBERS.has(key))
+      return (...args) => {
+        assertLive();
+        return entry(...args);
+      };
+    return (...args) => {
+      try {
+        assertLive();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return entry(...args);
+    };
+  };
+  const client = (value, path, absent) =>
     bounded(
       Object.fromEntries(
-        Object.entries(value).map(([key, entry]) => [
-          key,
-          typeof entry === 'function'
-            ? (...args) => {
-                assertLive();
-                return entry(...args);
-              }
-            : entry,
-        ]),
+        Object.entries(value).map(([key, entry]) => [key, typeof entry === 'function' ? guarded(key, entry) : entry]),
       ),
       path,
+      absent,
     );
   const events = new Map(),
+    eventOrdinals = new Map(),
     notifications = new Set(),
-    initial = structuredClone(host.record);
+    submitModes = new Map(),
+    invalidNumberReads = new Map(),
+    // The baseline dirty state compares with is the runtime's own copy of the persisted values. The copy is taken again
+    // when the host hands over another initial record object (a reload) and after a completed save; the caller's object
+    // is never read after that.
+    baselineState = { source: host.initialRecord, snapshot: structuredClone(host.initialRecord ?? host.record) },
+    baseline = () => {
+      if (host.initialRecord !== baselineState.source) {
+        baselineState.source = host.initialRecord;
+        baselineState.snapshot = structuredClone(host.initialRecord ?? host.record);
+      }
+      return baselineState.snapshot;
+    };
   const add = (key, callback) => {
     if (typeof callback !== 'function') throw new Error('Client event handler must be a function.');
     const handlers = events.get(key) ?? [];
-    handlers.push(callback);
+    const ordinal = eventOrdinals.get(key) ?? 0;
+    handlers.push({ callback, ordinal });
+    eventOrdinals.set(key, ordinal + 1);
     events.set(key, handlers);
   };
   const remove = (key, callback) =>
     events.set(
       key,
-      (events.get(key) ?? []).filter((handler) => handler !== callback),
+      (events.get(key) ?? []).filter((handler) => handler.callback !== callback),
     );
-  const saveForm = (close) => {
+  // Refusals a script awaits: the observed native shapes, and Mirage-local errors for outcomes Microsoft documents no shape for.
+  const NATIVE_SAVE_REFUSALS = new Map([
+    [
+      'cancelled',
+      {
+        errorCode: 2200000005,
+        code: 2200000005,
+        message: 'This form can’t be saved due to a custom setting.',
+        title: 'Unable to save',
+      },
+    ],
+    [
+      'invalid',
+      {
+        errorCode: 2200000007,
+        code: 2200000007,
+        message: 'Please make sure all the field requirements are met.',
+        title: 'Unable to save changes',
+      },
+    ],
+    [
+      'busy',
+      {
+        errorCode: 2200000003,
+        code: 2200000003,
+        message: 'Please wait while saving is completed',
+        title: 'Saving in Progress',
+      },
+    ],
+  ]);
+  const LOCAL_SAVE_REFUSALS = new Map([
+    ['denied', ['SaveDenied', 'This record cannot be saved with the signed-in staff context.']],
+    ['unsupported', ['SaveUnsupported', 'The form has changes that cannot be saved locally.']],
+  ]);
+  const refusals = new WeakSet();
+  const saveRefusal = (outcome) => {
+    if (NATIVE_SAVE_REFUSALS.has(outcome)) return { ...NATIVE_SAVE_REFUSALS.get(outcome) };
+    if (!LOCAL_SAVE_REFUSALS.has(outcome)) return undefined;
+    const [code, message] = LOCAL_SAVE_REFUSALS.get(outcome);
+    return Object.assign(new Error(message), { code });
+  };
+  // The braced id data.entity.getId() returns; the saved reference uses the same format.
+  const recordId = () => (host.record[host.table.idColumn] ? `{${host.record[host.table.idColumn]}}` : '');
+  const savedReference = () => ({
+    savedEntityReference: {
+      entityType: host.table.entity,
+      id: recordId(),
+      name: host.record[host.table.nameColumn] ?? '',
+    },
+  });
+  const settleSave = (outcome) => {
+    const refusal = saveRefusal(outcome);
+    if (!refusal) return savedReference();
+    refusals.add(refusal);
+    throw refusal;
+  };
+  const saveForm = (close, mode) => {
     assertLive();
     if (activeEvents.size)
-      throw new Error(
-        `Saving from an active ${[...activeEvents.keys()].at(-1)} handler is not supported. Finish the event before saving.`,
+      return Promise.reject(
+        new Error(
+          `Saving from an active ${[...activeEvents.keys()].at(-1)} handler is not supported. Finish the event before saving.`,
+        ),
       );
-    return host.save(close);
+    return Promise.resolve(host.save(close, mode)).then((outcome) => {
+      const reference = settleSave(outcome);
+      rebaseline();
+      return reference;
+    });
+  };
+  // A completed save makes the saved values the baseline: a copy of them, so no later change to a host object matters.
+  const rebaseline = () => {
+    baselineState.source = host.initialRecord;
+    baselineState.snapshot = structuredClone(host.record);
+  };
+  // A context saved as saveandnew keeps answering with the record it saved. Every other host call it makes
+  // is refused here, in one place: reads and Web API passthroughs stay live, and a value-setting call is refused.
+  const DETACHED = 'This form context was replaced by a new record form.';
+  const DETACHED_READS = new Set([
+    'read',
+    'isDirty',
+    'isValid',
+    'getFormType',
+    'controlNames',
+    'controlField',
+    'isPcfControl',
+    'layoutVisible',
+    'layoutLabel',
+    'pageContext',
+    'metadata',
+    'request',
+    'webApi',
+    'alert',
+    'confirm',
+  ]);
+  // Host calls whose value argument, at this index, turns a read into a write.
+  const DETACHED_VALUE_INDEX = new Map([
+    ['controlState', 2],
+    ['required', 1],
+  ]);
+  const detachedMember =
+    (key, member) =>
+    (...args) => {
+      const valueIndex = DETACHED_VALUE_INDEX.get(key);
+      if (DETACHED_READS.has(key) || (valueIndex !== undefined && args[valueIndex] === undefined))
+        return member(...args);
+      throw new Error(DETACHED);
+    };
+  const detach = () => {
+    const saved = structuredClone(host.record),
+      formType = host.getFormType?.() ?? (saved[host.table.idColumn] ? 2 : 1),
+      guarded = Object.fromEntries(
+        Object.entries(host).map(([key, value]) => [
+          key,
+          typeof value === 'function' ? detachedMember(key, value) : value,
+        ]),
+      );
+    host = {
+      ...guarded,
+      record: saved,
+      initialRecord: saved,
+      read: (name) => saved[name],
+      isDirty: () => false,
+      isValid: () => true,
+      getFormType: () => formType,
+      save: () => Promise.reject(new Error(DETACHED)),
+      refresh: () => Promise.reject(new Error(DETACHED)),
+    };
+  };
+  // formContext.data.save(saveOptions): saveMode reaches OnSave as getSaveMode() and does not change the save action.
+  const saveOptionMode = (options) => {
+    const valid =
+      options === undefined ||
+      (typeof options === 'object' &&
+        options !== null &&
+        (options.saveMode === undefined || Number.isSafeInteger(options.saveMode)));
+    if (!valid) throw new Error('formContext.data.save expects saveOptions with an integer saveMode.');
+    return options?.saveMode;
+  };
+  // data.save reports invalid saveOptions as a rejection, as the other promise-returning members do.
+  const saveWithOptions = (options) => {
+    try {
+      return saveForm(false, saveOptionMode(options));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  // Returns no promise, as the native call does. A host without openNewRecord refuses the mode.
+  const saveAndNew = () => {
+    if (typeof host.openNewRecord !== 'function') unsupported('formContext.data.entity.save saveandnew');
+    const openNewRecord = host.openNewRecord;
+    // formNotification stays callable after detach() replaces host with an object that refuses notification.
+    const chain = saveForm(false, 59)
+      .then(() => {
+        // The runtime was destroyed while the save was in flight: the form it saved is no longer this runtime's to replace.
+        if (!live) return undefined;
+        detach();
+        return openNewRecord();
+      })
+      .catch((error) => {
+        // A refused save leaves this form open with its refusal; any other failure is shown as an error form notification.
+        if (refusals.has(error)) return;
+        notifications.add('save');
+        formNotification(error.message, 'ERROR', 'save');
+      });
+    savedChains.add(chain);
+    // A failed chain is reported to the page as an error event; settled() carries the same failure.
+    chain.then(
+      () => savedChains.delete(chain),
+      (error) => globalThis.reportError?.(error),
+    );
+    return undefined;
+  };
+  const entitySave = (mode) => {
+    if (mode === 'saveandnew') return saveAndNew();
+    return mode === 'saveandclose' ? saveForm(true, 2) : saveForm(false);
+  };
+  const formIsValid = (report) => {
+    if (typeof host.isValid !== 'function') unsupported('form validity without a host validator');
+    return Boolean(host.isValid(report));
   };
   const fieldValue = (name) => {
     assertLive();
     return host.read(name);
   };
-  const clientValue = (name, value) => {
+  const attributeValue = (name) => {
+    // Native UCI retains the previous getter snapshot for an out-of-range assignment while the draft is invalid.
+    const value = fieldValue(name),
+      invalid = invalidNumberReads.get(name);
+    if (invalid && Object.is(value, invalid.input)) return invalid.previous;
+    invalidNumberReads.delete(name);
+    return value;
+  };
+  const choiceOptions = new Map();
+  const choiceBlank = new Map();
+  const controlOptions = (name, fieldName) =>
+    host.controlState?.(name, 'options') ??
+    choiceOptions.get(fieldName) ??
+    (host.table.fields[fieldName]?.options ?? []).map((option) => ({ text: option.label, value: option.value }));
+  const hasChoiceBlank = (name, fieldName) =>
+    host.controlState?.(name, 'optionPlaceholder') ?? choiceBlank.get(fieldName) ?? true;
+  const setControlOptions = (name, fieldName, options, blank = hasChoiceBlank(name, fieldName)) => {
+    host.controlState(name, 'options', options);
+    choiceOptions.set(fieldName, options);
+    choiceBlank.set(fieldName, blank);
+    host.syncChoiceOptions?.(name, fieldName, options, blank);
+  };
+  const layoutLabels = new Map();
+  // A section passes its parent tab, which names the section in the host (sections of different tabs may share a name).
+  const layoutLabel = (item, parent) => layoutLabels.get(item) ?? host.layoutLabel?.(item, parent) ?? item.label;
+  const setLayoutLabel = (item, value, parent) => {
+    const label = String(value);
+    layoutLabels.set(item, label);
+    host.setLayoutLabel?.(item, label, parent);
+  };
+  const clientValue = (name, value, source = host.record) => {
     if (value == null) return null;
     const field = host.table.fields[name];
     if (field.type === 'date') return new Date(value);
@@ -585,10 +903,69 @@ export function createFormClientRuntime(host) {
         {
           id: `{${String(value.id ?? value).replace(/[{}]/g, '')}}`,
           name: value.name ?? '',
-          entityType: value.entity ?? value.logicalName ?? field.targets?.[0],
+          entityType:
+            value.entity ??
+            value.logicalName ??
+            source?.[`${name}@Microsoft.Dynamics.CRM.lookuplogicalname`] ??
+            field.targets?.[0],
         },
       ];
     return value;
+  };
+  const sameAttributeValue = (name, left, right) => {
+    const a = clientValue(name, left),
+      b = clientValue(name, right, baseline());
+    if (host.table.fields[name].type === 'lookup') {
+      const identity = (value) =>
+        value?.map(({ id, entityType }) => [bareId(id), String(entityType ?? '').toLowerCase()]) ?? null;
+      return JSON.stringify(identity(a)) === JSON.stringify(identity(b));
+    }
+    return (
+      a === b ||
+      (a !== null &&
+        b !== null &&
+        typeof a === 'object' &&
+        typeof b === 'object' &&
+        JSON.stringify(a) === JSON.stringify(b))
+    );
+  };
+  const multiselectAssignment = (name, value) => {
+    const primary = host.controlNames(name)[0];
+    const next = controlOptions(primary, name)
+      .filter((option) => value.includes(option.value))
+      .map((option) => option.value)
+      .sort((a, b) => a - b);
+    return next.length ? next : null;
+  };
+  const validateChoiceAssignment = (field, name, value) => {
+    const offered = host.controlNames(name).flatMap((control) => controlOptions(control, name));
+    if (!field.options.some((option) => option.value === value) && !offered.some((option) => option.value === value)) {
+      const error = new Error(`Invalid value ${value} for OptionSetValue`);
+      error.name = 'UciError';
+      throw error;
+    }
+  };
+  const assignedValue = (field, name, value) => {
+    if (field.type === 'date' && value instanceof Date) return value.toISOString();
+    if (field.type === 'lookup' && Array.isArray(value))
+      return value.length
+        ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
+        : null;
+    if (['text', 'textarea'].includes(field.type) && value === '') return null;
+    if (field.type === 'multiselect' && Array.isArray(value)) return multiselectAssignment(name, value);
+    if (field.type === 'number' && Array.isArray(field.options) && value !== null)
+      validateChoiceAssignment(field, name, value);
+    return value;
+  };
+  const unavailableAttributeMethods = (field) => {
+    if (['text', 'textarea'].includes(field.type)) return new Set(['getMin', 'getMax', 'getPrecision']);
+    if (
+      field.type === 'number' &&
+      !Array.isArray(field.options) &&
+      ['int', 'integer', 'decimal'].includes(field.dataverseType)
+    )
+      return new Set(['getMaxLength']);
+    return new Set();
   };
   // formContext.data.entity.attributes: only columns added to the form are available. The form's bindings
   // (body, header, footer) are host.form.attributes; a form without them exposes its controls' columns.
@@ -605,36 +982,88 @@ export function createFormClientRuntime(host) {
     .filter(Boolean)
     .map((field) => {
       const name = field.name;
+      const metadataNumber = (property, method) => {
+        if (property === 'precision' && ['int', 'integer', 'bigint'].includes(field.dataverseType)) return 0;
+        const value = field[property];
+        if (typeof value !== 'number' || !Number.isFinite(value))
+          unsupported(`attribute(${name}).${method} without imported numeric ${property} metadata`);
+        return value;
+      };
       return client(
         {
           getName: () => name,
-          getValue: () => clientValue(name, fieldValue(name)),
-          getInitialValue: () => clientValue(name, initial[name]),
+          getValue: () => clientValue(name, attributeValue(name)),
+          getInitialValue: () =>
+            field.type === 'boolean' && baseline()[name] != null
+              ? Number(baseline()[name])
+              : clientValue(name, baseline()[name]),
           setValue: (value) => {
             assertLive();
-            const next =
-              field.type === 'date' && value instanceof Date
-                ? value.toISOString()
-                : field.type === 'lookup' && Array.isArray(value)
-                  ? value.length
-                    ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
-                    : null
-                  : value;
-            host.write(name, next);
+            const previous = fieldValue(name),
+              next = assignedValue(field, name, value);
+            host.write(name, next, { changed: !sameAttributeValue(name, previous, next) });
+            if (
+              field.type === 'number' &&
+              !Array.isArray(field.options) &&
+              typeof next === 'number' &&
+              (next < field.minValue || next > field.maxValue)
+            )
+              invalidNumberReads.set(name, { input: next, previous });
+            else invalidNumberReads.delete(name);
           },
-          getIsDirty: () => host.isDirty(name),
+          getFormat: () => {
+            if (field.format) return String(field.format).toLowerCase();
+            if (field.type === 'textarea') return 'textarea';
+            if (field.type === 'text') return 'text';
+            if (
+              field.type === 'lookup' ||
+              (field.type === 'number' &&
+                !Array.isArray(field.options) &&
+                !['decimal', 'double', 'float', 'money'].includes(field.dataverseType))
+            )
+              return 'none';
+            if (field.type === 'date') return 'datetime';
+            return null;
+          },
+          getIsDirty: () => {
+            // Native new forms activate an untouched false default after another
+            // column changes. A real edit to this Boolean settles that default;
+            // restoring its value then clears only its attribute dirty flag.
+            const pendingFalseDefault =
+              !baseline()[host.table.idColumn] &&
+              field.type === 'boolean' &&
+              field.defaultValue === false &&
+              baseline()[name] === false &&
+              host.isDirty() &&
+              !host.isDirty(name);
+            return pendingFalseDefault || !sameAttributeValue(name, fieldValue(name), baseline()[name]);
+          },
+          ...(field.type === 'number' && !Array.isArray(field.options)
+            ? {
+                getMin: () => metadataNumber('minValue', 'getMin'),
+                getMax: () => metadataNumber('maxValue', 'getMax'),
+                getPrecision: () => metadataNumber('precision', 'getPrecision'),
+              }
+            : {}),
+          ...(['text', 'textarea'].includes(field.type)
+            ? { getMaxLength: () => metadataNumber('maxLength', 'getMaxLength') }
+            : {}),
           getAttributeType: () =>
             ({
               text: 'string',
               textarea: 'memo',
-              number: field.options?.length
+              number: Array.isArray(field.options)
                 ? 'optionset'
                 : ({ decimal: 'decimal', money: 'money', double: 'double', float: 'double' }[field.dataverseType] ??
                   'integer'),
               date: 'datetime',
               multiselect: 'multiselectoptionset',
             })[field.type] ?? field.type,
-          getOptions: () => (field.options ?? []).map((option) => ({ text: option.label, value: option.value })),
+          getOptions: () =>
+            (field.type === 'boolean'
+              ? [...(field.options ?? [])].sort((a, b) => a.value - b.value)
+              : (field.options ?? [])
+            ).map((option) => ({ text: option.label, value: option.value })),
           getOption: (value) => {
             const option = (field.options ?? []).find((option) =>
               typeof value === 'number' ? option.value === value : option.label === value,
@@ -647,14 +1076,20 @@ export function createFormClientRuntime(host) {
                   ?.map((value) => field.options?.find((option) => option.value === value)?.label)
                   .filter((value) => value !== undefined) ?? null)
               : (field.options?.find((option) => option.value === fieldValue(name))?.label ?? null),
-          getRequiredLevel: () => (host.required?.(name) ? 'required' : 'none'),
+          getRequiredLevel: () => {
+            const level = host.required?.(name);
+            if (typeof level === 'string') return level;
+            if (level) return 'required';
+            return 'none';
+          },
           setRequiredLevel: (value) => {
             if (!['none', 'required', 'recommended'].includes(value)) throw new Error('Invalid required level.');
             host.required?.(name, value);
           },
-          getSubmitMode: () => 'dirty',
+          getSubmitMode: () => submitModes.get(name) ?? 'dirty',
           setSubmitMode: (mode) => {
-            if (mode !== 'dirty') unsupported(`attribute.setSubmitMode(${mode})`);
+            if (!['dirty', 'always', 'never'].includes(mode)) throw new Error('Invalid submit mode.');
+            submitModes.set(name, mode);
           },
           addOnChange: (callback) => add(`onchange:${name}`, callback),
           removeOnChange: (callback) => remove(`onchange:${name}`, callback),
@@ -662,22 +1097,84 @@ export function createFormClientRuntime(host) {
           controls: collection(host.controlNames(name).map((controlName) => makeControl(controlName, name))),
         },
         `attribute(${name})`,
+        unavailableAttributeMethods(field),
       );
     });
   function makeControl(name, fieldName = host.controlField(name)) {
+    const field = host.table.fields[fieldName];
+    const options = () => controlOptions(name, fieldName);
     return client(
       {
         getName: () => name,
         getAttribute: () => attributes.find((attribute) => attribute.getName() === fieldName) ?? null,
+        getControlType: () => {
+          if (field?.type === 'multiselect') return 'multiselectoptionset';
+          if (field?.type === 'lookup') return 'lookup';
+          if (field?.type === 'number' && Array.isArray(field.options)) return 'optionset';
+          return 'standard';
+        },
+        getParent: () => {
+          for (const tab of host.form?.tabs ?? []) {
+            const index = (tab.sections ?? []).findIndex((section) =>
+              (section.fields ?? []).some((cell) => (cell.sourceControl?.id ?? cell.name) === name),
+            );
+            if (index !== -1) return formContext.ui.tabs.get(tab.id).sections.get(index);
+          }
+          return null;
+        },
         getDisabled: () => host.controlState(name, 'disabled'),
-        setDisabled: (value) => host.controlState(name, 'disabled', Boolean(value)),
+        setDisabled: (value) => {
+          host.controlState(name, 'disabled', Boolean(value));
+        },
         getVisible: () => !host.controlState(name, 'hidden'),
-        setVisible: (value) => host.controlState(name, 'hidden', !value),
+        setVisible: (value) => {
+          host.controlState(name, 'hidden', !value);
+        },
         getLabel: () => host.controlState(name, 'label'),
-        setLabel: (value) => host.controlState(name, 'label', String(value)),
+        setLabel: (value) => {
+          host.controlState(name, 'label', String(value));
+        },
         setFocus: () => host.controlState(name, 'focus', true),
-        setNotification: (message, id = 'default') => host.controlState(name, `notification:${id}`, String(message)),
-        clearNotification: (id = 'default') => host.controlState(name, `notification:${id}`, null),
+        setNotification: (message, id = 'default') => {
+          host.controlState(name, `notification:${id}`, String(message));
+          return true;
+        },
+        clearNotification: (id = 'default') => {
+          const present = host.controlState(name, `notification:${id}`) != null;
+          host.controlState(name, `notification:${id}`, null);
+          return present;
+        },
+        ...(field?.type === 'multiselect' || (field?.type === 'number' && Array.isArray(field.options))
+          ? {
+              getOptions: () => [
+                ...(hasChoiceBlank(name, fieldName) ? [{ text: '', value: Number.NaN }] : []),
+                ...options().map((option) => ({ ...option })),
+              ],
+              addOption: (option, index) => {
+                if (!option || typeof option.text !== 'string')
+                  throw new Error('addOption requires text and a numeric option value.');
+                if (typeof option.value !== 'number') {
+                  const error = new Error('Value should be of type: number: Parameter Name: optionSetItem.value');
+                  error.name = 'UciError';
+                  throw error;
+                }
+                const next = options().map((entry) => ({ ...entry }));
+                const numericIndex = Number(index);
+                const at =
+                  index === undefined || !Number.isInteger(numericIndex) ? next.length : Math.max(0, numericIndex - 1);
+                next.splice(at, 0, { text: option.text, value: option.value });
+                setControlOptions(name, fieldName, next, host.isPcfControl?.(name) ? undefined : true);
+              },
+              removeOption: (value) => {
+                const next = options().slice();
+                const index = next.findIndex((option) => option.value === value);
+                if (index !== -1) next.splice(index, 1);
+                const blank = host.isPcfControl?.(name) && index !== -1 && !next.length ? false : undefined;
+                setControlOptions(name, fieldName, next, blank);
+              },
+              clearOptions: () => setControlOptions(name, fieldName, [], !host.isPcfControl?.(name)),
+            }
+          : {}),
       },
       `control(${name})`,
     );
@@ -685,7 +1182,15 @@ export function createFormClientRuntime(host) {
   const controls = host.controlNames().map((name) => makeControl(name));
   const formItem = client(
     {
-      getId: () => (host.form?.id ? `{${String(host.form.id).replace(/[{}]/g, '')}}` : null),
+      getId: () => {
+        const id = host.form?.id;
+        if (!id) return null;
+        const text = String(id),
+          candidate = text.startsWith('{') && text.endsWith('}') ? text.slice(1, -1) : text;
+        return /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(candidate)
+          ? candidate.toLowerCase()
+          : `{${text.replace(/[{}]/g, '')}}`;
+      },
       getLabel: () => host.form?.name ?? '',
       navigate: () => unsupported('formSelector item.navigate'),
     },
@@ -701,19 +1206,21 @@ export function createFormClientRuntime(host) {
         {
           entity: client(
             {
-              getId: () => (host.record[host.table.idColumn] ? `{${host.record[host.table.idColumn]}}` : ''),
+              getId: recordId,
               getEntityName: () => host.table.entity,
               getPrimaryAttributeValue: () => host.read(host.table.nameColumn),
               getIsDirty: () => host.isDirty(),
+              isValid: () => formIsValid(false),
               attributes: collection(attributes),
               addOnSave: (callback) => add('onsave', callback),
               removeOnSave: (callback) => remove('onsave', callback),
-              save: (mode) => saveForm(mode === 'saveandclose'),
+              save: entitySave,
             },
             'formContext.data.entity',
           ),
           getIsDirty: () => host.isDirty(),
-          save: () => saveForm(false),
+          isValid: () => formIsValid(true),
+          save: saveWithOptions,
           refresh: (save) => (save ? saveForm(false) : host.refresh()),
           addOnLoad: (callback) => add('onload', callback),
           removeOnLoad: (callback) => remove('onload', callback),
@@ -726,7 +1233,10 @@ export function createFormClientRuntime(host) {
           getFormType: () => host.getFormType?.() ?? (host.record[host.table.idColumn] ? 2 : 1),
           // formContext.ui.formSelector: the open form; switching forms from a script is not supported locally.
           formSelector: client(
-            { getCurrentItem: () => formItem, items: collection(host.form?.id ? [formItem] : []) },
+            {
+              getCurrentItem: () => formItem,
+              items: collection(host.form?.id ? [formItem] : [], (item, key) => item.getId() === key, null),
+            },
             'formContext.ui.formSelector',
           ),
           // formContext.ui.tabs and tab.sections: names, labels and visibility of the exported form layout.
@@ -735,17 +1245,24 @@ export function createFormClientRuntime(host) {
               client(
                 {
                   getName: () => tab.id,
-                  getLabel: () => tab.label,
+                  getLabel: () => layoutLabel(tab),
+                  setLabel: (value) => setLayoutLabel(tab, value),
                   getVisible: () => host.layoutVisible?.(tab) ?? tab.visible !== false,
-                  setVisible: (visible) => host.setLayoutVisible(tab, Boolean(visible)),
+                  setVisible: (visible) => {
+                    host.setLayoutVisible(tab, Boolean(visible));
+                  },
                   sections: collection(
                     (tab.sections ?? []).map((section) =>
                       client(
                         {
                           getName: () => section.name ?? null,
-                          getLabel: () => section.label,
-                          getVisible: () => host.layoutVisible?.(section) ?? section.visible !== false,
-                          setVisible: (visible) => host.setLayoutVisible(section, Boolean(visible)),
+                          getLabel: () => layoutLabel(section, tab),
+                          setLabel: (value) => setLayoutLabel(section, value, tab),
+                          getParent: () => formContext.ui.tabs.get(tab.id),
+                          getVisible: () => host.layoutVisible?.(section, tab) ?? section.visible !== false,
+                          setVisible: (visible) => {
+                            host.setLayoutVisible(section, Boolean(visible), tab);
+                          },
                         },
                         'formContext.ui.tab.section',
                       ),
@@ -762,9 +1279,9 @@ export function createFormClientRuntime(host) {
             return true;
           },
           clearFormNotification: (id = 'default') => {
-            notifications.delete(id);
+            const present = notifications.delete(id);
             host.notification(null, null, id);
-            return true;
+            return present;
           },
           close: () => host.close(),
         },
@@ -792,45 +1309,61 @@ export function createFormClientRuntime(host) {
       depth--;
     }
   };
-  async function dispatch(name, attribute, saveMode = 1) {
+  // getEventArgs per event: OnSave has the save mode and prevention, OnLoad the data load state, OnChange is undefined.
+  const eventArguments = (name, detail, state) => {
+    if (name === 'onload') return client({ getDataLoadState: () => detail }, 'eventArgs');
+    if (name === 'onchange') return undefined;
+    if (name !== 'onsave') return client({}, 'eventArgs');
+    return client(
+      {
+        getSaveMode: () => detail,
+        preventDefault: () => {
+          state.prevented = true;
+        },
+        isDefaultPrevented: () => state.prevented,
+        preventDefaultOnError: () => {
+          state.preventDefaultOnError = true;
+        },
+        shouldPreventDefaultOnError: () => state.preventDefaultOnError,
+        disableAsyncTimeout: () => {
+          state.disableAsyncTimeout = true;
+        },
+        shouldDisableAsyncTimeout: () => state.disableAsyncTimeout,
+      },
+      'eventArgs',
+    );
+  };
+  // formHandlers: false runs only the handlers added from script; a reload of an open form does not replay the form's OnLoad.
+  async function dispatch(name, attribute, detail = 1, { formHandlers = true } = {}) {
     assertLive();
     if (name === 'onsave' && saving) throw new Error('Recursive save from an OnSave handler is not supported.');
     if (name === 'onsave') saving = true;
     activeEvents.set(name, (activeEvents.get(name) ?? 0) + 1);
-    let prevented = false;
-    const eventArgs = client(
-      {
-        getSaveMode: () => saveMode,
-        preventDefault: () => {
-          if (name !== 'onsave') unsupported(`${name}.preventDefault`);
-          prevented = true;
+    const state = { prevented: false, preventDefaultOnError: false, disableAsyncTimeout: false };
+    const eventArgs = eventArguments(name, detail, state);
+    const context = (ordinal) =>
+      client(
+        {
+          getFormContext: () => formContext,
+          getEventSource: () => (attribute ? formContext.getAttribute(attribute) : formContext.data.entity),
+          getEventArgs: () => eventArgs,
+          getDepth: () => ordinal,
         },
-        isDefaultPrevented: () => prevented,
-      },
-      'eventArgs',
-    );
-    const context = client(
-      {
-        getFormContext: () => formContext,
-        getEventSource: () => (attribute ? formContext.getAttribute(attribute) : formContext.data.entity),
-        getEventArgs: () => eventArgs,
-        getDepth: () => Math.max(1, depth),
-      },
-      'executionContext',
-    );
+        'executionContext',
+      );
     try {
-      for (const event of host.extensions?.trusted === true ? (host.form.clientEvents ?? []) : [])
-        if (event.active !== false && event.name === name && (name !== 'onchange' || event.attribute === attribute))
-          for (const handler of event.handlers ?? []) {
-            if (handler.enabled === false) continue;
-            await call(handler, [
-              ...(handler.passExecutionContext ? [context] : []),
-              ...parseHandlerParameters(handler.parameters),
-            ]);
-          }
-      for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
-        await call(handler, [context]);
-      return { prevented };
+      let ordinal = 0;
+      const registered = formHandlers ? matchingRegisteredHandlers(host, name, attribute) : [];
+      for (const handler of registered) {
+        await call(handler, [
+          ...(handler.passExecutionContext ? [context(ordinal)] : []),
+          ...parseHandlerParameters(handler.parameters),
+        ]);
+        ordinal++;
+      }
+      /* NOSONAR */ for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
+        await call(handler.callback, [context(ordinal + handler.ordinal)]);
+      return { prevented: state.prevented };
     } finally {
       const count = activeEvents.get(name) - 1;
       if (count) activeEvents.set(name, count);
@@ -1006,7 +1539,7 @@ export function createFormClientRuntime(host) {
               {
                 getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
                 // getGlobalContext.getVersion: the Web API version this organization serves.
-                getVersion: () => host.version ?? '9.2.0.0',
+                getVersion: () => host.version ?? '9.2.0.0', // NOSONAR: version string or loopback address, not a network target
                 // getGlobalContext.userSettings: the server-built staff context, the same one the PCF context reads.
                 userSettings: client(
                   {
@@ -1062,26 +1595,30 @@ export function createFormClientRuntime(host) {
       assertLive();
       if (!command.supported) throw new Error(command.reason ?? 'Unsupported exported ribbon command.');
       for (const action of command.actions) {
-        const args = action.parameters.map((parameter) =>
-          parameter.kind === 'crm'
-            ? parameter.value === 'PrimaryControl'
-              ? formContext
-              : parameter.value === 'SelectedControlSelectedItemIds'
-                ? selection
-                : host.table.entity
-            : parameter.kind === 'number'
-              ? Number(parameter.value)
-              : parameter.kind === 'boolean'
-                ? parameter.value === 'true'
-                : parameter.value,
-        );
+        const args = action.parameters.map((parameter) => {
+          if (parameter.kind === 'crm') {
+            if (parameter.value === 'PrimaryControl') return formContext;
+            if (parameter.value === 'SelectedControlSelectedItemIds') return selection;
+            return host.table.entity;
+          }
+          if (parameter.kind === 'number') return Number(parameter.value);
+          if (parameter.kind === 'boolean') return parameter.value === 'true';
+          return parameter.value;
+        });
         await call(action, args);
       }
+    },
+    // Resolves when every save-and-new chain the runtime started has ended; rejects when one ended in a failure.
+    async settled() {
+      await Promise.all(savedChains);
     },
     destroy() {
       live = false;
       events.clear();
-      for (const id of notifications) host.notification(null, null, id);
+      eventOrdinals.clear();
+      invalidNumberReads.clear();
+      layoutLabels.clear();
+      for (const id of notifications) formNotification(null, null, id);
     },
   };
 }

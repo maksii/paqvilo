@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { FileBodyCache } from '../lense/file-cache.mjs';
+import { tempDirSync } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-body-cache-'));
+  const dir = tempDirSync('pp-body-cache-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return (name, body) => {
     const file = path.join(dir, name);
@@ -16,6 +17,8 @@ function fixture(t) {
 }
 
 test('served-body cache reuses transforms, notices replacement, and invalidates explicit saves', (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const write = fixture(t);
   const file = write('app.js', 'before');
   const cache = new FileBodyCache();
@@ -42,6 +45,8 @@ test('served-body cache reuses transforms, notices replacement, and invalidates 
 });
 
 test('served-body LRU limits total bytes, individual entries and empty-file count', (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const write = fixture(t);
   const cache = new FileBodyCache({ maxBytes: 10, maxEntryBytes: 8, maxEntries: 2 });
   const a = write('a', 'aaaaa'),

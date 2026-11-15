@@ -24,8 +24,7 @@ const lastLine = (text) =>
   String(text ?? '')
     .trim()
     .split(/\r?\n/)
-    .filter(Boolean)
-    .at(-1) ?? '';
+    .findLast(Boolean) ?? '';
 
 const steps = action === 'restart' ? ['stop', 'start'] : [action];
 for (const step of steps) {

@@ -143,7 +143,7 @@ export const TIME_ZONE_DEFINITIONS = Object.freeze([
 /** Time zone choices in the platform's display order (ordinal by name). */
 export function timeZoneChoices() {
   return [...TIME_ZONE_DEFINITIONS]
-    .sort((left, right) => (left[1] < right[1] ? -1 : left[1] > right[1] ? 1 : 0))
+    .sort((left, right) => Number(left[1] > right[1]) - Number(left[1] < right[1]))
     .map(([value, label]) => ({ value, label }));
 }
 

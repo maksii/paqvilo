@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "repository": "maksii/paqvilo",
+  "analysisRef": "refs/pull/40/merge",
+  "analysisId": 2078345472,
+  "analysisCommit": "0f3fd6b7f8ff09f70f0117a9bc716091a0b79793",
+  "policy": "This records the reviewed source and sink for the specified analysis, not a rule exclusion or automatic suppression list. Fixes and proposed dispositions require verification on the final head.",
+  "followupAnalyses": [
+    {
+      "analysisId": 2097478769,
+      "analysisCommit": "0c7c7075dee0e58f210f8a4a97ae5664c9eb5a36",
+      "headCommit": "7e89a133af6dfb4fa03f255aac4a4c84ee8cff2e",
+      "baseCommit": "e66e71544a7716b8508325d249e417680f4f6ed9",
+      "category": "/language:javascript-typescript",
+      "entries": [
+        {
+          "number": 377,
+          "rule": "js/xss-through-dom",
+          "disposition": "false-positive",
+          "previousAlertNumbers": [258, 169],
+          "source": "mirage/lib/platform-app-compat.js",
+          "sourceSha256": "4bc90fd675eaf7eca7a8e6b09538860303ac55673ec0ef74de4e3fa333bd662b",
+          "location": {
+            "line": 488,
+            "startColumn": 33,
+            "endColumn": 36
+          },
+          "primaryLocationLineHash": "ca14aa53a7d8b29d:1",
+          "evidence": "The data-page value is parsed as a URL and restricted to same-origin HTTP(S) with no double-slash-leading path. URLSearchParams serializes existing options and action-owned values are encoded; the two reported flows through the query and hash reach an iframe src navigation, not an HTML-string parser. This does not prove destination pages cannot independently reflect query data unsafely.",
+          "verification": "Two independent reviews of the exact source and both current SARIF flows; mirage/test-browser/frame-url-safety.test.mjs asserts hostile query and fragment inputs remain URL data, with no injected markup, script or external navigation.",
+          "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/377"
+        }
+      ]
+    }
+  ],
+  "entries": [
+    {
+      "number": 361,
+      "disposition": "false-positive",
+      "evidence": "The reported request URL flows to the action argument of webFormsForm. That function encodes ampersand, double quote, less-than and greater-than before inserting the value in a double-quoted HTML attribute. The URL is not placed directly in script or unquoted markup.",
+      "verification": "mirage/test/platform-manifest.test.mjs: request-derived WebForms action attribute regression"
+    },
+    {
+      "number": 362,
+      "disposition": "false-positive",
+      "evidence": "The reported request URL flows to the action argument of webFormsForm on the modal path. The same escapeAttribute encoding protects the double-quoted action attribute; this path does not insert the URL directly into script.",
+      "verification": "mirage/test/platform-manifest.test.mjs: request-derived WebForms action attribute regression"
+    },
+    {
+      "number": 363,
+      "disposition": "false-positive",
+      "previousAlertNumbers": [265],
+      "evidence": "strip_html is a Liquid text transformation implementing the DotLiquid StandardFilters.StripHtml behavior, not an HTML sanitizer. Its output is not promised to be safe HTML and changing repeated stripping would change its compatibility behavior. Prior review 265 documents the upstream behavior.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html"
+    },
+    {
+      "number": 364,
+      "disposition": "false-positive",
+      "evidence": "The expression extracts a column heading for a CSV download, not HTML for insertion in a document. The resulting heading is passed through csvCell and serialized to a text/csv response. The expression is not relied upon as an HTML security sanitizer.",
+      "verification": "mirage/test/grid-download.test.mjs; mirage/test/platform-services.test.mjs"
+    },
+    {
+      "number": 365,
+      "disposition": "false-positive",
+      "evidence": "scriptRawEnd implements script escaped and double-escaped tokenizer states; it is not a general HTML comment filter. In the script double-escaped dash-dash state, ! transitions back to double-escaped rather than making --!> the --> state transition. Treating it as --> would locate the wrong script end.",
+      "verification": "test/rewrite-safety.test.mjs: script double-escaped --!>"
+    },
+    {
+      "number": 366,
+      "disposition": "false-positive",
+      "previousAlertNumbers": [265],
+      "evidence": "The script regex is part of the DotLiquid strip_html text transformation, not a security filter. Accepting additional HTML end-tag syntax would change the existing compatibility transform. See prior review 265.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html"
+    },
+    {
+      "number": 367,
+      "disposition": "false-positive",
+      "evidence": "This regex identifies script ranges only to classify FetchXML source for a static Web API inventory. It neither sanitizes nor serves HTML, and an imperfect range can affect classification but cannot make executable HTML safe or unsafe.",
+      "verification": "mirage/test/webapi-ecosystem.test.mjs; mirage/test/webapi-inventory-wrappers.test.mjs"
+    },
+    {
+      "number": 368,
+      "disposition": "false-positive",
+      "evidence": "The CDP probe inserts JSON.stringify(selector) as a complete JavaScript string literal, not as an HTML script element. The selector remains a value rather than executable source.",
+      "verification": "mirage/test/security-regressions.test.mjs: browser code construction keeps hostile JSON values as data"
+    },
+    {
+      "number": 369,
+      "disposition": "false-positive",
+      "evidence": "The CDP probe inserts JSON.stringify(attribute) as a complete JavaScript string literal, not as an HTML script element. The attribute remains a value rather than executable source.",
+      "verification": "mirage/test/security-regressions.test.mjs: browser code construction keeps hostile JSON values as data"
+    },
+    {
+      "number": 370,
+      "disposition": "false-positive",
+      "evidence": "The SHA-1 hashes derive stable metadata component identifiers. UUID version 5 specifies SHA-1, and the fallback hashes a non-GUID namespace into stable bytes; neither digest authenticates, verifies integrity, protects a secret or makes a security decision. Changing them changes existing identifiers.",
+      "verification": "mirage/test/dataverse-metadata.test.mjs; metadata component identity callers"
+    },
+    {
+      "number": 371,
+      "disposition": "false-positive",
+      "evidence": "objectTypeCode derives a stable 10000–59999 custom table identifier from a logical name. This intentionally small identifier space and SHA-1 digest do not authenticate, verify integrity or protect a secret; changing the digest renumbers existing object types.",
+      "verification": "mirage/test/dataverse-metadata.test.mjs: objectTypeCode"
+    },
+    {
+      "number": 372,
+      "disposition": "fix",
+      "evidence": "The required whitespace and following non-percent repetition overlapped. Consuming one required whitespace before the non-percent repetition accepts the same complete tags without that ambiguous partition.",
+      "verification": "mirage/test/page-resources.test.mjs: long whitespace runs"
+    },
+    {
+      "number": 373,
+      "disposition": "fix",
+      "evidence": "The unanchored literal snippet regex can repeatedly scan malformed suffixes. The replacement indexes quote-and-bracket closers and line breaks once, then locates the same first eligible closer for each candidate without rescanning the suffix.",
+      "verification": "mirage/test/page-resources.test.mjs: incomplete literal lookups; ignored differential proof script"
+    },
+    {
+      "number": 374,
+      "disposition": "fix",
+      "evidence": "Every dynamic snippet match ends at a closing bracket. Excluding the suffix following the final closing bracket preserves all matches and prevents repeated scans of that unmatched suffix.",
+      "verification": "mirage/test/page-resources.test.mjs: unterminated snippet lookups"
+    },
+    {
+      "number": 375,
+      "disposition": "fix",
+      "evidence": "The unanchored literal setting regex can repeatedly scan malformed suffixes. It now uses the same indexed closer lookup as snippet references.",
+      "verification": "mirage/test/page-resources.test.mjs: incomplete literal lookups; ignored differential proof script"
+    },
+    {
+      "number": 376,
+      "disposition": "false-positive",
+      "previousAlertNumbers": [315],
+      "evidence": "The output path is fixed to report.json under the caller-selected and resolved outputDir. Remote observations affect JSON contents, not the destination path. This is an intentional acceptance report, analogous to reviewed verify report alert 315.",
+      "verification": "mirage/test/acceptance-options.test.mjs; mirage/acceptance.mjs outputDir resolution and final report write"
+    }
+  ]
+}

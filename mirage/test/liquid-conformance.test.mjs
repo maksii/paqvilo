@@ -1,3 +1,4 @@
+// @test-kind contract: the golden-liquid conformance tool follows its documented exit-code contract
 // golden-liquid conformance tool: case rendering, rule classification, stale rules and the
 // generated tables (synthetic suite; the pinned suite itself is not vendored).
 import test from 'node:test';
@@ -6,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_RULES, classify, conformance, markdown, runCase } from '../liquid-conformance.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SUITE = {
   description: 'synthetic',
@@ -49,8 +51,19 @@ test('cases render with hash data and an expected error passes when one is raise
   assert.equal(classify(SUITE.tests[5], RULES.rules), null);
 });
 
+test('a suite without a tests array is refused instead of reported as zero cases', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-conformance-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'rules.json'), JSON.stringify(RULES));
+  const suite = path.join(dir, 'wrong.json');
+  await fs.writeFile(suite, JSON.stringify({}));
+  await assert.rejects(conformance({ suite, rules: path.join(dir, 'rules.json') }), {
+    message: `Suite ${suite} has no tests array`,
+  });
+});
+
 test('conformance classifies differing cases, reports unexplained ones as engine gaps and lists stale rules', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-conformance-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-conformance-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'suite.json'), JSON.stringify(SUITE));
   await fs.writeFile(path.join(dir, 'rules.json'), JSON.stringify(RULES));

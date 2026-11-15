@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { performanceOptionsFromArgs, runtimePerformance } from '../scripts/runtime-performance.mjs';
 
 test('performance workload and per-phase budgets reach the measured report without changing default qualification', async () => {
+  // Budgets sit far above any runner's timings: this checks that they reach the report, not this machine's speed.
   const options = performanceOptionsFromArgs([
     '--standalone',
     '--tables',
@@ -12,17 +14,17 @@ test('performance workload and per-phase budgets reach the measured report witho
     '--forms-per-table',
     '2',
     '--startup-budget',
-    '10000',
+    '300000',
     '--restart-budget',
-    '11000',
+    '310000',
     '--journal-budget',
-    '12000',
+    '320000',
     '--catalogue-budget',
-    '10000',
+    '330000',
     '--heartbeat-budget',
-    '5000',
+    '60000',
     '--data-budget',
-    '5000',
+    '61000',
   ]);
   const report = await runtimePerformance(options);
   assert.equal(report.portal, false);
@@ -30,8 +32,10 @@ test('performance workload and per-phase budgets reach the measured report witho
   assert.equal(report.formsPerTable, 2);
   assert.deepEqual(
     report.results.map((row) => row.startupBudgetMs),
-    [10000, 11000, 12000],
+    [300000, 310000, 320000],
   );
+  assert.deepEqual([report.catalogueBudgetMs, report.heartbeatBudgetMs, report.dataBudgetMs], [330000, 60000, 61000]);
+  assert.equal(report.strictBudgets, true, 'declared budgets keep the default strict qualification');
   assert.deepEqual(report.findings, []);
   for (const row of report.results) {
     assert.equal(row.actualRecords, 20);
@@ -55,4 +59,18 @@ test('performance CLI rejects unknown options and invalid budgets before creatin
     ['--records', '1e4'],
   ])
     assert.throws(() => performanceOptionsFromArgs(args), undefined, JSON.stringify(args));
+});
+
+test('the --large workload is the one the runtime performance guide documents', () => {
+  const options = performanceOptionsFromArgs(['--large']);
+  const guide = fs.readFileSync(new URL('../mirage/docs/runtime-performance.md', import.meta.url), 'utf8');
+  const [, tables, forms, xmlFiles, records] = guide.match(
+    /runtime-performance\.mjs --large +# ([\d,]+) tables x ([\d,]+) forms \(([\d,]+) XML files\), ([\d,]+) records/,
+  );
+  const number = (text) => Number(text.replaceAll(',', ''));
+  assert.deepEqual(options.scales, [number(tables)]);
+  assert.equal(options.formsPerTable, number(forms));
+  assert.equal(options.records, number(records));
+  // One Entity.xml and the forms per table, plus the Solution manifest and app module.
+  assert.equal(options.scales[0] * (1 + options.formsPerTable) + 2, number(xmlFiles));
 });

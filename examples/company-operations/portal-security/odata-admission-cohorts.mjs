@@ -73,7 +73,7 @@ export function odataAdmissionCohorts({ schema, catalogue }) {
   rootQuery(oneToMany, 'pqvd_assignment');
   oneToMany.discriminator = 'multi-level-one-to-many';
   configurations.push(oneToMany);
-  const { bindingContract: ignoredBinding, ...sameSource } = configurations.find(
+  /* NOSONAR */ const { bindingContract: ignoredBinding, ...sameSource } = configurations.find(
     (configuration) => configuration.discriminator === 'depth-2',
   );
   const same = structuredClone(sameSource);
@@ -114,7 +114,7 @@ export function odataAdmissionCohorts({ schema, catalogue }) {
   configurations.push(same);
   for (const configuration of configurations) {
     const old = configuration.variantId;
-    configuration.variantId = 'odata-admission:' + configuration.discriminator;
+    configuration.variantId = 'odata-admission:' + configuration.discriminator; // NOSONAR: stringification is intentional here
     configuration.query = {
       ...configuration.query,
       id: 'QF-ODA-' + hash(configuration.variantId).slice(0, 16),

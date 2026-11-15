@@ -1,8 +1,9 @@
+// @test-kind tooling: invented-schema harness generation, plan execution and evidence bookkeeping contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { compilePlans, caseTemplate, dispatcher } from './compile.mjs';
+import { compilePlans, caseTemplate, dispatcher, hasSelfClosingTag } from './compile.mjs';
 import {
   authoredQuery,
   canonicalRows,
@@ -25,6 +26,7 @@ const operation = {
   pqvd_markeroperation: 'CO-OP:11111111-1111-4111-8111-111111111111',
 };
 
+// @test-kind tooling: async reconciliation retains late multipart packets and waits for a stable complete operation
 test('async reconciliation retains late multipart packets and waits for a stable complete operation', async () => {
   const { sha256 } = await import('./core.mjs');
   let time = 0,
@@ -56,6 +58,7 @@ test('async reconciliation retains late multipart packets and waits for a stable
   assert.equal(result.elapsedMs, 3);
 });
 
+// @test-kind tooling: async reconciliation aborts an unresponsive transport within its deadline
 test('async reconciliation aborts an unresponsive transport within its deadline', async () => {
   let signal;
   const result = await reconcileBackendArtifact({
@@ -72,6 +75,7 @@ test('async reconciliation aborts an unresponsive transport within its deadline'
   assert.deepEqual(result.events, []);
 });
 
+// @test-kind tooling: default async deadline admits the observed late queue and retains a finite timeout for longer queues
 test('default async deadline admits the observed late queue and retains a finite timeout for longer queues', async () => {
   const { sha256 } = await import('./core.mjs');
   const packet = {
@@ -98,6 +102,7 @@ test('default async deadline admits the observed late queue and retains a finite
   }
 });
 
+// @test-kind tooling: async reconciliation retains partial failures and never grants credit for missing, corrupt, paged or cancelled evidence
 test('async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence', async () => {
   const { sha256 } = await import('./core.mjs'),
     event = {
@@ -155,7 +160,8 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
     const calls = [],
       operations = new Map(),
       queryCache = new Map();
-    let eventReads = 0;
+    let eventReads = 0,
+      elapsed = 0;
     const packet = {
       pqvd_plugineventid: 'event',
       pqvd_spanid: 'span',
@@ -183,12 +189,12 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       if (args.url.startsWith('/_api/pqvd_pluginevents?')) {
         eventReads++;
         if (fail) return { ok: false, status: 403, text: 'denied' };
-        if (eventReads > 3) throw Error('Cached query never exposed the late event.');
+        if (eventReads > 3) throw new Error('Cached query never exposed the late event.');
         const xml = new URL(args.url, 'http://127.0.0.1').searchParams.get('fetchXml'),
-          operationId = xml.match(/attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/)?.[1];
+          operationId = /attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/.exec(xml)?.[1];
         assert.equal(operations.get(operationId)?.pqvd_caseid, 'P10');
-        const equality = xml.match(/attribute="pqvd_plugineventid" operator="eq" value="([a-f0-9-]+)"/)?.[1],
-          inequality = xml.match(/attribute="pqvd_plugineventid" operator="ne" value="([a-f0-9-]+)"/)?.[1];
+        const equality = /attribute="pqvd_plugineventid" operator="eq" value="([a-f0-9-]+)"/.exec(xml)?.[1],
+          inequality = /attribute="pqvd_plugineventid" operator="ne" value="([a-f0-9-]+)"/.exec(xml)?.[1];
         assert.ok(equality);
         assert.equal(equality, inequality);
         assert.match(xml, /<filter type="or">/);
@@ -208,6 +214,13 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       },
       context: { contactId: '11111111-1111-4111-8111-111111111111', roles: ['CO Test Runner'] },
       request,
+      // Virtual time: the late packet arrives on the third poll without two real one-second intervals.
+      clock: {
+        now: () => elapsed,
+        sleep: async (ms) => {
+          elapsed += ms;
+        },
+      },
     });
     const result = await runner.run({ selectedCases: [], pluginProfile: 'P10' }),
       profile = result.evidence.find((e) => e.profile === 'P10' && !e.kind),
@@ -220,6 +233,7 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       );
     assert.equal(profile.backendReconciliation.state, fail ? 'read-failed' : 'observed');
     assert.equal(eventReads, fail ? 1 : 3);
+    assert.equal(elapsed, fail ? 0 : 2000, 'two default one-second polling intervals separate the three reads');
     assert.equal(queryCache.size, fail ? 0 : 3);
     assert.deepEqual(result.residuals, []);
     assert.ok(cleanup > calls.findLastIndex((c) => c.url.startsWith('/_api/pqvd_pluginevents?')));
@@ -230,13 +244,14 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
   }
 });
 
+// @test-kind contract: generated typed plans retain their explicit-tag and oracle-isolation guarantees.
 test('all36 cases plus inner/outer variant share typed plans without administrator oracle leakage', () => {
   assert.equal(manifest.cases.length, 37);
   assert.equal(new Set(manifest.cases.map((c) => c.id.slice(0, 3))).size, 36);
   for (const c of manifest.cases) {
     assert.ok(!c.expected);
     assert.ok(!c.fetchXml.includes('{{ref:'));
-    assert.ok(!/<[^>]*\/>/.test(c.fetchXml));
+    assert.ok(!hasSelfClosingTag(c.fetchXml));
     assert.match(c.fetchXml, /<filter type="or"><condition attribute="[^"]+" operator="null">/);
     assert.equal((c.fetchXml.match(/\{\{markerUtc\}\}/g) || []).length, 1);
     assert.equal((c.fetchXml.match(/\{\{markerOperation\}\}/g) || []).length, 1);
@@ -284,12 +299,14 @@ test('canonical parity keeps null, empty, dates, tuples and duplicate multiplici
   );
   assert.equal(compareResults({ complete: false }, { complete: true }), 'incomplete');
 });
+// @test-kind tooling: full terminal page needs extra proof when provider omits more-record metadata
 test('full terminal page needs extra proof when provider omits more-record metadata', () => {
   assert.equal(pageComplete({ rowCount: 50, pageSize: 50 }), false);
   assert.equal(pageComplete({ rowCount: 0, pageSize: 50 }), true);
   assert.equal(pageComplete({ rowCount: 50, pageSize: 50, more: false }), true);
   assert.equal(pageComplete({ rowCount: 0, pageSize: 50, more: true }), false);
 });
+// @test-kind tooling: chunking reconstructs exactly and never splits surrogate pairs
 test('chunking reconstructs exactly and never splits surrogate pairs', () => {
   const text = 'ab😀c'.repeat(30),
     parts = splitPayload(text, 7);
@@ -297,6 +314,7 @@ test('chunking reconstructs exactly and never splits surrogate pairs', () => {
   assert.ok(parts.every((p) => p.length <= 7));
   assert.ok(parts.every((p) => !/[\uD800-\uDBFF]$/.test(p)));
 });
+// @test-kind tooling: artifact transport preserves original Unicode and API URLs through memo rewriting and rejects tampering
 test('artifact transport preserves original Unicode and API URLs through memo rewriting and rejects tampering', async () => {
   const original = 'https://portal.example.test/_api/$metadata\r\n東京😀'.repeat(15000),
     encoded = await encodeArtifact(original, 'application/xml'),
@@ -349,6 +367,7 @@ test('per-run artifact transport overflow records incomplete persistence before 
   assert.equal(calls.filter((c) => c.url === '/_api/pqvd_testresults').length, 0);
   assert.equal(calls.at(-1).body.pqvd_runstate, manifest.choices.pqvd_runstate.Incomplete);
 });
+// @test-kind tooling: reusable runner rejects overlap and starts each sequential run with its own budget and evidence
 test('reusable runner rejects overlap and starts each sequential run with its own budget and evidence', async () => {
   let release,
     firstPost = true;
@@ -407,7 +426,7 @@ test('templates escape XML, use immutable operation intent, and hide no failed o
   const module = /<script type="module">([\s\S]*?)<\/script>/.exec(shell)?.[1];
   assert.ok(module, 'the shell includes its browser module');
   assert.doesNotThrow(
-    () => new vm.Script(module, { filename: 'bundled-portal-shell.js' }),
+    () => new vm.Script(module, { filename: 'bundled-portal-shell.js' }), // NOSONAR: intentional local script execution or generated handler
     'the browser bundle has no unresolved module imports or exports',
   );
   assert.match(shell, /pre.textContent/);
@@ -432,6 +451,7 @@ test('disjoint request fragments retain every fixture and joined row multiplicit
   }
   assert.equal(manifest.cases.find((c) => c.id === 'R31').fragments, undefined);
 });
+// @test-kind tooling: empty failed lanes retain differing HTTP and platform outcome classes
 test('empty failed lanes retain differing HTTP and platform outcome classes', () => {
   const plan = { primaryId: 'id', fields: [{ name: 'id', type: 'guid' }] },
     previous = {

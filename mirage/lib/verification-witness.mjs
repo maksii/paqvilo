@@ -2,23 +2,20 @@ import { createHash } from 'node:crypto';
 
 // Typed representation preserves absent versus explicit undefined, Date,
 // bigint and duplicate rows without ambiguous sentinel objects.
-const canonical = (value) =>
-  value === undefined
-    ? ['undefined']
-    : value === null
-      ? ['null']
-      : value instanceof Date
-        ? ['date', value.toISOString()]
-        : Array.isArray(value)
-          ? ['array', value.map(canonical)]
-          : typeof value === 'object'
-            ? [
-                'object',
-                Object.keys(value)
-                  .sort()
-                  .map((key) => [key, canonical(value[key])]),
-              ]
-            : [typeof value, typeof value === 'number' && Object.is(value, -0) ? '-0' : String(value)];
+const canonical = (value) => {
+  if (value === undefined) return ['undefined'];
+  if (value === null) return ['null'];
+  if (value instanceof Date) return ['date', value.toISOString()];
+  if (Array.isArray(value)) return ['array', value.map(canonical)];
+  if (typeof value === 'object')
+    return [
+      'object',
+      Object.keys(value)
+        .sort((a, b) => Number(a > b) - Number(a < b))
+        .map((key) => [key, canonical(value[key])]),
+    ];
+  return [typeof value, typeof value === 'number' && Object.is(value, -0) ? '-0' : String(value)];
+};
 const hash = (value) =>
   createHash('sha256')
     .update(JSON.stringify(canonical(value)))
@@ -45,7 +42,7 @@ export function verificationTableSelection(tables, state) {
     fail('Select between one and 32 distinct logical fixture tables.');
   if (tables.some((table) => !Object.hasOwn(state.tables ?? {}, table) || !Object.hasOwn(state.mappings ?? {}, table)))
     fail('Every selected fixture table must exist in the current runtime data and mappings.');
-  return [...tables].sort();
+  return [...tables].sort((a, b) => Number(a > b) - Number(a < b));
 }
 
 /** Pure in-memory hashing. The caller holds the DataStore read-operation frame;
@@ -59,8 +56,8 @@ export function verificationWitness({ state, tables, identity, portal, runtime }
     contactId: identity?.contactId ?? identity?.id ?? null,
     accountId: identity?.accountId ?? null,
     roleSource: identity?.roleSource ?? 'memberships',
-    roles: [...(identity?.roles ?? [])].sort(),
-    roleIds: [...(identity?.roleIds ?? [])].sort(),
+    roles: [...(identity?.roles ?? [])].sort(), // NOSONAR: preserve default string coercion in witnesses
+    roleIds: [...(identity?.roleIds ?? [])].sort(), // NOSONAR: preserve default string coercion in witnesses
   };
   const rows = Object.fromEntries(
     selection.map((table) => [
@@ -109,7 +106,7 @@ export function verificationWitness({ state, tables, identity, portal, runtime }
       rows,
       excludedTables: Object.keys(state.tables ?? {})
         .filter((table) => !selection.includes(table))
-        .sort(),
+        .sort((a, b) => Number(a > b) - Number(a < b)),
       scope:
         'All stored columns and row multiplicities in explicitly selected fixture tables; excluded collections are unobserved. Effective actor fields are independently hashed.',
     },

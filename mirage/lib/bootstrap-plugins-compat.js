@@ -7,12 +7,12 @@
 (() => {
   // One adapter per document: a repeated include only re-attaches the plugins to
   // the current jQuery; the delegated click handler is bound once.
-  const compat = (window.__ppSimCompat ||= {});
+  const compat = (globalThis.__ppSimCompat ||= {});
   if (compat.bootstrapPlugins) {
-    compat.bootstrapPlugins(window.jQuery);
+    compat.bootstrapPlugins(globalThis.jQuery);
     return;
   }
-  if (!window.jQuery) {
+  if (!globalThis.jQuery) {
     console.error('Local Bootstrap compatibility requires jQuery.');
     return;
   }
@@ -22,23 +22,27 @@
   const instance = (element, name) => instances.get(element)?.[name];
   const create = (element, name, value) => {
     let all = instances.get(element);
-    if (!all) instances.set(element, (all = {}));
-    const $ = window.jQuery;
+    if (!all) {
+      all = {};
+      instances.set(element, all);
+    }
+    const $ = globalThis.jQuery;
     const Constructor = $.fn[name]?.Constructor;
     if (Constructor) Object.setPrototypeOf(value, Constructor.prototype);
     value.$element = $(element);
     $(element).data('bs.' + name, value);
-    return (all[name] = value);
+    all[name] = value;
+    return value;
   };
   const event = (element, name, properties) => {
-    const $ = window.jQuery;
+    const $ = globalThis.jQuery;
     const value = $.Event(name, properties);
     $(element).trigger(value);
     return value;
   };
   // Options from data-* (Bootstrap 3) or data-bs-* (Bootstrap 5) attributes, converted as jQuery .data() does.
   const dataOptions = (element, names) => {
-    const values = window.jQuery(element).data();
+    const values = globalThis.jQuery(element).data();
     const result = {};
     for (const name of names) {
       const value = values[name] ?? values['bs' + name[0].toUpperCase() + name.slice(1)];
@@ -46,10 +50,21 @@
     }
     return result;
   };
+  function fragmentSelector(href) {
+    const hash = href.lastIndexOf('#', href.length - 2);
+    if (hash < 0 || hash >= href.length - 1) return href;
+    for (let i = hash + 1; i < href.length; i++) if (/\s/.test(href[i])) return href;
+    let start = hash;
+    while (start > 0 && !/[\r\n\u2028\u2029]/.test(href[start - 1])) start--;
+    return href.slice(0, start) + href.slice(hash);
+  }
   // A trigger's targets: data-target/data-bs-target, else the #fragment of href.
   const targetsOf = (trigger) => {
-    let selector = trigger.getAttribute('data-target') || trigger.getAttribute('data-bs-target');
-    if (!selector) selector = trigger.getAttribute('href')?.replace(/.*(?=#[^\s]+$)/, '');
+    let selector = trigger.getAttribute('data-target') || trigger.getAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
+    if (!selector) {
+      const href = trigger.getAttribute('href');
+      selector = href == null ? undefined : fragmentSelector(href);
+    }
     if (!selector || selector === '#') return [];
     try {
       return [...document.querySelectorAll(selector)];
@@ -61,110 +76,115 @@
     [...(toggle.parentElement?.children ?? [])].find((element) => element.classList.contains('dropdown-menu'));
   const setShown = (element, shown) => {
     // Bootstrap 5 markup (data-bs-*) carries "show" only, no hidden attribute and no aria-hidden while shown.
-    const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle');
+    const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
     if (!bs5) element.hidden = !shown;
     element.classList.toggle('in', shown && !bs5);
     element.classList.toggle('show', shown);
     if (shown && bs5) element.removeAttribute('aria-hidden');
     else element.setAttribute('aria-hidden', String(!shown));
   };
+  const hideHint = (element, state) => {
+    state.tip?.remove();
+    state.tip = null;
+    element.removeAttribute('aria-describedby');
+  };
+  function positionHint(element, kind, state, tip, $) {
+    if (kind === 'popover') {
+      const Constructor = $.fn.popover?.Constructor;
+      const instance = Object.create(Constructor?.prototype ?? Object.prototype);
+      instance.$element = $(element);
+      instance.$tip = $(tip);
+      instance.tip = function () {
+        return this.$tip;
+      };
+      instance.arrow = function () {
+        return this.$tip.find('.arrow');
+      };
+      const position = instance.getPosition(instance.$element);
+      const placement = state.options?.placement ?? 'bottom';
+      const vertical = placement === 'bottom' || placement === 'top' || placement === 'auto';
+      const tipHeight = tip.offsetHeight,
+        tipWidth = tip.offsetWidth;
+      tip.style.left = `${Math.max(0, position.left + (vertical ? (position.width - tipWidth) / 2 : position.width + 4))}px`;
+      const topInset = vertical ? position.height + 4 : (position.height - tipHeight) / 2;
+      tip.style.top = `${Math.max(0, placement === 'top' ? position.top - tipHeight - 4 : position.top + topInset)}px`;
+      instance.replaceArrow(
+        vertical ? (tipWidth - position.width) / 2 : (tipHeight - position.height) / 2,
+        vertical ? tipWidth : tipHeight,
+        vertical,
+      );
+      state.instance = instance;
+    } else {
+      const rect = element.getBoundingClientRect();
+      tip.style.left = `${Math.max(0, rect.left + scrollX)}px`;
+      tip.style.top = `${rect.bottom + scrollY + 4}px`;
+    }
+  }
+  function showHint(element, kind, state, $) {
+    if (state.tip?.isConnected) return;
+    const tip = document.createElement('div');
+    tip.className = kind === 'popover' ? 'popover paqvilo-mirage-popover' : 'tooltip paqvilo-mirage-tooltip';
+    tip.setAttribute('role', kind === 'popover' ? 'dialog' : 'tooltip');
+    tip.id = `paqvilo-mirage-${kind}-${Math.random().toString(36).slice(2)}`; // NOSONAR: pseudo-random value for simulation, not a secret
+    if (kind === 'popover') {
+      const arrow = document.createElement('div');
+      arrow.className = 'arrow';
+      tip.append(arrow);
+    }
+    const value = (key) => {
+      const result = state.options?.[key] ?? element.getAttribute(key === 'content' ? 'data-content' : 'title') ?? '';
+      return typeof result === 'function' ? result.call(element) : result;
+    };
+    const title = value('title'),
+      content = value('content');
+    if (kind === 'popover' && title) {
+      const heading = document.createElement('h3');
+      heading.className = 'popover-title';
+      heading.textContent = String(title);
+      tip.append(heading);
+    }
+    if (content || kind === 'tooltip') {
+      const body = document.createElement('div');
+      body.className = kind === 'popover' ? 'popover-content' : 'tooltip-inner';
+      if (kind === 'popover' && state.options?.html) body.innerHTML = String(content);
+      else body.textContent = String(content || title);
+      tip.append(body);
+    }
+    (state.options?.container === 'body' ? document.body : (element.parentElement ?? document.body)).append(tip);
+    tip.style.cssText =
+      'position:absolute;z-index:1080;max-width:24rem;padding:.5rem;background:#fff;border:1px solid #777;border-radius:.25rem;box-shadow:0 2px 6px #0003';
+    element.setAttribute('aria-describedby', tip.id);
+    state.tip = tip;
+    data.set(element, state);
+    positionHint(element, kind, state, tip, $);
+  }
+  function bindHint(element, kind, state, options, show, hide) {
+    if (state.bound) return;
+    state.bound = true;
+    state.options = options;
+    data.set(element, state);
+    const trigger = options.trigger ?? (kind === 'tooltip' ? 'hover focus' : 'click');
+    if (trigger.includes('hover')) {
+      element.addEventListener('mouseenter', show);
+      element.addEventListener('mouseleave', hide);
+    }
+    if (trigger.includes('focus')) {
+      element.addEventListener('focus', show);
+      element.addEventListener('blur', hide);
+    }
+    if (trigger.includes('click')) element.addEventListener('click', () => (state.tip?.isConnected ? hide() : show()));
+    if (trigger === 'manual') element.setAttribute('aria-haspopup', kind === 'popover' ? 'dialog' : 'true');
+  }
   function hint(element, kind, options = {}) {
-    const $ = window.jQuery;
+    const $ = globalThis.jQuery;
     const state = data.get(element) ?? {};
     const command = typeof options === 'string' ? options : null;
-    const hide = () => {
-      state.tip?.remove();
-      state.tip = null;
-      element.removeAttribute('aria-describedby');
-    };
-    const show = () => {
-      if (state.tip?.isConnected) return;
-      const tip = document.createElement('div');
-      tip.className = kind === 'popover' ? 'popover paqvilo-mirage-popover' : 'tooltip paqvilo-mirage-tooltip';
-      tip.setAttribute('role', kind === 'popover' ? 'dialog' : 'tooltip');
-      tip.id = `paqvilo-mirage-${kind}-${Math.random().toString(36).slice(2)}`;
-      if (kind === 'popover') {
-        const arrow = document.createElement('div');
-        arrow.className = 'arrow';
-        tip.append(arrow);
-      }
-      const value = (key) => {
-        const result = state.options?.[key] ?? element.getAttribute(key === 'content' ? 'data-content' : 'title') ?? '';
-        return typeof result === 'function' ? result.call(element) : result;
-      };
-      const title = value('title'),
-        content = value('content');
-      if (kind === 'popover' && title) {
-        const h = document.createElement('h3');
-        h.className = 'popover-title';
-        h.textContent = String(title);
-        tip.append(h);
-      }
-      if (content || kind === 'tooltip') {
-        const body = document.createElement('div');
-        body.className = kind === 'popover' ? 'popover-content' : 'tooltip-inner';
-        if (kind === 'popover' && state.options?.html) body.innerHTML = String(content);
-        else body.textContent = String(content || title);
-        tip.append(body);
-      }
-      (state.options?.container === 'body' ? document.body : (element.parentElement ?? document.body)).append(tip);
-      tip.style.cssText =
-        'position:absolute;z-index:1080;max-width:24rem;padding:.5rem;background:#fff;border:1px solid #777;border-radius:.25rem;box-shadow:0 2px 6px #0003';
-      element.setAttribute('aria-describedby', tip.id);
-      state.tip = tip;
-      data.set(element, state);
-      if (kind === 'popover') {
-        const Constructor = $.fn.popover?.Constructor;
-        const instance = Object.create(Constructor?.prototype ?? Object.prototype);
-        instance.$element = $(element);
-        instance.$tip = $(tip);
-        instance.tip = function () {
-          return this.$tip;
-        };
-        instance.arrow = function () {
-          return this.$tip.find('.arrow');
-        };
-        const position = instance.getPosition(instance.$element);
-        const placement = state.options?.placement ?? 'bottom';
-        const vertical = placement === 'bottom' || placement === 'top' || placement === 'auto';
-        const tipHeight = tip.offsetHeight,
-          tipWidth = tip.offsetWidth;
-        tip.style.left = `${Math.max(0, position.left + (vertical ? (position.width - tipWidth) / 2 : position.width + 4))}px`;
-        tip.style.top = `${Math.max(0, placement === 'top' ? position.top - tipHeight - 4 : position.top + (vertical ? position.height + 4 : (position.height - tipHeight) / 2))}px`;
-        instance.replaceArrow(
-          vertical ? (tipWidth - position.width) / 2 : (tipHeight - position.height) / 2,
-          vertical ? tipWidth : tipHeight,
-          vertical,
-        );
-        state.instance = instance;
-      } else {
-        const rect = element.getBoundingClientRect();
-        tip.style.left = `${Math.max(0, rect.left + scrollX)}px`;
-        tip.style.top = `${rect.bottom + scrollY + 4}px`;
-      }
-    };
+    const hide = () => hideHint(element, state);
+    const show = () => showHint(element, kind, state, $);
     if (command === 'hide' || command === 'destroy' || command === 'dispose') hide();
     else if (command === 'show') show();
     else if (command === 'toggle') state.tip?.isConnected ? hide() : show();
-    else if (!command) {
-      // Bootstrap initialises once: later option calls do not rebind or replace options.
-      if (state.bound) return;
-      state.bound = true;
-      state.options = options;
-      data.set(element, state);
-      const trigger = options.trigger ?? (kind === 'tooltip' ? 'hover focus' : 'click');
-      if (trigger.includes('hover')) {
-        element.addEventListener('mouseenter', show);
-        element.addEventListener('mouseleave', hide);
-      }
-      if (trigger.includes('focus')) {
-        element.addEventListener('focus', show);
-        element.addEventListener('blur', hide);
-      }
-      if (trigger.includes('click'))
-        element.addEventListener('click', () => (state.tip?.isConnected ? hide() : show()));
-      if (trigger === 'manual') element.setAttribute('aria-haspopup', kind === 'popover' ? 'dialog' : 'true');
-    }
+    else if (!command) bindHint(element, kind, state, options, show, hide);
   }
   const MODAL_DEFAULTS = { backdrop: true, keyboard: true, show: true };
   const modal = {
@@ -176,7 +196,7 @@
         });
       if (event(element, 'show.bs.modal', { relatedTarget }).isDefaultPrevented() || state.shown) return;
       state.shown = true;
-      const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle');
+      const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
       // Bootstrap 5 hides the page scrollbar and pads the body by its width (overflow: hidden; padding-right: 15px).
       const scrollbar = window.innerWidth - document.documentElement.clientWidth;
       if (bs5 && !document.body.classList.contains('modal-open')) {
@@ -215,7 +235,7 @@
       element.style.display = 'none';
       element.removeAttribute('aria-modal');
       // Bootstrap 5 drops the dialog role it set on show.
-      if (element.hasAttribute('data-bs-backdrop')) element.removeAttribute('role');
+      if (element.hasAttribute('data-bs-backdrop')) element.removeAttribute('role'); // NOSONAR: actual attributes exclude inherited dataset values
       element.removeEventListener('click', state.click);
       element.removeEventListener('keydown', state.keydown);
       state.backdrop?.remove();
@@ -264,14 +284,14 @@
   // toggle and its menu (.show) and signals on the toggle. Both fire show/shown/hide/hidden.bs.dropdown.
   const DROPDOWN_TOGGLES = '[data-toggle="dropdown"],[data-bs-toggle="dropdown"]';
   const dropdownTarget = (toggle) =>
-    toggle.hasAttribute('data-bs-toggle') ? toggle : (toggle.parentElement ?? toggle);
+    toggle.hasAttribute('data-bs-toggle') ? toggle : (toggle.parentElement ?? toggle); // NOSONAR: actual attributes exclude inherited dataset values
   const dropdownOpen = (toggle) =>
-    toggle.hasAttribute('data-bs-toggle')
+    toggle.hasAttribute('data-bs-toggle') // NOSONAR: actual attributes exclude inherited dataset values
       ? toggle.classList.contains('show')
       : Boolean(toggle.parentElement?.classList.contains('open'));
   const dropdown = {
     show(element) {
-      const bs5 = element.hasAttribute('data-bs-toggle'),
+      const bs5 = element.hasAttribute('data-bs-toggle'), // NOSONAR: actual attributes exclude inherited dataset values
         target = dropdownTarget(element);
       if (dropdownOpen(element) || event(target, 'show.bs.dropdown', { relatedTarget: element }).isDefaultPrevented())
         return;
@@ -283,7 +303,7 @@
       event(target, 'shown.bs.dropdown', { relatedTarget: element });
     },
     hide(element) {
-      const bs5 = element.hasAttribute('data-bs-toggle'),
+      const bs5 = element.hasAttribute('data-bs-toggle'), // NOSONAR: actual attributes exclude inherited dataset values
         target = dropdownTarget(element);
       if (!dropdownOpen(element) || event(target, 'hide.bs.dropdown', { relatedTarget: element }).isDefaultPrevented())
         return;
@@ -320,7 +340,7 @@
   const TAB_TOGGLES =
     '[data-toggle="tab"],[data-toggle="pill"],[data-bs-toggle="tab"],[data-bs-toggle="pill"],[data-bs-toggle="list"]';
   const tabItem = (tab) =>
-    !tab.hasAttribute('data-bs-toggle') && tab.parentElement?.tagName === 'LI' ? tab.parentElement : tab;
+    !tab.hasAttribute('data-bs-toggle') && tab.parentElement?.tagName === 'LI' ? tab.parentElement : tab; // NOSONAR: actual attributes exclude inherited dataset values
   const tab = {
     show(element) {
       if (tabItem(element).classList.contains('active')) return;
@@ -336,7 +356,7 @@
         const active = candidate === element;
         tabItem(candidate).classList.toggle('active', active);
         candidate.setAttribute('aria-selected', String(active));
-        if (!candidate.hasAttribute('data-bs-toggle')) candidate.setAttribute('aria-expanded', String(active));
+        if (!candidate.hasAttribute('data-bs-toggle')) candidate.setAttribute('aria-expanded', String(active)); // NOSONAR: actual attributes exclude inherited dataset values
         const pane = targetsOf(candidate)[0];
         if (pane) {
           pane.classList.toggle('active', active);
@@ -354,9 +374,45 @@
       target.classList.remove('in', 'show');
       target.remove();
       event(target, 'closed.bs.alert');
-      window.jQuery(target).remove();
+      globalThis.jQuery(target).remove();
     },
   };
+  function toggleButton(element, $) {
+    const group = element.closest('[data-toggle="buttons"]');
+    const input = element.querySelector('input[type="radio"],input[type="checkbox"]');
+    if (group && input) {
+      if (input.type === 'radio') {
+        if (input.checked && element.classList.contains('active')) return;
+        for (const active of group.querySelectorAll('.btn.active')) active.classList.remove('active');
+      }
+      input.checked = !element.classList.contains('active');
+      $(input).trigger('change');
+    } else element.setAttribute('aria-pressed', String(!element.classList.contains('active')));
+    element.classList.toggle('active');
+  }
+  function updateButtonText(element, argument, state, $) {
+    const input = element.tagName === 'INPUT';
+    state.resetText ??= input ? element.value : element.innerHTML;
+    setTimeout(() => {
+      const text =
+        argument === 'reset'
+          ? state.resetText
+          : ($(element).data(argument + 'Text') ?? state.options[argument + 'Text']);
+      if (text != null) {
+        if (input) element.value = text;
+        else element.innerHTML = text;
+      }
+      if (argument === 'loading') {
+        state.loading = true;
+        element.classList.add('disabled');
+        element.setAttribute('disabled', 'disabled');
+      } else if (state.loading) {
+        state.loading = false;
+        element.classList.remove('disabled');
+        element.removeAttribute('disabled');
+      }
+    }, 0);
+  }
   // $(element).<plugin>(argument, relatedTarget), as Bootstrap 3.4.1's Plugin functions.
   const plugins = {
     tooltip: (element, argument) => hint(element, 'tooltip', argument ?? {}),
@@ -409,43 +465,13 @@
       if (typeof argument === 'string') alertBox[argument]?.(element);
     },
     button(element, argument) {
-      const $ = window.jQuery;
+      const $ = globalThis.jQuery;
       const state =
         instance(element, 'button') ?? create(element, 'button', { options: { loadingText: 'loading...' } });
       if (argument === 'toggle') {
-        const group = element.closest('[data-toggle="buttons"]');
-        const input = element.querySelector('input[type="radio"],input[type="checkbox"]');
-        if (group && input) {
-          if (input.type === 'radio') {
-            if (input.checked && element.classList.contains('active')) return;
-            for (const active of group.querySelectorAll('.btn.active')) active.classList.remove('active');
-          }
-          input.checked = !element.classList.contains('active');
-          $(input).trigger('change');
-        } else element.setAttribute('aria-pressed', String(!element.classList.contains('active')));
-        element.classList.toggle('active');
+        toggleButton(element, $);
       } else if (typeof argument === 'string') {
-        const input = element.tagName === 'INPUT';
-        state.resetText ??= input ? element.value : element.innerHTML;
-        setTimeout(() => {
-          const text =
-            argument === 'reset'
-              ? state.resetText
-              : ($(element).data(argument + 'Text') ?? state.options[argument + 'Text']);
-          if (text != null) {
-            if (input) element.value = text;
-            else element.innerHTML = text;
-          }
-          if (argument === 'loading') {
-            state.loading = true;
-            element.classList.add('disabled');
-            element.setAttribute('disabled', 'disabled');
-          } else if (state.loading) {
-            state.loading = false;
-            element.classList.remove('disabled');
-            element.removeAttribute('disabled');
-          }
-        }, 0);
+        updateButtonText(element, argument, state, $);
       }
     },
   };
@@ -454,7 +480,7 @@
     for (const [name, run] of Object.entries(plugins)) {
       if ($.fn[name]) continue;
       const previous = $.fn[name];
-      function Constructor(element, options) {
+      /* NOSONAR: captures variables of the enclosing function */ function Constructor(element, options) {
         this.$element = $(element);
         this.options = options ?? {};
       }
@@ -519,89 +545,116 @@
     }
   };
   compat.bootstrapPlugins = attach;
-  attach(window.jQuery);
+  attach(globalThis.jQuery);
   watchJQuery(compat, attach);
   // The data API acts only for local plugins: a real Bootstrap owns its own handlers.
-  const local = (name) => Boolean(window.jQuery?.fn?.[name]?.__ppSimCompat);
-  const handleCompatibilityClick = (click) => {
-    const $ = window.jQuery;
-    const source = click.target instanceof Element ? click.target : click.target?.parentElement;
-    if (!$ || !source) return;
+  const local = (name) => Boolean(globalThis.jQuery?.fn?.[name]?.__ppSimCompat);
+  function handleButtonCompatibilityClick(click, source, $) {
     const buttonToggle = source.closest('[data-toggle^="button"],[data-bs-toggle="button"]');
-    if (buttonToggle && local('button')) {
-      const button = source.closest('.btn') ?? buttonToggle;
-      $(button).button('toggle');
-      if (!source.matches('input[type="radio"],input[type="checkbox"]')) click.preventDefault();
-      return;
-    }
-    // Bootstrap 3 (data-*) and Bootstrap 5 (data-bs-*) data API: the platform bundle's local
-    // equivalent serves both builds (lib/platform-manifest.mjs).
+    if (!buttonToggle || !local('button')) return false;
+    const button = source.closest('.btn') ?? buttonToggle;
+    $(button).button('toggle');
+    if (!source.matches('input[type="radio"],input[type="checkbox"]')) click.preventDefault();
+    return true;
+  }
+  function handleDropdownCompatibilityClick(click, source, $) {
     const menuToggle = source.closest(DROPDOWN_TOGGLES);
-    if (menuToggle && local('dropdown')) {
-      click.preventDefault();
-      $(menuToggle).dropdown('toggle');
-      return;
-    }
-    if (local('dropdown')) clearMenus(click);
+    if (!menuToggle || !local('dropdown')) return false;
+    click.preventDefault();
+    $(menuToggle).dropdown('toggle');
+    return true;
+  }
+  function handleDismissCompatibilityClick(click, source, $) {
     const dismiss = source.closest('[data-dismiss="modal"],[data-bs-dismiss="modal"]');
     if (dismiss) {
-      if (!local('modal')) return;
+      if (!local('modal')) return true;
       click.preventDefault();
       const element = dismiss.closest('.modal');
       if (element) $(element).modal('hide');
-      return;
+      return true;
     }
     const close = source.closest('[data-dismiss="alert"],[data-bs-dismiss="alert"]');
-    if (close) {
-      if (!local('alert')) return;
-      click.preventDefault();
-      const targets = targetsOf(close);
-      for (const element of targets.length ? targets : [close.closest('.alert')].filter(Boolean))
-        $(element).alert('close');
-      return;
+    if (!close) return false;
+    if (!local('alert')) return true;
+    click.preventDefault();
+    const targets = targetsOf(close);
+    for (const element of targets.length ? targets : [close.closest('.alert')].filter(Boolean))
+      $(element).alert('close');
+    return true;
+  }
+  function handleTabCompatibilityClick(click, toggle, $) {
+    click.preventDefault();
+    $(toggle).tab('show');
+  }
+  function handleCollapseCompatibilityClick(click, toggle) {
+    if (
+      toggle.tagName === 'A' ||
+      !(/* NOSONAR */ toggle.getAttribute('data-target') || /* NOSONAR */ toggle.getAttribute('data-bs-target'))
+    )
+      // NOSONAR: read actual attributes, not inherited dataset properties
+      click.preventDefault(); // NOSONAR: actual attributes exclude inherited dataset values
+    for (const element of targetsOf(toggle)) {
+      if (!instance(element, 'collapse')) create(element, 'collapse', { options: { toggle: false } });
+      collapse.toggle(element);
     }
+  }
+  function handleModalCompatibilityClick(click, toggle, $) {
+    if (toggle.tagName === 'A' || toggle.tagName === 'AREA') click.preventDefault();
+    const element = targetsOf(toggle)[0];
+    if (!element) return;
+    // A first open takes the target's and the trigger's options; later clicks toggle.
+    if (instance(element, 'modal')) $(element).modal('toggle', toggle);
+    else $(element).modal(dataOptions(toggle, ['backdrop', 'keyboard', 'show']), toggle);
+  }
+  function handleToggleCompatibilityClick(click, source, $) {
     const toggle = source.closest('[data-toggle],[data-bs-toggle]');
     if (!toggle) return;
-    const kind = toggle.getAttribute('data-toggle') || toggle.getAttribute('data-bs-toggle');
+    const kind = toggle.getAttribute('data-toggle') || toggle.getAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
     if (!local({ tab: 'tab', pill: 'tab', list: 'tab', collapse: 'collapse', modal: 'modal' }[kind])) return;
     if (['tab', 'pill', 'list'].includes(kind)) {
-      click.preventDefault();
-      $(toggle).tab('show');
+      handleTabCompatibilityClick(click, toggle, $);
       return;
     }
     if (kind === 'collapse') {
-      if (toggle.tagName === 'A' || !(toggle.getAttribute('data-target') || toggle.getAttribute('data-bs-target')))
-        click.preventDefault();
-      for (const element of targetsOf(toggle)) {
-        if (!instance(element, 'collapse')) create(element, 'collapse', { options: { toggle: false } });
-        collapse.toggle(element);
-      }
+      handleCollapseCompatibilityClick(click, toggle);
       return;
     }
-    if (kind === 'modal') {
-      if (toggle.tagName === 'A' || toggle.tagName === 'AREA') click.preventDefault();
-      const element = targetsOf(toggle)[0];
-      if (!element) return;
-      // A first open takes the target's and the trigger's options; later clicks toggle.
-      if (instance(element, 'modal')) $(element).modal('toggle', toggle);
-      else $(element).modal(dataOptions(toggle, ['backdrop', 'keyboard', 'show']), toggle);
-    }
+    if (kind === 'modal') handleModalCompatibilityClick(click, toggle, $);
+  }
+  const handleCompatibilityClick = (click) => {
+    const $ = globalThis.jQuery;
+    const source = click.target instanceof Element ? click.target : click.target?.parentElement;
+    if (!$ || !source) return;
+    if (handleButtonCompatibilityClick(click, source, $)) return;
+    // Bootstrap 3 (data-*) and Bootstrap 5 (data-bs-*) data API: the platform bundle's local
+    // equivalent serves both builds (lib/platform-manifest.mjs).
+    if (handleDropdownCompatibilityClick(click, source, $)) return;
+    if (local('dropdown')) clearMenus(click);
+    if (handleDismissCompatibilityClick(click, source, $)) return;
+    handleToggleCompatibilityClick(click, source, $);
   };
   document.addEventListener('click', handleCompatibilityClick);
-  ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).bootstrapPluginsMode = 'local-compatibility';
+  globalThis.__portalSimulation ||= {};
+  globalThis.__portalSimulation.compatibility ||= {};
+  globalThis.__portalSimulation.compatibility.bootstrapPluginsMode = 'local-compatibility';
   console.info(
     'Local Bootstrap 3.4.1 interaction compatibility active for tooltip, popover, modal, dropdown, tab, collapse, alert, and button controls.',
   );
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
-    (registry.jqueryWatchers ||= new Set()).add(attach);
+    let watchers = registry.jqueryWatchers;
+    if (!watchers) {
+      watchers = new Set();
+      registry.jqueryWatchers = watchers;
+    }
+    watchers.add(attach);
     if (registry.jqueryWatched) return;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-    let current = window.jQuery;
+    let current = globalThis.jQuery;
     try {
-      Object.defineProperty(window, 'jQuery', {
+      Object.defineProperty(globalThis, 'jQuery', {
         configurable: true,
         enumerable: true,
         get: () => current,

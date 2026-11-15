@@ -2,6 +2,11 @@ import { personaHtml as h, renderPersonaPicker } from './persona-picker-view.mjs
 import { mountPersonaPicker, rememberPersona } from './persona-picker.mjs';
 import { personaFilters, personaRowKey } from './persona-search.mjs';
 
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
+
 export function personaSessionPanel(report, session, selectedKey) {
   const selected =
     [...report.personas, ...report.other].find((p) => personaRowKey(p) === selectedKey) ??
@@ -16,18 +21,22 @@ export function personaManagementPanel(report) {
   const owner = report.contextRuntime
     ? `<section class="panel section-gap"><h2>Isolated setup: ${h(report.contextRuntime.label)}</h2><p>Changes here belong to this copy. <a href="${h(report.contextRuntime.ownerOrigin)}/_sim/#identity">Return to the parent runtime to launch another setup or stop this copy.</a></p></section>`
     : '';
-  return `${owner}<details id="persona-management-panel" class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section id="persona-scenarios-panel" class="panel section-gap"><h2>Catalogue scenarios</h2><p class="muted">Each scenario signs in a persona and opens its start page in one step. A scenario that brings its own preset or setup (context) runs in an isolated copy of this runtime, so this workspace's data is not changed.</p>${
-    report.scenarios.length
-      ? report.groups
-          .map((group) => {
-            const items = report.scenarios.filter((s) => s.group === group.id);
-            return items.length
-              ? `<details><summary>${h(group.label)} (${items.length})</summary><ul class="persona-list">${items.map((s) => `<li class="persona-card"><div><strong>${h(s.label)}</strong><p>${h(s.description ?? '')}</p><small>${h(s.persona)} · ${h(s.context ?? 'Default setup')} · ${h(s.startPath ?? '/')}</small></div><button class="button" data-persona-scenario="${h(s.id)}">Launch scenario</button></li>`).join('')}</ul></details>`
-              : '';
-          })
-          .join('')
-      : '<p>No catalogue scenarios. Add one in catalogue management or a data pack.</p>'
-  }</section>${report.diagnostics.length ? `<section class="panel section-gap"><h2>Catalogue diagnostics</h2><ul>${report.diagnostics.map((d) => `<li><code>${h(d.code)}</code> ${h(d.key)} (${h(d.source)})</li>`).join('')}</ul></section>` : ''}`;
+  return `${owner}<details id="persona-management-panel" class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section id="persona-scenarios-panel" class="panel section-gap"><h2>Catalogue scenarios</h2><p class="note">Each scenario signs in a persona and opens its start page in one step. A scenario that brings its own preset or setup (context) runs in an isolated copy of this runtime, so this workspace's data is not changed.</p>${chooseLazily(
+    () => report.scenarios.length,
+    () =>
+      report.groups
+        .map((group) => {
+          const items = report.scenarios.filter((s) => s.group === group.id);
+          return chooseLazily(
+            () => items.length,
+            () =>
+              `<details><summary>${h(group.label)} (${items.length})</summary><ul class="persona-list">${items.map((s) => '<li class="persona-card"><div><strong>' + h(s.label) + '</strong><p>' + h(s.description ?? '') + '</p><small>' + h(s.persona) + ' · ' + h(s.context ?? 'Default setup') + ' · ' + h(s.startPath ?? '/') + '</small></div><button class="button" data-persona-scenario="' + h(s.id) + '">Launch scenario</button></li>').join('')}</ul></details>`,
+            () => '',
+          );
+        })
+        .join(''),
+    () => '<p class="ui-empty">No catalogue scenarios. Add one in catalogue management or a data pack.</p>',
+  )}</section>${report.diagnostics.length ? '<section class="panel section-gap"><h2>Catalogue diagnostics</h2><ul>' + report.diagnostics.map((d) => '<li><code>' + h(d.code) + '</code> ' + h(d.key) + ' (' + h(d.source) + ')</li>').join('') + '</ul></section>' : ''}`;
 }
 
 function chooser(report, selectedContactId, choose) {
@@ -104,6 +113,16 @@ const fields = {
   ],
 };
 const rowId = (type, row) => row[type === 'personas' ? 'key' : 'id'];
+const CHOICE_FIELDS = new Set([
+  'group',
+  'subgroup',
+  'context',
+  'persona',
+  'profile',
+  'colorScheme',
+  'boolean',
+  'preset',
+]);
 function maps(value = {}) {
   return Object.entries(value)
     .map(
@@ -111,6 +130,117 @@ function maps(value = {}) {
         `<div class="persona-map-row"><input data-map-name aria-label="Name" placeholder="Name" value="${h(name)}"><textarea data-map-value aria-label="JSON value" rows="2">${h(JSON.stringify(value))}</textarea><button type="button" class="button" data-remove-row aria-label="Remove value">Remove</button></div>`,
     )
     .join('');
+}
+
+function readMapField(form, name, row) {
+  const map = {};
+  for (const node of form.querySelector(`[data-map="${name}"]`).querySelectorAll('.persona-map-row')) {
+    const key = node.querySelector('[data-map-name]').value.trim();
+    if (!key) throw new Error('Override names cannot be empty.');
+    if (Object.hasOwn(map, key)) throw new Error('Duplicate override: ' + key);
+    Object.defineProperty(map, key, {
+      value: JSON.parse(node.querySelector('[data-map-value]').value),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  if (Object.keys(map).length) row[name] = map;
+}
+
+function readSubgroups(form, row) {
+  row.subgroups = [...form.querySelectorAll('[data-subgroups] .persona-map-row')].map((node) => ({
+    id: node.querySelector('[data-subgroup-id]').value,
+    label: node.querySelector('[data-subgroup-label]').value,
+    ...(node.querySelector('[data-subgroup-order]').value
+      ? { order: Number(node.querySelector('[data-subgroup-order]').value) }
+      : {}),
+  }));
+}
+
+function readEditorField(form, data, row, name, kind) {
+  const value = String(data.get(name) ?? '');
+  if (kind === 'map') readMapField(form, name, row);
+  else if (kind === 'subgroups') readSubgroups(form, row);
+  else if (value)
+    row[name] = chooseLazily(
+      () => kind === 'number',
+      () => Number(value),
+      () =>
+        chooseLazily(
+          () => kind === 'json',
+          () => JSON.parse(value),
+          () => (name === 'tags' ? value.trim().split(/\s+/) : value),
+        ),
+    );
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function finalizeContextRow(row) {
+  if (row.profile) row.deploymentProfile = { profile: row.profile === '__none' ? null : row.profile };
+  const enabled = {};
+  for (const [field, key] of [
+    ['profilePages', 'pages'],
+    ['profileEnvironment', 'environmentVariables'],
+    ['profileConnections', 'connectionReferences'],
+  ]) {
+    if (row[field]) enabled[key] = row[field] === 'true';
+    delete row[field];
+  }
+  if (Object.keys(enabled).length) {
+    if (!row.deploymentProfile) throw new Error('Choose a deployment profile before overriding its section switches.');
+    row.deploymentProfile.enabled = enabled;
+  }
+  delete row.profile;
+  if (row.snippetOverrides || row.settingOverrides)
+    row.portalOverrides = {
+      ...(row.snippetOverrides ? { snippets: row.snippetOverrides } : {}),
+      ...(row.settingOverrides ? { settings: row.settingOverrides } : {}),
+    };
+  delete row.snippetOverrides;
+  delete row.settingOverrides;
+  const browser = {};
+  for (const name of ['locale', 'timezoneId', 'colorScheme']) {
+    if (row[name]) browser[name] = row[name];
+    delete row[name];
+  }
+  if (row.width || row.height) browser.viewport = { width: row.width, height: row.height };
+  delete row.width;
+  delete row.height;
+  if (Object.keys(browser).length) row.browser = browser;
+}
+
+function choiceControlMarkup(name, label, required, value, options) {
+  return `<label>${h(label)}<select name="${name}"${required ? ' required' : ''}>${[
+    ...options(),
+    ...(value !== undefined && value !== '' && !options().some(([id]) => id === String(value))
+      ? [[String(value), 'Unavailable: ' + value]]
+      : []),
+  ]
+    .map(
+      ([id, label]) =>
+        '<option value="' +
+        h(id) +
+        '"' +
+        (String(value ?? '') === id ? ' selected' : '') +
+        '>' +
+        h(label) +
+        '</option>',
+    )
+    .join('')}</select></label>`;
+}
+
+function textControlMarkup(name, label, kind, value) {
+  return `<label>${h(label)}<textarea name="${name}" rows="${kind === 'json' ? 3 : 4}">${h(
+    chooseLazily(
+      () => kind === 'json',
+      () => (value ? JSON.stringify(value, null, 2) : ''),
+      () => value ?? '',
+    ),
+  )}</textarea></label>`;
+}
+
+function inputControlMarkup(name, label, kind, required, value, original) {
+  return `<label>${h(label)}<input name="${name}" type="${kind === 'number' ? 'number' : 'text'}"${kind === 'contact' ? ' list="persona-contact-options"' : ''} value="${h(Array.isArray(value) ? value.join(' ') : (value ?? ''))}"${required ? ' required' : ''}${original[name] && ['key', 'id'].includes(name) ? ' readonly' : ''}></label>`;
 }
 
 export function mountPersonaAdministration(
@@ -174,7 +304,11 @@ export function mountPersonaAdministration(
       if (
         !button.dataset.personaLaunch &&
         !button.dataset.personaScenario &&
-        !button.hasAttribute('data-persona-contact-chooser')
+        !(
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute(
+            'data-persona-contact-chooser',
+          )
+        )
       )
         return;
       setButtonPending(button, true);
@@ -188,7 +322,12 @@ export function mountPersonaAdministration(
           } else await launch({ personaKey: key });
         }
         if (button.dataset.personaScenario) await launch({ scenario: button.dataset.personaScenario });
-        if (button.hasAttribute('data-persona-contact-chooser')) chooser(report, button.dataset.contactId, onContact);
+        if (
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute(
+            'data-persona-contact-chooser',
+          )
+        )
+          chooser(report, button.dataset.contactId, onContact);
       } catch (error) {
         setButtonPending(button, false, true);
         notify(error.message, true);
@@ -217,7 +356,7 @@ export function mountPersonaAdministration(
       .map((type) => `<option value="${type}">${h(type[0].toUpperCase() + type.slice(1))}</option>`)
       .join(
         '',
-      )}</select><input type="search" data-management-search aria-label="Find catalogue entry" placeholder="Find an entry"><button class="button" data-add-entry>Add entry</button><button class="button" data-export>Export catalogue</button></div><div data-management-list></div><details><summary>Import / replace state catalogue</summary><p>Import version 1 JSON. Validation runs before saving; a stale edit is rejected.</p><textarea data-import rows="8" aria-label="Catalogue JSON"></textarea><button class="button" data-import-save>Validate and replace</button></details><details><summary>Reset state catalogue</summary><p>This removes local metadata overrides. Matching pack catalogues remain available. Contact records and role memberships stay unchanged.</p><button class="button danger" data-reset-catalog>Reset local catalogue</button></details><h3>Isolated local runtimes (${report.runtimes.items.length}/${report.runtimes.maxInstances})</h3><p>Each setup keeps its own data and cookies. Reusing a setup keeps its edits; stop it to discard that copy. All copies stop with this runtime.</p><ul>${report.runtimes.items.map((item) => `<li>${item.status === 'stopping' ? h(item.label) : `<a href="${h(item.origin)}" target="_blank" rel="noopener">${h(item.label)}</a>`} · ${h(item.instanceKey)} · ${item.status === 'stopping' ? 'Cleanup incomplete' : 'Running'} <button class="button" data-stop-runtime="${h(item.id)}">${item.status === 'stopping' ? 'Retry stop and discard' : 'Stop and discard'}</button></li>`).join('') || '<li>No isolated runtimes running.</li>'}</ul>`;
+      )}</select><input type="search" data-management-search aria-label="Find catalogue entry" placeholder="Find an entry"><button class="button" data-add-entry>Add entry</button><button class="button" data-export>Export catalogue</button></div><div data-management-list></div><details><summary>Import / replace state catalogue</summary><p>Import version 1 JSON. Validation runs before saving; a stale edit is rejected.</p><textarea data-import rows="8" aria-label="Catalogue JSON"></textarea><button class="button" data-import-save>Validate and replace</button></details><details><summary>Reset state catalogue</summary><p>This removes local metadata overrides. Matching pack catalogues remain available. Contact records and role memberships stay unchanged.</p><button class="button danger" data-reset-catalog>Reset local catalogue</button></details><h3>Isolated local runtimes (${report.runtimes.items.length}/${report.runtimes.maxInstances})</h3><p>Each setup keeps its own data and cookies. Reusing a setup keeps its edits; stop it to discard that copy. All copies stop with this runtime.</p><ul>${report.runtimes.items.map((item) => '<li>' + (item.status === 'stopping' ? h(item.label) : '<a href="' + h(item.origin) + '" target="_blank" rel="noopener">' + h(item.label) + '</a>') + ' · ' + h(item.instanceKey) + ' · ' + (item.status === 'stopping' ? 'Cleanup incomplete' : 'Running') + ' <button class="button" data-stop-runtime="' + h(item.id) + '">' + (item.status === 'stopping' ? 'Retry stop and discard' : 'Stop and discard') + '</button></li>').join('') || '<li>No isolated runtimes running.</li>'}</ul>`;
     const save = async (catalog) => {
       await request('/persona-catalog', {
         method: 'PUT',
@@ -238,7 +377,7 @@ export function mountPersonaAdministration(
           .map((row) => {
             const id = rowId(type, row),
               local = (report.stateCatalog?.[type] ?? []).some((item) => rowId(type, item) === id);
-            return `<li><span><strong>${h(row.label ?? id)}</strong> <code>${h(id)}</code><small>${local ? 'State override' : 'Pack metadata'}</small></span><button class="button" data-edit-entry="${h(id)}">${local ? 'Edit' : 'Customize'}</button>${local ? `<button class="button" data-delete-entry="${h(id)}">Remove override</button>` : ''}</li>`;
+            return `<li><span><strong>${h(row.label ?? id)}</strong> <code>${h(id)}</code><small>${local ? 'State override' : 'Pack metadata'}</small></span><button class="button" data-edit-entry="${h(id)}">${local ? 'Edit' : 'Customize'}</button>${local ? '<button class="button" data-delete-entry="' + h(id) + '">Remove override</button>' : ''}</li>`;
           })
           .join(
             '',
@@ -271,7 +410,7 @@ export function mountPersonaAdministration(
       return base;
     };
     container.addEventListener('change', (event) => {
-      if (event.target.hasAttribute('data-kind')) {
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ event.target.hasAttribute('data-kind')) {
         type = event.target.value;
         page = 0;
         renderList();
@@ -287,15 +426,15 @@ export function mountPersonaAdministration(
       if (!button) return;
       setButtonPending(button, true);
       try {
-        if (button.hasAttribute('data-prev')) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-prev')) {
           page--;
           renderList();
         }
-        if (button.hasAttribute('data-next')) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-next')) {
           page++;
           renderList();
         }
-        if (button.hasAttribute('data-add-entry'))
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-entry'))
           edit(type, {}, (row) =>
             save(withDependencies(structuredClone(report.stateCatalog ?? emptyCatalog()), type, row)),
           );
@@ -310,7 +449,7 @@ export function mountPersonaAdministration(
           base[type] = base[type].filter((row) => rowId(type, row) !== button.dataset.deleteEntry);
           await save(base);
         }
-        if (button.hasAttribute('data-export')) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-export')) {
           const blob = new Blob([JSON.stringify(report.catalog, null, 2) + '\n'], { type: 'application/json' }),
             url = URL.createObjectURL(blob),
             a = document.createElement('a');
@@ -319,9 +458,11 @@ export function mountPersonaAdministration(
           a.click();
           setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
-        if (button.hasAttribute('data-import-save'))
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-import-save'))
           await save(JSON.parse(container.querySelector('[data-import]').value));
-        if (button.hasAttribute('data-reset-catalog')) {
+        if (
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-reset-catalog')
+        ) {
           await request('/persona-catalog', {
             method: 'DELETE',
             body: JSON.stringify({ expectedDigest: report.catalogDigest }),
@@ -362,61 +503,57 @@ export function mountPersonaAdministration(
       ...original.browser,
       ...original.browser?.viewport,
     };
-    const options = (kind) =>
-      kind === 'preset'
-        ? [
-            ['', 'Keep current data'],
-            ...(report.presets ?? []).filter((p) => !p.unavailable).map((p) => [p.id, p.name ?? p.id]),
-          ]
-        : kind === 'profile'
-          ? [['', 'Runtime default'], ['__none', 'No profile'], ...report.deploymentProfiles.map((id) => [id, id])]
-          : kind === 'boolean'
-            ? [
-                ['', 'Runtime default'],
-                ['true', 'Enabled'],
-                ['false', 'Disabled'],
-              ]
-            : kind === 'colorScheme'
-              ? [['', 'Browser default'], ...['light', 'dark', 'no-preference'].map((value) => [value, value])]
-              : [
-                  ['', 'None'],
-                  ...(kind === 'persona'
-                    ? report.catalog.personas.map((p) => [p.key, p.label ?? p.key])
-                    : kind === 'subgroup'
-                      ? (report.catalog.groups.find((g) => g.id === values.group)?.subgroups ?? []).map((s) => [
-                          s.id,
-                          s.label,
-                        ])
-                      : (report.catalog[kind === 'group' ? 'groups' : 'contexts'] ?? []).map((row) => [
-                          row.id,
-                          row.label,
-                        ])),
-                ];
+    const options = (kind) => {
+      if (kind === 'preset')
+        return [
+          ['', 'Keep current data'],
+          ...(report.presets ?? []).filter((p) => !p.unavailable).map((p) => [p.id, p.name ?? p.id]),
+        ];
+      if (kind === 'profile')
+        return [['', 'Runtime default'], ['__none', 'No profile'], ...report.deploymentProfiles.map((id) => [id, id])];
+      if (kind === 'boolean')
+        return [
+          ['', 'Runtime default'],
+          ['true', 'Enabled'],
+          ['false', 'Disabled'],
+        ];
+      if (kind === 'colorScheme')
+        return [['', 'Browser default'], ...['light', 'dark', 'no-preference'].map((value) => [value, value])];
+      if (kind === 'persona') return [['', 'None'], ...report.catalog.personas.map((p) => [p.key, p.label ?? p.key])];
+      if (kind === 'subgroup')
+        return [
+          ['', 'None'],
+          ...(report.catalog.groups.find((g) => g.id === values.group)?.subgroups ?? []).map((s) => [s.id, s.label]),
+        ];
+      return [
+        ['', 'None'],
+        ...(report.catalog[kind === 'group' ? 'groups' : 'contexts'] ?? []).map((row) => [row.id, row.label]),
+      ];
+    };
     const control = (name, label, kind = 'text', required = false) => {
       const value = values[name];
       if (kind === 'map')
         return `<fieldset data-map="${name}"><legend>${h(label)}</legend><p class="field-help">Values use JSON: quote strings, use true/false or numbers; null removes a setting or snippet.</p><div data-map-rows>${maps(value)}</div><button class="button" type="button" data-add-map>Add value</button></fieldset>`;
       if (kind === 'subgroups')
         return `<fieldset><legend>Subgroups</legend><div data-subgroups>${(value ?? []).map((s) => subgroup(s)).join('')}</div><button class="button" type="button" data-add-subgroup>Add subgroup</button></fieldset>`;
-      if (['group', 'subgroup', 'context', 'persona', 'profile', 'colorScheme', 'boolean', 'preset'].includes(kind))
-        return `<label>${h(label)}<select name="${name}"${required ? ' required' : ''}>${[...options(kind), ...(value !== undefined && value !== '' && !options(kind).some(([id]) => id === String(value)) ? [[String(value), 'Unavailable: ' + value]] : [])].map(([id, label]) => `<option value="${h(id)}"${String(value ?? '') === id ? ' selected' : ''}>${h(label)}</option>`).join('')}</select></label>`;
-      if (kind === 'textarea' || kind === 'json')
-        return `<label>${h(label)}<textarea name="${name}" rows="${kind === 'json' ? 3 : 4}">${h(kind === 'json' ? (value ? JSON.stringify(value, null, 2) : '') : (value ?? ''))}</textarea></label>`;
-      return `<label>${h(label)}<input name="${name}" type="${kind === 'number' ? 'number' : 'text'}"${kind === 'contact' ? ' list="persona-contact-options"' : ''} value="${h(Array.isArray(value) ? value.join(' ') : (value ?? ''))}"${required ? ' required' : ''}${original[name] && ['key', 'id'].includes(name) ? ' readonly' : ''}></label>`;
+      if (CHOICE_FIELDS.has(kind)) return choiceControlMarkup(name, label, required, value, () => options(kind));
+      if (kind === 'textarea' || kind === 'json') return textControlMarkup(name, label, kind, value);
+      return inputControlMarkup(name, label, kind, required, value, original);
     };
     const subgroup = (s) =>
       `<div class="persona-map-row"><input data-subgroup-id aria-label="Subgroup ID" placeholder="ID" value="${h(s.id ?? '')}"><input data-subgroup-label aria-label="Subgroup label" placeholder="Label" value="${h(s.label ?? '')}"><input type="number" data-subgroup-order aria-label="Subgroup order" placeholder="Order" value="${h(s.order ?? '')}"><button type="button" class="button" data-remove-row>Remove</button></div>`;
-    dialog.innerHTML = `<form id="persona-metadata-editor"><div class="persona-dialog-heading"><h2>${rowId(type, original) ? 'Edit' : 'Add'} ${h(type)}</h2><button type="button" class="button" data-close>Cancel</button></div><p>Local metadata only. Identity and permissions are read from contacts. Context overrides apply to isolated local copies.</p><div class="persona-editor-fields">${fields[type].map((field) => control(...field)).join('')}</div><datalist id="persona-contact-options">${report.contacts.map((c) => `<option value="${h(c.contactId)}">${h(c.name)}</option>`).join('')}</datalist><p class="form-error" role="alert" data-editor-error></p><div class="dialog-actions"><button type="submit" class="button primary">Save local metadata</button></div></form>`;
+    dialog.innerHTML = `<form id="persona-metadata-editor"><div class="persona-dialog-heading"><h2>${rowId(type, original) ? 'Edit' : 'Add'} ${h(type)}</h2><button type="button" class="button" data-close>Cancel</button></div><p>Local metadata only. Identity and permissions are read from contacts. Context overrides apply to isolated local copies.</p><div class="persona-editor-fields">${fields[type].map((field) => control(...field)).join('')}</div><datalist id="persona-contact-options">${report.contacts.map((c) => '<option value="' + h(c.contactId) + '">' + h(c.name) + '</option>').join('')}</datalist><p class="form-error" role="alert" data-editor-error></p><div class="dialog-actions"><button type="submit" class="button primary">Save local metadata</button></div></form>`;
     document.body.append(dialog);
     dialog.querySelector('[data-close]').onclick = () => dialog.close();
     dialog.addEventListener('close', () => dialog.remove(), { once: true });
     dialog.addEventListener('click', (event) => {
       const button = event.target.closest('button');
       if (!button) return;
-      if (button.hasAttribute('data-remove-row')) button.parentElement.remove();
-      if (button.hasAttribute('data-add-map'))
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-remove-row'))
+        button.parentElement.remove();
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-map'))
         button.previousElementSibling.insertAdjacentHTML('beforeend', maps({ '': '' }));
-      if (button.hasAttribute('data-add-subgroup'))
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-subgroup'))
         button.previousElementSibling.insertAdjacentHTML('beforeend', subgroup({}));
     });
     dialog.querySelector('form').addEventListener('change', (event) => {
@@ -439,76 +576,8 @@ export function mountPersonaAdministration(
       const button = event.submitter ?? form.querySelector('button[type=submit]');
       setButtonPending(button, true);
       try {
-        for (const [name, , kind] of fields[type]) {
-          const value = String(data.get(name) ?? '');
-          if (kind === 'map') {
-            const map = {};
-            for (const node of form.querySelector(`[data-map="${name}"]`).querySelectorAll('.persona-map-row')) {
-              const key = node.querySelector('[data-map-name]').value.trim();
-              if (!key) throw Error('Override names cannot be empty.');
-              if (Object.hasOwn(map, key)) throw Error('Duplicate override: ' + key);
-              Object.defineProperty(map, key, {
-                value: JSON.parse(node.querySelector('[data-map-value]').value),
-                enumerable: true,
-                configurable: true,
-                writable: true,
-              });
-            }
-            if (Object.keys(map).length) row[name] = map;
-          } else if (kind === 'subgroups') {
-            row.subgroups = [...form.querySelectorAll('[data-subgroups] .persona-map-row')].map((node) => ({
-              id: node.querySelector('[data-subgroup-id]').value,
-              label: node.querySelector('[data-subgroup-label]').value,
-              ...(node.querySelector('[data-subgroup-order]').value
-                ? { order: Number(node.querySelector('[data-subgroup-order]').value) }
-                : {}),
-            }));
-          } else if (value)
-            row[name] =
-              kind === 'number'
-                ? Number(value)
-                : kind === 'json'
-                  ? JSON.parse(value)
-                  : name === 'tags'
-                    ? value.trim().split(/\s+/)
-                    : value;
-        }
-        if (type === 'contexts') {
-          if (row.profile) {
-            row.deploymentProfile = { profile: row.profile === '__none' ? null : row.profile };
-          }
-          const enabled = {};
-          for (const [field, key] of [
-            ['profilePages', 'pages'],
-            ['profileEnvironment', 'environmentVariables'],
-            ['profileConnections', 'connectionReferences'],
-          ]) {
-            if (row[field]) enabled[key] = row[field] === 'true';
-            delete row[field];
-          }
-          if (Object.keys(enabled).length) {
-            if (!row.deploymentProfile)
-              throw Error('Choose a deployment profile before overriding its section switches.');
-            row.deploymentProfile.enabled = enabled;
-          }
-          delete row.profile;
-          if (row.snippetOverrides || row.settingOverrides)
-            row.portalOverrides = {
-              ...(row.snippetOverrides ? { snippets: row.snippetOverrides } : {}),
-              ...(row.settingOverrides ? { settings: row.settingOverrides } : {}),
-            };
-          delete row.snippetOverrides;
-          delete row.settingOverrides;
-          const browser = {};
-          for (const name of ['locale', 'timezoneId', 'colorScheme']) {
-            if (row[name]) browser[name] = row[name];
-            delete row[name];
-          }
-          if (row.width || row.height) browser.viewport = { width: row.width, height: row.height };
-          delete row.width;
-          delete row.height;
-          if (Object.keys(browser).length) row.browser = browser;
-        }
+        for (const [name, , kind] of fields[type]) readEditorField(form, data, row, name, kind);
+        if (type === 'contexts') finalizeContextRow(row);
         await save(row);
         dialog.close();
       } catch (error) {

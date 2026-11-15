@@ -22,136 +22,135 @@ before(async () => {
 after(() => browser?.close());
 
 for (const mirage of [false, true])
-  test(
-    `${mirage ? 'Mirage' : 'live-source Lense'} Inspect opens applicable plugin metadata and explicitly mapped C# source`,
-    { timeout: 45_000 },
-    async (t) => {
-      const fx = inspectionFixture();
-      const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
-      const step = path.join(fx.solution, 'SdkMessageProcessingSteps/update.xml');
-      const code = path.join(fx.work, 'components/Plugins/Rules.cs');
-      for (const [file, body] of [
-        [assembly, assemblyXml],
-        [step, stepXml(7, { message: 'Update', attributes: 'fx_title' })],
-        [code, 'namespace Invented.WidgetRules { class Validate {} }'],
-      ]) {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, body);
-      }
-      const observed = {
-        evidence: 'Invented source navigation fixture',
-        pluginSources: {
-          'Invented.WidgetRules.Validate': {
-            path: 'components/Plugins/Rules.cs',
-            root: fx.work,
-            evidence: 'Exact invented C# mapping',
-          },
+  test(`${mirage ? 'Mirage' : 'live-source Lense'} Inspect opens applicable plugin metadata and explicitly mapped C# source`, async (t) => {
+    const fx = inspectionFixture();
+    const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
+    const step = path.join(fx.solution, 'SdkMessageProcessingSteps/update.xml');
+    const code = path.join(fx.work, 'components/Plugins/Rules.cs');
+    for (const [file, body] of [
+      [assembly, assemblyXml],
+      [step, stepXml(7, { message: 'Update', attributes: 'fx_title' })],
+      [code, 'namespace Invented.WidgetRules { class Validate {} }'],
+    ]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    }
+    const observed = {
+      evidence: 'Invented source navigation fixture',
+      pluginSources: {
+        'Invented.WidgetRules.Validate': {
+          path: 'components/Plugins/Rules.cs',
+          root: fx.work,
+          evidence: 'Exact invented C# mapping',
         },
-      };
-      const project = path.join(fx.work, 'project.json');
-      fs.writeFileSync(
-        project,
-        JSON.stringify({
-          version: 2,
-          portals: [{ id: 'fixture', path: './portal', observed }],
-          solutions: [{ id: 'sample', path: './solution' }],
-        }),
-      );
-      let app, server, context, panel, detach;
-      ownedFixture(t).add(async () => {
-        await panel?.dispose();
-      });
-      ownedFixture(t).add(async () => {
-        await detach?.();
-      });
-      ownedFixture(t).add(async () => {
-        await context?.close();
-      });
-      ownedFixture(t).add(async () => {
-        await app?.close();
-      });
-      ownedFixture(t).add(async () => {
-        if (server) {
-          server.closeAllConnections();
-          await new Promise((resolve) => server.close(resolve));
-        }
-      });
-      ownedFixture(t).remove(async () => {
-        fx.cleanup();
-      });
-      let origin;
-      if (mirage) {
-        app = await createSimulator({
-          sourceDir: fx.portal,
-          solutionRoots: [fx.solution],
-          observed,
-          stateFile: path.join(fx.work, 'state.json'),
-          watch: false,
-        });
-        origin = app.url;
-      } else {
-        server = http.createServer((req, res) => {
-          res.writeHead(200, { 'content-type': 'text/html' });
-          res.end(
-            '<!doctype html><title>Invented source fixture</title><form data-entityname="fx_widget"><label for="fx_title">Title</label><input id="fx_title"></form>',
-          );
-        });
-        server.listen(0, '127.0.0.1');
-        await once(server, 'listening');
-        origin = `http://127.0.0.1:${server.address().port}`;
+      },
+    };
+    const project = path.join(fx.work, 'project.json');
+    fs.writeFileSync(
+      project,
+      JSON.stringify({
+        version: 2,
+        portals: [{ id: 'fixture', path: './portal', observed }],
+        solutions: [{ id: 'sample', path: './solution' }],
+      }),
+    );
+    let app, server, context, panel, detach;
+    ownedFixture(t).add(async () => {
+      await panel?.dispose();
+    });
+    ownedFixture(t).add(async () => {
+      await detach?.();
+    });
+    ownedFixture(t).add(async () => {
+      await context?.close();
+    });
+    ownedFixture(t).add(async () => {
+      await app?.close();
+    });
+    ownedFixture(t).add(async () => {
+      if (server) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
       }
-      context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
-      context.setDefaultTimeout(10_000);
-      await context.route('**/*', (route) =>
-        new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
-      );
-      const session = new OverlaySession({
+    });
+    ownedFixture(t).remove(async () => {
+      fx.cleanup();
+    });
+    let origin;
+    if (mirage) {
+      app = await createSimulator({
         sourceDir: fx.portal,
-        origin,
-        site: structuredClone(SITE),
-        sourceMaps: false,
-        siteName: 'Plugin fixture',
-        envName: 'loopback',
-        stateDir: fx.work,
-        browser: {},
-        mirage,
-        mirageSourceRoots: [fx.portal, fx.solution],
-        mirageConfig: { project },
+        solutionRoots: [fx.solution],
+        observed,
+        stateFile: path.join(fx.work, 'state.json'),
+        watch: false,
       });
-      // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
-      const page = await context.newPage();
-      detach = await attachSession(context, session);
-      const opened = [];
-      panel = enablePanel(context, session, {
-        open: async (...args) => {
-          opened.push(args);
-          return null;
-        },
+      origin = app.url;
+    } else {
+      server = http.createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          '<!doctype html><title>Invented source fixture</title><form data-entityname="fx_widget"><label for="fx_title">Title</label><input id="fx_title"></form>',
+        );
       });
-      const errors = [];
-      page.on('pageerror', (error) => errors.push(error.message));
-      await page.goto(origin);
-      const scope = page.locator('#paqvilo-panel');
-      await scope.locator('.pill').click();
-      await scope.locator('[data-act="tab"][data-v="runtime"]').click();
-      const logic = scope.locator('[data-group="runtime-logic"]');
-      await logic.getByText('Widget step 7', { exact: true }).waitFor();
-      assert.match(
-        await logic.innerText(),
-        /fx_widget Update.*PreValidation.*input attributes: fx_title.*live execution unknown/,
-      );
-      for (const [suffix, exact] of [
-        ['update.xml', step],
-        ['Synthetic.xml', assembly],
-        ['Rules.cs', code],
-      ]) {
-        const before = opened.length;
-        await logic.locator(`[data-rel$="${suffix}"] [data-act="open"]`).first().click();
-        for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        assert.equal(opened.length, before + 1, suffix);
-        assert.equal(opened.at(-1)[1], exact);
-      }
-      assert.deepEqual(errors, []);
-    },
-  );
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      origin = `http://127.0.0.1:${server.address().port}`;
+    }
+    context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
+    await context.route('**/*', (route) =>
+      new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
+    );
+    const session = new OverlaySession({
+      sourceDir: fx.portal,
+      origin,
+      site: structuredClone(SITE),
+      sourceMaps: false,
+      siteName: 'Plugin fixture',
+      envName: 'loopback',
+      stateDir: fx.work,
+      browser: {},
+      mirage,
+      mirageSourceRoots: [fx.portal, fx.solution],
+      mirageConfig: { project },
+    });
+    // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+    const page = await context.newPage();
+    detach = await attachSession(context, session);
+    // Editor opens in order; each click below waits for the next one.
+    let arrived = () => {};
+    const opened = [];
+    panel = enablePanel(context, session, {
+      open: async (...args) => {
+        // The waiting click resumes only after this callback has recorded the request.
+        arrived();
+        opened.push(args);
+        return null;
+      },
+    });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(origin);
+    const scope = page.locator('#paqvilo-panel');
+    await scope.locator('.pill').click();
+    await scope.locator('[data-act="tab"][data-v="runtime"]').click();
+    const logic = scope.locator('[data-group="runtime-logic"]');
+    await logic.getByText('Widget step 7', { exact: true }).waitFor();
+    assert.match(
+      await logic.innerText(),
+      /fx_widget Update.*PreValidation.*input attributes: fx_title.*live execution unknown/,
+    );
+    for (const [suffix, exact] of [
+      ['update.xml', step],
+      ['Synthetic.xml', assembly],
+      ['Rules.cs', code],
+    ]) {
+      const before = opened.length;
+      const next = new Promise((resolve) => (arrived = resolve));
+      await logic.locator(`[data-rel$="${suffix}"] [data-act="open"]`).first().click();
+      await next;
+      assert.equal(opened.length, before + 1, suffix);
+      assert.equal(opened.at(-1)[1], exact);
+    }
+    assert.deepEqual(errors, []);
+  });

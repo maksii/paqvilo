@@ -11,15 +11,10 @@
 //   attentionAck() -> DONE with DONE_ATTN, the reply a client ATTENTION (0x06) requires
 // DONE, ERROR and DONE status bits are encoded by dataverse-tds-login.mjs and shared here.
 // Malformed or truncated input throws TdsProtocolError; nothing is read past the payload.
-import { decodeTypedValue } from './dataverse-tds-types.mjs';
+import { TdsProtocolError, decodeTypedValue } from './dataverse-tds-types.mjs';
 import { DONE_STATUS, done, error } from './dataverse-tds-login.mjs';
 
-export class TdsProtocolError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'TdsProtocolError';
-  }
-}
+export { TdsProtocolError };
 
 const TOKEN = { DONEPROC: 0xfe, DONEINPROC: 0xff, RETURNSTATUS: 0x79 };
 const HEADER_TRANSACTION_DESCRIPTOR = 0x0002;
@@ -127,7 +122,11 @@ export function rpcToQuery(rpc) {
   if (typeof stmt?.value !== 'string') throw new TdsProtocolError('sp_executesql needs an NVARCHAR statement');
   const params = {};
   values.forEach((p, k) => {
-    const key = p.name ? (p.name.startsWith('@') ? p.name : `@${p.name}`) : `@p${k + 1}`;
+    let key;
+    if (p.name) {
+      if (p.name.startsWith('@')) key = p.name;
+      else key = `@${p.name}`;
+    } else key = `@p${k + 1}`;
     params[key] = p.value;
   });
   return { sql: stmt.value, params };
@@ -157,7 +156,10 @@ export function returnStatus(value = 0) {
   return b;
 }
 
-export const errorToken = ({ server = '', ...rest }) => error({ ...rest, serverName: server });
+// The ERROR token carries its text as a USHORT character count, so longer server text is cut to ERROR_TEXT_MAX.
+const ERROR_TEXT_MAX = 4000;
+export const errorToken = ({ server = '', message = '', ...rest }) =>
+  error({ ...rest, message: String(message).slice(0, ERROR_TEXT_MAX), serverName: server });
 
 export function readOnlyError() {
   return Buffer.concat([errorToken(READ_ONLY_ERROR), doneToken({ error: true })]);

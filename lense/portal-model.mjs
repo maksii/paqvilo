@@ -1,10 +1,12 @@
 import { orderedMap } from './async-map.mjs';
+import { recordedStamp } from './file-cache.mjs';
 // Reads a `pac paportal download` extract from disk and builds an index of everything that can be
 // overridden locally: web files (URL -> file) and inline sources (page/form/list JS & CSS, templates).
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { portalLanguage } from '../mirage/lib/portal-languages.mjs';
+import { stripTrailingCharacter, nestedElementText } from '../mirage/lib/text-scanning.mjs';
 
 const MIME_BY_EXT = {
   '.js': 'application/javascript; charset=utf-8',
@@ -41,7 +43,7 @@ export function isSourceFile(sourceDir, file) {
 }
 
 // Resolving every metadata file and the extract root through realpath dominated index reloads
-// (two realpath calls per file). Reuse directories only within one synchronous index load.
+// (two realpath calls per file). Reuse directories only within one synchronous index build.
 // Keeping them across loads/requests is unsafe: an ancestor can become a junction while a
 // descendant retains the same inode. Reads outside indexing always resolve fresh paths.
 const MAX_REAL_DIRECTORIES = 8192;
@@ -53,6 +55,17 @@ function realDirectory(dir) {
   const real = fs.realpathSync.native(dir);
   if (realDirectories && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(dir, real);
   return real;
+}
+
+/** Runs one synchronous index build (a model load or a rewriter refresh) that reuses resolved directories. */
+export function indexingPass(build) {
+  const previous = realDirectories;
+  realDirectories = new Map();
+  try {
+    return build();
+  } finally {
+    realDirectories = previous;
+  }
 }
 
 /** Real path and stat of `file`; a symbolic link or junction is followed explicitly. */
@@ -96,9 +109,11 @@ function readYaml(file, allowSequence = false) {
   }
 }
 
-const fileStamp = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+const statKey = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+// Cached metadata is reused by stamp; a file changed within the racy window gets a stamp that matches nothing.
+const fileStamp = (stat) => recordedStamp(stat, statKey(stat));
 
-function walk(dir, out = []) {
+function walk(dir, out = [], real = null) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -106,12 +121,27 @@ function walk(dir, out = []) {
     if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return out;
     throw err;
   }
+  // During an index load, a directory entry (never a link or junction) of a resolved directory
+  // resolves to the same name inside it: one realpath per walk root instead of one per directory.
+  if (realDirectories && !real)
+    try {
+      real = realDirectory(dir);
+    } catch {
+      real = null;
+    }
   for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (entry.isFile()) out.push(full);
+    walkEntry(dir, entry, out, real);
   }
   return out;
+}
+
+function walkEntry(dir, entry, out, real) {
+  const full = path.join(dir, entry.name);
+  if (entry.isDirectory()) {
+    const child = real && path.join(real, entry.name);
+    if (child && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(full, child);
+    walk(full, out, child);
+  } else if (entry.isFile()) out.push(full);
 }
 
 async function walkAsync(roots) {
@@ -140,14 +170,12 @@ async function walkAsync(roots) {
   return files;
 }
 
-async function sourceFileStatAsync(sourceDir, file) {
+// `root` is the extract's realpath, resolved once per prefetch (null when unresolvable); the synchronous load
+// that follows every prefetch resolves it again.
+async function sourceFileStatAsync(realRoot, file) {
   try {
-    const [root, resolved, stat] = await Promise.all([
-      fs.promises.realpath(sourceDir),
-      fs.promises.realpath(file),
-      fs.promises.stat(file),
-    ]);
-    const relative = path.relative(root, resolved);
+    const [root, resolved, stat] = await Promise.all([realRoot, fs.promises.realpath(file), fs.promises.stat(file)]);
+    const relative = root && path.relative(root, resolved);
     return relative &&
       relative !== '..' &&
       !relative.startsWith(`..${path.sep}`) &&
@@ -174,7 +202,7 @@ export function urlKey(urlPath) {
 }
 
 function joinUrl(parentPath, partial) {
-  const clean = String(partial ?? '').replace(/^\/+|\/+$/g, '');
+  const clean = stripTrailingCharacter(String(partial ?? '').replace(/^\/+/, ''), '/');
   const base = parentPath.endsWith('/') ? parentPath : parentPath + '/';
   return clean ? base + clean : parentPath;
 }
@@ -264,6 +292,11 @@ const SHORT_KEY_MARKUP_KINDS = [
 // keeps record IDs in id:.
 const yamlValue = (record, name) => record?.[`adx_${name}`] ?? record?.[name];
 const yamlId = (record, kind) => record?.[`adx_${kind}id`] ?? record?.id;
+const languageField = (row, key) => row?.[`adx_${key}`] ?? row?.[`mspp_${key}`] ?? row?.[key];
+const pageLabel = (page) => (page.name ? `${page.name} (${page.id})` : page.id);
+function addLanguageCode(codes, code) {
+  if (typeof code === 'string' && /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code)) codes.add(code.toLowerCase());
+}
 const atPath = (content, keys) => keys.reduce((value, key) => value?.[key], content);
 const setPath = (content, keys, value) => {
   const parent = atPath(content, keys.slice(0, -1));
@@ -306,61 +339,62 @@ const yamlField = (source) => (raw) => {
       return null;
     }
   }
-  return value == null ? '' : typeof value === 'string' ? value : null;
+  if (value == null) return '';
+  return typeof value === 'string' ? value : null;
 };
 
 // Remove only text leaves supported by a discovered source. A record move, LCID change or
 // non-text value remains visible in the comparison instead of being mistaken for an HTML edit.
 function stripPreviewFields(before, after, sources) {
-  for (const source of sources) {
-    const keys = source.fieldPath ?? [source.field];
-    if (
-      source.recordId &&
-      (atPath(before, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId ||
-        atPath(after, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId)
-    )
-      continue;
-    if (
-      source.recordLanguageField &&
-      (atPath(before, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId ||
-        atPath(after, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId)
-    )
-      continue;
-    const oldValue = atPath(before, keys);
-    const newValue = atPath(after, keys);
-    if (source.jsonPath) {
-      try {
-        const oldJSON = JSON.parse(oldValue);
-        const newJSON = JSON.parse(newValue);
-        const lcidKeys = [...source.jsonPath.slice(0, -1), 'LCID'];
-        if (
-          source.lcid != null &&
-          (atPath(oldJSON, lcidKeys) !== source.lcid || atPath(newJSON, lcidKeys) !== source.lcid)
-        )
-          continue;
-        if (
-          typeof atPath(oldJSON, source.jsonPath) !== 'string' ||
-          typeof atPath(newJSON, source.jsonPath) !== 'string'
-        )
-          continue;
-        setPath(oldJSON, source.jsonPath, '');
-        setPath(newJSON, source.jsonPath, '');
-        setPath(before, keys, stableValue(oldJSON));
-        setPath(after, keys, stableValue(newJSON));
-      } catch {
-        /* malformed localized configuration is not previewable */
-      }
-    } else {
-      if ((oldValue != null && typeof oldValue !== 'string') || (newValue != null && typeof newValue !== 'string'))
-        continue;
-      setPath(before, keys, '');
-      setPath(after, keys, '');
-    }
+  for (const source of sources) stripPreviewField(before, after, source);
+}
+
+function stripPreviewField(before, after, source) {
+  const keys = source.fieldPath ?? [source.field];
+  if (
+    source.recordId &&
+    (atPath(before, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId ||
+      atPath(after, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId)
+  )
+    return;
+  if (
+    source.recordLanguageField &&
+    (atPath(before, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId ||
+      atPath(after, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId)
+  )
+    return;
+  const oldValue = atPath(before, keys);
+  const newValue = atPath(after, keys);
+  if (source.jsonPath) stripLocalizedPreviewField(before, after, source, keys, oldValue, newValue);
+  else stripTextPreviewField(before, after, keys, oldValue, newValue);
+}
+
+function stripLocalizedPreviewField(before, after, source, keys, oldValue, newValue) {
+  try {
+    const oldJSON = JSON.parse(oldValue);
+    const newJSON = JSON.parse(newValue);
+    const lcidKeys = [...source.jsonPath.slice(0, -1), 'LCID'];
+    if (source.lcid != null && (atPath(oldJSON, lcidKeys) !== source.lcid || atPath(newJSON, lcidKeys) !== source.lcid))
+      return;
+    if (typeof atPath(oldJSON, source.jsonPath) !== 'string' || typeof atPath(newJSON, source.jsonPath) !== 'string')
+      return;
+    setPath(oldJSON, source.jsonPath, '');
+    setPath(newJSON, source.jsonPath, '');
+    setPath(before, keys, stableValue(oldJSON));
+    setPath(after, keys, stableValue(newJSON));
+  } catch {
+    /* malformed localized configuration is not previewable */
   }
 }
 
+function stripTextPreviewField(before, after, keys, oldValue, newValue) {
+  if ((oldValue != null && typeof oldValue !== 'string') || (newValue != null && typeof newValue !== 'string')) return;
+  setPath(before, keys, '');
+  setPath(after, keys, '');
+}
+
 export function inlineKindOf(file) {
-  const norm = file.replace(/\\/g, '/');
+  const norm = file.replaceAll('\\', '/');
   return INLINE_KINDS.find((k) => norm.includes(`/${k.dir}/`) && norm.endsWith(k.suffix));
 }
 
@@ -484,7 +518,7 @@ export function yamlKeyStyle(dir) {
  */
 export function unsupportedSourceLayout(dir) {
   if (!dir) return null;
-  const exists = (file, directory) => {
+  /* NOSONAR: identical bodies capture different state */ const exists = (file, directory) => {
     try {
       const stat = fs.statSync(file);
       return directory ? stat.isDirectory() : stat.isFile();
@@ -525,7 +559,8 @@ export function sourceText(src, raw) {
   if (text == null) return null;
   text = text.replace(/^\uFEFF/, '');
   if (src.componentId != null && componentIdentity(text) !== String(src.componentId).toLowerCase()) return null;
-  return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
+  if (src.parsedYaml && src.fieldPath) return yamlField(src)(text);
+  return src.extract ? src.extract(text) : text;
 }
 
 /**
@@ -535,56 +570,79 @@ export function sourceText(src, raw) {
  */
 export function createSourceReader(model, { readRaw } = {}) {
   const files = new Map();
-  return (source) => {
-    const yamlFieldSource = source.fieldPath && /\.ya?ml$/i.test(source.file);
-    if (!files.has(source.file)) {
-      const root = source.sourceDir ?? model?.sourceDir;
-      const entry = { raw: null, yaml: null };
-      try {
-        if (readRaw) entry.raw = readRaw(source.file) ?? null;
-        else {
-          const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
-          if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');
-          const cached = model?.yamlCache?.get(source.file);
-          entry.stamp = fileStamp(stat);
-          if (yamlFieldSource && cached?.stamp === entry.stamp) entry.yaml = cached.value;
-          else entry.raw = fs.readFileSync(source.file, 'utf8');
-        }
-      } catch {
-        /* Missing and unsafe sources retain sourceText's null result. */
-      }
-      files.set(source.file, entry);
+  return (source) => readSource(files, model, readRaw, source);
+}
+
+function readSource(files, model, readRaw, source) {
+  const yamlFieldSource = source.fieldPath && /\.ya?ml$/i.test(source.file);
+  if (!files.has(source.file)) files.set(source.file, loadSourceEntry(model, readRaw, source, yamlFieldSource));
+  const entry = files.get(source.file);
+  if (yamlFieldSource) {
+    if (!entry.yaml && entry.raw !== null) {
+      entry.yaml = parseYaml(entry.raw, true);
+      if (!readRaw) model?.yamlCache?.set(source.file, { stamp: entry.stamp, value: entry.yaml });
     }
-    const entry = files.get(source.file);
-    if (yamlFieldSource) {
-      if (!entry.yaml && entry.raw !== null) {
-        entry.yaml = parseYaml(entry.raw, true);
-        if (!readRaw) model?.yamlCache?.set(source.file, { stamp: entry.stamp, value: entry.yaml });
-      }
-      if (!entry.yaml) return null;
-      return sourceText({ ...source, parsedYaml: () => entry.yaml }, '');
+    if (!entry.yaml) return null;
+    return sourceText({ ...source, parsedYaml: () => entry.yaml }, '');
+  }
+  // A file may contain both structured fields and a raw source descriptor.
+  if (entry.raw === null && entry.yaml !== null) {
+    try {
+      entry.raw = fs.readFileSync(source.file, 'utf8');
+    } catch {
+      return null;
     }
-    // A file may contain both structured fields and a raw source descriptor.
-    if (entry.raw === null && entry.yaml !== null) {
-      try {
-        entry.raw = fs.readFileSync(source.file, 'utf8');
-      } catch {
-        return null;
-      }
+  }
+  return sourceText(source, entry.raw);
+}
+
+function loadSourceEntry(model, readRaw, source, yamlFieldSource) {
+  const root = source.sourceDir ?? model?.sourceDir;
+  const entry = { raw: null, yaml: null };
+  try {
+    if (readRaw) entry.raw = readRaw(source.file) ?? null;
+    else {
+      const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
+      if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');
+      const cached = model?.yamlCache?.get(source.file);
+      entry.stamp = fileStamp(stat);
+      if (yamlFieldSource && cached?.stamp === entry.stamp) entry.yaml = cached.value;
+      else entry.raw = fs.readFileSync(source.file, 'utf8');
     }
-    return sourceText(source, entry.raw);
-  };
+  } catch {
+    /* Missing and unsafe sources retain sourceText's null result. */
+  }
+  return entry;
 }
 
 const XML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
 const xmlUnescape = (s) =>
-  s.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_, dec, hex, name) =>
-    dec
-      ? String.fromCodePoint(Number(dec))
-      : hex
-        ? String.fromCodePoint(parseInt(hex, 16))
-        : XML_ENTITIES[name.toLowerCase()],
-  );
+  s.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_, dec, hex, name) => {
+    if (dec) return String.fromCodePoint(Number(dec));
+    if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+    return XML_ENTITIES[name.toLowerCase()];
+  });
+
+const xmlSectionAt = (text, opening) => {
+  if (text.startsWith('<!--', opening)) return { marker: '-->', length: 4 };
+  if (text.startsWith('<![CDATA[', opening)) return { marker: ']]>', length: 9 };
+  if (text.startsWith('<?', opening)) return { marker: '?>', length: 2 };
+  return null;
+};
+
+function xmlTagClosing(text, opening) {
+  let quote = null;
+  let closing = opening + 1;
+  for (; closing < text.length; closing++) {
+    const character = text[closing];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '<') return -1;
+    else if (character === '>') break;
+  }
+  return closing;
+}
 
 /** Shared linear XML tag cursor. Text in comments, CDATA and processing instructions is never a tag. */
 function* xmlElementTags(xml, fromIndex = 0) {
@@ -592,13 +650,7 @@ function* xmlElementTags(xml, fromIndex = 0) {
   for (let cursor = fromIndex; cursor < text.length;) {
     const opening = text.indexOf('<', cursor);
     if (opening < 0) return;
-    const section = text.startsWith('<!--', opening)
-      ? { marker: '-->', length: 4 }
-      : text.startsWith('<![CDATA[', opening)
-        ? { marker: ']]>', length: 9 }
-        : text.startsWith('<?', opening)
-          ? { marker: '?>', length: 2 }
-          : null;
+    const section = xmlSectionAt(text, opening);
     if (section) {
       const end = text.indexOf(section.marker, opening + section.length);
       if (end < 0) {
@@ -608,17 +660,10 @@ function* xmlElementTags(xml, fromIndex = 0) {
       cursor = end + section.marker.length;
       continue;
     }
-    let quote = null;
-    let closing = opening + 1;
-    for (; closing < text.length; closing++) {
-      const character = text[closing];
-      if (quote) {
-        if (character === quote) quote = null;
-      } else if (character === '"' || character === "'") quote = character;
-      else if (character === '<') {
-        yield { invalid: true };
-        return;
-      } else if (character === '>') break;
+    const closing = xmlTagClosing(text, opening);
+    if (closing < 0) {
+      yield { invalid: true };
+      return;
     }
     if (closing === text.length) {
       yield { invalid: true };
@@ -654,10 +699,12 @@ function xmlText(raw) {
   const sections = /<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>/g;
   let result = '';
   let from = 0;
-  for (let section; (section = sections.exec(raw));) {
+  let section = sections.exec(raw);
+  while (section) {
     result += xmlUnescape(raw.slice(from, section.index));
     if (section[1] !== undefined) result += section[1];
     from = sections.lastIndex;
+    section = sections.exec(raw);
   }
   return result + xmlUnescape(raw.slice(from));
 }
@@ -673,41 +720,104 @@ export function componentIdentity(xml) {
     }
   }
   if (attributes === null) return null;
-  const attribute = /([A-Za-z_:][\w:.-]*)\s*=\s*(["'])([\s\S]*?)\2/y;
-  const ids = [];
-  for (let offset = 0; offset < attributes.length;) {
-    while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
-    if (offset === attributes.length) break;
-    if (attributes[offset] === '/') {
-      offset++;
-      while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
-      if (offset !== attributes.length) return null;
-      break;
-    }
-    attribute.lastIndex = offset;
-    const parsed = attribute.exec(attributes);
-    if (!parsed) return null;
-    if (parsed[1] === 'powerpagecomponentid') ids.push(parsed[3]);
-    offset = attribute.lastIndex;
-  }
-  if (ids.length !== 1) return null;
+  const id = componentIdentityAttribute(attributes);
+  if (id === null) return null;
   try {
-    return xmlUnescape(ids[0]).trim().toLowerCase();
+    return xmlUnescape(id).trim().toLowerCase();
   } catch {
     return null;
   }
 }
 
+function componentIdentityAttribute(attributes) {
+  const attribute = /([A-Za-z_:][\w:.-]*)\s*=\s*(["'])([\s\S]*?)\2/y;
+  const ids = [];
+  for (let offset = 0; offset < attributes.length;) {
+    const parsed = readComponentAttribute(attributes, offset, attribute);
+    if (parsed.invalid) return null;
+    if (parsed.done) break;
+    if (parsed.id !== undefined) ids.push(parsed.id);
+    offset = parsed.offset;
+  }
+  return ids.length === 1 ? ids[0] : null;
+}
+
+function readComponentAttribute(attributes, offset, attribute) {
+  while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
+  if (offset === attributes.length) return { done: true };
+  if (attributes[offset] === '/') {
+    offset++;
+    while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
+    return offset === attributes.length ? { done: true } : { invalid: true };
+  }
+  attribute.lastIndex = offset;
+  const parsed = attribute.exec(attributes);
+  if (!parsed) return { invalid: true };
+  return {
+    offset: attribute.lastIndex,
+    id: parsed[1] === 'powerpagecomponentid' ? parsed[3] : undefined,
+  };
+}
+
+/** Classify the record payload independently from XML-envelope validity, without diagnostic source values. */
+export function componentPayload(xml) {
+  const span = componentContentSpan(xml);
+  if (!span) return { status: 'absent' };
+  if (componentContentSpan(xml, span.closeEnd)) return { status: 'unsupported' };
+  try {
+    const text = xmlText(xml.slice(span.contentStart, span.contentEnd));
+    if (!text.trim()) return { status: 'empty' };
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? { status: 'record', value }
+      : { status: 'unsupported' };
+  } catch {
+    return { status: 'invalid' };
+  }
+}
+
 /** The JSON held in <content> of a powerpagecomponent.xml, or null. */
 export function componentContent(xml) {
-  const span = componentContentSpan(xml);
-  if (!span || componentContentSpan(xml, span.closeEnd)) return null;
-  try {
-    const value = JSON.parse(xmlText(xml.slice(span.contentStart, span.contentEnd)));
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
+  return componentPayload(xml).value ?? null;
+}
+
+const ENVELOPE_FIELDS = new Set(['powerpagecomponenttype', 'name', 'statecode', 'powerpagesiteid', 'websiteid']);
+
+function openEnvelopeTag(state, tag) {
+  if (tag.name === 'powerpagecomponent' && state.stack.length === 0) state.roots++;
+  const selfClosing = /\/\s*$/.test(tag.attributes);
+  if (
+    state.stack.length === 1 &&
+    state.stack[0] === 'powerpagecomponent' &&
+    ENVELOPE_FIELDS.has(tag.name) &&
+    !selfClosing
+  )
+    state.pending = { name: tag.name, start: tag.end };
+  if (!selfClosing) state.stack.push(tag.name);
+}
+
+function closeEnvelopeTag(state, tag, xml) {
+  if (state.stack.pop() !== tag.name) return false;
+  if (state.pending?.name !== tag.name || state.stack.length !== 1) return true;
+  if (Object.hasOwn(state.result, tag.name)) return false;
+  const raw = xml.slice(state.pending.start, tag.start);
+  state.result[tag.name] = tag.name.endsWith('siteid')
+    ? (nestedElementText(raw, tag.name) ?? xmlText(raw))
+    : xmlText(raw);
+  state.pending = null;
+  return true;
+}
+
+/** Direct component envelope fields; comments, CDATA and JSON content never supply metadata tags. */
+export function componentEnvelope(xml) {
+  const state = { stack: [], result: {}, pending: null, roots: 0 };
+  for (const tag of xmlElementTags(xml)) {
+    if (tag.invalid || !tag.name) return null;
+    if (tag.closing) {
+      if (!closeEnvelopeTag(state, tag, xml)) return null;
+    } else openEnvelopeTag(state, tag);
   }
+  return state.roots === 1 && state.stack.length === 0 ? state.result : null;
 }
 
 /** Reader for one field of a component, usable as `extract` of an inline source. */
@@ -742,6 +852,62 @@ const PREVIEW_FIELDS = new Map([
   [COMPONENT.LIST, ['customjavascript']],
   [COMPONENT.ADVANCED_FORM_STEP, ['customjavascript']],
 ]);
+function isInactiveEnhancedSource(type, stepId, formId, inactiveSteps, inactiveForms) {
+  return (
+    [COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA, COMPONENT.ADVANCED_FORM_STEP].includes(type) &&
+    (inactiveSteps.has(stepId) || inactiveForms.has(String(formId ?? '').toLowerCase()))
+  );
+}
+function isEnhancedNonInlineType(type) {
+  return [
+    COMPONENT.SHORTCUT,
+    COMPONENT.WEB_LINK_SET,
+    COMPONENT.WEB_LINK,
+    COMPONENT.BASIC_FORM_METADATA,
+    COMPONENT.ADVANCED_FORM_METADATA,
+    COMPONENT.ADVANCED_FORM,
+  ].includes(type);
+}
+function isInactiveLanguagePage(component, inactivePages) {
+  return (
+    component.type === COMPONENT.WEB_PAGE &&
+    component.content.isroot === false &&
+    inactivePages.has(String(component.content.rootwebpageid ?? '').toLowerCase())
+  );
+}
+function enhancedInlineFields(type) {
+  let fields = [['content-snippet', 'value', 'markup']];
+  if (type === COMPONENT.WEB_PAGE)
+    fields = [
+      ['page-js', 'customjavascript', 'block', 'script'],
+      ['page-css', 'customcss', 'block', 'style'],
+      ['page-copy', 'copy', 'markup'],
+      ['page-summary', 'summary', 'markup'],
+    ];
+  else if (type === COMPONENT.WEB_TEMPLATE) fields = [['web-template', 'source', 'markup']];
+  else if (type === COMPONENT.BASIC_FORM) fields = [['basic-form-js', 'customjavascript', 'block', 'script']];
+  else if (type === COMPONENT.LIST) fields = [['list-js', 'customjavascript', 'block', 'script']];
+  else if (type === COMPONENT.ADVANCED_FORM_STEP)
+    fields = [['advanced-form-step-js', 'customjavascript', 'block', 'script']];
+  return fields;
+}
+function enhancedMarkupField(xml, source, field) {
+  const content = componentContent(xml);
+  if (!content) return null;
+  let text = content[field];
+  if (source.jsonPath) {
+    try {
+      const localized = JSON.parse(text);
+      if (source.lcid != null && atPath(localized, [...source.jsonPath.slice(0, -1), 'LCID']) !== source.lcid)
+        return null;
+      text = atPath(localized, source.jsonPath);
+    } catch {
+      return null;
+    }
+  }
+  if (text == null) return '';
+  return typeof text === 'string' ? text : null;
+}
 const COMPONENT_MARKUP_FIELDS = new Map([
   [COMPONENT.WEB_FILE, ['summary']],
   [COMPONENT.SHORTCUT, ['description']],
@@ -753,25 +919,29 @@ const COMPONENT_MARKUP_FIELDS = new Map([
   [COMPONENT.ADVANCED_FORM_METADATA, ['description', 'label', 'validationregularexpressionerrormessage']],
 ]);
 const CLASSIC_METADATA =
-  /(?:^(?:website|websiteaccess|webrole|webpagerule|urlhistory|forumthreadtype|sitesetting|sitemarker|publishingstate|websitelanguage|tag|adplacement|shortcut|redirect|ad)\.yml$|(?:^|\/)[^/]+\.(?:webpage|webfile|contentsnippet|webtemplate|basicform|basicformmetadata|advancedform|advancedformstep|advancedformmetadata|list|pagetemplate|tablepermission|entitypermission|columnpermissionprofile|columnpermission|weblink|weblinkset|poll|pollplacement|polloption|forum|forumpermission|forumaccesspermission|webrole|webpagelanguage|websitelanguage|sitemarker|sitesetting|publishingstate|webpageaccesscontrolrule|websiteaccess|redirect|shortcut|deployment|botconsumer|cloudflowconsumer|serverlogic|uxcomponent|pollplacement|adplacement|publishingstatetransitionrule|portallanguage|sourcefile)\.yml$)/i;
+  /(?:^(?:website|websiteaccess|webrole|webpagerule|urlhistory|forumthreadtype|sitesetting|sitemarker|publishingstate|websitelanguage|tag|adplacement|shortcut|redirect|ad)\.yml$|(?:^|\/)[^/]+\.(?:webpage|webfile|contentsnippet|webtemplate|basicform|basicformmetadata|advancedform|advancedformstep|advancedformmetadata|list|pagetemplate|tablepermission|entitypermission|columnpermissionprofile|columnpermission|weblink|weblinkset|poll|pollplacement|polloption|forum|forumpermission|forumaccesspermission|webrole|webpagelanguage|websitelanguage|sitemarker|sitesetting|publishingstate|webpageaccesscontrolrule|websiteaccess|redirect|shortcut|deployment|botconsumer|cloudflowconsumer|serverlogic|uxcomponent|pollplacement|adplacement|publishingstatetransitionrule|portallanguage|sourcefile)\.yml$)/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 /** Enhanced site and language documents configure the live host, rather than page overlays. */
 export const isEnhancedSiteMetadata = (relative) =>
-  /(?:^|\/)powerpagesite(?:s|languages)\.xml$/i.test(relative.replace(/\\/g, '/'));
+  /(?:^|\/)powerpagesite(?:s|languages)\.xml$/i.test(relative.replaceAll('\\', '/'));
 /** Portal metadata filenames, excluding unrelated YAML/XML notes in the checkout. */
 export const isPortalMetadata = (relative) =>
-  CLASSIC_METADATA.test(relative.replace(/\\/g, '/')) ||
-  /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replace(/\\/g, '/')) ||
+  CLASSIC_METADATA.test(relative.replaceAll('\\', '/')) ||
+  /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replaceAll('\\', '/')) ||
   isEnhancedSiteMetadata(relative);
 const stableValue = (value) =>
   JSON.stringify(value, (_key, item) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort(/* NOSONAR: preserve default string coercion */)
             .map((key) => [key, item[key]]),
         )
       : item,
   );
+const componentOuter = (xml) => {
+  const span = componentContentSpan(xml);
+  return (span ? xml.slice(0, span.contentStart) + xml.slice(span.contentEnd) : xml).replace(/>\s+</g, '><').trim();
+};
 
 export class PortalModel {
   /**
@@ -811,8 +981,9 @@ export class PortalModel {
           ),
         ];
     const cache = new Map();
+    const realRoot = fs.promises.realpath(sourceDir).catch(() => null);
     await orderedMap(files, 16, async (file) => {
-      const before = await sourceFileStatAsync(sourceDir, file);
+      const before = await sourceFileStatAsync(realRoot, file);
       if (!before) return;
       let text;
       try {
@@ -820,8 +991,8 @@ export class PortalModel {
       } catch {
         return;
       }
-      const after = await sourceFileStatAsync(sourceDir, file);
-      if (!after || fileStamp(before) !== fileStamp(after)) return;
+      const after = await sourceFileStatAsync(realRoot, file);
+      if (!after || statKey(before) !== statKey(after)) return;
       cache.set(
         file,
         enhanced
@@ -842,13 +1013,7 @@ export class PortalModel {
   }
 
   load() {
-    const previous = realDirectories;
-    realDirectories = new Map();
-    try {
-      this.#load();
-    } finally {
-      realDirectories = previous;
-    }
+    indexingPass(() => this.#load());
   }
 
   #load() {
@@ -897,10 +1062,7 @@ export class PortalModel {
       if (url) urls.set(urlKey(url), [...(urls.get(urlKey(url)) ?? []), page]);
     }
     for (const [url, pages] of urls)
-      if (pages.length > 1)
-        this.warnings.push(
-          `duplicate page URL ${url}: ${pages.map((page) => (page.name ? `${page.name} (${page.id})` : page.id)).join(', ')}`,
-        );
+      if (pages.length > 1) this.warnings.push(`duplicate page URL ${url}: ${pages.map(pageLabel).join(', ')}`);
     this.languageCodes = new Set();
     this.pagePaths = new Set(
       [...this.pages.values()]
@@ -908,72 +1070,10 @@ export class PortalModel {
         .filter(Boolean)
         .map(urlKey),
     );
-    const add = (code) => {
-      if (typeof code === 'string' && /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code))
-        this.languageCodes.add(code.toLowerCase());
-    };
-    const field = (row, key) => row?.[`adx_${key}`] ?? row?.[`mspp_${key}`] ?? row?.[key];
-    const languageRows = [];
-    const portalRows = [];
-    const candidates = fs
-      .readdirSync(this.sourceDir, { withFileTypes: true })
-      .flatMap((entry) =>
-        entry.isFile()
-          ? [path.join(this.sourceDir, entry.name)]
-          : entry.isDirectory() &&
-              /^(?:Assets|(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?)$/i.test(entry.name)
-            ? this.#files(path.join(this.sourceDir, entry.name))
-            : [],
-      );
-    for (const file of candidates) {
-      const name = path.basename(file);
-      if (
-        /^(?:websitelanguage|portallanguage)\.yml$/i.test(name) ||
-        /\.(?:websitelanguage|portallanguage)\.ya?ml$/i.test(name)
-      ) {
-        const rows = [this.#readYaml(file, true)]
-          .flat()
-          .filter((row) => row && !row.__error && Number(field(row, 'statecode') ?? 0) !== 1);
-        (/portallanguage/i.test(name) ? portalRows : languageRows).push(...rows);
-      }
-      if (name.toLowerCase() === 'powerpagesitelanguages.xml' && isSourceFile(this.sourceDir, file)) {
-        const xml = fs.readFileSync(file, 'utf8');
-        for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
-          if (/<statecode>\s*1\s*</.test(match[1])) continue;
-          const content = componentContent(match[1]) ?? {};
-          languageRows.push({
-            ...content,
-            id: /\bpowerpagesitelanguageid="([^"]+)"/.exec(match[0])?.[1],
-            languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode,
-            name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name,
-          });
-        }
-      }
-    }
+    const add = (code) => addLanguageCode(this.languageCodes, code);
+    const { languageRows, portalRows } = this.#readLanguageRows();
     const languageLabels = new Map();
-    for (const row of languageRows) {
-      const reference = String(field(row, 'portallanguageid')?.id ?? field(row, 'portallanguageid') ?? '')
-        .replace(/[{}]/g, '')
-        .toLowerCase();
-      const linked = portalRows.find(
-        (item) =>
-          String(field(item, 'portallanguageid') ?? item.id ?? '')
-            .replace(/[{}]/g, '')
-            .toLowerCase() === reference,
-      );
-      const code =
-        field(row, 'languagecode') ??
-        field(linked, 'languagecode') ??
-        portalLanguage({ name: field(row, 'name') })?.code;
-      add(code);
-      if (code)
-        languageLabels.set(
-          String(field(row, 'websitelanguageid') ?? row.id ?? '')
-            .replace(/[{}]/g, '')
-            .toLowerCase(),
-          code,
-        );
-    }
+    for (const row of languageRows) this.#indexLanguageRow(row, portalRows, languageLabels, add);
     for (const source of this.inlineSources)
       if (source.pageLayer && source.pageLayer !== 'root')
         source.pageLayer =
@@ -983,6 +1083,70 @@ export class PortalModel {
       add(
         /\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(source.rel)?.[1] ??
           /\/content-pages\/([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\//i.exec(source.rel)?.[1],
+      );
+  }
+
+  #readLanguageRows() {
+    const languageRows = [];
+    const portalRows = [];
+    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => {
+      if (entry.isFile()) return [path.join(this.sourceDir, entry.name)];
+      if (entry.isDirectory() && /^(?:Assets|(?:web-?site|portal|powerpage-?site)-?languages?)$/i.test(entry.name))
+        return this.#files(path.join(this.sourceDir, entry.name));
+      return [];
+    });
+    for (const file of candidates) {
+      const name = path.basename(file);
+      if (
+        /^(?:websitelanguage|portallanguage)\.yml$/i.test(name) ||
+        /\.(?:websitelanguage|portallanguage)\.ya?ml$/i.test(name)
+      ) {
+        const rows = [this.#readYaml(file, true)]
+          .flat()
+          .filter((row) => row && !row.__error && Number(languageField(row, 'statecode') ?? 0) !== 1);
+        (/portallanguage/i.test(name) ? portalRows : languageRows).push(...rows);
+      }
+      if (name.toLowerCase() === 'powerpagesitelanguages.xml' && isSourceFile(this.sourceDir, file))
+        this.#readLanguageXmlRows(file, languageRows);
+    }
+    return { languageRows, portalRows };
+  }
+
+  #readLanguageXmlRows(file, languageRows) {
+    const xml = fs.readFileSync(file, 'utf8');
+    for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
+      if (/<statecode>\s*1\s*</.test(match[1])) continue;
+      const content = componentContent(match[1]) ?? {};
+      languageRows.push({
+        ...content,
+        id: /\bpowerpagesitelanguageid="([^"]+)"/.exec(match[0])?.[1],
+        languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode,
+        name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name,
+      });
+    }
+  }
+
+  #indexLanguageRow(row, portalRows, languageLabels, add) {
+    const reference = String(languageField(row, 'portallanguageid')?.id ?? languageField(row, 'portallanguageid') ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+    const linked = portalRows.find(
+      (item) =>
+        String(languageField(item, 'portallanguageid') ?? item.id ?? '')
+          .replace(/[{}]/g, '')
+          .toLowerCase() === reference,
+    );
+    const code =
+      languageField(row, 'languagecode') ??
+      languageField(linked, 'languagecode') ??
+      portalLanguage({ name: languageField(row, 'name') })?.code;
+    add(code);
+    if (code)
+      languageLabels.set(
+        String(languageField(row, 'websitelanguageid') ?? row.id ?? '')
+          .replace(/[{}]/g, '')
+          .toLowerCase(),
+        code,
       );
   }
 
@@ -1029,70 +1193,19 @@ export class PortalModel {
     this.webFiles = [];
     this.webFileByUrl = new Map();
     this.inlineSources = [];
+    const components = this.#readEnhancedComponents();
+    this.#indexEnhancedPages(components);
+    for (const component of components) this.#indexEnhancedSource(component);
+    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url), 'en'));
+  }
+
+  #readEnhancedComponents() {
     const base = path.join(this.sourceDir, 'powerpagecomponents');
     const components = [];
     const seenFiles = new Set();
     for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const dir = path.join(base, entry.name);
-      const file = path.join(dir, 'powerpagecomponent.xml');
-      let xml;
-      try {
-        const stat = sourceFileStat(this.sourceDir, file);
-        if (!stat) {
-          this.warnings.push(
-            `powerpagecomponents/${entry.name}/powerpagecomponent.xml: component is missing or outside the extract`,
-          );
-          continue;
-        }
-        seenFiles.add(file);
-        const stamp = fileStamp(stat);
-        const cached = this.xmlCache.get(file);
-        xml = cached?.stamp === stamp ? cached.text : fs.readFileSync(file, 'utf8');
-        this.xmlCache.set(file, { stamp, text: xml });
-      } catch {
-        continue;
-      }
-      const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
-      if (!Object.values(COMPONENT).includes(type)) continue;
-      if (/<statecode>\s*1\s*<\/statecode>/.test(xml)) {
-        if (type === COMPONENT.WEB_PAGE) this.inactivePages.add((componentIdentity(xml) ?? entry.name).toLowerCase());
-        if ([COMPONENT.BASIC_FORM, COMPONENT.ADVANCED_FORM].includes(type))
-          this.inactiveForms.add((componentIdentity(xml) ?? entry.name).toLowerCase());
-        if (type === COMPONENT.ADVANCED_FORM_STEP)
-          this.inactiveSteps.add((componentIdentity(xml) ?? entry.name).toLowerCase());
-        continue;
-      }
-      const attachment = /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
-      const content = componentContent(xml);
-      if (!content)
-        this.warnings.push(`powerpagecomponents/${entry.name}/powerpagecomponent.xml: <content> is not a JSON object`);
-      const decode = (value) => {
-        try {
-          return xmlUnescape(value);
-        } catch {
-          this.warnings.push(`powerpagecomponents/${entry.name}/powerpagecomponent.xml: invalid XML character entity`);
-          return value;
-        }
-      };
-      components.push({
-        id: (componentIdentity(xml) ?? entry.name).toLowerCase(),
-        type,
-        name: decode(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
-        content: content ?? {},
-        languageId:
-          content?.webpagelanguageid?.id ??
-          content?.webpagelanguageid ??
-          /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(
-            xml,
-          )?.[1],
-        dir,
-        file,
-        rel: `powerpagecomponents/${entry.name}/powerpagecomponent.xml`,
-        attachment: attachment
-          ? { mimeType: /\bmimetype="([^"]*)"/.exec(attachment[1])?.[1] ?? null, name: decode(attachment[2]).trim() }
-          : null,
-      });
+      this.#readEnhancedComponent(base, entry, seenFiles, components);
     }
     for (const file of this.xmlCache.keys()) {
       if (!seenFiles.has(file)) this.xmlCache.delete(file);
@@ -1101,7 +1214,77 @@ export class PortalModel {
       if (c.type === COMPONENT.ADVANCED_FORM_STEP && c.content.webform)
         this.stepForms.set(c.id, String(c.content.webform).toLowerCase());
     }
+    return components;
+  }
 
+  #readEnhancedComponent(base, entry, seenFiles, components) {
+    const dir = path.join(base, entry.name);
+    const file = path.join(dir, 'powerpagecomponent.xml');
+    let xml;
+    try {
+      const stat = sourceFileStat(this.sourceDir, file);
+      if (!stat) {
+        this.warnings.push(
+          `powerpagecomponents/${entry.name}/powerpagecomponent.xml: component is missing or outside the extract`,
+        );
+        return;
+      }
+      seenFiles.add(file);
+      const stamp = fileStamp(stat);
+      const cached = this.xmlCache.get(file);
+      xml = cached?.stamp === stamp ? cached.text : fs.readFileSync(file, 'utf8');
+      this.xmlCache.set(file, { stamp, text: xml });
+    } catch {
+      return;
+    }
+    const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
+    if (!Object.values(COMPONENT).includes(type)) return;
+    if (/<statecode>\s*1\s*<\/statecode>/.test(xml)) {
+      this.#markInactiveEnhancedComponent(type, entry.name, xml);
+      return;
+    }
+    this.#appendEnhancedComponent(entry, dir, file, xml, type, components);
+  }
+
+  #markInactiveEnhancedComponent(type, name, xml) {
+    if (type === COMPONENT.WEB_PAGE) this.inactivePages.add((componentIdentity(xml) ?? name).toLowerCase());
+    if ([COMPONENT.BASIC_FORM, COMPONENT.ADVANCED_FORM].includes(type))
+      this.inactiveForms.add((componentIdentity(xml) ?? name).toLowerCase());
+    if (type === COMPONENT.ADVANCED_FORM_STEP) this.inactiveSteps.add((componentIdentity(xml) ?? name).toLowerCase());
+  }
+
+  #appendEnhancedComponent(entry, dir, file, xml, type, components) {
+    const attachment = /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
+    const content = componentContent(xml);
+    if (!content)
+      this.warnings.push(`powerpagecomponents/${entry.name}/powerpagecomponent.xml: <content> is not a JSON object`);
+    const decode = (value) => {
+      try {
+        return xmlUnescape(value);
+      } catch {
+        this.warnings.push(`powerpagecomponents/${entry.name}/powerpagecomponent.xml: invalid XML character entity`);
+        return value;
+      }
+    };
+    components.push({
+      id: (componentIdentity(xml) ?? entry.name).toLowerCase(),
+      type,
+      name: decode(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
+      content: content ?? {},
+      languageId:
+        content?.webpagelanguageid?.id ??
+        content?.webpagelanguageid ??
+        nestedElementText(xml, 'powerpagesitelanguageid'),
+      dir,
+      file,
+      rel: `powerpagecomponents/${entry.name}/powerpagecomponent.xml`,
+      attachment: attachment
+        ? { mimeType: /\bmimetype="([^"]*)"/.exec(attachment[1])?.[1] ?? null, name: decode(attachment[2]).trim() }
+        : null,
+    });
+  }
+
+  #indexEnhancedPages(components) {
     // pages: the URL tree lives on root pages; a language copy points at its root
     for (const c of components) {
       if (c.type !== COMPONENT.WEB_PAGE) continue;
@@ -1125,158 +1308,114 @@ export class PortalModel {
     for (const page of this.pages.values()) {
       if (this.pagePath(page.id) == null)
         this.warnings.push(
-          `${path.relative(this.sourceDir, page.dir).replace(/\\/g, '/')}: missing parent page or a cycle in the page hierarchy`,
+          `${path.relative(this.sourceDir, page.dir).replaceAll('\\', '/')}: missing parent page or a cycle in the page hierarchy`,
         );
     }
+  }
 
-    for (const c of components) {
-      const stepId = String(c.content.webformstep ?? '').toLowerCase();
-      const formId = c.content.entityform ?? c.content.webform ?? this.stepForms.get(stepId);
-      if (
-        [COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA, COMPONENT.ADVANCED_FORM_STEP].includes(
-          c.type,
-        ) &&
-        (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase()))
-      ) {
-        this.inactiveSources.push({ file: c.file, rel: c.rel });
-        continue;
-      }
-      for (const field of COMPONENT_MARKUP_FIELDS.get(c.type) ?? []) {
-        for (const value of markupValues(c.content[field])) {
-          const source = {
-            kind: 'metadata-markup',
-            mode: 'markup',
-            tag: null,
-            file: c.file,
-            sourceDir: this.sourceDir,
-            rel: `${c.rel}#${field}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
-            label: `${c.name} (${field})`,
-            field,
-            fieldPath: [field],
-            componentId: c.id,
-            ...value,
-            pageUrl: null,
-            usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId),
-          };
-          source.extract = (xml) => {
-            const content = componentContent(xml);
-            if (!content) return null;
-            let text = content[field];
-            if (source.jsonPath) {
-              try {
-                const localized = JSON.parse(text);
-                if (source.lcid != null && atPath(localized, [...source.jsonPath.slice(0, -1), 'LCID']) !== source.lcid)
-                  return null;
-                text = atPath(localized, source.jsonPath);
-              } catch {
-                return null;
-              }
-            }
-            return text == null ? '' : typeof text === 'string' ? text : null;
-          };
-          this.inlineSources.push(source);
-        }
-      }
-      if (c.type === COMPONENT.WEB_FILE) {
-        const parentPath = this.pagePath(c.content.parentpageid);
-        const attachmentRoot = path.join(c.dir, 'filecontent');
-        const file = c.attachment?.name ? path.resolve(attachmentRoot, c.attachment.name) : null;
-        let contentFile = null;
-        if (file) {
-          try {
-            if (inside(realDirectory(attachmentRoot), realFile(file).real) && isSourceFile(this.sourceDir, file))
-              contentFile = file;
-          } catch {
-            /* missing or unsafe attachment */
-          }
-        }
-        const entry = {
-          id: c.id,
-          name: c.name,
-          yml: c.file,
-          file: contentFile,
-          partialUrl: c.content.partialurl,
-          parentPageId: c.content.parentpageid ?? null,
-          url: parentPath == null || c.content.partialurl == null ? null : joinUrl(parentPath, c.content.partialurl),
-          mimeType: c.attachment?.mimeType ?? null,
-          problem: null,
+  #indexEnhancedSource(c) {
+    const stepId = String(c.content.webformstep ?? '').toLowerCase();
+    const formId = c.content.entityform ?? c.content.webform ?? this.stepForms.get(stepId);
+    if (isInactiveEnhancedSource(c.type, stepId, formId, this.inactiveSteps, this.inactiveForms)) {
+      this.inactiveSources.push({ file: c.file, rel: c.rel });
+      return;
+    }
+    this.#addEnhancedMarkupSources(c, formId);
+    if (c.type === COMPONENT.WEB_FILE) {
+      this.#addEnhancedWebFile(c);
+      return;
+    }
+    if (isEnhancedNonInlineType(c.type)) return;
+    if (isInactiveLanguagePage(c, this.inactivePages)) {
+      this.inactiveSources.push({ file: c.file, rel: c.rel });
+      return;
+    }
+    this.#addEnhancedInlineSources(c, enhancedInlineFields(c.type));
+  }
+
+  #addEnhancedMarkupSources(c, formId) {
+    for (const field of COMPONENT_MARKUP_FIELDS.get(c.type) ?? []) {
+      for (const value of markupValues(c.content[field])) {
+        const source = {
+          kind: 'metadata-markup',
+          mode: 'markup',
+          tag: null,
+          file: c.file,
+          sourceDir: this.sourceDir,
+          rel: `${c.rel}#${field}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
+          label: `${c.name} (${field})`,
+          field,
+          fieldPath: [field],
+          componentId: c.id,
+          ...value,
+          pageUrl: null,
+          usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId),
         };
-        if (!entry.file) entry.problem = 'no regular content file safely inside filecontent/';
-        else if (entry.url == null) entry.problem = 'no parent page, cannot build the URL';
-        this.#addWebFile(entry, `${c.rel} (${c.name})`);
-      } else {
-        if (
-          [
-            COMPONENT.SHORTCUT,
-            COMPONENT.WEB_LINK_SET,
-            COMPONENT.WEB_LINK,
-            COMPONENT.BASIC_FORM_METADATA,
-            COMPONENT.ADVANCED_FORM_METADATA,
-          ].includes(c.type)
-        )
-          continue;
-        // The form record supplies configuration and associations; its steps hold the JS.
-        if (c.type === COMPONENT.ADVANCED_FORM) continue;
-        // The language copy of an inactive root page is never rendered: its fields are no sources.
-        if (
-          c.type === COMPONENT.WEB_PAGE &&
-          c.content.isroot === false &&
-          this.inactivePages.has(String(c.content.rootwebpageid ?? '').toLowerCase())
-        ) {
-          this.inactiveSources.push({ file: c.file, rel: c.rel });
-          continue;
-        }
-        const fields =
-          c.type === COMPONENT.WEB_PAGE
-            ? [
-                ['page-js', 'customjavascript', 'block', 'script'],
-                ['page-css', 'customcss', 'block', 'style'],
-                ['page-copy', 'copy', 'markup'],
-                ['page-summary', 'summary', 'markup'],
-              ]
-            : c.type === COMPONENT.WEB_TEMPLATE
-              ? [['web-template', 'source', 'markup']]
-              : c.type === COMPONENT.BASIC_FORM
-                ? [['basic-form-js', 'customjavascript', 'block', 'script']]
-                : c.type === COMPONENT.LIST
-                  ? [['list-js', 'customjavascript', 'block', 'script']]
-                  : c.type === COMPONENT.ADVANCED_FORM_STEP
-                    ? [['advanced-form-step-js', 'customjavascript', 'block', 'script']]
-                    : [['content-snippet', 'value', 'markup']];
-        for (const [kind, field, mode, tag] of fields) {
-          this.inlineSources.push({
-            kind,
-            mode,
-            tag: tag ?? null,
-            file: c.file,
-            sourceDir: this.sourceDir,
-            // several sources share one XML file; the field keeps them apart
-            rel: `${c.rel}#${field}`,
-            label: `${c.name} (${field})`,
-            field,
-            componentId: c.id,
-            exists: Object.hasOwn(c.content, field),
-            pageLayer:
-              c.type === COMPONENT.WEB_PAGE
-                ? c.content.isroot === false && c.content.rootwebpageid
-                  ? String(c.languageId ?? c.id)
-                  : 'root'
-                : undefined,
-            renders: !(c.type === COMPONENT.WEB_PAGE && [...this.pageAlias.values()].includes(c.id)),
-            extract: componentField(field),
-            pageUrl: c.type === COMPONENT.WEB_PAGE ? this.pagePath(c.id) : null,
-            usedOn:
-              c.type === COMPONENT.BASIC_FORM || c.type === COMPONENT.LIST
-                ? this.pagesShowing(c.id)
-                : c.type === COMPONENT.ADVANCED_FORM_STEP
-                  ? this.pagesShowing(c.content.webform)
-                  : [],
-            snippetName: c.type === COMPONENT.CONTENT_SNIPPET ? c.name : undefined,
-          });
-        }
+        source.extract = (xml) => enhancedMarkupField(xml, source, field);
+        this.inlineSources.push(source);
       }
     }
-    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url)));
+  }
+
+  #addEnhancedWebFile(c) {
+    const parentPath = this.pagePath(c.content.parentpageid);
+    const attachmentRoot = path.join(c.dir, 'filecontent');
+    const file = c.attachment?.name ? path.resolve(attachmentRoot, c.attachment.name) : null;
+    let contentFile = null;
+    if (file) {
+      try {
+        if (inside(realDirectory(attachmentRoot), realFile(file).real) && isSourceFile(this.sourceDir, file))
+          contentFile = file;
+      } catch {
+        /* missing or unsafe attachment */
+      }
+    }
+    const entry = {
+      id: c.id,
+      name: c.name,
+      yml: c.file,
+      file: contentFile,
+      partialUrl: c.content.partialurl,
+      parentPageId: c.content.parentpageid ?? null,
+      url: parentPath == null || c.content.partialurl == null ? null : joinUrl(parentPath, c.content.partialurl),
+      mimeType: c.attachment?.mimeType ?? null,
+      problem: null,
+    };
+    if (!entry.file) entry.problem = 'no regular content file safely inside filecontent/';
+    else if (entry.url == null) entry.problem = 'no parent page, cannot build the URL';
+    this.#addWebFile(entry, `${c.rel} (${c.name})`);
+  }
+
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ #addEnhancedInlineSources(c, fields) {
+    for (const [kind, field, mode, tag] of fields) {
+      let pageLayer;
+      if (c.type === COMPONENT.WEB_PAGE) {
+        if (c.content.isroot === false && c.content.rootwebpageid) pageLayer = String(c.languageId ?? c.id);
+        else pageLayer = 'root';
+      }
+      let usedOn = [];
+      if (c.type === COMPONENT.BASIC_FORM || c.type === COMPONENT.LIST) usedOn = this.pagesShowing(c.id);
+      else if (c.type === COMPONENT.ADVANCED_FORM_STEP) usedOn = this.pagesShowing(c.content.webform);
+      this.inlineSources.push({
+        kind,
+        mode,
+        tag: tag ?? null,
+        file: c.file,
+        sourceDir: this.sourceDir,
+        // several sources share one XML file; the field keeps them apart
+        rel: `${c.rel}#${field}`,
+        label: `${c.name} (${field})`,
+        field,
+        componentId: c.id,
+        exists: Object.hasOwn(c.content, field),
+        pageLayer,
+        renders: !(c.type === COMPONENT.WEB_PAGE && [...this.pageAlias.values()].includes(c.id)),
+        extract: componentField(field),
+        pageUrl: c.type === COMPONENT.WEB_PAGE ? this.pagePath(c.id) : null,
+        usedOn,
+        snippetName: c.type === COMPONENT.CONTENT_SNIPPET ? c.name : undefined,
+      });
+    }
   }
 
   /** Registers a web file under its URL, or records why it cannot be served. */
@@ -1321,44 +1460,7 @@ export class PortalModel {
           : [];
       }),
     );
-    for (const { file, y } of pageRecords) {
-      if (!yamlId(y, 'webpage')) continue;
-      const id = String(yamlId(y, 'webpage')).toLowerCase();
-      if (Number(y.statecode ?? y.adx_statecode) === 1) {
-        this.inactivePages.add(id);
-        continue;
-      }
-      const components = [yamlValue(y, 'entityform'), yamlValue(y, 'webform'), yamlValue(y, 'entitylist')]
-        .filter(Boolean)
-        .map((value) => String(value).toLowerCase());
-      this.#indexPageComponents(id, components);
-      const rootId = yamlValue(y, 'rootwebpageid') ? String(yamlValue(y, 'rootwebpageid')).toLowerCase() : null;
-      if (rootId && rootId !== id) {
-        this.pageAlias.set(id, rootId);
-        continue;
-      }
-      // Only an independent active language reference establishes a displaced root.
-      if (
-        (path.basename(path.dirname(file)) === 'content-pages' ||
-          path.basename(path.dirname(path.dirname(file))) === 'content-pages') &&
-        !(!rootId && !yamlValue(y, 'webpagelanguageid') && referencedRoots.has(id))
-      ) {
-        this.warnings.push(
-          `${path.relative(this.sourceDir, file).replaceAll('\\', '/')}: language page has no root page`,
-        );
-        continue;
-      }
-      this.pages.set(id, {
-        id,
-        partialUrl: String(yamlValue(y, 'partialurl') ?? ''),
-        parentId: yamlValue(y, 'parentpageid') ? String(yamlValue(y, 'parentpageid')).toLowerCase() : null,
-        name: yamlValue(y, 'name'),
-        dir: path.dirname(file),
-        // the form / list the page is configured to show
-        components,
-      });
-      this.pageByDir.set(path.dirname(file), id);
-    }
+    for (const { file, y } of pageRecords) this.#loadPageRecord(file, y, referencedRoots);
     this.pagePathCache = new Map();
     for (const page of this.pages.values()) {
       if (this.pagePath(page.id) == null)
@@ -1366,6 +1468,45 @@ export class PortalModel {
           `web-pages/${path.basename(page.dir)}: missing parent page or a cycle in the page hierarchy`,
         );
     }
+  }
+
+  #loadPageRecord(file, y, referencedRoots) {
+    if (!yamlId(y, 'webpage')) return;
+    const id = String(yamlId(y, 'webpage')).toLowerCase();
+    if (Number(y.statecode ?? y.adx_statecode) === 1) {
+      this.inactivePages.add(id);
+      return;
+    }
+    const components = [yamlValue(y, 'entityform'), yamlValue(y, 'webform'), yamlValue(y, 'entitylist')]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase());
+    this.#indexPageComponents(id, components);
+    const rootId = yamlValue(y, 'rootwebpageid') ? String(yamlValue(y, 'rootwebpageid')).toLowerCase() : null;
+    if (rootId && rootId !== id) {
+      this.pageAlias.set(id, rootId);
+      return;
+    }
+    // Only an independent active language reference establishes a displaced root.
+    if (
+      (path.basename(path.dirname(file)) === 'content-pages' ||
+        path.basename(path.dirname(path.dirname(file))) === 'content-pages') &&
+      !(!rootId && !yamlValue(y, 'webpagelanguageid') && referencedRoots.has(id))
+    ) {
+      this.warnings.push(
+        `${path.relative(this.sourceDir, file).replaceAll('\\', '/')}: language page has no root page`,
+      );
+      return;
+    }
+    this.pages.set(id, {
+      id,
+      partialUrl: String(yamlValue(y, 'partialurl') ?? ''),
+      parentId: yamlValue(y, 'parentpageid') ? String(yamlValue(y, 'parentpageid')).toLowerCase() : null,
+      name: yamlValue(y, 'name'),
+      dir: path.dirname(file),
+      // the form / list the page is configured to show
+      components,
+    });
+    this.pageByDir.set(path.dirname(file), id);
   }
 
   /** URL paths of the pages configured to show the form / list with this id. */
@@ -1377,7 +1518,7 @@ export class PortalModel {
       const p = this.pagePath(pageId);
       if (p) out.add(p);
     }
-    return [...out].sort();
+    return [...out].sort(/* NOSONAR: preserve default string coercion */);
   }
 
   /** Full URL path of a web page ("/" for home), or null when the parent chain is broken. */
@@ -1422,46 +1563,62 @@ export class PortalModel {
             .map((entry) => path.join(dir, entry.name))
         : []),
     ];
-    for (const folder of folders) {
-      const names = fs
-        .readdirSync(folder, { withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name);
-      const nameSet = new Set(names);
-      for (const name of names) {
-        if (!name.endsWith('.webfile.yml')) continue;
-        const ymlFile = path.join(folder, name);
-        const y = this.#readYaml(ymlFile);
-        if (Number(y.statecode) === 1) continue;
-        const base = name.slice(0, -'.webfile.yml'.length);
-        // pac writes the attachment next to the yml: normally under the yml's base name, otherwise
-        // under the annotation's original file name
-        const candidates = [base, y.filename, yamlValue(y, 'name')].filter(Boolean).map(String);
-        const contentName = candidates.find((c) => nameSet.has(c) && !c.endsWith('.webfile.yml'));
-        const parentPath = this.pagePath(yamlValue(y, 'parentpageid'));
-        const partialUrl = yamlValue(y, 'partialurl');
-        const entry = {
-          id: yamlId(y, 'webfile'),
-          name: yamlValue(y, 'name'),
-          yml: ymlFile,
-          file: contentName ? path.join(folder, contentName) : null,
-          partialUrl,
-          parentPageId: yamlValue(y, 'parentpageid') ?? null,
-          url: parentPath == null || partialUrl == null ? null : joinUrl(parentPath, partialUrl),
-          mimeType: y.mimetype,
-          problem: null,
-        };
-        if (!entry.file) entry.problem = 'no content file on disk next to the .webfile.yml';
-        else if (entry.url == null) entry.problem = 'parent page not found in web-pages/, cannot build the URL';
-        this.#addWebFile(entry, path.relative(this.sourceDir, ymlFile).replace(/\\/g, '/'));
-      }
+    for (const folder of folders) this.#loadWebFilesFromFolder(folder);
+    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url), 'en'));
+  }
+
+  #loadWebFilesFromFolder(folder) {
+    const names = fs
+      .readdirSync(folder, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+    const nameSet = new Set(names);
+    for (const name of names) {
+      if (!name.endsWith('.webfile.yml')) continue;
+      const ymlFile = path.join(folder, name);
+      const y = this.#readYaml(ymlFile);
+      if (Number(y.statecode) === 1) continue;
+      const base = name.slice(0, -'.webfile.yml'.length);
+      // pac writes the attachment next to the yml: normally under the yml's base name, otherwise
+      // under the annotation's original file name
+      const candidates = [base, y.filename, yamlValue(y, 'name')].filter(Boolean).map(String);
+      const contentName = candidates.find((c) => nameSet.has(c) && !c.endsWith('.webfile.yml'));
+      const parentPath = this.pagePath(yamlValue(y, 'parentpageid'));
+      const partialUrl = yamlValue(y, 'partialurl');
+      const entry = {
+        id: yamlId(y, 'webfile'),
+        name: yamlValue(y, 'name'),
+        yml: ymlFile,
+        file: contentName ? path.join(folder, contentName) : null,
+        partialUrl,
+        parentPageId: yamlValue(y, 'parentpageid') ?? null,
+        url: parentPath == null || partialUrl == null ? null : joinUrl(parentPath, partialUrl),
+        mimeType: y.mimetype,
+        problem: null,
+      };
+      if (!entry.file) entry.problem = 'no content file on disk next to the .webfile.yml';
+      else if (entry.url == null) entry.problem = 'parent page not found in web-pages/, cannot build the URL';
+      this.#addWebFile(entry, path.relative(this.sourceDir, ymlFile).replaceAll('\\', '/'));
     }
-    this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url)));
   }
 
   #loadInlineSources() {
     /** @type {Array<object>} */
     this.inlineSources = [];
+    this.#loadFormStatuses();
+    for (const def of INLINE_KINDS) {
+      const dir = path.join(this.sourceDir, def.dir);
+      for (const file of this.#files(dir)) this.#indexInlineFile(def, file);
+    }
+    for (const def of this.shortKey ? SHORT_KEY_MARKUP_KINDS : YAML_MARKUP_KINDS) {
+      for (const file of def.file
+        ? [path.join(this.sourceDir, def.file)]
+        : this.#files(path.join(this.sourceDir, def.dir)))
+        this.#indexYamlMarkupFile(def, file);
+    }
+  }
+
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ #loadFormStatuses() {
     for (const dir of ['basic-forms', 'advanced-forms', 'advanced-form-steps']) {
       for (const file of this.#files(path.join(this.sourceDir, dir))) {
         if (file.endsWith('.advancedformstep.yml')) {
@@ -1478,126 +1635,147 @@ export class PortalModel {
         if (Number(metadata.statecode) === 1 && id) this.inactiveForms.add(String(id).toLowerCase());
       }
     }
-    for (const def of INLINE_KINDS) {
-      const dir = path.join(this.sourceDir, def.dir);
-      for (const file of this.#files(dir)) {
-        if (!file.endsWith(def.suffix)) continue;
-        const metadataFile = file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml');
-        const metadata = this.fileInventory.has(metadataFile) ? this.#readYaml(metadataFile) : {};
-        if (metadata.__error || Number(metadata.statecode) === 1) continue;
-        // A language copy whose root page is inactive is not rendered online either.
-        if (
-          def.dir === 'web-pages' &&
-          this.inactivePages.has(String(yamlValue(metadata, 'rootwebpageid') ?? '').toLowerCase())
-        ) {
-          this.inactiveSources.push({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') });
-          continue;
-        }
-        const entry = {
-          kind: def.kind,
-          mode: def.mode,
-          tag: def.tag ?? null,
+  }
+
+  #indexInlineFile(def, file) {
+    if (!file.endsWith(def.suffix)) return;
+    const metadataFile = file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml');
+    const metadata = this.fileInventory.has(metadataFile) ? this.#readYaml(metadataFile) : {};
+    if (metadata.__error || Number(metadata.statecode) === 1) return;
+    // A language copy whose root page is inactive is not rendered online either.
+    if (
+      def.dir === 'web-pages' &&
+      this.inactivePages.has(String(yamlValue(metadata, 'rootwebpageid') ?? '').toLowerCase())
+    ) {
+      this.inactiveSources.push({ file, rel: path.relative(this.sourceDir, file).replaceAll('\\', '/') });
+      return;
+    }
+    const entry = {
+      kind: def.kind,
+      mode: def.mode,
+      tag: def.tag ?? null,
+      file,
+      sourceDir: this.sourceDir,
+      rel: path.relative(this.sourceDir, file).replaceAll('\\', '/'),
+      // the one page a page-* source belongs to
+      pageUrl: null,
+      // pages configured to show a form/list source. Only a hint: forms are also placed with
+      // Liquid ({% entityform %}) and opened in modals, which the page configuration does not show.
+      usedOn: [],
+    };
+    if (!this.#setInlineUsage(def, file, metadata, entry)) return;
+    this.inlineSources.push(entry);
+  }
+
+  #setInlineUsage(def, file, metadata, entry) {
+    if (def.dir === 'web-pages') entry.pageUrl = this.#pageUrlForFile(file);
+    else if (def.kind === 'basic-form-js') {
+      entry.usedOn = this.pagesShowing(yamlId(metadata, 'entityform'));
+    } else if (def.kind === 'list-js') {
+      entry.usedOn = this.pagesShowing(yamlId(metadata, 'entitylist'));
+    } else if (def.kind === 'advanced-form-step-js') {
+      // The relationship is authoritative, including steps exported outside the usual folder.
+      let formId = yamlValue(metadata, 'webform');
+      // <form>/advanced-form-steps/<step>/<Step>.advancedformstep.custom_javascript.js
+      const formDir = path.resolve(path.dirname(file), '..', '..');
+      const formYml = fs.existsSync(formDir)
+        ? fs.readdirSync(formDir).find((n) => n.endsWith('.advancedform.yml'))
+        : null;
+      if (!formId && formYml) formId = yamlId(this.#readYaml(path.join(formDir, formYml)), 'webform');
+      if (this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
+        this.inactiveSources.push({ file, rel: entry.rel });
+        return false;
+      }
+      entry.usedOn = this.pagesShowing(formId);
+    } else if (def.kind === 'content-snippet') {
+      entry.snippetName = yamlValue(metadata, 'name');
+    }
+    return true;
+  }
+
+  #indexYamlMarkupFile(def, file) {
+    if (def.file) {
+      try {
+        fs.lstatSync(file);
+      } catch (error) {
+        if (error.code === 'ENOENT') return;
+      }
+    }
+    if (!def.file && !file.endsWith(def.suffix)) return;
+    const metadata = this.#readYaml(file, true);
+    if (metadata.__error) return;
+    const rel = path.relative(this.sourceDir, file).replaceAll('\\', '/');
+    const records = Array.isArray(metadata) ? metadata.entries() : [[null, metadata]];
+    for (const [index, record] of records) this.#indexYamlMarkupRecord(def, file, rel, index, record);
+  }
+
+  #indexYamlMarkupRecord(def, file, rel, index, record) {
+    if (!record || typeof record !== 'object' || Number(record.statecode) === 1) return;
+    const stepId = String(yamlValue(record, 'webformstep') ?? '').toLowerCase();
+    const formId = yamlValue(record, 'entityform') ?? yamlValue(record, 'webform') ?? this.stepForms.get(stepId);
+    if (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
+      this.inactiveSources.push({ file, rel });
+      return;
+    }
+    const recordIdField = [
+      'adx_entityformmetadataid',
+      'adx_webformmetadataid',
+      'adx_webformstepid',
+      'adx_weblinkid',
+      'adx_pollid',
+      'adx_entityformid',
+      'adx_weblinksetid',
+      'adx_shortcutid',
+      'adx_webfileid',
+      'adx_contentsnippetid',
+      'id',
+    ].find((key) => record[key] != null);
+    const recordLanguageField = ['adx_contentsnippetlanguageid', 'contentsnippetlanguageid'].find((key) =>
+      Object.hasOwn(record, key),
+    );
+    this.#appendYamlMarkupSources({ def, file, rel, index, record, formId, recordIdField, recordLanguageField });
+  }
+
+  #appendYamlMarkupSources({ def, file, rel, index, record, formId, recordIdField, recordLanguageField }) {
+    for (const field of def.fields) {
+      for (const value of markupValues(record[field])) {
+        this.#addYamlMarkupSource({
           file,
-          sourceDir: this.sourceDir,
-          rel: path.relative(this.sourceDir, file).replace(/\\/g, '/'),
-          // the one page a page-* source belongs to
-          pageUrl: null,
-          // pages configured to show a form/list source. Only a hint: forms are also placed with
-          // Liquid ({% entityform %}) and opened in modals, which the page configuration does not show.
-          usedOn: [],
-        };
-        if (def.dir === 'web-pages') entry.pageUrl = this.#pageUrlForFile(file);
-        else if (def.kind === 'basic-form-js') {
-          entry.usedOn = this.pagesShowing(yamlId(metadata, 'entityform'));
-        } else if (def.kind === 'list-js') {
-          entry.usedOn = this.pagesShowing(yamlId(metadata, 'entitylist'));
-        } else if (def.kind === 'advanced-form-step-js') {
-          // The relationship is authoritative, including steps exported outside the usual folder.
-          let formId = yamlValue(metadata, 'webform');
-          // <form>/advanced-form-steps/<step>/<Step>.advancedformstep.custom_javascript.js
-          const formDir = path.resolve(path.dirname(file), '..', '..');
-          const formYml = fs.existsSync(formDir)
-            ? fs.readdirSync(formDir).find((n) => n.endsWith('.advancedform.yml'))
-            : null;
-          if (!formId && formYml) formId = yamlId(this.#readYaml(path.join(formDir, formYml)), 'webform');
-          if (this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
-            this.inactiveSources.push({ file, rel: entry.rel });
-            continue;
-          }
-          entry.usedOn = this.pagesShowing(formId);
-        } else if (def.kind === 'content-snippet') {
-          entry.snippetName = yamlValue(metadata, 'name');
-        }
-        this.inlineSources.push(entry);
+          rel,
+          index,
+          record,
+          formId,
+          field,
+          value,
+          recordIdField,
+          recordLanguageField,
+        });
       }
     }
-    for (const def of this.shortKey ? SHORT_KEY_MARKUP_KINDS : YAML_MARKUP_KINDS) {
-      for (const file of def.file
-        ? [path.join(this.sourceDir, def.file)]
-        : this.#files(path.join(this.sourceDir, def.dir))) {
-        if (def.file) {
-          try {
-            fs.lstatSync(file);
-          } catch (error) {
-            if (error.code === 'ENOENT') continue;
-          }
-        }
-        if (!def.file && !file.endsWith(def.suffix)) continue;
-        const metadata = this.#readYaml(file, true);
-        if (metadata.__error) continue;
-        const rel = path.relative(this.sourceDir, file).replace(/\\/g, '/');
-        for (const [index, record] of Array.isArray(metadata) ? metadata.entries() : [[null, metadata]]) {
-          if (!record || typeof record !== 'object' || Number(record.statecode) === 1) continue;
-          const stepId = String(yamlValue(record, 'webformstep') ?? '').toLowerCase();
-          const formId = yamlValue(record, 'entityform') ?? yamlValue(record, 'webform') ?? this.stepForms.get(stepId);
-          if (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
-            this.inactiveSources.push({ file, rel });
-            continue;
-          }
-          const recordIdField = [
-            'adx_entityformmetadataid',
-            'adx_webformmetadataid',
-            'adx_webformstepid',
-            'adx_weblinkid',
-            'adx_pollid',
-            'adx_entityformid',
-            'adx_weblinksetid',
-            'adx_shortcutid',
-            'adx_webfileid',
-            'adx_contentsnippetid',
-            'id',
-          ].find((key) => record[key] != null);
-          const recordLanguageField = ['adx_contentsnippetlanguageid', 'contentsnippetlanguageid'].find((key) =>
-            Object.hasOwn(record, key),
-          );
-          for (const field of def.fields) {
-            for (const value of markupValues(record[field])) {
-              const fieldPath = index === null ? [field] : [index, field];
-              const source = {
-                kind: 'metadata-markup',
-                mode: 'markup',
-                tag: null,
-                file,
-                sourceDir: this.sourceDir,
-                rel: `${rel}#${fieldPath.join('.')}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
-                label: `${yamlValue(record, 'name') ?? yamlValue(record, 'attributelogicalname') ?? path.basename(file)} (${field})`,
-                format: 'yaml',
-                field,
-                fieldPath,
-                ...value,
-                recordId: recordIdField ? record[recordIdField] : undefined,
-                recordIdField,
-                ...(recordLanguageField ? { recordLanguageField, recordLanguageId: record[recordLanguageField] } : {}),
-                pageUrl: null,
-                usedOn: this.pagesShowing(formId),
-              };
-              source.extract = yamlField(source);
-              this.inlineSources.push(source);
-            }
-          }
-        }
-      }
-    }
+  }
+
+  #addYamlMarkupSource({ file, rel, index, record, formId, field, value, recordIdField, recordLanguageField }) {
+    const fieldPath = index === null ? [field] : [index, field];
+    const source = {
+      kind: 'metadata-markup',
+      mode: 'markup',
+      tag: null,
+      file,
+      sourceDir: this.sourceDir,
+      rel: `${rel}#${fieldPath.join('.')}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
+      label: `${yamlValue(record, 'name') ?? yamlValue(record, 'attributelogicalname') ?? path.basename(file)} (${field})`,
+      format: 'yaml',
+      field,
+      fieldPath,
+      ...value,
+      recordId: recordIdField ? record[recordIdField] : undefined,
+      recordIdField,
+      ...(recordLanguageField ? { recordLanguageField, recordLanguageId: record[recordLanguageField] } : {}),
+      pageUrl: null,
+      usedOn: this.pagesShowing(formId),
+    };
+    source.extract = yamlField(source);
+    this.inlineSources.push(source);
   }
 
   #pageUrlForFile(file) {
@@ -1616,7 +1794,7 @@ export class PortalModel {
   /** Changes the overlay cannot render: portal configuration, record creation/deletion and schema. */
   deploymentChanges(baseline, changed) {
     const files = [...changed]
-      .map((file) => ({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') }))
+      .map((file) => ({ file, rel: path.relative(this.sourceDir, file).replaceAll('\\', '/') }))
       .filter(
         ({ rel }) =>
           !rel.startsWith('../') &&
@@ -1630,7 +1808,7 @@ export class PortalModel {
       const indexed = new Set(this.inlineSources.map((source) => source.file));
       for (const file of changed) {
         if (!inlineKindOf(file) || indexed.has(file)) continue;
-        const rel = path.relative(this.sourceDir, file).replace(/\\/g, '/');
+        const rel = path.relative(this.sourceDir, file).replaceAll('\\', '/');
         if (!rel.startsWith('../'))
           changes.push({
             rel,
@@ -1647,72 +1825,79 @@ export class PortalModel {
       } catch {
         /* deleted metadata */
       }
-      if (before === after) continue;
-      if (before === null || after === null) {
-        changes.push({
-          rel,
-          reason: `${after === null ? 'deleted' : 'new'} portal metadata requires deployment; the overlay cannot create or delete portal records`,
-        });
-        continue;
-      }
-      if (isEnhancedSiteMetadata(rel)) {
-        changes.push({ rel, reason: 'site or language configuration changed; these fields require deployment' });
-        continue;
-      }
-      if (this.format !== 'enhanced') {
-        let equal = false;
-        try {
-          const oldContent = YAML.parse(before);
-          const newContent = YAML.parse(after);
-          const preview = this.inlineSources.filter((source) => source.file === file && source.format === 'yaml');
-          stripPreviewFields(oldContent, newContent, preview);
-          equal = stableValue(oldContent) === stableValue(newContent);
-        } catch {
-          /* broken edit is actionable */
-        }
-        if (!equal)
-          changes.push({
-            rel,
-            reason: 'portal metadata changed; URLs, permissions and server-side configuration require deployment',
-          });
-        continue;
-      }
-      const oldContent = componentContent(before);
-      const newContent = componentContent(after);
-      if (!oldContent || !newContent) {
-        if (!this.inlineSources.some((source) => source.file === file))
-          changes.push({
-            rel,
-            reason: 'component metadata cannot be compared because its <content> is not a JSON object',
-          });
-        continue;
-      }
-      const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(after)?.[1]);
-      const inactive = /<statecode>\s*1\s*<\/statecode>/.test(after);
-      const preview = new Set(inactive ? [] : (PREVIEW_FIELDS.get(type) ?? []));
-      if (!inactive)
-        stripPreviewFields(
-          oldContent,
-          newContent,
-          this.inlineSources.filter((source) => source.file === file && source.kind === 'metadata-markup'),
-        );
-      const changedFields = [...new Set([...Object.keys(oldContent), ...Object.keys(newContent)])].filter(
-        (key) => !preview.has(key) && stableValue(oldContent[key]) !== stableValue(newContent[key]),
-      );
-      const outer = (xml) => {
-        const span = componentContentSpan(xml);
-        return (span ? xml.slice(0, span.contentStart) + xml.slice(span.contentEnd) : xml)
-          .replace(/>\s+</g, '><')
-          .trim();
-      };
-      if (changedFields.length || outer(before) !== outer(after)) {
-        changes.push({
-          rel,
-          reason: `component metadata changed${changedFields.length ? ` (${changedFields.join(', ')})` : ''}; these fields require deployment`,
-        });
-      }
+      this.#deploymentChangeForFile(changes, file, rel, before, after);
     }
     return changes;
+  }
+
+  #deploymentChangeForFile(changes, file, rel, before, after) {
+    if (before === after) return;
+    if (before === null || after === null) {
+      changes.push({
+        rel,
+        reason: `${after === null ? 'deleted' : 'new'} portal metadata requires deployment; the overlay cannot create or delete portal records`,
+      });
+      return;
+    }
+    if (isEnhancedSiteMetadata(rel)) {
+      changes.push({ rel, reason: 'site or language configuration changed; these fields require deployment' });
+      return;
+    }
+    if (this.format !== 'enhanced') {
+      this.#classicDeploymentChange(changes, file, rel, before, after);
+      return;
+    }
+    this.#enhancedDeploymentChange(changes, file, rel, before, after);
+  }
+
+  #classicDeploymentChange(changes, file, rel, before, after) {
+    let equal = false;
+    try {
+      const oldContent = YAML.parse(before);
+      const newContent = YAML.parse(after);
+      const preview = this.inlineSources.filter((source) => source.file === file && source.format === 'yaml');
+      stripPreviewFields(oldContent, newContent, preview);
+      equal = stableValue(oldContent) === stableValue(newContent);
+    } catch {
+      /* broken edit is actionable */
+    }
+    if (!equal)
+      changes.push({
+        rel,
+        reason: 'portal metadata changed; URLs, permissions and server-side configuration require deployment',
+      });
+  }
+
+  #enhancedDeploymentChange(changes, file, rel, before, after) {
+    const oldContent = componentContent(before);
+    const newContent = componentContent(after);
+    if (!oldContent || !newContent) {
+      if (!this.inlineSources.some((source) => source.file === file))
+        changes.push({
+          rel,
+          reason: 'component metadata cannot be compared because its <content> is not a JSON object',
+        });
+      return;
+    }
+    const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(after)?.[1]);
+    const inactive = /<statecode>\s*1\s*<\/statecode>/.test(after);
+    const preview = new Set(inactive ? [] : (PREVIEW_FIELDS.get(type) ?? []));
+    if (!inactive)
+      stripPreviewFields(
+        oldContent,
+        newContent,
+        this.inlineSources.filter((source) => source.file === file && source.kind === 'metadata-markup'),
+      );
+    const changedFields = [...new Set([...Object.keys(oldContent), ...Object.keys(newContent)])].filter(
+      (key) => !preview.has(key) && stableValue(oldContent[key]) !== stableValue(newContent[key]),
+    );
+    if (changedFields.length || componentOuter(before) !== componentOuter(after)) {
+      const changedList = changedFields.length ? ` (${changedFields.join(', ')})` : '';
+      changes.push({
+        rel,
+        reason: `component metadata changed${changedList}; these fields require deployment`,
+      });
+    }
   }
 
   /** Looks up the local web file that backs an online URL path. */

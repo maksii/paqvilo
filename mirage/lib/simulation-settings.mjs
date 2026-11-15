@@ -18,11 +18,17 @@ export function simulationReport(settings = null) {
   return {
     level: settings?.level ?? 'local-state',
     legacy: !settings,
-    recordPersistence: !settings ? 'local-state' : settings.level === 'dry-run' ? 'memory' : 'pack-data-files',
+    recordPersistence: persistenceFor(settings),
     schemaChanges: !settings || settings.level === 'deep',
     targets: [],
     dirtyRecords: 0,
     ready: true,
     restartRequired: false,
   };
+}
+
+function persistenceFor(settings) {
+  if (!settings) return 'local-state';
+  if (settings.level === 'dry-run') return 'memory';
+  return 'pack-data-files';
 }

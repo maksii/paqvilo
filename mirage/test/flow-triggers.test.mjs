@@ -1,5 +1,7 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { createFlowTriggerRunner } from '../lib/flow-triggers.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
@@ -182,7 +184,7 @@ test('Explicit mock/disabled choices do not require original activation or backe
       }),
     diagnostic: (n) => notes.push(n),
   });
-  t.after(() => manual.close());
+  ownedFixture(t).add(() => manual.close());
   await store.create('widget', { title: 'Explicit local activation' }, { admin: true });
   await manual.drain();
   assert.equal(store.snapshot().tables.audit.length, 1);
@@ -207,4 +209,32 @@ test('Empty source select list means no filter; lookup fields and unknown kinds 
   await runner.drain();
   assert.ok(notes.some((n) => n.code === 'FLOW_TRIGGER_FAILED' && /field kind/.test(n.error.message)));
   assert.equal(store.snapshot().tables.audit.length, 2);
+});
+
+test('committed Dataverse trigger conditions filter before flow history or connector effects without rolling back the source row', async (t) => {
+  const { store, workflow, runner, notes } = setup(t, { filter: '' });
+  const runs = createHostFlowRuns({ store });
+  runs.attach({ store });
+  t.after(() => runs.close());
+  workflow.definition.properties.definition.triggers.row.conditions = [
+    { expression: "@equals(triggerBody()?['title'],'Allowed')" },
+  ];
+  await store.create('widget', { title: 'Filtered by condition' }, { admin: true });
+  await runner.drain();
+  assert.equal(store.state.tables.widget.length, 1);
+  assert.equal(store.state.tables.audit.length, 0);
+  assert.equal(runs.list().length, 0);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_SKIPPED'));
+  await store.create('widget', { title: 'Allowed' }, { admin: true });
+  await runner.drain();
+  assert.equal(store.state.tables.widget.length, 2);
+  assert.equal(store.state.tables.audit.length, 1);
+  assert.equal(runs.list().length, 1);
+  workflow.definition.properties.definition.triggers.row.conditions = [{ expression: "@triggerBody()['absent']" }];
+  await store.create('widget', { title: 'Committed despite condition error' }, { admin: true });
+  await runner.drain();
+  assert.equal(store.state.tables.widget.length, 3);
+  assert.equal(store.state.tables.audit.length, 1);
+  assert.equal(runs.list().length, 1);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_FAILED' && note.error.code === 'LocalFlowExpression'));
 });

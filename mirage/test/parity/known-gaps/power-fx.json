@@ -1,0 +1,764 @@
+{
+  "batch#assert-02bb6e34440fc733a094": {
+    "/value": "Mirage returns 23 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"23\"} at /value."
+  },
+  "batch#assert-097d9cc6eaa7b1d27655": {
+    "/value": "Mirage returns the plain number 123 for IfError(Value(\"1,23\"), FirstError.Kind); the official interpreter returns a Decimal with text '123'. The numeric value agrees; the original assertion unboxed the Decimal to a number."
+  },
+  "batch#assert-0e27dccf42d5a7bc6182": {
+    "/value": "Mirage returns null at /value; the official interpreter records {\"kind\":\"blank\"} at /value."
+  },
+  "batch#assert-11cb767dfa84ee1c850e": {
+    "/value": "Mirage returns 123456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123456\"} at /value."
+  },
+  "batch#assert-1fbe19f42d5d12057c8c": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'Notify' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"Message\":\"The function 'IfEr... at /errors.",
+    "/value": "Mirage returns 20 at /value; the official interpreter records no value at /value."
+  },
+  "batch#assert-2363c2864c01ba655117": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"Name isn't valid. 'a' isn't recognized.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns 2 at /value; the official interpreter records no value at /value."
+  },
+  "batch#assert-24735c1e0c0d8cfc7ef9": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-2cecc98702350b047cd2": {
+    "/value": "Mirage returns 0.1234 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"0.1234\"} at /value."
+  },
+  "batch#assert-2d4245473fad11377c38": {
+    "/value": "Mirage returns 1500 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1500\"} at /value."
+  },
+  "batch#assert-2da7d6f899cb11ba3480": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-2e632efac07a2c6f0bd0": {
+    "/value": "Mirage returns 123.456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123.456\"} at /value."
+  },
+  "batch#assert-2e9df9c5fd684d1741fe": {
+    "/value": "Mirage returns 1234.5 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1234.5\"} at /value."
+  },
+  "batch#assert-2f9fd0be48a7e5635f1f": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 0 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 1 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 2 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 255 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(0,1,2,1)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(0, 1, 2, 1)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#assert-34a7348379006553bf64": {
+    "/value": "Mirage returns null at /value; the official interpreter records {\"kind\":\"blank\"} at /value."
+  },
+  "batch#assert-3c305ca8e0e25232ded1": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"This feature is deprecated and is no longer supported.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns 2 at /value; the official interpreter records no value at /value."
+  },
+  "batch#assert-48bcc406ab1a19fba2fa": {
+    "/value": "Mirage returns 0.25 at /value; the official interpreter records {\"kind\":\"float\",\"text\":\"0.25\"} at /value."
+  },
+  "batch#assert-4f724607ed3d08f0da52": {
+    "/value": "Mirage returns -1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"-1\"} at /value."
+  },
+  "batch#assert-522281f7be3018848dfc": {
+    "/value": "Mirage returns 1234 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1234\"} at /value."
+  },
+  "batch#assert-571e06fc5d7aebc92f81": {
+    "/value": "Mirage returns 16 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"16\"} at /value."
+  },
+  "batch#assert-61e8e53be1ad6ef46395": {
+    "/value": "Mirage returns 1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1\"} at /value."
+  },
+  "batch#assert-63afc06541b07c4d0de0": {
+    "/value/errors/0/Message": "Mirage reports 'Lower value cannot be greater than upper value or exceed the supported range.' for RandBetween(3,2); the official interpreter reports 'Lower value cannot be greater than upper value.' (kind 24 Numeric agrees). The original assertion compared only the error kind."
+  },
+  "batch#assert-63ff879103b172483b9e": {
+    "/value": "Mirage returns 1234567.5 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1234567.5\"} at /value."
+  },
+  "batch#assert-64d28726718e09678a15": {
+    "/value": "Mirage returns 1234.5 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1234.5\"} at /value."
+  },
+  "batch#assert-64def58c2cfa387dab89": {
+    "/value": "Mirage returns the plain number 14 for IfError(Value(\"1\", \"x-invalid-@\"), FirstError.Kind); the official interpreter returns a Decimal with text '14'. The numeric value agrees; the original assertion unboxed the Decimal to a number."
+  },
+  "batch#assert-66b381b8ed0ac05129f1": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-6849f594d6dd4bd784d5": {
+    "/value": "Mirage returns 1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1\"} at /value."
+  },
+  "batch#assert-6cd1fa3107ea0567fc96": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 1 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 2 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 3 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 128 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(1,2,3,0.502)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(1, 2, 3, 0.502)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#assert-7286f2b787115cc13150": {
+    "/value": "Mirage returns 3 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"3\"} at /value."
+  },
+  "batch#assert-7967fdf2f2049f7192ad": {
+    "/value": "Mirage returns 1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1\"} at /value."
+  },
+  "batch#assert-7ef0a9d33f4747898ddb": {
+    "/value": "Mirage returns 1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1\"} at /value."
+  },
+  "batch#assert-7f650d7256dc7c0586f8": {
+    "/value": "Mirage returns 5 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"5\"} at /value."
+  },
+  "batch#assert-82356c1bc5375e4effc8": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-8578f783f057ff0ee792": {
+    "/value": "Mirage returns 123.456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123.456\"} at /value."
+  },
+  "batch#assert-8917fdcb93b39886a80f": {
+    "/value": "Mirage returns 24000 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"24000\"} at /value."
+  },
+  "batch#assert-893081441d43917b97dd": {
+    "/value": "Mirage returns \"2026-01-02T00:00:00\" at /value; the official interpreter records {\"kind\":\"typed-other\",\"type\":\"Date\",\"expression\":\"Date(2026,1,2)\"} at /value."
+  },
+  "batch#assert-8dfc08d42f2613d6aa2c": {
+    "/value": "Mirage returns 123.456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123.456\"} at /value."
+  },
+  "batch#assert-91f79f3a5b1c67c2c372": {
+    "/value": "Mirage returns the plain number 25 for IfError(Decimal(\"-79228162514264337593543950336\"), FirstError.Kind); the official interpreter returns a Decimal with text '25'. The numeric value agrees; the original assertion unboxed the Decimal to a number."
+  },
+  "batch#assert-aaedeaa8d6ac9a886dd9": {
+    "/value": "Mirage returns 123.456 at /value; the official interpreter records {\"kind\":\"float\",\"text\":\"123.456\"} at /value."
+  },
+  "batch#assert-ab5dac8cdf9b640ac45f": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-b282ceb1a2dc7370cd01": {
+    "/value": "Mirage returns 0.1 at /value; the official interpreter records {\"kind\":\"float\",\"text\":\"0.1\"} at /value."
+  },
+  "batch#assert-bcf36d84cea0209e39b2": {
+    "/value": "Mirage returns null at /value; the official interpreter records {\"kind\":\"blank\"} at /value."
+  },
+  "batch#assert-c0a2edd8a54bcb6499fb": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 18 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 52 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 86 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 128 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(18,52,86,0.502)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(18, 52, 86, 0.502)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#assert-c45694e22965fdd688be": {
+    "/value": "Mirage returns 123456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123456\"} at /value."
+  },
+  "batch#assert-c964e2e3e03798c9609e": {
+    "/value": "Mirage returns 1234.5 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1234.5\"} at /value."
+  },
+  "batch#assert-ccfabeb7e9cdf8e769a7": {
+    "/value": "Mirage returns 12.34 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"12.34\"} at /value."
+  },
+  "batch#assert-d1f22fd34a714cfcde14": {
+    "/value": "Mirage returns 2 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"2\"} at /value."
+  },
+  "batch#assert-db70aef6d80d973ce1fa": {
+    "/value": "Mirage returns the plain number 25 for IfError(Decimal(\"79228162514264337593543950336\"), FirstError.Kind); the official interpreter returns a Decimal with text '25'. The numeric value agrees; the original assertion unboxed the Decimal to a number."
+  },
+  "batch#assert-de066f42ca4ceb1c16c5": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 177 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 202 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 227 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 255 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(177,202,227,1)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(177, 202, 227, 1)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#assert-e1a9858820057c74d2bd": {
+    "/value": "Mirage returns 1 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"1\"} at /value."
+  },
+  "batch#assert-e9ba53ef7c5c10bc875d": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'UTCNow' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/clockReads": "Mirage returns 1 at /clockReads; the official interpreter records 0 at /clockReads.",
+    "/value": "Mirage returns 20 at /value; the official interpreter records no value at /value."
+  },
+  "batch#assert-f954318b7c2e8922073e": {
+    "/value": "Mirage returns 1e+100 at /value; the official interpreter records {\"kind\":\"float\",\"text\":\"1E+100\"} at /value."
+  },
+  "batch#assert-fe750b4ea04134fef076": {
+    "/value": "Mirage returns 123456 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"123456\"} at /value."
+  },
+  "batch#matrix-109": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"Invalid regular expression: Unclosed groups, too few closing parenthesis.\",\"severity\":\"Severe\"},{\"Message\":... at /errors.",
+    "/value": "Mirage returns {\"kind\":\"boolean\",\"value\":true} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-153": {
+    "/value": "Mirage returns 420 at /value; the official interpreter records {\"kind\":\"float\",\"text\":\"480\"} at /value.",
+    "/clockReads": "Mirage returns 1 at /clockReads; the official interpreter records 0 at /clockReads."
+  },
+  "batch#matrix-154": {
+    "/value/value": "Mirage returns \"15-07-2013 20:02\" at /value/value; the official interpreter records \"15-07-2013 21:02\" at /value/value.",
+    "/clockReads": "Mirage returns 2 at /clockReads; the official interpreter records 1 at /clockReads."
+  },
+  "batch#matrix-155": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'UTCNow' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/clockReads": "Mirage returns 1 at /clockReads; the official interpreter records 0 at /clockReads.",
+    "/value": "Mirage returns 20 at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-158": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'UTCToday' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/clockReads": "Mirage returns 1 at /clockReads; the official interpreter records 0 at /clockReads.",
+    "/value": "Mirage returns 15 at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-161": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'IsUTCToday' is an unknown or unsupported function.\",\"severity\":\"Critical\"},{\"Message\":\"'UTCNow' is an unkn... at /errors.",
+    "/clockReads": "Mirage returns 2 at /clockReads; the official interpreter records 0 at /clockReads.",
+    "/value": "Mirage returns {\"kind\":\"boolean\",\"value\":true} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-166": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'ISOWeekNum' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns 53 at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-17": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"Deprecated use of '.'. Please use the 'ShowColumns' function instead.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns [{\"Value\":1},{\"Value\":2}] at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-173": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'x' isn't recognized.\"; the official interpreter records {\"expression\":\"Set(x, 5); x * 2\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'x' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"Name isn't valid. 'x' isn't recognized.\",\"seve....",
+  "batch#matrix-174": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The functi....",
+  "batch#matrix-175": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"ClearCollect(c, {a: 9}); First(c).a\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The function 'ClearCollect'....",
+  "batch#matrix-176": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Clear(c); CountRows(c)\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The function 'Collec....",
+  "batch#matrix-178": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The ....",
+  "batch#matrix-179": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The....",
+  "batch#matrix-180": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Message\":\"The....",
+  "batch#matrix-181": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"Name isn't valid. 'c' isn't recognized.\",\"severity\":\"Critical\"},{\"Mes....",
+  "batch#matrix-182": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'n' isn't recognized.\"; the official interpreter records {\"expression\":\"UpdateContext({n: 4}); n + 1\",\"kind\":\"compile-error\",\"errors\":[{\"Message\":\"'UpdateContext' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"Message\":\"Name isn't val....",
+  "batch#matrix-183": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'Defaults' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns {\"kind\":\"string\",\"value\":\"{}\"} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-184": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"error\" at /kind.",
+    "/value/kind": "Mirage returns \"boolean\" at /value/kind; the official interpreter records \"error\" at /value/kind.",
+    "/value/errors": "Mirage returns no value at /value/errors; the official interpreter records [{\"kind\":25,\"kindName\":\"InvalidArgument\",\"Message\":\"Runtime type mismatch\"}] at /value/errors.",
+    "/value/value": "Mirage returns true at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#matrix-187": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 255 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 0 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 128 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 128 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(255,0,128,0.502)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(255, 0, 128, 0.502)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#matrix-188": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 255 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 0 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 0 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 255 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(255,0,0,1)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(255, 0, 0, 1)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#matrix-189": {
+    "/value/kind": "Mirage returns \"string\" at /value/kind; the official interpreter records \"color\" at /value/kind.",
+    "/value/r": "Mirage returns no value at /value/r; the official interpreter records 177 at /value/r.",
+    "/value/g": "Mirage returns no value at /value/g; the official interpreter records 202 at /value/g.",
+    "/value/b": "Mirage returns no value at /value/b; the official interpreter records 227 at /value/b.",
+    "/value/a": "Mirage returns no value at /value/a; the official interpreter records 255 at /value/a.",
+    "/value/expression": "Mirage returns no value at /value/expression; the official interpreter records \"RGBA(177,202,227,1)\" at /value/expression.",
+    "/value/value": "Mirage returns \"rgba(177, 202, 227, 1)\" at /value/value; the official interpreter records no value at /value/value."
+  },
+  "batch#matrix-191": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'DataSourceInfo' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"Message\":\"Name isn't... at /errors.",
+    "/value": "Mirage returns {\"kind\":\"boolean\",\"value\":false} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-192": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'Choices' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"Message\":\"Deprecated use of... at /errors.",
+    "/value": "Mirage returns {\"kind\":\"boolean\",\"value\":true} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-193": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/errors": "Mirage returns no value at /errors; the official interpreter records [{\"Message\":\"'Errors' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /errors.",
+    "/value": "Mirage returns {\"kind\":\"boolean\",\"value\":true} at /value; the official interpreter records no value at /value."
+  },
+  "batch#matrix-54": {
+    "/value": "Mirage returns 12.34 at /value; the official interpreter records {\"kind\":\"decimal\",\"text\":\"12.34\"} at /value."
+  },
+  "batch#matrix-71": {
+    "/errors": "Mirage returns [{\"Message\":\"Numeric value is too large (position 9).\"}] at /errors; the official interpreter records [{\"Message\":\"Numeric value is too large.\",\"severity\":\"Critical\"},{\"Message\":\"Numeric value is too large.\",\"severity\":\"Cr... at /errors."
+  },
+  "batch#matrix-73": {
+    "/errors": "Mirage returns [{\"Message\":\"Numeric value is too large (position 9).\"}] at /errors; the official interpreter records [{\"Message\":\"Numeric value is too large.\",\"severity\":\"Critical\"},{\"Message\":\"Incompatible type. We can't evaluate your f... at /errors."
+  },
+  "batch#matrix-78": {
+    "/value": "Mirage returns 13 at /value; the official interpreter records {\"kind\":\"typed-other\",\"type\":\"Microsoft.PowerFx.Types.Void\",\"expression\":\"If(true, {test:1}, \\\"Void value (result of the... at /value."
+  },
+  "five-corrections#case-126": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "five-corrections#case-139": {
+    "/errors/0/Message": "Mirage returns \"'{77777777777747778777777777777777}' is not a GUID.\" at /errors/0/Message; the official interpreter records \"Invalid argument\" at /errors/0/Message."
+  },
+  "full193#existing-language-1": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-10": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-108": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-109": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"Invalid regular expression: Unclosed groups, too few closing parenthesis.\",\"severity\":\"Severe\"},{\"message\":... at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-110": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-117": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-118": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-119": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-121": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-126": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-128": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-129": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-131": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-134": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-136": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-139": {
+    "/errors/0/Message": "Mirage returns \"'{77777777777747778777777777777777}' is not a GUID.\" at /errors/0/Message; the official interpreter records \"Invalid argument\" at /errors/0/Message."
+  },
+  "full193#existing-language-140": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-146": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-147": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-148": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-149": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-150": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-151": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-152": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-155": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'UTCNow' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns 20 at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-156": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-157": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-158": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'UTCToday' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns 15 at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-159": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-16": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-161": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'IsUTCToday' is an unknown or unsupported function.\",\"severity\":\"Critical\"},{\"message\":\"'UTCNow' is an unkn... at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-163": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-164": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-165": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-166": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'ISOWeekNum' is an unknown or unsupported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns 53 at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-167": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-169": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-17": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"Deprecated use of '.'. Please use the 'ShowColumns' function instead.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"TableValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns [{\"Value\":1},{\"Value\":2}] at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-173": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'x' isn't recognized.\"; the official interpreter records {\"expression\":\"Set(x, 5); x * 2\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the formula.\",\"severity\":\"Critical\"},{\"message\"....",
+  "full193#existing-language-174": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the formula....",
+  "full193#existing-language-175": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"ClearCollect(c, {a: 9}); First(c).a\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the formula.\",\"severity\":\"Cr....",
+  "full193#existing-language-176": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Clear(c); CountRows(c)\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the formula.\",\"severi....",
+  "full193#existing-language-177": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-178": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the f....",
+  "full193#existing-language-179": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the ....",
+  "full193#existing-language-180": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the ....",
+  "full193#existing-language-181": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"expression\":\"Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this poi....",
+  "full193#existing-language-182": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'n' isn't recognized.\"; the official interpreter records {\"expression\":\"UpdateContext({n: 4}); n + 1\",\"phase\":\"check\",\"diagnostics\":[{\"message\":\"Expected operator. We expect an operator such as +, *, or & at this point in the formula.\",\"severity\":\"Critical\"....",
+  "full193#existing-language-183": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'Defaults' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"StringValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns \"{}\" at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-184": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"Behavior function in a non-behavior property. You can't use this property to change values elsewhere in the... at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-185": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-187": {
+    "/type": "Mirage returns \"StringValue\" at /type; the official interpreter records \"ColorValue\" at /type.",
+    "/value": "Mirage returns \"rgba(255, 0, 128, 0.502)\" at /value; the official interpreter records {\"R\":255,\"G\":0,\"B\":128,\"A\":128,\"IsKnownColor\":false,\"IsEmpty\":false,\"IsNamedColor\":false,\"IsSystemColor\":false,\"Name\":\"8... at /value."
+  },
+  "full193#existing-language-188": {
+    "/type": "Mirage returns \"StringValue\" at /type; the official interpreter records \"ColorValue\" at /type.",
+    "/value": "Mirage returns \"rgba(255, 0, 0, 1)\" at /value; the official interpreter records {\"R\":255,\"G\":0,\"B\":0,\"A\":255,\"IsKnownColor\":false,\"IsEmpty\":false,\"IsNamedColor\":false,\"IsSystemColor\":false,\"Name\":\"fff... at /value."
+  },
+  "full193#existing-language-189": {
+    "/type": "Mirage returns \"StringValue\" at /type; the official interpreter records \"ColorValue\" at /type.",
+    "/value": "Mirage returns \"rgba(177, 202, 227, 1)\" at /value; the official interpreter records {\"R\":177,\"G\":202,\"B\":227,\"A\":255,\"IsKnownColor\":false,\"IsEmpty\":false,\"IsNamedColor\":false,\"IsSystemColor\":false,\"Name\":... at /value."
+  },
+  "full193#existing-language-19": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-190": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-191": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [{\"message\":\"Data source information Required is unavailable.\"}] at /diagnostics; the official interpreter records [{\"message\":\"'DataSourceInfo' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"message\":\"Name isn't... at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns false at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-192": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'Choices' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"message\":\"Deprecated use of... at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-193": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'Errors' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"BooleanValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-21": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-26": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-27": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-28": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-29": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-33": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-34": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-35": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type.",
+    "/diagnostics": "Mirage returns [{\"message\":\"IfError replacement type could not be determined; coercion was not applied.\"}] at /diagnostics; the official interpreter records [] at /diagnostics."
+  },
+  "full193#existing-language-36": {
+    "/diagnostics": "Mirage returns [{\"message\":\"IfError replacement type could not be determined; coercion was not applied.\"}] at /diagnostics; the official interpreter records [] at /diagnostics."
+  },
+  "full193#existing-language-37": {
+    "/diagnostics": "Mirage returns [{\"message\":\"IfError replacement type could not be determined; coercion was not applied.\"}] at /diagnostics; the official interpreter records [] at /diagnostics."
+  },
+  "full193#existing-language-4": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-45": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-46": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-47": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-48": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-49": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-50": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-51": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-53": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-54": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-55": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-56": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-59": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-6": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-60": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-61": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-63": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-64": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-71": {
+    "/diagnostics": "Mirage returns [{\"message\":\"Numeric value is too large (position 9).\"}] at /diagnostics; the official interpreter records [{\"message\":\"Numeric value is too large.\",\"severity\":\"Critical\"},{\"message\":\"Numeric value is too large.\",\"severity\":\"Cr... at /diagnostics."
+  },
+  "full193#existing-language-72": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-73": {
+    "/diagnostics": "Mirage returns [{\"message\":\"Numeric value is too large (position 9).\"}] at /diagnostics; the official interpreter records [{\"message\":\"Numeric value is too large.\",\"severity\":\"Critical\"},{\"message\":\"Incompatible type. We can't evaluate your f... at /diagnostics."
+  },
+  "full193#existing-language-78": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/diagnostics/0/message": "Mirage returns \"IfError replacement type could not be determined; coercion was not applied.\" at /diagnostics/0/message; the official interpreter records \"Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.... at /diagnostics/0/message.",
+    "/diagnostics/0/severity": "Mirage returns no value at /diagnostics/0/severity; the official interpreter records \"Critical\" at /diagnostics/0/severity.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records no value at /type.",
+    "/value": "Mirage returns 13 at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "full193#existing-language-89": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "full193#existing-language-9": {
+    "/type": "Mirage returns \"NumberValue\" at /type; the official interpreter records \"DecimalValue\" at /type."
+  },
+  "language#existing-language-75": {
+    "/value": "The language corpus, recorded without host context, reports false; Mirage returns true, as do the full193 and five-corrections recordings under the fixed en-US host."
+  },
+  "language-references#existing-language-109": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/messages": "Mirage returns no value at /messages; the official interpreter records [\"Line 108: Error 21-24: Invalid regular expression: Unclosed groups, too few closing parenthesis.\",\"Line 108: Error 8-1... at /messages.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value."
+  },
+  "language-references#existing-language-166": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/messages": "Mirage returns no value at /messages; the official interpreter records [\"Line 146: Error 0-28: 'ISOWeekNum' is an unknown or unsupported function.\"] at /messages.",
+    "/value": "Mirage returns 53 at /value; the official interpreter records no value at /value."
+  },
+  "language-references#existing-language-171": {
+    "/value": "Mirage returns \"2:05 PM\" at /value; the official interpreter records \"2:05 pm\" at /value."
+  },
+  "language-references#existing-language-172": {
+    "/value": "Mirage returns \"Tuesday, March 5, 2024\" at /value; the official interpreter records \"Tuesday, 5 March 2024\" at /value."
+  },
+  "language-references#existing-language-174": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-17: The speci....",
+  "language-references#existing-language-175": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 13-14: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-12: The function 'ClearCollect' has some invalid arguments.\",\"Line 1: Error 16-22: T....",
+  "language-references#existing-language-176": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-17: The speci....",
+  "language-references#existing-language-178": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-17: The speci....",
+  "language-references#existing-language-179": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-17: The speci....",
+  "language-references#existing-language-180": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-20: The speci....",
+  "language-references#existing-language-181": "The expression is a statement sequence that changes state, which is not a formula; Mirage's evaluator has no such statements. Mirage throws \"Name isn't valid. 'c' isn't recognized.\"; the official interpreter records {\"kind\":\"compile-error\",\"messages\":[\"Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.\",\"Line 1: Error 0-7: The function 'Collect' has some invalid arguments.\",\"Line 1: Error 11-17: The speci....",
+  "language-references#existing-language-54": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"error\" at /kind.",
+    "/message": "Mirage returns no value at /message; the official interpreter records \"The value '$ 12.34' cannot be converted to a number.\" at /message.",
+    "/value": "Mirage returns 12.34 at /value; the official interpreter records no value at /value."
+  },
+  "language-references#existing-language-71": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/messages": "Mirage returns no value at /messages; the official interpreter records [\"Line 70: Error 8-13: Numeric value is too large.\",\"Line 70: Error 16-21: Numeric value is too large.\",\"Line 70: Error ... at /messages.",
+    "/value": "Mirage returns 0 at /value; the official interpreter records no value at /value."
+  },
+  "language-references#existing-language-73": {
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records \"compile-error\" at /kind.",
+    "/messages": "Mirage returns no value at /messages; the official interpreter records [\"Line 72: Error 8-13: Numeric value is too large.\",\"Line 72: Error 8-13: Incompatible type. We can't evaluate your form... at /messages.",
+    "/value": "Mirage returns 2 at /value; the official interpreter records no value at /value."
+  },
+  "positive-guid-original#positive-1": {
+    "/message": "Mirage reports \"'{77777777777747778777777777777777}' is not a GUID.\"; the official PAC evaluator reports 'Invalid argument'. The original test skipped this comparison; the original semantic error is asserted in power-fx-language.test.mjs."
+  },
+  "positive-values#positive-5": {
+    "/message": "Mirage reports \"The value '13/01/2024' cannot be converted to a date/time.\"; the official PAC evaluator reports 'The date or time value cannot be parsed.'. The original test skipped this comparison because the native Canvas and this package disagree on the explicit en-US invalid-date predicate."
+  },
+  "positive-values#positive-6": {
+    "/message": "Mirage reports \"The value '13/01/2024' cannot be converted to a date/time.\"; the official PAC evaluator reports 'The date or time value cannot be parsed.'. The original test skipped this comparison because the native Canvas and this package disagree on the explicit en-US invalid-date predicate."
+  },
+  "positive-values#positive-7": {
+    "/message": "Mirage reports \"The value '13/01/2024' cannot be converted to a date/time.\"; the official PAC evaluator reports 'The date or time value cannot be parsed.'. The original test skipped this comparison because the native Canvas and this package disagree on the explicit en-US invalid-date predicate."
+  },
+  "positive-values#positive-8": {
+    "/message": "Mirage reports \"The value '13/01/2024' cannot be converted to a date/time.\"; the official PAC evaluator reports 'The date or time value cannot be parsed.'. The original test skipped this comparison because the native Canvas and this package disagree on the explicit en-US invalid-date predicate."
+  },
+  "root-behavior-case173#case-173": "The formula is a REPL statement sequence that defines and sets a variable; Mirage's evaluator has no statements. Mirage throws \"Name isn't valid. 'x' isn't recognized.\"; the official interpreter records {\"index\":173,\"expression\":\"Set(x, 5); x * 2\",\"phase\":\"evaluation\",\"kind\":\"value\",\"type\":\"DecimalValue\",\"value\":10,\"errors\":null,\"diagnostics\":[],\"output\":[],\"beforeSymbols\":{\"x\":false,\"c\":false,\"n\":fa....",
+  "root-decimal#row-01": {
+    "/diagnostics": "Mirage's Check of IfError(1e400, 2) returns one diagnostic, 'Numeric value is too large (position 9).', with no severity; the official Check returns four diagnostics, the first 'Numeric value is too large.' (Critical), then type and argument errors. The original test matched only the first message by regex."
+  },
+  "root-decimal#row-02": {
+    "/diagnostics": "Mirage's Check of IfError(1e29, 2) returns one diagnostic, 'Numeric value is too large (position 9).', with no severity; the official Check returns four diagnostics, the first 'Numeric value is too large.' (Critical). The original test matched only the first message by regex."
+  },
+  "root-decimal#row-04": {
+    "/diagnostics": "Mirage's Check of IfError(79228162514264337593543950336, 2) returns one diagnostic, 'Numeric value is too large (position 9).', with no severity; the official Check returns four diagnostics, the first 'Numeric value is too large.' (Critical). The original test matched only the first message by regex."
+  },
+  "root-decimal#row-05": {
+    "/valueType": "Mirage evaluates IfError(1e-400, 2) to the plain number 0, typed NumberValue; the official interpreter types the result DecimalValue. The value 0 agrees."
+  },
+  "root-decimal#row-06": {
+    "/valueType": "Mirage evaluates IfError(0e400, 2) to the plain number 0, typed NumberValue; the official interpreter types the result DecimalValue. The value 0 agrees."
+  },
+  "root-phase#row-01": {
+    "/diagnostics": "Mirage adds warning POWER_FX_IFERROR_TYPE_UNKNOWN, 'IfError replacement type could not be determined; coercion was not applied.', for IfError(1e300 * 1e300, 0); the official interpreter reports no diagnostics for this formula. The value 0 and NumberValue agree."
+  },
+  "root-phase#row-02": {
+    "/diagnostics": "Mirage's Check of IfError(1e400, 2) returns one diagnostic, 'Numeric value is too large (position 9).', with no severity; the official Check returns four diagnostics, the first 'Numeric value is too large.' (Critical). The original test matched only the first message by regex."
+  },
+  "root-phase#row-03": {
+    "/valueType": "Mirage's Value(\"$ 12.34\") returns the plain number 12.34, typed NumberValue; the official interpreter types the result DecimalValue. The value 12.34 agrees."
+  },
+  "root-phase#row-07": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/success": "Mirage returns true at /success; the official interpreter records false at /success.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'IsMatch' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/valueType": "Mirage returns \"BooleanValue\" at /valueType; the official interpreter records no value at /valueType.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "root-phase#row-08": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/success": "Mirage returns true at /success; the official interpreter records false at /success.",
+    "/diagnostics": "Mirage returns [{\"message\":\"Data source information Required is unavailable.\"}] at /diagnostics; the official interpreter records [{\"message\":\"'DataSourceInfo' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"message\":\"Name isn't... at /diagnostics.",
+    "/valueType": "Mirage returns \"BooleanValue\" at /valueType; the official interpreter records no value at /valueType.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/value": "Mirage returns false at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "root-phase#row-09": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/success": "Mirage returns true at /success; the official interpreter records false at /success.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'Choices' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"message\":\"Deprecated use of... at /diagnostics.",
+    "/valueType": "Mirage returns \"BooleanValue\" at /valueType; the official interpreter records no value at /valueType.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "root-phase#row-10": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/success": "Mirage returns true at /success; the official interpreter records false at /success.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'Errors' is a recognized but not supported function.\",\"severity\":\"Critical\"}] at /diagnostics.",
+    "/valueType": "Mirage returns \"BooleanValue\" at /valueType; the official interpreter records no value at /valueType.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/value": "Mirage returns true at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  },
+  "root-phase#row-11": {
+    "/phase": "Mirage returns \"evaluation\" at /phase; the official interpreter records \"check\" at /phase.",
+    "/success": "Mirage returns true at /success; the official interpreter records false at /success.",
+    "/diagnostics": "Mirage returns [] at /diagnostics; the official interpreter records [{\"message\":\"'JSON' is a recognized but not supported function.\",\"severity\":\"Critical\"},{\"message\":\"'Defaults' is a reco... at /diagnostics.",
+    "/valueType": "Mirage returns \"StringValue\" at /valueType; the official interpreter records no value at /valueType.",
+    "/kind": "Mirage returns \"value\" at /kind; the official interpreter records no value at /kind.",
+    "/value": "Mirage returns \"{}\" at /value; the official interpreter records no value at /value.",
+    "/errors": "Mirage returns null at /errors; the official interpreter records no value at /errors."
+  }
+}

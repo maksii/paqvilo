@@ -1,3 +1,4 @@
+// @test-kind contract: calendar list markup, language table, event feed and iCalendar output over invented lists.
 // Calendar lists: markup shell, language table and the event feed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,13 +8,14 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import {
+  calendarIcs,
   calendarSettings,
   renderCalendarList,
   calendarResources,
   calendarLanguageScript,
   parseCalendarPath,
 } from '../lib/list-views.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
 const LIST = '1b000000-0000-4000-8000-000000000001';
@@ -72,7 +74,7 @@ test('calendar list settings, markup shell and resources follow the exported lis
 });
 
 test('calendar event feed returns rows in the requested period with summary and description', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-calendar-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-calendar-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Calendar`,
@@ -198,4 +200,21 @@ test("a fixed-zone calendar feed sends user-local instants as the zone's wall cl
   assert.equal(winter.end, Date.parse('2026-01-15T10:00:00Z'));
   assert.deepEqual(winter.organizer, { name: 'x@example.invalid', email: null });
   assert.equal('url' in winter || 'allDay' in winter, false);
+});
+
+// @test-kind security: a bare carriage return in calendar text cannot start a new iCalendar line.
+test('calendar text with bare carriage returns cannot forge iCalendar lines', () => {
+  const start = Date.UTC(2026, 0, 1, 9),
+    ics = calendarIcs([
+      {
+        id: 'event-1',
+        title: 'Visit',
+        start,
+        end: start + 3_600_000,
+        description: 'x\rEND:VEVENT\rBEGIN:VEVENT\rUID:forged',
+      },
+    ]);
+  assert.doesNotMatch(ics, /\r(?!\n)/);
+  assert.equal(ics.split('\r\n').filter((line) => line === 'BEGIN:VEVENT').length, 1);
+  assert.equal(ics.split('\r\n').filter((line) => line === 'END:VEVENT').length, 1);
 });

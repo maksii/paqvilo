@@ -45,6 +45,11 @@ export function inspectionEvidenceRuntime() {
   function normalizeInspectionSourceRef(value) {
     if (!value || typeof value !== 'object' || !text(value.id ?? value.key ?? value.sourceKey, 8192)) return null;
     const result = { id: value.id ?? value.key ?? value.sourceKey };
+    copyInspectionSourceText(value, result);
+    copyInspectionSourceMetadata(value, result);
+    return result;
+  }
+  function copyInspectionSourceText(value, result) {
     for (const key of [
       'key',
       'sourceKey',
@@ -67,6 +72,8 @@ export function inspectionEvidenceRuntime() {
       const clean = text(value[key], ['key', 'sourceKey', 'ref'].includes(key) ? 16384 : 1024);
       if (clean) result[key] = clean;
     }
+  }
+  function copyInspectionSourceMetadata(value, result) {
     if (value.lcid !== undefined && Number.isSafeInteger(value.lcid) && value.lcid >= 0) result.lcid = value.lcid;
     if (['available', 'pending', 'unavailable'].includes(value.currentState)) result.currentState = value.currentState;
     if (
@@ -83,7 +90,6 @@ export function inspectionEvidenceRuntime() {
         if ([true, false, 'unavailable'].includes(value.observations[key]))
           result.observations[key] = value.observations[key];
     }
-    return result;
   }
   const componentOf = (value) => {
     if (!value || typeof value !== 'object' || !text(value.kind, 128)) return null;
@@ -149,41 +155,9 @@ export function inspectionEvidenceRuntime() {
   ]);
   const sourceProofs = new Set(['render-literal', 'render-platform', 'lense-applied-literal', 'observed-dom-callsite']);
 
-  /** Inputs have already crossed the provider's trusted channel. Page hints never assign their own proof type. */
-  function resolveInspectionEvidence(input = {}) {
-    const scope = normalizeInspectionScope(input.scope);
-    const result = {
-      version: 1,
-      scope: scope ?? null,
-      owner: { status: 'unavailable', component: null, evidence: [] },
-      source: { status: 'unavailable', refs: [] },
-      enclosing: [],
-      facts: [],
-      candidates: [],
-      conflicts: [],
-      unavailable: [],
-      limits: { truncated: false, reasons: [] },
-    };
-    const notice = (dimension, reason) => ({ dimension, reason, label: reason.replaceAll('-', ' ') });
-    if (input.version !== 1) {
-      result.unavailable.push(notice('all', 'unsupported-evidence-version'));
-      return result;
-    }
-    if (!scope) {
-      result.unavailable.push(notice('all', 'invalid-selection-scope'));
-      return result;
-    }
-    const rawRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
-    const refs = rawRefs.slice(0, 128).map(normalizeInspectionSourceRef).filter(Boolean);
-    const byId = new Map();
-    const currentById = new Map(
-      (Array.isArray(input.currentSourceRefs) ? input.currentSourceRefs : [])
-        .slice(0, 256)
-        .map(normalizeInspectionSourceRef)
-        .filter(Boolean)
-        .map((ref) => [ref.id, ref]),
-    );
-    const ambiguousRefs = new Set();
+  function buildInspectionRefIndex(refs) {
+    const byId = new Map(),
+      ambiguousRefs = new Set();
     const identityKey = (ref) =>
       JSON.stringify([
         ref.sourceKey ?? ref.key ?? ref.id,
@@ -202,79 +176,80 @@ export function inspectionEvidenceRuntime() {
       if (previous.some((item) => identityKey(item) !== identityKey(ref))) ambiguousRefs.add(ref.id);
       byId.set(ref.id, [...previous, ref]);
     }
-    const rawFacts = [
-      ...(Array.isArray(input.facts) ? input.facts : []),
-      ...(Array.isArray(input.ownerFacts) ? input.ownerFacts.map((row) => ({ ...row, dimension: 'owner' })) : []),
-      ...(Array.isArray(input.contextFacts) ? input.contextFacts.map((row) => ({ ...row, dimension: 'context' })) : []),
-    ];
-    const facts = rawFacts.slice(0, 256).flatMap((value, index) => {
-      if (!value || typeof value !== 'object' || !text(value.proof ?? value.kind, 128)) return [];
-      const dimension =
-        value.dimension === 'direct' ? 'source' : value.dimension === 'component' ? 'owner' : value.dimension;
-      if (!['owner', 'source', 'enclosing', 'context'].includes(dimension)) return [];
-      const factScope = normalizeInspectionScope(value.scope);
-      const freshness = compareInspectionScopes(factScope, scope);
-      const sourceRevision = text(value.renderSourceRevision ?? value.sourceRevision, 256) ?? factScope?.sourceRevision;
-      if (sourceRevision !== scope.sourceRevision) freshness.source = 'stale';
-      if (input.node?.connected === false || value.stale === true) freshness.owner = freshness.source = 'stale';
-      const proof = value.proof ?? value.kind;
-      const allowed = !localProofs.has(proof) || input.mode === 'local';
-      return [
-        {
-          id: text(value.id, 256) ?? 'fact-' + index,
-          dimension,
-          proof,
-          freshness,
-          subject: text(value.subject, 8192) ?? text(input.node?.id, 256) ?? 'selection',
-          predicate: text(value.predicate, 128) ?? (dimension === 'source' ? 'definition' : 'identity'),
-          binding: componentOf(value.binding ?? value.component),
-          sourceRefIds: Array.isArray(value.sourceRefIds)
-            ? value.sourceRefIds.slice(0, 32).filter((id) => text(id, 8192))
-            : [],
-          sourceRefBindings: (Array.isArray(value.sourceRefBindings) ? value.sourceRefBindings : [])
-            .slice(0, 32)
-            .filter((ref) => text(ref?.id, 8192) && text(ref.sourceRevision, 256) && text(ref.contentRevision, 1024))
-            .map((ref) => ({ id: ref.id, sourceRevision: ref.sourceRevision, contentRevision: ref.contentRevision })),
-          sourceRevision,
-          region: regionOf(value.region),
-          reason: text(value.reason, 256),
-          label: text(value.label, 512),
-          allowed,
-          conflict: proof === 'lifecycle-conflict' || proof === 'binding-conflict',
-        },
-      ];
+    return { byId, ambiguousRefs };
+  }
+
+  function normalizeInspectionFacts(input, scope, rawFacts) {
+    return rawFacts.slice(0, 256).flatMap((value, index) => {
+      const fact = normalizeInspectionFact(value, index, input, scope);
+      return fact ? [fact] : [];
     });
-    const evidenceOf = (fact) => ({
-      id: fact.id,
-      kind: fact.proof,
-      label: fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
-    });
-    const ownerRows = facts.filter((fact) => fact.dimension === 'owner' && fact.binding);
-    const exactOwners = ownerRows.filter(
-      (fact) => fact.allowed && fact.freshness.owner === 'current' && ownerProofs.has(fact.proof),
-    );
-    const ownerConflicts = facts.filter(
-      (fact) => fact.dimension === 'owner' && fact.conflict && fact.freshness.owner === 'current',
-    );
+  }
+
+  function normalizeInspectionFact(value, index, input, scope) {
+    if (!value || typeof value !== 'object' || !text(value.proof ?? value.kind, 128)) return null;
+    let dimension;
+    if (value.dimension === 'direct') dimension = 'source';
+    else if (value.dimension === 'component') dimension = 'owner';
+    else dimension = value.dimension;
+    if (!['owner', 'source', 'enclosing', 'context'].includes(dimension)) return null;
+    const factScope = normalizeInspectionScope(value.scope);
+    const freshness = compareInspectionScopes(factScope, scope);
+    const sourceRevision = text(value.renderSourceRevision ?? value.sourceRevision, 256) ?? factScope?.sourceRevision;
+    if (sourceRevision !== scope.sourceRevision) freshness.source = 'stale';
+    if (input.node?.connected === false || value.stale === true) freshness.owner = freshness.source = 'stale';
+    const proof = value.proof ?? value.kind;
+    const allowed = !localProofs.has(proof) || input.mode === 'local';
+    return {
+      id: text(value.id, 256) ?? 'fact-' + index,
+      dimension,
+      proof,
+      freshness,
+      subject: text(value.subject, 8192) ?? text(input.node?.id, 256) ?? 'selection',
+      predicate: text(value.predicate, 128) ?? (dimension === 'source' ? 'definition' : 'identity'),
+      binding: componentOf(value.binding ?? value.component),
+      sourceRefIds: Array.isArray(value.sourceRefIds)
+        ? value.sourceRefIds.slice(0, 32).filter((id) => text(id, 8192))
+        : [],
+      sourceRefBindings: (Array.isArray(value.sourceRefBindings) ? value.sourceRefBindings : [])
+        .slice(0, 32)
+        .filter((ref) => text(ref?.id, 8192) && text(ref.sourceRevision, 256) && text(ref.contentRevision, 1024))
+        .map((ref) => ({ id: ref.id, sourceRevision: ref.sourceRevision, contentRevision: ref.contentRevision })),
+      sourceRevision,
+      region: regionOf(value.region),
+      reason: text(value.reason, 256),
+      label: text(value.label, 512),
+      allowed,
+      conflict: proof === 'lifecycle-conflict' || proof === 'binding-conflict',
+    };
+  }
+
+  function ownerEvidenceConflicts(exactOwners, ownerConflicts) {
     const groups = new Map();
     for (const fact of exactOwners) {
       const key = fact.subject + '\0' + fact.predicate;
       if (!groups.has(key)) groups.set(key, new Set());
       groups.get(key).add(componentKey(fact.binding));
     }
-    if (
-      ownerConflicts.length ||
+    return (
+      ownerConflicts.length > 0 ||
       new Set(exactOwners.map((fact) => componentKey(fact.binding))).size > 1 ||
       [...groups.values()].some((group) => group.size > 1)
-    ) {
+    );
+  }
+
+  /* NOSONAR */ function applyOwnerStatus(ownerRows, exactOwners, conflicted, input, result, evidenceOf, notice) {
+    if (conflicted) {
       result.owner.status = 'conflicting';
       result.conflicts.push(notice('owner', 'contradictory-current-owner-evidence'));
     } else if (exactOwners.length) {
       const selected = exactOwners[0];
       result.owner = { status: 'exact', component: selected.binding, evidence: exactOwners.map(evidenceOf) };
-    } else if (ownerRows.some((fact) => fact.freshness.owner === 'current')) {
-      result.owner.status = 'candidate';
-    } else if (ownerRows.length || input.node?.connected === false) result.owner.status = 'stale';
+    } else if (ownerRows.some((fact) => fact.freshness.owner === 'current')) result.owner.status = 'candidate';
+    else if (ownerRows.length || input.node?.connected === false) result.owner.status = 'stale';
+  }
+
+  function addOwnerCandidates(ownerRows, result) {
     for (const fact of ownerRows)
       if (result.owner.status !== 'exact' || componentKey(fact.binding) !== componentKey(result.owner.component))
         result.candidates.push({
@@ -282,77 +257,101 @@ export function inspectionEvidenceRuntime() {
           component: fact.binding,
           reason: fact.reason ?? fact.proof,
         });
+  }
 
-    const sourceFacts = facts.filter((fact) => fact.dimension === 'source');
-    // Retain candidate/stale definition links as such. Only an independently
-    // exact current owner can promote a matching definition to exact source.
-    for (const fact of ownerRows)
-      if (fact.sourceRefIds.length)
-        sourceFacts.push({ ...fact, dimension: 'source', proof: 'export-definition', predicate: 'definition' });
-    const sourceRows = sourceFacts.flatMap((fact) =>
-      fact.sourceRefIds.map((id) => {
-        const versions = byId.get(id) ?? [];
-        const binding = fact.sourceRefBindings.find((ref) => ref.id === id);
-        const relevant = versions.filter((ref) =>
-          binding
-            ? ref.sourceRevision === binding.sourceRevision && ref.contentRevision === binding.contentRevision
-            : !fact.sourceRevision || ref.sourceRevision === fact.sourceRevision,
-        );
-        const choices = relevant.length ? relevant : binding ? [] : versions;
-        const versionConflict =
-          new Set(choices.map((ref) => JSON.stringify([ref.sourceRevision, ref.contentRevision]))).size > 1;
-        const ref = choices[0];
-        if (!ref) return { fact, ref: null, status: 'unavailable' };
-        const stale =
-          fact.freshness.source === 'stale' ||
-          (ref.sourceRevision && ref.sourceRevision !== scope.sourceRevision) ||
-          (ref.currentContentRevision && ref.currentContentRevision !== ref.contentRevision) ||
-          (currentById.has(ref.id) && currentById.get(ref.id).contentRevision !== ref.contentRevision);
-        const matchesOwner =
-          result.owner.status === 'exact' &&
-          (componentKey(fact.binding) === componentKey(result.owner.component) ||
-            ref.componentKey === result.owner.component.key);
-        const exactProof =
-          fact.allowed && (sourceProofs.has(fact.proof) || (fact.proof === 'export-definition' && matchesOwner));
-        const verified = Boolean(ref.ref && (ref.sourceKey ?? ref.key) && ref.sourceRevision && ref.contentRevision);
-        return {
-          fact,
-          ref: {
-            ...ref,
-            evidenceLabel: ref.evidenceLabel ?? fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
-            ...(fact.region ? { region: fact.region } : {}),
-          },
-          status: ['pending', 'unavailable'].includes(ref.currentState)
-            ? 'unavailable'
-            : ambiguousRefs.has(id) || versionConflict
-              ? 'conflicting'
-              : stale
-                ? 'stale'
-                : exactProof && verified
-                  ? 'exact'
-                  : 'candidate',
-        };
-      }),
+  /* NOSONAR */ function inspectionSourceStatus(ref, id, ambiguousRefs, versionConflict, stale, exactProof, verified) {
+    if (['pending', 'unavailable'].includes(ref.currentState)) return 'unavailable';
+    if (ambiguousRefs.has(id) || versionConflict) return 'conflicting';
+    if (stale) return 'stale';
+    if (exactProof && verified) return 'exact';
+    return 'candidate';
+  }
+
+  function inspectionSourceChoices(fact, id, versions) {
+    const binding = fact.sourceRefBindings.find((ref) => ref.id === id);
+    const relevant = versions.filter((ref) =>
+      binding
+        ? ref.sourceRevision === binding.sourceRevision && ref.contentRevision === binding.contentRevision
+        : !fact.sourceRevision || ref.sourceRevision === fact.sourceRevision,
     );
-    const exactSources = sourceRows.filter((row) => row.status === 'exact');
+    let choices;
+    if (relevant.length) choices = relevant;
+    else if (binding) choices = [];
+    else choices = versions;
+    return {
+      binding,
+      choices,
+      versionConflict:
+        new Set(choices.map((ref) => JSON.stringify([ref.sourceRevision, ref.contentRevision]))).size > 1,
+    };
+  }
+
+  /* NOSONAR */ function inspectionRefIsStale(fact, ref, currentById, scope) {
+    return (
+      fact.freshness.source === 'stale' ||
+      (ref.sourceRevision && ref.sourceRevision !== scope.sourceRevision) ||
+      (ref.currentContentRevision && ref.currentContentRevision !== ref.contentRevision) ||
+      (currentById.has(ref.id) && currentById.get(ref.id).contentRevision !== ref.contentRevision)
+    );
+  }
+
+  function resolveInspectionSourceRow(fact, id, byId, currentById, ambiguousRefs, scope, owner) {
+    const versions = byId.get(id) ?? [];
+    const { choices, versionConflict } = inspectionSourceChoices(fact, id, versions);
+    const ref = choices[0];
+    if (!ref) return { fact, ref: null, status: 'unavailable' };
+    const stale = inspectionRefIsStale(fact, ref, currentById, scope);
+    const matchesOwner =
+      owner.status === 'exact' &&
+      (componentKey(fact.binding) === componentKey(owner.component) || ref.componentKey === owner.component.key);
+    const exactProof =
+      fact.allowed && (sourceProofs.has(fact.proof) || (fact.proof === 'export-definition' && matchesOwner));
+    const verified = Boolean(ref.ref && (ref.sourceKey ?? ref.key) && ref.sourceRevision && ref.contentRevision);
+    return {
+      fact,
+      ref: {
+        ...ref,
+        evidenceLabel: ref.evidenceLabel ?? fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
+        ...(fact.region ? { region: fact.region } : {}),
+      },
+      status: inspectionSourceStatus(ref, id, ambiguousRefs, versionConflict, stale, exactProof, verified),
+    };
+  }
+
+  function buildInspectionSourceRows(sourceFacts, byId, currentById, ambiguousRefs, scope, owner) {
+    return sourceFacts.flatMap((fact) =>
+      fact.sourceRefIds.map((id) =>
+        resolveInspectionSourceRow(fact, id, byId, currentById, ambiguousRefs, scope, owner),
+      ),
+    );
+  }
+
+  function inspectionSourceConflict(sourceRows, exactSources, facts, refKey) {
     const sourceGroups = new Map();
     for (const { fact, ref } of exactSources) {
       const group = fact.subject + '\0' + (ref.relationship ?? fact.predicate);
       if (!sourceGroups.has(group)) sourceGroups.set(group, new Set());
       sourceGroups.get(group).add(refKey(ref));
     }
-    const sourceConflict =
+    return (
       sourceRows.some((row) => row.status === 'conflicting') ||
       facts.some((fact) => fact.dimension === 'source' && fact.conflict && fact.freshness.source === 'current') ||
-      [...sourceGroups.values()].some((group) => group.size > 1);
+      [...sourceGroups.values()].some((group) => group.size > 1)
+    );
+  }
+
+  /* NOSONAR */ function applyInspectionSourceStatus(sourceRows, exactSources, sourceConflict, result, notice) {
     if (sourceConflict) {
       result.source.status = 'conflicting';
       result.conflicts.push(notice('source', 'contradictory-current-source-evidence'));
     } else if (exactSources.length) result.source.status = 'exact';
     else if (sourceRows.some((row) => row.status === 'stale')) result.source.status = 'stale';
     else if (sourceRows.some((row) => row.status === 'candidate')) result.source.status = 'candidate';
+  }
+
+  function inspectionSourceRefs(sourceRows, sourceConflict, refKey, unique) {
     const refPriority = { unavailable: 0, stale: 1, candidate: 2, exact: 3, conflicting: 4 };
-    result.source.refs = unique(
+    const refs = unique(
       sourceRows
         .filter((row) => row.ref)
         .map(({ ref, status }) => ({
@@ -363,7 +362,7 @@ export function inspectionEvidenceRuntime() {
       refKey,
     );
     const exactRefIdentities = new Set(
-      result.source.refs
+      refs
         .filter((ref) => ref.status === 'exact')
         .map((ref) =>
           JSON.stringify([
@@ -374,7 +373,7 @@ export function inspectionEvidenceRuntime() {
           ]),
         ),
     );
-    result.source.refs = result.source.refs.filter(
+    return refs.filter(
       (ref) =>
         ref.status !== 'candidate' ||
         !exactRefIdentities.has(
@@ -386,13 +385,14 @@ export function inspectionEvidenceRuntime() {
           ]),
         ),
     );
+  }
+
+  function appendRelatedInspectionFacts(facts, result, evidenceOf) {
     for (const fact of facts.filter((row) => ['enclosing', 'context'].includes(row.dimension))) {
-      const status =
-        fact.freshness.owner === 'stale'
-          ? 'stale'
-          : fact.allowed && ownerProofs.has(fact.proof)
-            ? 'exact'
-            : 'candidate';
+      let status;
+      if (fact.freshness.owner === 'stale') status = 'stale';
+      else if (fact.allowed && ownerProofs.has(fact.proof)) status = 'exact';
+      else status = 'candidate';
       if (fact.dimension === 'enclosing')
         result.enclosing.push({
           status,
@@ -402,8 +402,9 @@ export function inspectionEvidenceRuntime() {
         });
       else result.facts.push({ ...evidenceOf(fact), status, relationship: fact.predicate, component: fact.binding });
     }
-    result.candidates = unique(result.candidates, (row) => componentKey(row.component) + '\0' + row.status);
-    result.enclosing = unique(result.enclosing, (row) => componentKey(row.component) + '\0' + row.relationship);
+  }
+
+  /* NOSONAR: captures variables of the enclosing function */ function sortInspectionEnclosing(result) {
     const hierarchyOrder = {
       form: 0,
       formxml: 0,
@@ -421,6 +422,9 @@ export function inspectionEvidenceRuntime() {
         (hierarchyOrder[a.component?.kind?.toLowerCase()] ?? 10) -
         (hierarchyOrder[b.component?.kind?.toLowerCase()] ?? 10),
     );
+  }
+
+  function applyInspectionLimits(input, rawRefs, rawFacts, result) {
     const omitted = input.completeness?.omitted;
     result.limits.truncated = Boolean(
       input.limits?.truncated ||
@@ -447,6 +451,9 @@ export function inspectionEvidenceRuntime() {
         .filter(([key, count]) => text(key, 128) && Number.isSafeInteger(count) && count >= 0),
     );
     if (result.limits.truncated && !result.limits.reasons.length) result.limits.reasons.push('bounded-evidence-search');
+  }
+
+  /* NOSONAR */ function appendInspectionUnavailable(input, result, notice) {
     if (result.owner.status === 'unavailable')
       result.unavailable.push(notice('owner', 'no-current-direct-owner-proof'));
     if (result.source.status === 'unavailable')
@@ -457,6 +464,86 @@ export function inspectionEvidenceRuntime() {
         label: 'Local definition; deployed revision unverified',
         observed: false,
       });
+  }
+
+  function classifyInspectionFacts(facts) {
+    const ownerRows = facts.filter((fact) => fact.dimension === 'owner' && fact.binding);
+    const exactOwners = ownerRows.filter(
+      (fact) => fact.allowed && fact.freshness.owner === 'current' && ownerProofs.has(fact.proof),
+    );
+    const ownerConflicts = facts.filter(
+      (fact) => fact.dimension === 'owner' && fact.conflict && fact.freshness.owner === 'current',
+    );
+    const sourceFacts = facts.filter((fact) => fact.dimension === 'source');
+    for (const fact of ownerRows)
+      if (fact.sourceRefIds.length)
+        sourceFacts.push({ ...fact, dimension: 'source', proof: 'export-definition', predicate: 'definition' });
+    return { ownerRows, exactOwners, ownerConflicts, sourceFacts };
+  }
+
+  /** Inputs have already crossed the provider's trusted channel. Page hints never assign their own proof type. */
+  function resolveInspectionEvidence(input = {}) {
+    const scope = normalizeInspectionScope(input.scope);
+    const result = {
+      version: 1,
+      scope: scope ?? null,
+      owner: { status: 'unavailable', component: null, evidence: [] },
+      source: { status: 'unavailable', refs: [] },
+      enclosing: [],
+      facts: [],
+      candidates: [],
+      conflicts: [],
+      unavailable: [],
+      limits: { truncated: false, reasons: [] },
+    };
+    const notice = (dimension, reason) => ({ dimension, reason, label: reason.replaceAll('-', ' ') });
+    if (input.version !== 1) {
+      result.unavailable.push(notice('all', 'unsupported-evidence-version'));
+      return result;
+    }
+    if (!scope) {
+      result.unavailable.push(notice('all', 'invalid-selection-scope'));
+      return result;
+    }
+    const rawRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
+    const refs = rawRefs.slice(0, 128).map(normalizeInspectionSourceRef).filter(Boolean);
+    const currentById = new Map(
+      (Array.isArray(input.currentSourceRefs) ? input.currentSourceRefs : [])
+        .slice(0, 256)
+        .map(normalizeInspectionSourceRef)
+        .filter(Boolean)
+        .map((ref) => [ref.id, ref]),
+    );
+    const { byId, ambiguousRefs } = buildInspectionRefIndex(refs);
+    const rawFacts = [
+      ...(Array.isArray(input.facts) ? input.facts : []),
+      ...(Array.isArray(input.ownerFacts) ? input.ownerFacts.map((row) => ({ ...row, dimension: 'owner' })) : []),
+      ...(Array.isArray(input.contextFacts) ? input.contextFacts.map((row) => ({ ...row, dimension: 'context' })) : []),
+    ];
+    const facts = normalizeInspectionFacts(input, scope, rawFacts);
+    const evidenceOf = (fact) => ({
+      id: fact.id,
+      kind: fact.proof,
+      label: fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
+    });
+    const { ownerRows, exactOwners, ownerConflicts, sourceFacts } = classifyInspectionFacts(facts);
+    const ownerConflict = ownerEvidenceConflicts(exactOwners, ownerConflicts);
+    applyOwnerStatus(ownerRows, exactOwners, ownerConflict, input, result, evidenceOf, notice);
+    addOwnerCandidates(ownerRows, result);
+
+    // Retain candidate/stale definition links as such. Only an independently
+    // exact current owner can promote a matching definition to exact source.
+    const sourceRows = buildInspectionSourceRows(sourceFacts, byId, currentById, ambiguousRefs, scope, result.owner);
+    const exactSources = sourceRows.filter((row) => row.status === 'exact');
+    const sourceConflict = inspectionSourceConflict(sourceRows, exactSources, facts, refKey);
+    applyInspectionSourceStatus(sourceRows, exactSources, sourceConflict, result, notice);
+    result.source.refs = inspectionSourceRefs(sourceRows, sourceConflict, refKey, unique);
+    appendRelatedInspectionFacts(facts, result, evidenceOf);
+    result.candidates = unique(result.candidates, (row) => componentKey(row.component) + '\0' + row.status);
+    result.enclosing = unique(result.enclosing, (row) => componentKey(row.component) + '\0' + row.relationship);
+    sortInspectionEnclosing(result);
+    applyInspectionLimits(input, rawRefs, rawFacts, result);
+    appendInspectionUnavailable(input, result, notice);
     return result;
   }
   return Object.freeze({

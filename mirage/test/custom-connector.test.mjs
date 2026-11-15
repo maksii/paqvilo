@@ -1,14 +1,16 @@
+// @test-kind contract: Paqvilo's own compilation of custom connector definitions and the blocking diagnostics it names
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
-import { customConnectorsOf, buildRequest } from '../lib/custom-connector.mjs';
+import { compileConnector, compileOpenApi, customConnectorsOf, buildRequest } from '../lib/custom-connector.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { scriptHash } from '../lib/custom-connector-script.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 // A Solution custom connector compiles into a contract-level connector provider.
 const NAME = 'x_5ffxapi',
@@ -150,7 +152,7 @@ test('a flow action on an imported custom connector reaches a loopback service t
     res.end('{"x_name":"found"}');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   process.env.INVENTED_FX_KEY = 'invented-key';
   t.after(() => {
     delete process.env.INVENTED_FX_KEY;
@@ -253,7 +255,7 @@ test('an unsupported policy blocks the connector; a script operation without the
   );
   // A script the project does not register (connectorScripts: connector + SHA-256 of its text) is refused before
   // anything is generated or built, whether or not the SDK is present; the preflight row names it untrusted.
-  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'connector-untrusted-'));
+  const stateDirectory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'connector-untrusted-'));
   try {
     for (const trusted of [
       [],
@@ -303,6 +305,7 @@ test('an unsupported policy blocks the connector; a script operation without the
   );
 });
 
+// @test-kind security: a literal credential cannot be stored in connection settings
 test('a literal credential in connection settings is rejected', () => {
   assert.throws(() => connectionSettings({ fx: { settings: { auth: { apiKey: 'literal-key' } } } }), /references only/);
   assert.throws(
@@ -317,4 +320,23 @@ test('a literal credential in connection settings is rejected', () => {
       },
     }),
   );
+});
+
+test('a definition whose parameters or consumes is not an array is blocked by a named diagnostic, not a thrown error', () => {
+  const pathParametersNotList = {
+    swagger: '2.0',
+    host: 'service.invalid',
+    paths: { '/a': { parameters: {}, get: { operationId: 'x' } } },
+  };
+  const consumesNotList = {
+    swagger: '2.0',
+    host: 'service.invalid',
+    paths: {
+      '/a': { post: { operationId: 'x', consumes: 'application/json', parameters: [{ name: 'b', in: 'body' }] } },
+    },
+  };
+  for (const document of [pathParametersNotList, consumesNotList]) {
+    const compiled = compileConnector({ name: 'Invalid_Definition', compiled: compileOpenApi(document) });
+    assert.equal(compiled.blocked.code, 'CONNECTOR_OPENAPI_INVALID');
+  }
 });

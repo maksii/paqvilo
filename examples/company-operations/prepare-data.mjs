@@ -19,7 +19,7 @@ const clock = '2026-10-12T09:00:00Z',
 // Preserve the public, committed fixture identities. SHA-1 here maps invented catalogue keys
 // to deterministic UUID-shaped IDs; it provides no authentication, secrecy or integrity proof.
 const id = (key) => {
-  const b = createHash('sha1')
+  const b = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
     .update('paqvilo-company-operations-fixtures-v1:' + key)
     .digest()
     .subarray(0, 16);
@@ -106,7 +106,9 @@ const accountSpecs = [
 ];
 const roots = new Map();
 for (const [key, name, kind, parent] of accountSpecs) {
-  const root = kind === 'Vendor' ? null : parent ? roots.get(parent) : key;
+  let root = key;
+  if (kind === 'Vendor') root = null;
+  else if (parent) root = roots.get(parent);
   roots.set(key, root);
   const refs = { ...(parent ? { parentaccountid: parent } : {}), pqvd_rootaccountid: root === key ? null : root };
   add(key, 'account', name, { name, accountnumber: 'CO-' + key, pqvd_orgkind: choice('pqvd_orgkind', kind) }, refs);
@@ -187,13 +189,12 @@ const engage = (person, account, department = 1, kind = 'Permanent employee', su
   engagementSpecs.push({ key, person, account, department: account === 'C-STUDIO' ? 1 : department, kind, state });
   return key;
 };
-for (let i = 0; i < 24; i++)
-  engage(
-    'P' + String(i + 1).padStart(2, '0'),
-    home[i],
-    (i % 2) + 1,
-    i === 4 || i === 15 ? 'External contractor' : i % 3 === 1 ? 'Fixed-term employee' : 'Permanent employee',
-  );
+for (let i = 0; i < 24; i++) {
+  let kind = 'Permanent employee';
+  if (i === 4 || i === 15) kind = 'External contractor';
+  else if (i % 3 === 1) kind = 'Fixed-term employee';
+  engage('P' + String(i + 1).padStart(2, '0'), home[i], (i % 2) + 1, kind);
+}
 engage('P13', 'B-LAKE', 1, 'External contractor');
 engage('P14', 'B-LAKE', 2);
 engage('P17', 'A-HILL', 1);
@@ -250,6 +251,9 @@ for (const e of engagementSpecs) {
     ...(e.kind === 'External contractor' ? { pqvd_supplieraccountid: 'V-STAFF' } : {}),
     ...(leader.key !== e.key ? { pqvd_manageremploymentid: leader.key } : {}),
   };
+  let endDate = '2027-09-30';
+  if (e.state === 'Ended') endDate = '2026-09-30';
+  else if (e.kind === 'Permanent employee') endDate = null;
   add(
     e.key,
     'pqvd_employment',
@@ -259,7 +263,7 @@ for (const e of engagementSpecs) {
       pqvd_engagementkind: choice('pqvd_engagementkind', e.kind),
       pqvd_ftefraction: e.kind === 'External contractor' ? 0.4 : 0.8,
       pqvd_startdate: '2025-01-15',
-      pqvd_enddate: e.state === 'Ended' ? '2026-09-30' : e.kind === 'Permanent employee' ? null : '2027-09-30',
+      pqvd_enddate: endDate,
       pqvd_jobtitle: e.person === 'P16' ? 'Interim CTO / HR / IT' : 'Operations specialist',
       pqvd_employmentstate: choice('pqvd_employmentstate', e.state),
     },
@@ -325,10 +329,16 @@ const issuedPeople = {
 for (const account of ['A-RIV', 'A-HILL', 'A-EAST', 'B-LAKE', 'C-STUDIO'])
   for (let n = 0; n < (account === 'C-STUDIO' ? 8 : 10); n++) {
     const key = `EQ-${account}-${String(n).padStart(2, '0')}`,
-      owner = n >= 8 && account !== 'C-STUDIO' ? account + '-U' : account,
-      state = n < 4 ? 'Assigned' : n === 4 ? 'In repair' : n === 8 ? 'Retired' : 'Stock';
+      owner = n >= 8 && account !== 'C-STUDIO' ? account + '-U' : account;
+    let state = 'Stock';
+    if (n < 4) state = 'Assigned';
+    else if (n === 4) state = 'In repair';
+    else if (n === 8) state = 'Retired';
     assets.push({ key, account, owner, n });
     const current = n < 5 ? 'ASN-' + key + '-issued' : null;
+    let condition = 'Good';
+    if (n === 4) condition = 'Damaged';
+    else if (n === 8) condition = 'Worn';
     add(
       key,
       'pqvd_equipment',
@@ -339,7 +349,7 @@ for (const account of ['A-RIV', 'A-HILL', 'A-EAST', 'B-LAKE', 'C-STUDIO'])
         pqvd_equipmentkind: choice('pqvd_equipmentkind', n % 2 ? 'Phone' : 'Laptop'),
         pqvd_manufacturer: 'Example Devices',
         pqvd_model: n % 2 ? 'Field phone' : 'Workstation 14',
-        pqvd_condition: choice('pqvd_condition', n === 4 ? 'Damaged' : n === 8 ? 'Worn' : 'Good'),
+        pqvd_condition: choice('pqvd_condition', condition),
         pqvd_equipmentstate: choice('pqvd_equipmentstate', state),
         pqvd_purchasedate: '2025-02-01',
         pqvd_warrantyend: '2028-02-01',
@@ -557,21 +567,25 @@ for (const [side, account, person] of [
     }
     records.push(clone);
     if (source.table === 'account') roots.set(clone.key, roots.get(account));
-    (crudCanaries[source.table] ??= {})[side] = clone.key;
+    crudCanaries[source.table] ??= {};
+    crudCanaries[source.table][side] = clone.key;
   }
 }
 const primaryEmployment = (person, account) =>
   engagementSpecs.find((e) => e.person === person && e.account === account && e.state === 'Active') ??
   engagementSpecs.find((e) => e.person === person && e.account === account);
+const grantScopeOf = (engagement, department) => {
+  if (engagement) return 'Engagement';
+  return department ? 'Department' : 'Organisation';
+};
+const grantScopeKeyOf = (engagement, department, tree) => {
+  if (engagement) return 'ENG-' + id(engagement).replaceAll('-', '');
+  if (department) return 'DEPT-' + id(department).replaceAll('-', '');
+  return tree ? 'ORG-TREE' : 'ORG-SELF';
+};
 function grant(person, role, account, { tree = false, department, engagement, state = 'Active', until, sponsor } = {}) {
-  const scope = engagement ? 'Engagement' : department ? 'Department' : 'Organisation',
-    scopeKey = engagement
-      ? 'ENG-' + id(engagement).replaceAll('-', '')
-      : department
-        ? 'DEPT-' + id(department).replaceAll('-', '')
-        : tree
-          ? 'ORG-TREE'
-          : 'ORG-SELF',
+  const scope = grantScopeOf(engagement, department),
+    scopeKey = grantScopeKeyOf(engagement, department, tree),
     key = `G-${person}-${role}-${account}-${grants.length + 1}`;
   const effective =
     state === 'Active' &&
@@ -617,20 +631,12 @@ for (let i = 0; i < 12; i++) {
   const [role] = roles[i],
     person = 'P' + String(i + 1).padStart(2, '0'),
     account = home[i];
-  grant(
-    person,
-    role,
-    role === 'COMPANYMANAGER' || role === 'CTO' || role === 'AUDITOR' ? 'A' : account,
-    role === 'TEAMLEADER'
-      ? { department: 'DEPT-A-RIV-1' }
-      : ['EMPLOYEE', 'CONTRACTOR'].includes(role)
-        ? { engagement: primaryEmployment(person, account).key }
-        : ['COMPANYMANAGER', 'CTO', 'AUDITOR'].includes(role)
-          ? { tree: true }
-          : role === 'BRANCHMANAGER'
-            ? { tree: true }
-            : {},
-  );
+  let scopeTarget = {};
+  if (role === 'TEAMLEADER') scopeTarget = { department: 'DEPT-A-RIV-1' };
+  else if (['EMPLOYEE', 'CONTRACTOR'].includes(role))
+    scopeTarget = { engagement: primaryEmployment(person, account).key };
+  else if (['COMPANYMANAGER', 'CTO', 'AUDITOR', 'BRANCHMANAGER'].includes(role)) scopeTarget = { tree: true };
+  grant(person, role, role === 'COMPANYMANAGER' || role === 'CTO' || role === 'AUDITOR' ? 'A' : account, scopeTarget);
 }
 grant('P13', 'EMPLOYEE', 'A-RIV', { engagement: primaryEmployment('P13', 'A-RIV').key });
 grant('P13', 'CONTRACTOR', 'B-LAKE', { engagement: primaryEmployment('P13', 'B-LAKE').key });
@@ -820,10 +826,20 @@ const tables = schema.tables.map((t) => ({
   keys: t.keys.map((k) => k.columns),
 }));
 const primary = (table) => tables.find((t) => t.name === table).primaryId;
+const nameColumnOf = (table) => {
+  if (table === 'account') return 'name';
+  if (table === 'contact') return 'fullname';
+  return table === 'transactioncurrency' ? 'currencyname' : 'pqvd_name';
+};
+const singletonParentOf = (table) => {
+  if (table === 'pqvd_equipmentfinance') return 'pqvd_equipmentid';
+  return table === 'pqvd_employmentterms' ? 'pqvd_employmentid' : null;
+};
 function boundedFilter(table, keys) {
-  return keys.length
-    ? `<condition attribute="${primary(table)}" operator="in">${keys.map((k) => `<value>{{ref:${k}}}</value>`).join('')}</condition>`
-    : `<condition attribute="${primary(table)}" operator="eq" value="00000000-0000-0000-0000-000000000000"/>`;
+  if (!keys.length)
+    return `<condition attribute="${primary(table)}" operator="eq" value="00000000-0000-0000-0000-000000000000"/>`;
+  const values = keys.map((k) => `<value>{{ref:${k}}}</value>`).join('');
+  return `<condition attribute="${primary(table)}" operator="in">${values}</condition>`;
 }
 function query(
   caseId,
@@ -841,15 +857,10 @@ function query(
     orders,
   } = {},
 ) {
-  const name =
-    table === 'account'
-      ? 'name'
-      : table === 'contact'
-        ? 'fullname'
-        : table === 'transactioncurrency'
-          ? 'currencyname'
-          : 'pqvd_name';
-  const xml = `<fetch${aggregate ? ' aggregate="true"' : ''}${distinct ? ' distinct="true"' : ''}><entity name="${table}">${selection ?? `<attribute name="${primary(table)}"/>`}${links}<filter type="and">${boundedFilter(table, keys)}<condition attribute="${name}" operator="ne" value="{{markerUtc}}"/><condition attribute="${name}" operator="ne" value="{{operationId}}"/>${extra}</filter>${orders ?? (!aggregate && !distinct ? `<order attribute="${primary(table)}"/>` : '')}</entity></fetch>`;
+  const name = nameColumnOf(table);
+  const selectionXml = selection ?? `<attribute name="${primary(table)}"/>`;
+  const orderXml = orders ?? (!aggregate && !distinct ? `<order attribute="${primary(table)}"/>` : '');
+  const xml = `<fetch${aggregate ? ' aggregate="true"' : ''}${distinct ? ' distinct="true"' : ''}><entity name="${table}">${selectionXml}${links}<filter type="and">${boundedFilter(table, keys)}<condition attribute="${name}" operator="ne" value="{{markerUtc}}"/><condition attribute="${name}" operator="ne" value="{{operationId}}"/>${extra}</filter>${orderXml}</entity></fetch>`;
   queries.push({
     id: caseId,
     table,
@@ -1196,12 +1207,7 @@ const crudFixtures = baselineTables.map((table) => ({
         fields: row(crudCanaries[table].A).fields,
         refs: row(crudCanaries[table].A).refs,
         requireUniqueRunKeys: true,
-        requireNewParentForSingleton:
-          table === 'pqvd_equipmentfinance'
-            ? 'pqvd_equipmentid'
-            : table === 'pqvd_employmentterms'
-              ? 'pqvd_employmentid'
-              : null,
+        requireNewParentForSingleton: singletonParentOf(table),
       }
     : null,
   readiness:

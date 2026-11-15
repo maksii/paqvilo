@@ -20,6 +20,10 @@ const TYPES = new Set([
   'choice',
   'multichoice',
 ]);
+const maxPrecisionOf = (type) => {
+  if (type === 'money') return 4;
+  return type === 'decimal' ? 10 : 5;
+};
 const required = (value) => ({
   Value: { none: 'None', recommended: 'Recommended', required: 'ApplicationRequired' }[value ?? 'none'],
   CanBeChanged: true,
@@ -41,8 +45,16 @@ function unique(items, key, kind) {
   }
 }
 
-export function validateManifest(input) {
-  const manifest = structuredClone(input);
+function customName(name, prefix) {
+  identifier(name);
+  ensure(name.toLowerCase().startsWith(prefix + '_'), `${name} must use publisher prefix`);
+}
+
+function component(item, solutionNames) {
+  ensure(solutionNames.has(item.solution), `unknown solution ${item.solution}`);
+}
+
+function validatePublisher(manifest) {
   ensure(manifest.schemaVersion === 1, 'schemaVersion must be 1');
   ensure(
     manifest.publisher && Array.isArray(manifest.solutions) && manifest.solutions.length,
@@ -67,6 +79,9 @@ export function validateManifest(input) {
     manifest[key] ??= [];
     ensure(Array.isArray(manifest[key]), `${key} must be an array`);
   }
+}
+
+function validateSolutionEntries(manifest) {
   unique(manifest.solutions, (s) => s.uniqueName, 'solution');
   const solutionNames = new Set(manifest.solutions.map((s) => s.uniqueName));
   const earlier = new Set();
@@ -80,17 +95,14 @@ export function validateManifest(input) {
       ensure(earlier.has(dependency), 'solutions must be listed in dependency order');
     earlier.add(solution.uniqueName);
   }
-  const customName = (name) => {
-    identifier(name);
-    ensure(name.toLowerCase().startsWith(manifest.publisher.prefix + '_'), `${name} must use publisher prefix`);
-  };
-  const component = (item) => {
-    ensure(solutionNames.has(item.solution), `unknown solution ${item.solution}`);
-  };
+  return solutionNames;
+}
+
+function validateChoices(manifest, solutionNames, prefix) {
   unique(manifest.choices, (c) => c.name, 'choice');
   for (const choice of manifest.choices) {
-    customName(choice.name);
-    component(choice);
+    customName(choice.name, prefix);
+    component(choice, solutionNames);
     ensure(choice.label && Array.isArray(choice.options) && choice.options.length, 'choice label/options required');
     unique(choice.options, (o) => String(o.value), 'choice value');
     for (const option of choice.options)
@@ -99,211 +111,246 @@ export function validateManifest(input) {
         'invalid choice option',
       );
   }
+}
+
+/* NOSONAR */ function validateColumn(column, manifest, solutionNames, prefix) {
+  customName(column.name, prefix);
+  ensure(TYPES.has(column.type ?? 'string'), `unsupported column type ${column.type}; lookups are relationships`);
+  if (column.schemaName) {
+    customName(column.schemaName, prefix);
+    ensure(column.schemaName.toLowerCase() === column.name, 'column schemaName must lowercase to name');
+  }
+  if (column.solution) component(column, solutionNames);
+  ensure(
+    column.label && ['none', 'recommended', 'required'].includes(column.required ?? 'none'),
+    'column label/required invalid',
+  );
+  if (['string', 'memo'].includes(column.type ?? 'string'))
+    ensure(
+      Number.isInteger(column.maxLength) &&
+        column.maxLength >= 1 &&
+        column.maxLength <= (column.type === 'memo' ? 1048576 : 4000),
+      'text maxLength invalid',
+    );
+  if (['choice', 'multichoice'].includes(column.type))
+    ensure(
+      manifest.choices.some((c) => c.name === column.choice),
+      `choice ${column.choice} missing`,
+    );
+  if (['integer', 'decimal', 'double', 'money'].includes(column.type)) {
+    ensure(
+      Number.isFinite(column.min) && Number.isFinite(column.max) && column.min <= column.max,
+      'numeric min/max required',
+    );
+    if (column.type === 'integer')
+      ensure(
+        Number.isInteger(column.min) &&
+          Number.isInteger(column.max) &&
+          column.min >= -2147483648 &&
+          column.max <= 2147483647,
+        'integer range invalid',
+      );
+    if (column.type !== 'integer')
+      ensure(
+        Number.isInteger(column.precision) && column.precision >= 0 && column.precision <= maxPrecisionOf(column.type),
+        'precision invalid',
+      );
+  }
+  if (column.type === 'datetime') validateDateTimeColumn(column);
+}
+
+function validateDateTimeColumn(column) {
+  ensure(['UserLocal', 'DateOnly', 'TimeZoneIndependent'].includes(column.behavior), 'datetime behavior required');
+  ensure(
+    column.format == null || ['DateOnly', 'DateAndTime'].includes(column.format),
+    'datetime format must be DateOnly or DateAndTime',
+  );
+  ensure(
+    column.behavior !== 'DateOnly' || column.format == null || column.format === 'DateOnly',
+    'DateOnly behavior requires DateOnly format',
+  );
+}
+
+function validateTable(table, manifest, solutionNames, prefix) {
+  identifier(table.name);
+  component(table, solutionNames);
+  table.columns ??= [];
+  table.keys ??= [];
+  if (!table.existing) validateNewTable(table, prefix);
+  unique(table.columns, (c) => c.name, `column on ${table.name}`);
+  for (const column of [...table.columns, ...(table.existing ? [] : [table.primaryName])])
+    validateColumn(column, manifest, solutionNames, prefix);
+  ensure(
+    !table.columns.some((c) => c.name === table.primaryName?.name),
+    'primary name must not be repeated in columns',
+  );
+  unique(table.keys, (k) => k.name, `key on ${table.name}`);
+  for (const key of table.keys) {
+    customName(key.name, prefix);
+    key.solution ??= table.solution;
+    component(key, solutionNames);
+    ensure(
+      Array.isArray(key.columns) && key.columns.length > 0 && key.columns.length <= 16,
+      'key columns required (maximum 16)',
+    );
+  }
+}
+
+function validateNewTable(table, prefix) {
+  customName(table.schemaName ?? table.name, prefix);
+  ensure((table.schemaName ?? table.name).toLowerCase() === table.name, 'table schemaName must lowercase to name');
+  identifier(table.entitySetName);
+  ensure(
+    table.label && table.pluralLabel && ['organization', 'user'].includes(table.ownership),
+    'new table label/pluralLabel/ownership required',
+  );
+  ensure(table.primaryName?.name && table.primaryName.label, 'primaryName required');
+  customName(table.primaryName.name, prefix);
+  for (const flag of ['notes', 'activities'])
+    ensure(table[flag] === undefined || typeof table[flag] === 'boolean', `table ${flag} must be boolean`);
+}
+
+function validateTables(manifest, solutionNames, prefix) {
   unique(manifest.tables, (t) => t.name, 'table');
   const tables = new Map(manifest.tables.map((t) => [t.name, t]));
-  for (const table of manifest.tables) {
-    identifier(table.name);
-    component(table);
-    table.columns ??= [];
-    table.keys ??= [];
-    if (!table.existing) {
-      customName(table.schemaName ?? table.name);
-      ensure((table.schemaName ?? table.name).toLowerCase() === table.name, 'table schemaName must lowercase to name');
-      identifier(table.entitySetName);
-      ensure(
-        table.label && table.pluralLabel && ['organization', 'user'].includes(table.ownership),
-        'new table label/pluralLabel/ownership required',
-      );
-      ensure(table.primaryName?.name && table.primaryName.label, 'primaryName required');
-      customName(table.primaryName.name);
-      for (const flag of ['notes', 'activities'])
-        ensure(table[flag] === undefined || typeof table[flag] === 'boolean', `table ${flag} must be boolean`);
-    }
-    unique(table.columns, (c) => c.name, `column on ${table.name}`);
-    for (const column of [...table.columns, ...(table.existing ? [] : [table.primaryName])]) {
-      customName(column.name);
-      ensure(TYPES.has(column.type ?? 'string'), `unsupported column type ${column.type}; lookups are relationships`);
-      if (column.schemaName) {
-        customName(column.schemaName);
-        ensure(column.schemaName.toLowerCase() === column.name, 'column schemaName must lowercase to name');
-      }
-      if (column.solution) component(column);
-      ensure(
-        column.label && ['none', 'recommended', 'required'].includes(column.required ?? 'none'),
-        'column label/required invalid',
-      );
-      if (['string', 'memo'].includes(column.type ?? 'string'))
-        ensure(
-          Number.isInteger(column.maxLength) &&
-            column.maxLength >= 1 &&
-            column.maxLength <= (column.type === 'memo' ? 1048576 : 4000),
-          'text maxLength invalid',
-        );
-      if (['choice', 'multichoice'].includes(column.type))
-        ensure(
-          manifest.choices.some((c) => c.name === column.choice),
-          `choice ${column.choice} missing`,
-        );
-      if (['integer', 'decimal', 'double', 'money'].includes(column.type)) {
-        ensure(
-          Number.isFinite(column.min) && Number.isFinite(column.max) && column.min <= column.max,
-          'numeric min/max required',
-        );
-        if (column.type === 'integer')
-          ensure(
-            Number.isInteger(column.min) &&
-              Number.isInteger(column.max) &&
-              column.min >= -2147483648 &&
-              column.max <= 2147483647,
-            'integer range invalid',
-          );
-        if (column.type !== 'integer')
-          ensure(
-            Number.isInteger(column.precision) &&
-              column.precision >= 0 &&
-              column.precision <= (column.type === 'money' ? 4 : column.type === 'decimal' ? 10 : 5),
-            'precision invalid',
-          );
-      }
-      if (column.type === 'datetime') {
-        ensure(
-          ['UserLocal', 'DateOnly', 'TimeZoneIndependent'].includes(column.behavior),
-          'datetime behavior required',
-        );
-        ensure(
-          column.format == null || ['DateOnly', 'DateAndTime'].includes(column.format),
-          'datetime format must be DateOnly or DateAndTime',
-        );
-        ensure(
-          column.behavior !== 'DateOnly' || column.format == null || column.format === 'DateOnly',
-          'DateOnly behavior requires DateOnly format',
-        );
-      }
-    }
-    ensure(
-      !table.columns.some((c) => c.name === table.primaryName?.name),
-      'primary name must not be repeated in columns',
-    );
-    unique(table.keys, (k) => k.name, `key on ${table.name}`);
-    for (const key of table.keys) {
-      customName(key.name);
-      key.solution ??= table.solution;
-      component(key);
-      ensure(
-        Array.isArray(key.columns) && key.columns.length > 0 && key.columns.length <= 16,
-        'key columns required (maximum 16)',
-      );
-    }
-  }
+  for (const table of manifest.tables) validateTable(table, manifest, solutionNames, prefix);
   unique(
     manifest.tables.filter((t) => !t.existing),
     (t) => t.entitySetName,
     'entity set',
   );
-  unique(manifest.relationships, (r) => r.name, 'relationship');
-  for (const relationship of manifest.relationships) {
-    customName(relationship.name);
-    component(relationship);
-    ensure(
-      tables.has(relationship.parent) && tables.has(relationship.child),
-      'relationship targets must be declared, including existing tables',
-    );
-    ensure(['oneToMany', 'manyToMany'].includes(relationship.kind), 'relationship kind invalid');
-    if (relationship.kind === 'oneToMany') {
-      customName(relationship.lookup?.name);
-      ensure(relationship.lookup.label, 'lookup label required');
-      ensure(
-        ['none', 'recommended', 'required'].includes(relationship.lookup.required ?? 'none'),
-        'lookup required invalid',
-      );
-      ensure(
-        !(tables.get(relationship.child).columns ?? []).some((c) => c.name === relationship.lookup.name),
-        'lookup duplicated as scalar column',
-      );
-      const cascades = {
-        Assign: 'NoCascade',
-        Delete: 'Restrict',
-        Merge: 'NoCascade',
-        Reparent: 'NoCascade',
-        Share: 'NoCascade',
-        Unshare: 'NoCascade',
-        ...relationship.cascade,
-      };
-      const valid = {
-        Assign: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
-        Delete: ['Restrict', 'RemoveLink', 'Cascade'],
-        Merge: ['NoCascade', 'Cascade'],
-        Reparent: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
-        Share: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
-        Unshare: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
-      };
-      for (const [key, value] of Object.entries(cascades)) ensure(valid[key]?.includes(value), 'cascade value invalid');
-      relationship.cascade = cascades;
-    } else {
-      customName(relationship.intersectName);
-      if (relationship.intersectColumns)
-        ensure(relationship.intersectColumns.length === 2, 'intersectColumns needs two names');
-    }
+  return tables;
+}
+
+function validateRelationship(relationship, tables, solutionNames, prefix) {
+  customName(relationship.name, prefix);
+  component(relationship, solutionNames);
+  ensure(
+    tables.has(relationship.parent) && tables.has(relationship.child),
+    'relationship targets must be declared, including existing tables',
+  );
+  ensure(['oneToMany', 'manyToMany'].includes(relationship.kind), 'relationship kind invalid');
+  if (relationship.kind === 'oneToMany') validateOneToMany(relationship, tables, prefix);
+  else {
+    customName(relationship.intersectName, prefix);
+    if (relationship.intersectColumns)
+      ensure(relationship.intersectColumns.length === 2, 'intersectColumns needs two names');
   }
+}
+
+function validateOneToMany(relationship, tables, prefix) {
+  customName(relationship.lookup?.name, prefix);
+  ensure(relationship.lookup.label, 'lookup label required');
+  ensure(
+    ['none', 'recommended', 'required'].includes(relationship.lookup.required ?? 'none'),
+    'lookup required invalid',
+  );
+  ensure(
+    !(tables.get(relationship.child).columns ?? []).some((c) => c.name === relationship.lookup.name),
+    'lookup duplicated as scalar column',
+  );
+  const cascades = {
+    Assign: 'NoCascade',
+    Delete: 'Restrict',
+    Merge: 'NoCascade',
+    Reparent: 'NoCascade',
+    Share: 'NoCascade',
+    Unshare: 'NoCascade',
+    ...relationship.cascade,
+  };
+  const valid = {
+    Assign: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
+    Delete: ['Restrict', 'RemoveLink', 'Cascade'],
+    Merge: ['NoCascade', 'Cascade'],
+    Reparent: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
+    Share: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
+    Unshare: ['NoCascade', 'Cascade', 'Active', 'UserOwned'],
+  };
+  for (const [key, value] of Object.entries(cascades)) ensure(valid[key]?.includes(value), 'cascade value invalid');
+  relationship.cascade = cascades;
+}
+
+function validateRelationships(manifest, tables, solutionNames, prefix) {
+  unique(manifest.relationships, (r) => r.name, 'relationship');
+  for (const relationship of manifest.relationships) validateRelationship(relationship, tables, solutionNames, prefix);
   unique(
     manifest.relationships.filter((r) => r.kind === 'oneToMany'),
     (r) => `${r.child}.${r.lookup.name}`,
     'lookup relationship',
   );
+}
+
+function validateKeyColumn(manifest, table, key, column) {
+  const declared =
+    table.columns.some((c) => c.name === column) ||
+    column === table.primaryName?.name ||
+    manifest.relationships.some((r) => r.kind === 'oneToMany' && r.child === table.name && r.lookup.name === column) ||
+    (table.existing && (table.existingColumns ?? []).includes(column));
+  ensure(declared, `key ${key.name} references undeclared ${column}`);
+  const scalar =
+    table.columns.find((c) => c.name === column) ?? (table.primaryName?.name === column ? table.primaryName : null);
+  if (scalar)
+    ensure(
+      ['string', 'integer', 'decimal', 'datetime', 'choice'].includes(scalar.type ?? 'string'),
+      `key ${key.name} uses unsupported ${scalar.type} column`,
+    );
+}
+
+function keyBytes(table, name) {
+  const column =
+    table.columns.find((c) => c.name === name) ?? (table.primaryName?.name === name ? table.primaryName : null);
+  return column?.type === 'string' || (column && column.type === undefined) ? 2 * column.maxLength : 16;
+}
+
+function validateKeyColumns(manifest) {
   for (const table of manifest.tables)
-    for (const key of table.keys)
-      for (const column of key.columns) {
-        const declared =
-          table.columns.some((c) => c.name === column) ||
-          column === table.primaryName?.name ||
-          manifest.relationships.some(
-            (r) => r.kind === 'oneToMany' && r.child === table.name && r.lookup.name === column,
-          ) ||
-          (table.existing && (table.existingColumns ?? []).includes(column));
-        ensure(declared, `key ${key.name} references undeclared ${column}`);
-        const scalar =
-          table.columns.find((c) => c.name === column) ??
-          (table.primaryName?.name === column ? table.primaryName : null);
-        if (scalar)
-          ensure(
-            ['string', 'integer', 'decimal', 'datetime', 'choice'].includes(scalar.type ?? 'string'),
-            `key ${key.name} uses unsupported ${scalar.type} column`,
-          );
-      }
+    for (const key of table.keys) for (const column of key.columns) validateKeyColumn(manifest, table, key, column);
   for (const table of manifest.tables)
     for (const key of table.keys) {
-      const estimate = key.columns.reduce((bytes, name) => {
-        const c =
-          table.columns.find((c) => c.name === name) ?? (table.primaryName?.name === name ? table.primaryName : null);
-        return bytes + (c?.type === 'string' || (c && c.type === undefined) ? 2 * c.maxLength : 16);
-      }, 0);
+      const estimate = key.columns.reduce((bytes, name) => bytes + keyBytes(table, name), 0);
       ensure(estimate <= 900, `key ${key.name} exceeds the 900-byte index budget`);
     }
+}
+
+function validateFormOrView(item, kind, tables, solutionNames) {
+  component(item, solutionNames);
+  ensure(
+    tables.has(item.table) &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id) &&
+      item.name,
+    `${kind} table/id/name invalid`,
+  );
+  if (kind === 'form') ensure(typeof item.formXml === 'string' && item.formXml.includes('<form'), 'formXML required');
+  else
+    ensure(
+      typeof item.fetchXml === 'string' &&
+        item.fetchXml.includes('<fetch') &&
+        typeof item.layoutXml === 'string' &&
+        item.layoutXml.includes('<grid'),
+      'view fetchXML/layoutXML required',
+    );
+}
+
+function validateFormsAndViews(manifest, tables, solutionNames) {
   for (const [kind, components] of [
     ['form', manifest.forms],
     ['view', manifest.views],
   ]) {
     unique(components, (c) => c.id, kind);
-    for (const item of components) {
-      component(item);
-      ensure(
-        tables.has(item.table) &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id) &&
-          item.name,
-        `${kind} table/id/name invalid`,
-      );
-      if (kind === 'form')
-        ensure(typeof item.formXml === 'string' && item.formXml.includes('<form'), 'formXML required');
-      else
-        ensure(
-          typeof item.fetchXml === 'string' &&
-            item.fetchXml.includes('<fetch') &&
-            typeof item.layoutXml === 'string' &&
-            item.layoutXml.includes('<grid'),
-          'view fetchXML/layoutXML required',
-        );
-    }
+    for (const item of components) validateFormOrView(item, kind, tables, solutionNames);
   }
+}
+
+export function validateManifest(input) {
+  const manifest = structuredClone(input);
+  validatePublisher(manifest);
+  const solutionNames = validateSolutionEntries(manifest);
+  const prefix = manifest.publisher.prefix;
+  validateChoices(manifest, solutionNames, prefix);
+  const tables = validateTables(manifest, solutionNames, prefix);
+  validateRelationships(manifest, tables, solutionNames, prefix);
+  validateKeyColumns(manifest);
+  validateFormsAndViews(manifest, tables, solutionNames);
   return manifest;
 }
 
@@ -332,6 +379,38 @@ export async function readManifest(file) {
   return manifest;
 }
 
+function textAttributePayload(result, column, type) {
+  if (!['string', 'memo'].includes(type)) return;
+  result.MaxLength = column.maxLength;
+  if (type === 'string') result.FormatName = { Value: column.format ?? 'Text' };
+  else result.Format = 'Text';
+}
+
+function numericAttributePayload(result, column, type) {
+  if (!['integer', 'decimal', 'double', 'money'].includes(type)) return;
+  result.MinValue = column.min;
+  result.MaxValue = column.max;
+  if (type !== 'integer') result.Precision = column.precision;
+  else result.Format = 'None';
+  if (type === 'money') result.PrecisionSource = column.precisionSource ?? 0;
+}
+
+function booleanAttributePayload(result, column, type, language) {
+  if (type !== 'boolean') return;
+  result.DefaultValue = column.default ?? false;
+  result.OptionSet = {
+    '@odata.type': 'Microsoft.Dynamics.CRM.BooleanOptionSetMetadata',
+    TrueOption: { Value: 1, Label: label(column.trueLabel ?? 'Yes', language) },
+    FalseOption: { Value: 0, Label: label(column.falseLabel ?? 'No', language) },
+  };
+}
+
+function choiceAttributePayload(result, column, type) {
+  if (!['choice', 'multichoice'].includes(type)) return;
+  result['GlobalOptionSet@odata.bind'] = `/GlobalOptionSetDefinitions(Name='${column.choice}')`;
+  if (type === 'choice' && column.default !== undefined) result.DefaultFormValue = column.default;
+}
+
 function attributePayload(column, language) {
   const type = column.type ?? 'string';
   const metadata = {
@@ -354,34 +433,14 @@ function attributePayload(column, language) {
     IsAuditEnabled: managed(column.audit ?? true),
   };
   if (column.description) result.Description = label(column.description, language);
-  if (['string', 'memo'].includes(type)) {
-    result.MaxLength = column.maxLength;
-    if (type === 'string') result.FormatName = { Value: column.format ?? 'Text' };
-    else result.Format = 'Text';
-  }
-  if (['integer', 'decimal', 'double', 'money'].includes(type)) {
-    result.MinValue = column.min;
-    result.MaxValue = column.max;
-    if (type !== 'integer') result.Precision = column.precision;
-    else result.Format = 'None';
-    if (type === 'money') result.PrecisionSource = column.precisionSource ?? 0;
-  }
+  textAttributePayload(result, column, type);
+  numericAttributePayload(result, column, type);
   if (type === 'datetime') {
     result.DateTimeBehavior = { Value: column.behavior };
     result.Format = column.format ?? (column.behavior === 'DateOnly' ? 'DateOnly' : 'DateAndTime');
   }
-  if (type === 'boolean') {
-    result.DefaultValue = column.default ?? false;
-    result.OptionSet = {
-      '@odata.type': 'Microsoft.Dynamics.CRM.BooleanOptionSetMetadata',
-      TrueOption: { Value: 1, Label: label(column.trueLabel ?? 'Yes', language) },
-      FalseOption: { Value: 0, Label: label(column.falseLabel ?? 'No', language) },
-    };
-  }
-  if (['choice', 'multichoice'].includes(type)) {
-    result['GlobalOptionSet@odata.bind'] = `/GlobalOptionSetDefinitions(Name='${column.choice}')`;
-    if (type === 'choice' && column.default !== undefined) result.DefaultFormValue = column.default;
-  }
+  booleanAttributePayload(result, column, type, language);
+  choiceAttributePayload(result, column, type);
   return result;
 }
 

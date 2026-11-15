@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLASSIC = '77777777-7777-4777-8777-777777777771';
 const BASE = {
@@ -62,8 +62,8 @@ const seen = (sim) => {
 };
 
 async function fixture(t, initial) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-reload-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await write(solution, initial);
   const options = {
@@ -79,7 +79,7 @@ async function fixture(t, initial) {
     solution,
     start: async () => {
       const sim = await createSimulator(options);
-      t.after(() => sim.close());
+      ownedFixture(t).add(() => sim.close());
       return sim;
     },
   };
@@ -138,7 +138,7 @@ test('a failed reload leaves the previous registrations', async (t) => {
 });
 
 test('the Power Pages host reload refreshes source modules too', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-pp-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-reload-pp-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(path.join(root, 'solution'), BASE);
   await write(path.join(root, 'portal'), {

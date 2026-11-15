@@ -21,7 +21,7 @@ concurrency:
 jobs:
   plan:
     name: Resolve immutable release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       version: ${{ steps.plan.outputs.version }}
@@ -55,7 +55,7 @@ jobs:
     needs:
       - plan
       - ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
       name: npm

@@ -44,18 +44,20 @@ export function scalarNumberLexemes(source) {
   });
   return (property, value) => map.get(property + '\0' + canonical(value)) ?? undefined;
 }
-export function dataverseScalarCause(value, expectedType, { numericLexeme, ieee754Compatible = false } = {}) {
-  if (!TYPES.has(expectedType)) return null;
-  if (value === null || (typeof value === 'object' && !isExactNumeric(value))) return null;
-  if (
+
+function decimalFormatConflict(value, expectedType, ieee754Compatible) {
+  return (
     expectedType === 'Edm.Decimal' &&
     ((typeof value === 'string' && !ieee754Compatible) ||
       ((typeof value === 'number' || isExactNumeric(value)) && ieee754Compatible))
-  )
-    return `Cannot convert a value to target type '${expectedType}' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true.`;
-  const literal = typeof value === 'boolean' ? (value ? 'True' : 'False') : (numericLexeme ?? canonical(value));
-  const head = `Cannot convert the literal '${literal}' to the expected type '${expectedType}'.`;
-  let sourceType = typeof value === 'boolean' ? 'Edm.Boolean' : typeof value === 'string' ? 'Edm.String' : null;
+  );
+}
+
+function sourceTypeOf(value, numericLexeme) {
+  let sourceType;
+  if (typeof value === 'boolean') sourceType = 'Edm.Boolean';
+  else if (typeof value === 'string') sourceType = 'Edm.String';
+  else sourceType = null;
   if (
     (typeof value === 'number' || isExactNumeric(value)) &&
     typeof numericLexeme === 'string' &&
@@ -64,27 +66,43 @@ export function dataverseScalarCause(value, expectedType, { numericLexeme, ieee7
     const parts = decimalParts(numericLexeme),
       n = parts?.coefficient;
     if (parts && parts.scale <= 28 && (n < 0n ? -n : n) <= 79228162514264337593543950335n)
-      sourceType =
-        !numericLexeme.includes('.') && parts.scale === 0 && n >= -2147483648n && n <= 2147483647n
-          ? 'Edm.Int32'
-          : 'Edm.Decimal';
+      if (!numericLexeme.includes('.') && parts.scale === 0 && n >= -2147483648n && n <= 2147483647n)
+        sourceType = 'Edm.Int32';
+      else sourceType = 'Edm.Decimal';
   }
+  return sourceType;
+}
+
+function stringConversionCause(value, expectedType, literal) {
+  if (
+    ['Edm.Int32', 'Edm.Int64', 'Edm.Decimal'].includes(expectedType) &&
+    /^[\t-\r ]*[+-]?\d+(?:\.\d*)?[\t-\r ]*$/.test(value)
+  )
+    return null;
+  if (expectedType === 'Edm.Boolean') return 'String was not recognized as a valid Boolean.';
+  if (expectedType === 'Edm.Guid')
+    return 'Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).';
+  if (expectedType === 'Edm.DateTimeOffset') return `The string '${literal}' is not a valid AllXsd value.`;
+  if (expectedType === 'Edm.Date') return `String '${literal}' was not recognized as a valid Edm.Date.`;
+  if (['Edm.Int32', 'Edm.Int64', 'Edm.Double', 'Edm.Decimal'].includes(expectedType))
+    return 'Input string was not in a correct format.';
+  return null;
+}
+
+export function dataverseScalarCause(value, expectedType, { numericLexeme, ieee754Compatible = false } = {}) {
+  if (!TYPES.has(expectedType)) return null;
+  if (value === null || (typeof value === 'object' && !isExactNumeric(value))) return null;
+  if (decimalFormatConflict(value, expectedType, ieee754Compatible))
+    return `Cannot convert a value to target type '${expectedType}' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true.`;
+  let literal;
+  if (typeof value === 'boolean') literal = value ? 'True' : 'False';
+  else literal = numericLexeme ?? canonical(value);
+  const head = `Cannot convert the literal '${literal}' to the expected type '${expectedType}'.`;
+  const sourceType = sourceTypeOf(value, numericLexeme);
   if (sourceType === 'Edm.String') {
-    let cause;
     // A syntactically numeric string outside its CLR range has an overflow cause, which is not reported separately;
     // it keeps the generic diagnostic.
-    if (
-      ['Edm.Int32', 'Edm.Int64', 'Edm.Decimal'].includes(expectedType) &&
-      /^[\t-\r ]*[+-]?\d+(?:\.\d*)?[\t-\r ]*$/.test(value)
-    )
-      return null;
-    if (expectedType === 'Edm.Boolean') cause = 'String was not recognized as a valid Boolean.';
-    else if (expectedType === 'Edm.Guid')
-      cause = 'Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).';
-    else if (expectedType === 'Edm.DateTimeOffset') cause = `The string '${literal}' is not a valid AllXsd value.`;
-    else if (expectedType === 'Edm.Date') cause = `String '${literal}' was not recognized as a valid Edm.Date.`;
-    else if (['Edm.Int32', 'Edm.Int64', 'Edm.Double', 'Edm.Decimal'].includes(expectedType))
-      cause = 'Input string was not in a correct format.';
+    const cause = stringConversionCause(value, expectedType, literal);
     return cause ? head + ' ---> System.FormatException: ' + cause : null;
   }
   if (sourceType && sourceType !== expectedType)

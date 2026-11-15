@@ -1,12 +1,115 @@
+// @test-kind unproven: Local metadata models; assertions with reproduced native proof declare their own scoped kind.
 // Dataverse metadata service: EntityDefinitions, Attributes, Keys, relationship shapes and the
 // $filter subset, from a mapping-only fixture and from a minimal Solution schema table.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createMetadataService, objectTypeCode, relationshipSchemaName } from '../lib/dataverse-metadata.mjs';
 import { privilegeId } from '../lib/dataverse-security.mjs';
 import { seed as seedStandard } from '../lib/dataverse-standard.mjs';
+import { metadataRead } from '../lib/dataverse-api.mjs';
+import { parseDataverseRoute } from '../lib/dataverse-odata.mjs';
+import { attributeTypeCode, attributeTypeDisplayName } from '../lib/attribute-metadata.mjs';
 
 const ORG = '5f0c2c1e-1d2b-4c3a-9a7e-0123456789ab';
+
+test('hundreds of lookups derive each target once per metadata read without retaining stale target fields', () => {
+  const mappings = {
+    x_probe: {
+      idColumn: 'x_probeid',
+      fields: Object.fromEntries(
+        Array.from({ length: 200 }, (_, i) => ['x_link' + i, { dataverseType: 'lookup', targets: ['x_target'] }]),
+      ),
+    },
+    x_target: { idColumn: 'x_targetid', fields: { x_name: { dataverseType: 'nvarchar' } } },
+  };
+  let targets = 0;
+  const service = createMetadataService({
+    organizationId: ORG,
+    mappings: () => mappings,
+    mapping: (name) => {
+      if (name === 'x_target') targets++;
+      return mappings[name];
+    },
+  });
+  const first = service.recordFields('x_probe', { includeNonOData: true });
+  assert.equal(targets, 1);
+  assert.equal(first.x_link0yominame, undefined);
+  mappings.x_target.fields.yominame = { dataverseType: 'nvarchar' };
+  targets = 0;
+  const second = service.recordFields('x_probe', { includeNonOData: true });
+  assert.equal(targets, 1);
+  assert.ok(second.x_link0yominame);
+  assert.ok(second.x_link199yominame);
+  assert.equal(first.x_link0yominame, undefined);
+});
+
+test('wide lookup companions inspect target names without deriving unrelated target column bodies', () => {
+  let labelsRead = 0;
+  const tables = {},
+    mappings = {
+      x_probe: { idColumn: 'x_probeid', fields: {} },
+    };
+  for (let table = 0; table < 200; table++) {
+    const name = 'x_target' + table;
+    mappings.x_probe.fields['x_link' + table] = { dataverseType: 'lookup', targets: [name] };
+    const attributes = Object.fromEntries(
+      Array.from({ length: 257 }, (_, column) => [
+        'x_column' + column,
+        {
+          name: 'x_column' + column,
+          type: 'nvarchar',
+          get labels() {
+            labelsRead++;
+            return { 1033: 'Invented label' };
+          },
+        },
+      ]),
+    );
+    tables[name] = { logicalName: name, attributes, layers: [], labels: {} };
+  }
+  tables.x_target199.attributes.yominame = { name: 'yominame', type: 'nvarchar' };
+  mappings.x_target10 = { fields: { yominame: { dataverseType: 'nvarchar' } } };
+  mappings.x_target11 = {
+    fields: { yominame: { dataverseType: 'nvarchar', columnMetadata: { isManaged: false, isCustomizable: true } } },
+  };
+  tables.x_target12.attributes = {};
+  mappings.x_target12 = { fields: {} };
+  Object.defineProperty(mappings.x_target12.fields, 'yominame', { value: { dataverseType: 'nvarchar' } });
+  mappings.x_target13 = {
+    fields: { yominame: { dataverseType: 'nvarchar' } },
+    fieldMetadata: {},
+  };
+  Object.defineProperty(mappings.x_target13.fieldMetadata, 'yominame', {
+    value: { columnMetadata: { isManaged: false, isCustomizable: true } },
+  });
+  const service = createMetadataService({
+    organizationId: ORG,
+    mappings,
+    schema: () => ({ tables, relationships: {}, targets: {}, optionSets: {} }),
+  });
+  const first = service.recordFields('x_probe', { includeNonOData: true });
+  assert.equal(labelsRead, 0, 'Phonetic-name presence does not require 51,400 unrelated column bodies.');
+  assert.equal(first.x_link0yominame, undefined);
+  assert.equal(
+    first.x_link10yominame,
+    undefined,
+    'A declared source retains authority over ordinary mapping-only columns.',
+  );
+  assert.ok(first.x_link11yominame, 'Runtime-created customizable columns retain their existing precedence.');
+  assert.equal(first.x_link12yominame, undefined, 'Non-enumerable mapping columns do not become source evidence.');
+  assert.equal(first.x_link13yominame, undefined, 'Non-enumerable metadata cannot elevate an ordinary mapped column.');
+  assert.ok(first.x_link199yominame);
+  tables.x_target0.attributes.yomifullname = { name: 'yomifullname', type: 'nvarchar' };
+  assert.ok(
+    service.recordFields('x_probe', { includeNonOData: true }).x_link0yominame,
+    'The next read sees added target evidence.',
+  );
+  assert.equal(labelsRead, 0);
+  assert.ok(service.recordFields('x_target0').x_column0);
+  assert.ok(labelsRead > 0, 'An explicit target read still derives all requested column bodies.');
+});
 
 test('registered fields supplement a source shell but complete source schemas remain authoritative', () => {
   const mappings = {
@@ -382,14 +485,30 @@ test('many-to-many returns the intersect with both sides', () => {
   assert.deepEqual(mapped.relationships({ cast: '#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata' }), [m2m]);
 });
 
-test('service document lists entity sets sorted by name', () => {
+// @test-kind observation: two native 878-entity-set service-document responses in fixtures/dataverse-native-service-document.json (response hashes, entity-set counts and independent CSDL facts only); this replaces the former unproven alphabetical expectation and its checks are typed here, so it is not a replay case.
+test('service document follows the CSDL entity-set declaration order', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-service-document.json', import.meta.url));
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '55b2d50904f1d4a7e4348aff64461879fda66090d3a49b73c4a74db2eeb7fbc7',
+  );
+  const proof = JSON.parse(bytes);
+  assert.equal(proof.captures.length, 2);
+  assert.equal(proof.expected.serviceDocumentFollowsCsdlDeclarationOrder, true);
   const doc = mapped.serviceDocument('https://org.example', 'v9.2');
   assert.equal(doc['@odata.context'], 'https://org.example/api/data/v9.2/$metadata');
   assert.deepEqual(
     doc.value.map((v) => v.name),
-    ['EntityDefinitions', 'GlobalOptionSetDefinitions', 'RelationshipDefinitions', 'gadgets', 'tags', 'widgets'],
+    ['gadgets', 'tags', 'widgets', 'EntityDefinitions', 'GlobalOptionSetDefinitions', 'RelationshipDefinitions'],
   );
-  assert.equal(doc.value[0].kind, 'EntitySet');
+  assert.ok(doc.value.every((value) => value.kind === proof.expected.kind && value.url === value.name));
+  const sourceNames = [...mapped.csdl('https://org.example').matchAll(/<EntitySet Name="([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    doc.value.map((value) => value.name),
+    sourceNames,
+  );
 });
 
 test('filterMetadata evaluates the supported subset', () => {
@@ -436,6 +555,52 @@ test('filterMetadata evaluates the supported subset', () => {
     code: 'UnsupportedQueryFunction',
     message: 'The "contains" function isn\'t supported for Metadata Entities.',
   });
+});
+
+// @test-kind security: the metadata $filter parser itself refuses parentheses nested deeper than 100 levels
+test('filterMetadata refuses parentheses nested deeper than 100 levels inside the parser', () => {
+  const nested = (depth) => `${'('.repeat(depth)}LogicalName eq 'widget'${')'.repeat(depth)}`;
+  const refused = { status: 400, details: { innerCode: '0x80060888', route: true } };
+  const entities = mapped.entities();
+  assert.deepEqual(names(mapped.filterMetadata(entities, nested(100))), ['widget']);
+  assert.throws(() => mapped.filterMetadata(entities, nested(101)), refused);
+  assert.throws(() => mapped.filterMetadata(entities, nested(5000)), refused);
+});
+
+// @test-kind security: a run of unary not operators is folded in a loop, so no run length exhausts the call stack
+test('filterMetadata folds a long run of not operators: an even run cancels, an odd run is one negation', () => {
+  const run = (count) => `${'not '.repeat(count)}LogicalName eq 'widget'`;
+  const entities = mapped.entities();
+  const widgets = names(entities.filter((item) => item.LogicalName === 'widget'));
+  const others = names(entities.filter((item) => item.LogicalName !== 'widget'));
+  assert.deepEqual(names(mapped.filterMetadata(entities, run(3))), others);
+  assert.deepEqual(names(mapped.filterMetadata(entities, run(4))), widgets);
+  assert.deepEqual(names(mapped.filterMetadata(entities, run(50000))), widgets);
+  assert.deepEqual(names(mapped.filterMetadata(entities, run(50001))), others);
+});
+
+// @test-kind security: the Web API metadata read takes the same long not run through the request path and returns the plain filter's rows
+test('EntityDefinitions answers a 50000-operator not run with the rows of the plain filter', () => {
+  const plain = readMetadata(mapped, `EntityDefinitions?$filter=LogicalName eq 'widget'`).value;
+  const chained = readMetadata(
+    mapped,
+    `EntityDefinitions?$filter=${'not '.repeat(50000)}LogicalName eq 'widget'`,
+  ).value;
+  assert.deepEqual(names(chained), names(plain));
+});
+
+// @test-kind security: metadata $select and $filter resolve property names to own properties only
+test('metadata property names do not reach inherited Object members', () => {
+  const widget = mapped.entity('widget');
+  const unknown = mapped.selectMetadata(widget, 'nosuchproperty');
+  for (const name of ['__proto__', 'constructor', 'toString'])
+    assert.deepEqual(Object.keys(mapped.selectMetadata(widget, name)), Object.keys(unknown), name);
+  const entities = mapped.entities();
+  assert.deepEqual(names(mapped.filterMetadata(entities, 'toString eq null')), names(entities));
+  assert.deepEqual(
+    names(mapped.filterMetadata(entities, 'toString eq null')),
+    names(mapped.filterMetadata(entities, 'nosuchproperty eq null')),
+  );
 });
 
 test('selectMetadata keeps MetadataId and @odata.type', () => {
@@ -1495,4 +1660,138 @@ test('csdl: activitypointer is abstract with the activityid key, and an activity
   assert.doesNotMatch(task, /<Property Name="activityid"/);
   assert.match(task, /<Property Name="percentcomplete"/);
   assert.match(block(xml, 'account'), /<EntityType Name="account" BaseType="mscrm\.crmbaseentity">/);
+});
+
+const METADATA_ORIGIN = 'http://127.0.0.1:39123';
+const WIDGET = "EntityDefinitions(LogicalName='widget')";
+// Reads a metadata Web API path through metadataRead, as the HTTP router does; a refusal throws its DataError.
+const readMetadata = (service, path) => {
+  const url = new URL(`/api/data/v9.2/${path}`, METADATA_ORIGIN);
+  return metadataRead({ url, origin: METADATA_ORIGIN }, service, parseDataverseRoute(url.pathname)).body;
+};
+
+// @test-kind compatibility: Microsoft Learn "Query table definitions using the Web API" filters Attributes by AttributeType next to $select and expects the matching columns.
+test('metadata Attributes filter before $select, so the Learn AttributeType query returns the picklist columns', () => {
+  const body = readMetadata(
+    mapped,
+    `${WIDGET}/Attributes?$select=LogicalName&$filter=AttributeType eq Microsoft.Dynamics.CRM.AttributeTypeCode'Picklist'`,
+  );
+  assert.deepEqual(
+    body.value.map((attribute) => attribute.LogicalName),
+    ['status'],
+  );
+});
+
+// @test-kind compatibility: Microsoft Learn "Query table definitions using the Web API" addresses one metadata key by name; a key the table does not have is a 404.
+test('metadata Keys(<key>) answers that key only, and an unknown key answers 404', () => {
+  assert.equal(readMetadata(mapped, `${WIDGET}/Keys(LogicalName='widget_code')`).LogicalName, 'widget_code');
+  assert.throws(() => readMetadata(mapped, `${WIDGET}/Keys(LogicalName='nosuch')`), { status: 404 });
+});
+
+// @test-kind compatibility: Microsoft Learn "Query table definitions using the Web API" addresses one relationship of a table by its schema name; a name the table does not have is a 404.
+test('metadata OneToManyRelationships(<key>) answers that relationship only, and an unknown one answers 404', () => {
+  assert.equal(
+    readMetadata(mapped, `${WIDGET}/OneToManyRelationships(SchemaName='widget_gadgets')`).SchemaName,
+    'widget_gadgets',
+  );
+  assert.throws(() => readMetadata(mapped, `${WIDGET}/OneToManyRelationships(SchemaName='nosuch')`), { status: 404 });
+});
+
+// @test-kind compatibility: Microsoft Learn "Query table definitions using the Web API" documents $expand with nested $select and $filter options on Attributes.
+test('metadata $expand applies nested $select and $filter, and a malformed nested $filter answers 400', () => {
+  const nested = readMetadata(
+    mapped,
+    `${WIDGET}?$select=LogicalName&$expand=Attributes($select=LogicalName;$filter=LogicalName eq 'name')`,
+  );
+  assert.deepEqual(
+    nested.Attributes.map((attribute) => attribute.LogicalName),
+    ['name'],
+  );
+  assert.throws(
+    () => readMetadata(mapped, `${WIDGET}?$expand=Attributes($select=LogicalName;$filter=LogicalName eq)`),
+    {
+      status: 400,
+    },
+  );
+});
+
+// @test-kind compatibility: Microsoft Learn "Query table definitions using the Web API" lists the EntityMetadata navigations $expand accepts; an unknown one answers 400 0x80060888.
+test('metadata $expand refuses a navigation EntityMetadata does not have, and a negative nested $top', () => {
+  const refused = { status: 400, details: { innerCode: '0x80060888', route: true } };
+  assert.throws(() => readMetadata(mapped, `${WIDGET}?$select=LogicalName&$expand=Nope`), refused);
+  assert.throws(() => readMetadata(mapped, `${WIDGET}?$expand=Attributes($top=-1)`), refused);
+});
+
+// @test-kind contract: this module refuses a metadata $filter nested deeper than 100 parentheses with 400 0x80060888 before the filter parser recurses.
+test('metadata $filter nested deeper than 100 levels answers 400 0x80060888 instead of overflowing the stack', () => {
+  const nested = (depth) => `${'('.repeat(depth)}LogicalName eq 'widget'${')'.repeat(depth)}`;
+  const refused = { status: 400, details: { innerCode: '0x80060888', route: true } };
+  assert.equal(readMetadata(mapped, `EntityDefinitions?$filter=${nested(100)}`).value.length, 1);
+  assert.throws(() => readMetadata(mapped, `EntityDefinitions?$filter=${nested(101)}`), refused);
+  assert.throws(() => readMetadata(mapped, `EntityDefinitions?$filter=${nested(5000)}`), refused);
+});
+
+// The metadata service's type table before the names were shared with attribute-metadata.mjs:
+// dataverseType -> [AttributeType, @odata.type stem, AttributeTypeName].
+const TYPE_TABLE_BEFORE = {
+  nvarchar: ['String', 'String', 'StringType'],
+  string: ['String', 'String', 'StringType'],
+  memo: ['Memo', 'Memo', 'MemoType'],
+  ntext: ['Memo', 'Memo', 'MemoType'],
+  int: ['Integer', 'Integer', 'IntegerType'],
+  integer: ['Integer', 'Integer', 'IntegerType'],
+  bigint: ['BigInt', 'BigInt', 'BigIntType'],
+  decimal: ['Decimal', 'Decimal', 'DecimalType'],
+  float: ['Double', 'Double', 'DoubleType'],
+  double: ['Double', 'Double', 'DoubleType'],
+  money: ['Money', 'Money', 'MoneyType'],
+  bit: ['Boolean', 'Boolean', 'BooleanType'],
+  boolean: ['Boolean', 'Boolean', 'BooleanType'],
+  datetime: ['DateTime', 'DateTime', 'DateTimeType'],
+  lookup: ['Lookup', 'Lookup', 'LookupType'],
+  customer: ['Customer', 'Lookup', 'CustomerType'],
+  owner: ['Owner', 'Lookup', 'OwnerType'],
+  picklist: ['Picklist', 'Picklist', 'PicklistType'],
+  state: ['State', 'State', 'StateType'],
+  status: ['Status', 'Status', 'StatusType'],
+  multiselectpicklist: ['Virtual', 'MultiSelectPicklist', 'MultiSelectPicklistType'],
+  primarykey: ['Uniqueidentifier', 'UniqueIdentifier', 'UniqueidentifierType'],
+  uniqueidentifier: ['Uniqueidentifier', 'UniqueIdentifier', 'UniqueidentifierType'],
+  entityname: ['EntityName', 'EntityName', 'EntityNameType'],
+  file: ['Virtual', 'File', 'FileType'],
+  image: ['Virtual', 'Image', 'ImageType'],
+  virtual: ['Virtual', '', 'VirtualType'],
+  partylist: ['PartyList', 'Lookup', 'PartyListType'],
+  managedproperty: ['ManagedProperty', 'ManagedProperty', 'ManagedPropertyType'],
+};
+
+// @test-kind contract: one type table names every internal type the same way in the metadata service, attributeTypeCode and attributeTypeDisplayName, with the names the service reported before the table was shared.
+test('the metadata service and the attribute type names agree for every internal type', () => {
+  const fields = Object.fromEntries(Object.keys(TYPE_TABLE_BEFORE).map((key) => [`f_${key}`, { dataverseType: key }]));
+  const service = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({ probe: { entitySet: 'probes', idColumn: 'probeid', nameColumn: 'f_nvarchar', fields } }),
+  });
+  const byName = Object.fromEntries(service.attributes('probe').map((attribute) => [attribute.LogicalName, attribute]));
+  for (const [key, [code, stem, typeName]] of Object.entries(TYPE_TABLE_BEFORE)) {
+    const attribute = byName[`f_${key}`];
+    // A generic Virtual companion (empty stem) is listed without its discriminator.
+    const odataType = stem ? `#Microsoft.Dynamics.CRM.${stem}AttributeMetadata` : undefined;
+    assert.deepEqual(
+      [attribute.AttributeType, attribute['@odata.type'], attribute.AttributeTypeName.Value],
+      [code, odataType, typeName],
+      key,
+    );
+    assert.equal(attributeTypeCode(key), code, key);
+    assert.equal(attributeTypeDisplayName(key), typeName, key);
+  }
+});
+
+// @test-kind contract: the Liquid attribute_type of a file, image, virtual or managed property column is its AttributeTypeCode name, and an unknown type stays a String.
+test('file, image, virtual and managed property columns name their AttributeTypeCode in attribute_type', () => {
+  assert.deepEqual(
+    ['file', 'image', 'virtual', 'managedproperty', 'not_a_type'].map((type) => attributeTypeCode(type)),
+    ['Virtual', 'Virtual', 'Virtual', 'ManagedProperty', 'String'],
+  );
 });

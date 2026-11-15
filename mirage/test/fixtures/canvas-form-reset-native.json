@@ -1,0 +1,158 @@
+{
+  "recordedDate": "2026-11-08",
+  "scope": "Two independent native Canvas player flows per owned isolated source version; original OnVisible retained byte-identically. V5 qualifies no-item form mode changes; V6 holds one source input nested and moves the other directly into its source data card, adds positive OnReset and Back markers, and directly renders explicit en-US date/time values. No submit or save.",
+  "sourceAppPreserved": true,
+  "originalAppSha256": "b22a13aa82f398a6290bae806a9c65c52a9009f977a3931d05fb8950d6f54860",
+  "v6PackedSourceSha256": "dd1619098dee48194a813fe2a0961666b13bb87fab53d63f6b75bb81a2c74113",
+  "captures": [
+    {
+      "revision": "v5",
+      "producerSha256": "9387714515e5457cf5bcf32a0785b35f703a4e099cac32e6f10420fc6f6027ed",
+      "sourceFileSha256": "ce51b086d570f251e0f2cad9d575dcc7c553d21027dc19472d73679d0a254325",
+      "originalOnVisibleSha256": "b5df590154353cfa85e14e6346a0aeaae45867740a050e69751987abe925af3e",
+      "originalOnVisibleUnchanged": true,
+      "rawSha256": [
+        "7c981540e1abd405f399ee6a42ffef14a2ae968609a0307d6317490eeb6914f9",
+        "7c981540e1abd405f399ee6a42ffef14a2ae968609a0307d6317490eeb6914f9"
+      ],
+      "canary": true,
+      "scalar": {
+        "Language": "Paqvilo Language=en-US",
+        "Forall": "Paqvilo Forall=2",
+        "TimeError": "Paqvilo TimeError=false",
+        "GuidError": "Paqvilo GuidError=true",
+        "DateError": "Paqvilo DateError=false",
+        "Meridiem": "Paqvilo Meridiem=2:05 PM"
+      },
+      "snapshots": {
+        "initial": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "",
+          "multi": ""
+        },
+        "edited": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": "Invented retained comment"
+        },
+        "confirmationMarkerTexts": [
+          "Paqvilo mode=new;default=new;discard=false;reset=false"
+        ],
+        "afterBack": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": "Invented retained comment"
+        },
+        "resetOnly": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=true",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": "Invented retained comment"
+        },
+        "toggleOne": {
+          "state": "Paqvilo mode=edit;default=edit;discard=false;reset=true",
+          "singleVisible": false,
+          "multiVisible": false,
+          "single": null,
+          "multi": null
+        },
+        "toggleTwo": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=true",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "",
+          "multi": ""
+        }
+      },
+      "finalReportsVisible": true,
+      "saved": false
+    },
+    {
+      "revision": "v6",
+      "producerSha256": "05574554e09c96548f9b028dab57ae7a74f1a0b5e4bfd3dfacc30b157730c4ab",
+      "sourceFileSha256": "cbe7939a8a9b67400dbac1d6f348d7af3a15218660484307a4d2e3ff5e44049c",
+      "originalOnVisibleSha256": "b5df590154353cfa85e14e6346a0aeaae45867740a050e69751987abe925af3e",
+      "originalOnVisibleUnchanged": true,
+      "rawSha256": [
+        "241cc42cabc2536328442bd2157a2dce6ffc760fefea95263ddba9d0feae7246",
+        "241cc42cabc2536328442bd2157a2dce6ffc760fefea95263ddba9d0feae7246"
+      ],
+      "canary": true,
+      "scalar": {
+        "Language": "Paqvilo Language=en-US",
+        "Forall": "Paqvilo Forall=2",
+        "Time": "Paqvilo Time=01:00:00;parts=1,0,0",
+        "GuidError": "Paqvilo GuidError=true",
+        "Date": "Paqvilo Date=2025-01-01;parts=2025,1,1",
+        "Meridiem": "Paqvilo Meridiem=2:05 PM"
+      },
+      "snapshots": {
+        "initial": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "header": "Paqvilo header discard=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "",
+          "multi": ""
+        },
+        "edited": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "header": "Paqvilo header discard=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": "Invented retained comment"
+        },
+        "confirmationHeader": "Paqvilo header discard=true",
+        "afterBack": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=true",
+          "header": "Paqvilo header discard=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": ""
+        },
+        "implicitReset": {
+          "state": "Paqvilo mode=new;default=new;discard=false;reset=false",
+          "header": "Paqvilo header discard=false",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": ""
+        },
+        "explicitNew": {
+          "state": "Paqvilo mode=new;default=new;discard=true;reset=false",
+          "header": "Paqvilo header discard=true",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": ""
+        },
+        "explicitEdited": {
+          "state": "Paqvilo mode=new;default=new;discard=true;reset=false",
+          "header": "Paqvilo header discard=true",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": "Invented retained comment"
+        },
+        "explicitReset": {
+          "state": "Paqvilo mode=new;default=new;discard=true;reset=true",
+          "header": "Paqvilo header discard=true",
+          "singleVisible": true,
+          "multiVisible": true,
+          "single": "Invented reset diagnostic",
+          "multi": ""
+        }
+      },
+      "saved": false
+    }
+  ]
+}

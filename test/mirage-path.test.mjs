@@ -1,22 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { samePath, catalogueArgs } from '../lense/commands/mirage.mjs';
 import { toolkitCommandHint } from './toolkit-cli.mjs';
+import { tempDirSync } from './fixture.mjs';
 
-test('Mirage session paths compare according to Windows path case rules', () => {
-  assert.equal(samePath('C:\\Portal\\Source', 'c:\\portal\\source'), process.platform === 'win32');
-});
-
-test('Mirage session paths preserve case-sensitive POSIX distinctions', { skip: process.platform !== 'linux' }, () => {
-  assert.equal(samePath('/tmp/Portal', '/tmp/portal'), false);
+test('Mirage session paths compare by filesystem identity and the platform path case rules', (t) => {
+  // Case folds only where the platform's paths are case-insensitive: Windows folds, POSIX keeps the distinction.
+  const folds = process.platform === 'win32';
+  assert.equal(samePath('C:\\Portal\\Source', 'c:\\portal\\source'), folds);
+  assert.equal(samePath('/tmp/Portal', '/tmp/portal'), folds);
   assert.equal(samePath('/tmp/Portal', '/tmp/Portal'), true);
+  assert.equal(samePath(null, '/tmp/Portal'), false);
+  // An existing folder reached through a junction (a symbolic link on POSIX) is the same source.
+  const dir = tempDirSync('paqvilo-mirage-same-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = path.join(dir, 'Source'),
+    linked = path.join(dir, 'linked');
+  fs.mkdirSync(source);
+  fs.symlinkSync(source, linked, 'junction');
+  assert.equal(samePath(linked, source), true);
+  assert.equal(samePath(linked, path.join(dir, 'other')), false);
 });
 
 test('catalogue Mirage settings fill only the options the command line leaves open', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-args-'));
+  const dir = tempDirSync('paqvilo-mirage-args-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const project = path.join(dir, 'site.project.yml');
   fs.writeFileSync(project, 'version: 1\n');

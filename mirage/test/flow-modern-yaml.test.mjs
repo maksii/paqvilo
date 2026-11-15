@@ -11,6 +11,7 @@ import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000f9';
 const FLOW_YAML = `workflowid: ${FLOW}
@@ -73,7 +74,7 @@ clientdata:
 `;
 
 test('a YAML modern flow imports into the flow interpreter and runs end to end', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-modern-yaml-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-modern-yaml-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solutions/InventedYaml/solution.yml': 'SolutionManifest:\n  UniqueName: InventedYaml\n  Version: 1.0.0.0\n',

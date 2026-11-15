@@ -1,0 +1,522 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "text-oracle",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerApps.CLI (PAC) Power Fx evaluator",
+    "version": "2.13.1",
+    "scope": "Only these pure numeric Text expressions executed by the official PAC 2.13.1 evaluator in isolated empty-authentication profiles. No Canvas player, connector or visual claim."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "b342451c46a2fb9b70296b5c26952b35b72c38bbe7a9328f8a82cebe800b7480",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "b342451c46a2fb9b70296b5c26952b35b72c38bbe7a9328f8a82cebe800b7480",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "numeric-text-1",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"0\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1234567890123456789012345678"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-2",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"#,##0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1,234,567,890,123,456,789,012,345,678.00"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-3",
+      "input": {
+        "expression": "Text(99999999999999999999,\"0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "99999999999999999999.00"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-4",
+      "input": {
+        "expression": "Text(1.235,\"0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1.24"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-5",
+      "input": {
+        "expression": "Text(-1.235,\"0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "-1.24"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-6",
+      "input": {
+        "expression": "Text(0.12345,\"0.00%\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.35%"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-7",
+      "input": {
+        "expression": "Text(12.3,\"$0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "$12.30"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-8",
+      "input": {
+        "expression": "Text(Float(0.1)+Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "0.30000000000000000"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-9",
+      "input": {
+        "expression": "Text(Float(1.2345678901234567),\"0.00000000000000000\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1.23456789012346000"
+      },
+      "volatile": []
+    },
+    {
+      "id": "numeric-text-10",
+      "input": {
+        "expression": "Text(IfError(Float(\"bad\"),\"0.1\") + Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "0.30000000000000000"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-1",
+      "input": {
+        "expression": "Text(12.3,\"0.00\"\"%\"\"\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.30%"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-2",
+      "input": {
+        "expression": "Text(12.3,\"0.00\\%\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.30%"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-3",
+      "input": {
+        "expression": "Text(0.123,\"0.00%\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.30%"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-4",
+      "input": {
+        "expression": "Text(123456,\"000-000\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "123-456"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-5",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"000-000\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1234567890123456789012345-678"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-6",
+      "input": {
+        "expression": "Text(12.3,\"0\"\"x\"\".00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12x.30"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-7",
+      "input": {
+        "expression": "Text(12.3,\"0.0\"\"x\"\"0\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.3x0"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-8",
+      "input": {
+        "expression": "Text(0,\"#.##\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": ""
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-9",
+      "input": {
+        "expression": "Text(12.3,\"0.#0#\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.30"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-10",
+      "input": {
+        "expression": "Text(12.3,\".00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12.30"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-11",
+      "input": {
+        "expression": "Text(12,\"0.\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12."
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-12",
+      "input": {
+        "expression": "Text(0,\".##\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": ""
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-13",
+      "input": {
+        "expression": "Text(12,\"0#0\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "012"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-14",
+      "input": {
+        "expression": "Text(-12,\"$0.00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "-$12.00"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-15",
+      "input": {
+        "expression": "Text(12345678,\"#,##0,,\"\" M\"\"\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "12 M"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-16",
+      "input": {
+        "expression": "Text(1234,\"0,\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-17",
+      "input": {
+        "expression": "Text(1234,\"0,,\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "0"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-18",
+      "input": {
+        "expression": "Text(0.123,\"0%%\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "1230%%"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-19",
+      "input": {
+        "expression": "Text(0,\"0#0\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "000"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-20",
+      "input": {
+        "expression": "Text(12,\"00#\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": "012"
+      },
+      "volatile": []
+    },
+    {
+      "id": "literal-format-21",
+      "input": {
+        "expression": "Text(0,\".00\",\"en-US\")",
+        "result": {
+          "fields": ["value"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "none"
+        }
+      },
+      "output": {
+        "value": ".00"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

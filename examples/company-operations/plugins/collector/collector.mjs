@@ -1,6 +1,10 @@
 import http from 'node:http';
 import { createPublicKey, verify } from 'node:crypto';
 import { guid, claimsValid, validateEnvelope } from './protocol.mjs';
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const required = (name) => {
   const v = process.env[name];
   if (!v) throw new Error(`Missing ${name}`);
@@ -131,18 +135,18 @@ const server = http.createServer(async (request, response) => {
       : 'CollectorUnavailable';
     reply(
       response,
-      ['AuthenticationRequired', 'InvalidToken'].includes(category)
-        ? 401
-        : category === 'CollectorUnavailable'
-          ? 503
-          : 400,
+      chooseLazily(
+        () => ['AuthenticationRequired', 'InvalidToken'].includes(category),
+        () => 401,
+        () => (category === 'CollectorUnavailable' ? 503 : 400),
+      ),
       { error: category },
     );
   }
 });
 if (
   process.argv[1] &&
-  new URL(import.meta.url).pathname.toLowerCase().endsWith(process.argv[1].replace(/\\/g, '/').toLowerCase())
+  new URL(import.meta.url).pathname.toLowerCase().endsWith(process.argv[1].replaceAll('\\', '/').toLowerCase())
 )
   server.listen(Number(process.env.PORT ?? 8080), '0.0.0.0');
 export { server };

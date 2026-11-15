@@ -1,3 +1,4 @@
+// @test-kind tooling: the committed fixture catalogues are outputs of the repository's own generator scripts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { readManifest, readCatalogue } from 'paqvilo/dataverse';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const schema = await readManifest(new URL('../dataverse/manifest.json', import.meta.url)),
   data = await readCatalogue(new URL('../data/catalogue.json', import.meta.url));
 const rows = (table) => data.records.filter((r) => r.table === table),
@@ -218,7 +221,7 @@ test('five complete deep paths, all paired read IDs, explicit collision expectat
 });
 
 test('regenerated invented fixtures retain their committed deterministic record identities', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-public-fixture-ids-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-public-fixture-ids-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const output = path.join(directory, 'catalogue.json');
   const result = spawnSync(
@@ -227,7 +230,7 @@ test('regenerated invented fixtures retain their committed deterministic record 
     {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CLI_HANG_GUARD_MS,
     },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -237,5 +240,31 @@ test('regenerated invented fixtures retain their committed deterministic record 
   assert.equal(
     generated.records.find((record) => record.key === 'currency-USD').id,
     '4423dab3-61bc-56f6-ba62-5c6135165abd',
+  );
+});
+
+test('committed catalogues are byte-identical to the output of their generator scripts', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-generated-catalogues-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const generate = (script, args) => {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL(`../${script}`, import.meta.url)), ...args], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const generated = path.join(directory, 'catalogue.json');
+  const generatedStress = path.join(directory, 'stress-catalogue.json');
+  generate('prepare-data.mjs', ['--out', generated]);
+  generate('prepare-stress-data.mjs', ['--catalogue', generated, '--out', generatedStress]);
+  const committed = (name) => fs.readFile(new URL(`../data/${name}`, import.meta.url));
+  assert.ok(
+    (await fs.readFile(generated)).equals(await committed('catalogue.json')),
+    'data/catalogue.json differs from prepare-data.mjs output; run npm run data:prepare',
+  );
+  assert.ok(
+    (await fs.readFile(generatedStress)).equals(await committed('stress-catalogue.json')),
+    'data/stress-catalogue.json differs from prepare-stress-data.mjs output; run npm run stress:prepare',
   );
 });

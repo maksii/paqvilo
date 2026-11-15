@@ -1,0 +1,339 @@
+{
+  "version": 1,
+  "tags": {
+    "mirage/test/customapi-main-configuration.test.mjs": [
+      "// @test-kind parity: native customApi scenario, stage-30 main-operation events record constructor configuration unsecure null and secure null although the plug-in type is registered with step configuration elsewhere"
+    ],
+    "mirage/test/customapi-plugin-pipeline.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, customApiNested captured twice: a custom API main operation's SDK Create has ParentContext Create/30 at Depth 2 and the custom API stage 30 (Depth 1, request inputs, IsAutoTransact true) above it",
+      "// @test-kind parity: native recorder corpus customApi and webApiNamed (two captures each): new_RecorderBound/40/Mode 1 PrimaryEntityId Guid.Empty while the synchronous stages carry the row id"
+    ],
+    "mirage/test/customapi-sdk-first-touch.test.mjs": [
+      "// @test-kind parity: native catchCoded (native and native-r2) PATCH result: the Update/40 plug-in caught the coded fault of its first SDK Execute of the custom API; the request answered 400 0x8009000c and the row kept its value"
+    ],
+    "mirage/test/dataverse-currency.test.mjs": [
+      "// @test-kind parity: native and native-r2 currency (pqwp_money 7.125 stores pqwp_money_base 7.125, column AccuracySource 0 Accuracy 4) and MoneyAttributeMetadata.PrecisionSource (Microsoft.Xrm.Sdk)"
+    ],
+    "mirage/test/dataverse-customapi.test.mjs": [
+      "// @test-kind parity: native live baseline case custom.no-output-function: a function with no response property is absent (404 0x80060888)"
+    ],
+    "mirage/test/dataverse-plugin-jobs.test.mjs": [
+      "// @test-kind parity: native and native-r2 jobs[]: plug-in job rows have primaryentitytype null and a numeric executiontimespan",
+      "// @test-kind parity: native-r2 asyncLoop and asyncDeletedRow: every job row's correlationid is the CorrelationId of the contexts of its request",
+      "// @test-kind parity: native and native-r2 jobs[]: plug-in job rows have primaryentitytype null and a numeric executiontimespan"
+    ],
+    "mirage/test/dataverse-plugin-registration.test.mjs": [
+      "// @test-kind parity: native recorder corpus n6-registration (trial environment, captures native-trial and native-trial-r2): an administrator's step whose impersonatinguserid binds a systemuser that does not exist is accepted with 204",
+      "// @test-kind parity: native accepted steps without a filter on every existing message, including messages with no filter",
+      "// @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n6-registration): a caller without registration privileges (impersonated through MSCRMCallerID) registering a step, with or without impersonatinguserid, is refused 403 0x80040220 naming prvReadSolution",
+      "// @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)",
+      "// @test-kind parity: native-trial and native-trial-r2 n3-package 'delete package-owned assembly' 0x80081117 text",
+      "// @test-kind parity: native-trial and native-trial-r2 n3-package 'create a second package with the same unique name' 0x80040265 text (byte-identical in both captures); connection ids and routing host are per request/environment",
+      "// @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): on a package-owned assembly PATCH isolationmode answers 403 0x80040256, POST of a plugintype its content does not declare answers 204, and the type is gone after the next package content update",
+      "// @test-kind parity: native rankNegative: a rank -1 Update PreOperation step runs before the rank 1 steps of the stage"
+    ],
+    "mirage/test/dataverse-read-projections.test.mjs": [
+      "// @test-kind parity: native and native-r2 relationsReads ($expand child keys, fetchXml row keys), faults ($select on an organization-owned table), imageAliasOrder (multi-select read as a comma-joined string)"
+    ],
+    "mirage/test/dataverse-records.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, bulk scenario captured twice: Web API DeleteMultiple on a non-elastic table answers 405 0x8004023b \"DeleteMultiple has not yet been implemented\""
+    ],
+    "mirage/test/dataverse-soap-sdk-values.test.mjs": [
+      "// @test-kind parity: official Microsoft.Xrm.Sdk DataContractSerializer executed: it reads Paqvilo's SOAP Entity metadata, exact Money, aliases and null members"
+    ],
+    "mirage/test/dataverse-soap.test.mjs": [
+      "// @test-kind parity: native soapMessages: a SOAP Assign or SetState queues the message's own asynchronous step and the asynchronous Update and UpdateMultiple steps of its delegated owner or state Update, once each",
+      "// @test-kind parity: native and native-r2 soapMessages 5962 (and sdkMessages 5179, imagesOrder 7843): the Update/20 Target under a SOAP Assign carries owninguser, owningbusinessunit, a named ownerid and owneridyominame equal to the assignee's fullname"
+    ],
+    "mirage/test/dataverse-webhooks.test.mjs": [
+      "// @test-kind parity: native imagesOrder (native-r2, 'Webhook: Update async images'): two asynchronous Update web hook steps registered through the Web API on one endpoint each deliver per PATCH; the one with images POSTed after the step sends PreEntityImages [pre] and PostEntityImages [post, AsynchronousStepPrimaryName], the bare one [] and [AsynchronousStepPrimaryName]",
+      "// @test-kind parity: native nullSemantics webhook payloads (DateOnly and TimeZoneIndependent values /Date(ms+0000)/ at the UTC wall clock, Utc createdon /Date(ms)/)"
+    ],
+    "mirage/test/exported-plugins.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud and reads scenarios: global (null-filter) Create and RetrieveMultiple steps run for the table"
+    ],
+    "mirage/test/plugin-async-context.test.mjs": [
+      "// @test-kind parity: native recorder corpus crud (async UpdateMultiple/40/m1 beside Update/40/m1 of the same PATCH): the multiple job sees the single job's request, shared variables and row under its own System Job identity"
+    ],
+    "mirage/test/plugin-async-parent-chain.test.mjs": [
+      "// @test-kind parity: native dataverse-recorder corpus (depth, crud, async, upsert, bulk, faults, ownerAndState, customApi): asynchronous job ParentContext, OperationCreatedOn, job creation order and the asynchronous web hook RemoteExecutionContext",
+      "// @test-kind parity: native and native-r2 asyncLoop (nested job chain Create/30/m1/dN, RequestId the originating request)",
+      "// @test-kind parity: native and native-r2 sdkSurface (four-frame jobs of records a nested SDK UpdateMultiple delegates)",
+      "// @test-kind parity: native and native-r2 bulkRequests (jobs of ExecuteTransaction and ExecuteMultiple requests)",
+      "// @test-kind parity: native and native-r2 bulk (asynchronous jobs of a Web API UpsertMultiple)",
+      "// @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match"
+    ],
+    "mirage/test/plugin-async-preemption.test.mjs": [
+      "// @test-kind parity: native dataverse-recorder corpus (sdkMessages, crud, async): a job regarding a row deleted before it starts never executes, for every message and for web hooks",
+      "// @test-kind parity: native asyncDeletedRow and async: with the organization's default start latency a row deleted right after its update cancels the waiting job, and a row deleted later lets it run",
+      "// @test-kind parity: native asyncStepDeleted: a step deleted right after its job was queued fails the job 0x8004418b and never executes",
+      "// @test-kind parity: native asyncLoop (two captures): an asynchronous Create step creating another row runs jobs at Depth 1 to 12; the Depth 12 job's create would start Depth 13 and fails it with 0x80044182"
+    ],
+    "mirage/test/plugin-async-read-rollback.test.mjs": [
+      "// @test-kind parity: native dataverse-recorder faults.json, reproduced in native-r2 faults.json: a PATCH (Upsert) whose Update PreOperation step threw (400) still ran the existence read's asynchronous RetrieveMultiple step, with the request's RequestId",
+      "// @test-kind parity: native readNested: a Retrieve whose PostOperation synchronous step faults answers 400 0x80040265, yet its asynchronous Retrieve step runs once with the read's BusinessEntity"
+    ],
+    "mirage/test/plugin-async-retry.test.mjs": [
+      "// @test-kind parity: native asyncRetry (one capture, two concurrent runs): an always-Retry step executes five times and ends Failed with retrycount 4; coded and plain exceptions execute once; every failure has errorcode 0x80040265 and the authored text as friendlymessage; failed attempts' writes persist"
+    ],
+    "mirage/test/plugin-async-snapshot.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus (pipelineEffects, async, crud, ownerAndState): async step context and deleted-row job failure"
+    ],
+    "mirage/test/plugin-async-targets.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, pipelineEffects scenario captured twice: async steps get the Target PostOperation started with, not its context edits"
+    ],
+    "mirage/test/plugin-batch-shared-variables.test.mjs": [
+      "// @test-kind parity: native recorder corpus batch (two captures): changeset contexts start SharedVariables with IsODataTransaction true and ODataChangesetRequestCount (2 for POST+PATCH, 1 for one PATCH); the non-changeset part has neither"
+    ],
+    "mirage/test/plugin-bulk-parents.test.mjs": [
+      "// @test-kind parity: native recorder parity corpus bulk (Web API CreateMultiple/UpdateMultiple): per-record pipelines run inside the bulk operation under its stage context, with one request identity and bulk Targets metadata"
+    ],
+    "mirage/test/plugin-bulk-target-shape.test.mjs": [
+      "// @test-kind parity: native and native-r2 bulk (CreateMultiple/UpdateMultiple Targets 10/20/40) and currency CreateMultiple/40: no versionnumber, null createdonbehalfby or owningteam, unnamed references without lookup FormattedValues, whole-second createdon, UpdateMultiple Targets carry the key"
+    ],
+    "mirage/test/plugin-clr-depth.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, depth scenario captured twice: a nested PostOperation Create chain reached Depth 10 and committed (204)"
+    ],
+    "mirage/test/plugin-clr-impersonation.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, crud scenario captured twice, 'Update 40 impersonated': UserId is the impersonated user, InitiatingUserId the caller"
+    ],
+    "mirage/test/plugin-clr-run-as.test.mjs": [
+      "// @test-kind parity: native recorder corpus sdkSurface and readNested (native-r2): asynchronous jobs queued by a run-as SDK write report that user as UserId and InitiatingUserId; Guid.Empty keeps the caller",
+      "// @test-kind parity: native recorder corpus bypassHeaders, readNested and sdkSurface (native and native-r2): IsApplicationUser is true exactly when the initiating user is an application user; MSCRMCallerID keeps the caller's application id, a run-as SYSTEM or other-user SDK call reports its own (Guid.Empty) and re-stamps every ancestor's initiating fields, Guid.Empty keeps the caller's",
+      "// @test-kind parity: native-r2 sdkSurface Create/20 as SYSTEM (62) and as another user (68), readNested nested Create as SYSTEM: createdonbehalfby and modifiedonbehalfby are the initiating user; as the context user neither"
+    ],
+    "mirage/test/plugin-clr-sandbox-worker.test.mjs": [
+      "// @test-kind parity: native and native-r2 sandbox scenario (both captures): plug-in threads complete SDK calls, the sandbox runs in en-US and UTC, and one worker keeps assembly static state"
+    ],
+    "mirage/test/plugin-clr-services.test.mjs": [
+      "// @test-kind parity: native dataverse-recorder 'services' corpus (both captures): interface sets of the tracing, factory, organization, ILogger, feature-control and managed-identity service objects"
+    ],
+    "mirage/test/plugin-clr-trace-format.test.mjs": [
+      "// @test-kind parity: native traceFaults Update/20 (both captures): a Trace with brace text and no arguments does not fault and later actions run"
+    ],
+    "mirage/test/plugin-constructor-configuration.test.mjs": [
+      "// @test-kind parity: native custom API main operations (stage 30) are constructed with null unsecure and secure configuration",
+      "// @test-kind parity: native N3 solution trial (native-trial/n3-solution.json): a step imported from a Solution has no secure"
+    ],
+    "mirage/test/plugin-context-values.test.mjs": [
+      "// @test-kind parity: native recorder corpus crud (both captures): System Create output from PostOperation"
+    ],
+    "mirage/test/plugin-context4-images.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus 2026-10-30 (crud, bulk, ownerAndState, sdkMessages), reproduced over repeated requests in each capture: IPluginExecutionContext4 image sets fill in execution order across a request's lanes",
+      "// @test-kind parity: native imagesOrder (native-r2 ev 61, native ev 51) 'Probe: SetStateDynamicEntity 40 images': a state-changing Update's SetStateDynamicEntity pre image holds the row before the write (statecode 0, statuscode 1), the post image the row after (1, 2)",
+      "// @test-kind parity: native imagesOrder (native and native-r2) 'Probe: Assign 40 images': registered Assign pre/post images hold the row before/after the owner change; with an async Assign step the sync step's preC keys are [AsynchronousStepPrimaryName, pre] and postC [post]",
+      "// @test-kind parity: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records, minus the Target columns; a table without a published rule has none",
+      "// @test-kind parity: native ownerAndState capture 2026-10-30 (Web API ownerid bind: Update/20 and /40 Targets add the new owner's owningbusinessunit, the saved row's modifiedonbehalfby is the caller) and sdkMessages (Assign's Update Target: owninguser, owningbusinessunit, modifiedonbehalfby = caller), each reproduced over its Update stages",
+      "// @test-kind parity: native imageAliasOrder captures 2026-10-30/31 (native and native-r2, reproduced): a step's images enumerate in registration order (z, m), the stage set appends them after earlier entries, and AsynchronousStepPrimaryName lists the primary name before the key",
+      "// @test-kind parity: native recorder captures 2026-10-30/31 (native and native-r2): the primary-name image joins the pre side for Delete, DeleteMultiple and Assign (crud, sdkMessages, imagesOrder) and the post side for the other row messages, Merge included (mergeAccount); none for RetrieveMultiple, Associate, Disassociate, custom APIs",
+      "// @test-kind parity: native bypassHeaders (native and native-r2) 'bypass async' ev 4/5: with the CustomAsync bypass a synchronous Create PostOperation step's PostEntityImagesCollection holds only its own post image; without it AsynchronousStepPrimaryName joins"
+    ],
+    "mirage/test/plugin-create-identity.test.mjs": [
+      "// @test-kind parity: repeated native qualification of Create stage-10 Entity.Id changes adopted or ignored by main; duplicate/permission tails are local"
+    ],
+    "mirage/test/plugin-create-zero-key.test.mjs": [
+      "// @test-kind parity: repeated native qualification: empty primary attribute keeps an allocated Entity.Id in PreValidation, then faults 0x80040203"
+    ],
+    "mirage/test/plugin-data-semantics.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus 2026-10-30, single Create stage 10/20/40 Target columns repeated across the crud, upsert, reads and pipelineEffects scenarios (organizationid from the organization-owned child create); Update and bulk Targets have their own tests below",
+      "// @test-kind parity: Update stage 20/40 modification stamps repeated in the native recorder corpus 2026-10-30 (crud, upsert, pipelineEffects); the cleared text as an empty string reproduced in native and native-r2 crud, nullSemantics, imagesOrder",
+      "// @test-kind parity: native dev-environment recorder corpus 2026-10-30, every bare PATCH in the crud and upsert scenarios (Upsert parent, existence RetrieveMultiple inputs and query, If-Match on a missing row)",
+      "// @test-kind parity: native recorder corpus 2026-10-30 Targets and images repeated across scenarios (metadata types, unnamed Target references, the submitted TimeZoneIndependent kind of the encoder's submitted projection, which only Create/CreateMultiple PreValidation uses, ten-place decimals, yominame companions, unnamed owninguser)",
+      "// @test-kind parity: native recorder nullSemantics Create 10/20/40 and async 40, events 3751-3784 (native) and 6897-6936 (native-r2)",
+      "// @test-kind parity: native-r2 nullSemantics full PATCH Update 20/40/async timezoneruleversionnumber (6955, 6965, 6972); all-null PATCH without it",
+      "// @test-kind parity: native and native-r2 crud/crudNoAsync Create/10 and CreateMultiple/10 Utc, nullSemantics Update/10 and UpdateMultiple/10 Unspecified TimeZoneIndependent kinds",
+      "// @test-kind parity: native-r2 relationsReads 1:N $ref associate child Update 10/20/40 Target keys",
+      "// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)",
+      "// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)",
+      "// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)"
+    ],
+    "mirage/test/plugin-depth-limit.test.mjs": [
+      "// @test-kind parity: native depth39 (two captures): a synchronous nested chain runs to Depth 12, then the request answers 400 0x80044182 (infinite loop) and nothing is kept"
+    ],
+    "mirage/test/plugin-dynamic-filter.test.mjs": [
+      "// @test-kind parity: native and native-r2 filters 'Probe: Create 20 filter text' does not run for a POST without the filtered column"
+    ],
+    "mirage/test/plugin-entry-points.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (customApi: a bound custom API's target load runs no Retrieve pipeline; associate: a self-referencing N:N $ref through the relationship-named navigation passes PrimaryEntityRole Referencing; upsert: a Delete by alternate key names it in its PreValidation and main-operation Targets)",
+      "// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): Web API Merge with a type-only UpdateContent runs Merge 10/20/40 around two subordinate Updates (PreOperation only here) under Merge/30, {statecode 1, statuscode 2} then {masterid, merged true}, and no target Update",
+      "// @test-kind parity: native recorder captures 2026-10-30 webApiNamed (native and native-r2): a bound custom API addressed by alternate key answers 200 and its Target carries the resolved id and KeyAttributes",
+      "// @test-kind parity: native recorder captures 2026-10-30 webApiNamed (native and native-r2): sharing messages and RetrievePrincipalAccess run no Retrieve before them, and a team holding only a share answers the shared rights",
+      "// @test-kind parity: native recorder corpus webApiNamed (native and native-r2): RetrieveSharedPrincipalsAndAccess/40 OutputParameters.PrincipalAccesses is PrincipalAccess[] of { Principal: EntityReference (team, name null), AccessMask: AccessRights }, not the HTTP JSON",
+      "// @test-kind parity: native recorder captures 2026-10-30 soapMessages (native and native-r2): SOAP Assign runs Assign 10/20/40 and its owner Update 20/40 (no PreValidation) under Assign/30 as SYSTEM; SOAP SetState runs SetStateDynamicEntity 10/20/40 and its Update 20/40 under SetStateDynamicEntity/30 as the caller",
+      "// @test-kind parity: native recorder captures 2026-10-30 privilege (native and native-r2): a Create reusing an existing primary key runs its PreValidation and PreOperation steps, then answers 412 0x80040237",
+      "// @test-kind parity: native recorder captures 2026-10-30/31 privilegeSecond (trial, both captures): for a caller without the table privileges a Create is refused after PreValidation, a Retrieve or RetrieveMultiple after PreOperation, an Update or Delete before any step, each 403 0x80040220",
+      "// @test-kind parity: native recorder captures 2026-10-30/31 relationsReads (both captures): a $ref on a one-to-many collection navigation runs Associate with Relationship.PrimaryEntityRole Referenced and PrimaryEntityName none around the child's delegated Update at depth 2 without ConcurrencyBehavior",
+      "// @test-kind parity: native webApiNamed: each Web API sharing or access message runs its asynchronous PostOperation step once after the request",
+      "// @test-kind parity: native mergeAccount: a Merge succeeds while a system job regarding the subordinate still waits (its asynchronous Update steps ran after the merge)"
+    ],
+    "mirage/test/plugin-formatted-values.test.mjs": [
+      "// @test-kind parity: dataverse-recorder native corpus 2026-10-30 (crud, bulk, pipelineEffects, upsert): Entity.FormattedValues of CLR Targets and images",
+      "// @test-kind parity+contract: native crud Create Target/post image FormattedValues (money \"₴3.5000\", \"No\") read by an original DLL; UTF-8 host protocol is Paqvilo's own",
+      "// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)",
+      "// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)",
+      "// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)"
+    ],
+    "mirage/test/plugin-handler-prevalidation.test.mjs": [
+      "// @test-kind parity+contract: native crud corpus: Pre/PostOperation parent is the stage-30 main operation (CLR observer); JS handler parent view is local"
+    ],
+    "mirage/test/plugin-image-values.test.mjs": [
+      "// @test-kind parity: native bulk.json capture 2026-10-30, ev 1407 and 1446 (repeated at 1454/1459): asynchronous bulk-origin CreateMultiple and UpdateMultiple without registered images have no pre-image sets and one AsynchronousStepPrimaryName set per target",
+      "// @test-kind parity: native qualification of selected-null and selected-primary-key images: null Attributes omitted, image Id retained",
+      "// @test-kind parity: native pipelineEffects corpus: a nested Create PreOperation parent is its own Create main operation (stage 30)"
+    ],
+    "mirage/test/plugin-merge.test.mjs": [
+      "// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): Web API Merge of two accounts as an original CLR observer sees it",
+      "// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): the subordinate is written by two Updates under Merge/30 at the Merge's depth, {statecode 1, statuscode 2} then {masterid = target, merged true}, the target is not written for a type-only UpdateContent, and the subordinate reads back 200 merged, inactive, with the target as master",
+      "// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): a Web API Merge with a type-only UpdateContent passes UpdateContent null, with the inputs in the native order Target, SubordinateId, PerformParentingChecks, tag, UpdateContent at stages 10, 20, 40 and in the asynchronous job",
+      "// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2) events 25-30 and the asynchronous reads: between the subordinate's two Updates the platform's internal Update/50 step reads the subordinate's action cards (RetrieveMultiple 10/20/40) and the subordinate (Retrieve 10/20/40) at Depth 2 under Update/50 < Merge/30 as SYSTEM; their asynchronous jobs report X/50 < X/30"
+    ],
+    "mirage/test/plugin-merged-operation-context.test.mjs": [
+      "// @test-kind parity: native recorder corpus pipelineEffects (native and native-r2): a Create PreValidation step's shared variable reaches the CreateMultiple step of the same phase, a PreOperation one reaches CreateMultiple PreOperation, the PostOperation steps and the queued job; crud: Create and CreateMultiple contexts share RequestId, OperationId and CorrelationId and keep their own Target/Targets inputs",
+      "// @test-kind parity: native recorder corpus pipelineEffects (native and native-r2): a variable a PreOperation step shares reaches the queued job of the same operation, and the job keeps its own message's Target input"
+    ],
+    "mirage/test/plugin-message-admission.test.mjs": [
+      "// @test-kind parity: native recorder corpus 2026-10-30, upsert and bulk scenarios captured twice: globally registered Upsert and UpsertMultiple steps never execute"
+    ],
+    "mirage/test/plugin-native-context.test.mjs": [
+      "// @test-kind parity: native recordings of single-record CLR context shapes: SharedVariables, stage-30 parent, async copies, Context4, Delete SYSTEM",
+      "// @test-kind parity: native recorder corpus customApi and webApiNamed (two captures each): new_RecorderBound/40/Mode 1 PrimaryEntityId Guid.Empty while the synchronous stages carry the row id"
+    ],
+    "mirage/test/plugin-parameter-order.test.mjs": [
+      "// @test-kind parity: native and native-r2 recorder corpora (crud, bulk, reads, relationsReads, associate, customApi, sdkMerge, sdkSurface): InputParameters and SharedVariables enumerate in the same order in both captures (request parameters, tag, FromSandbox, platform parameters; IsAutoTransact, AcceptLang, tag, DefaultsAddedFlag)"
+    ],
+    "mirage/test/plugin-parent-context.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (crud, upsert, nestedImages, sdkMessages, ownerAndState, bulk, faults, depth, customApi): ParentContext levels a CLR step can reach",
+      "// @test-kind parity: native depth captures r1 and r2 (dataverse-recorder depth, native-r2 depth) reproduce the chain",
+      "// @test-kind parity: native depth captures r1 and r2 (dataverse-recorder depth, native-r2 depth) reproduce the chain",
+      "// @test-kind parity: native faults captures r1 and r2 both show Create/20 and Create/40 at Depth 1 with AcceptLang ''",
+      "// @test-kind parity: native bypassHeaders (native and native-r2) 'bypass async' ev 4-6: under the CustomAsync bypass the Create root lists only the written table, without the fileattachment the other requests (ev 11, 12, 18, 19) add",
+      "// @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match",
+      "// @test-kind parity: native and native-r2 asyncLoop d2..d12 and native-r2 async (SDK Retrieve from an asynchronous step)",
+      "// @test-kind parity: native and native-r2 bulkRequests (an Update/40 step's ExecuteTransaction and ExecuteMultiple of two Creates each)",
+      "// @test-kind parity: native and native-r2 bulk (Web API UpsertMultiple of one new and one existing row; Web API CreateMultiple)",
+      "// @test-kind parity: native and native-r2 ownerAndState SetStateDynamicEntity 10/20/40 ParentContext Target formattedValues empty (4618-4620)"
+    ],
+    "mirage/test/plugin-platform-messages.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus, captures native and native-r2 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios)",
+      "// @test-kind parity: native recorder corpus sdkMessages and soapMessages (native and native-r2): Assign's owner Update/20,40 run as SYSTEM (UserId) while InitiatingUserId and AuthenticatedUserId stay the caller, IsApplicationUser and InitiatingUserApplicationId follow the caller application",
+      "// @test-kind parity+security: native dev-environment plug-in recorder corpus 2026-10-30, sdkMessages scenario: a team's shared mask is its RetrievePrincipalAccess answer; the explicit backend grants still decide",
+      "// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''",
+      "// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''",
+      "// @test-kind parity: native and native-r2 sdkMessages 5179, imagesOrder 7843 and soapMessages 5962: Update/20 under Assign/30 carries owninguser, owningbusinessunit, a named ownerid and owneridyominame equal to the assignee's fullname"
+    ],
+    "mirage/test/plugin-primary-global.test.mjs": [
+      "// @test-kind parity: native registration probes: global Create steps are accepted and run, global Update accepts an image"
+    ],
+    "mirage/test/plugin-query-like.test.mjs": [
+      "// @test-kind parity: native-r2 faults 5479/5481, pipelineEffects and native asyncRetry: Web API startswith reaches the plug-in Query as like 'p%'; the PagingCookie lists each order column then the primary key"
+    ],
+    "mirage/test/plugin-query-paging.test.mjs": [
+      "// @test-kind parity: official Microsoft.Xrm.Sdk.dll executed by the probe: QueryByAttribute and QueryExpression constructor PageInfo, null and populated paging round trip"
+    ],
+    "mirage/test/plugin-read-inputs.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, replayed by the local recorder harness: reads (a Web API collection GET hands RetrieveMultiple a paged FetchExpression of the client's selection and a first/last paging cookie), crud and upsert (the platform's existence read: no IncludeAnnotations, empty paging cookie)",
+      "// @test-kind parity: native recorder captures 2026-10-30 readAsync (native and native-r2): an asynchronous Retrieve step runs once per GET of a kept row, after the read",
+      "// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection",
+      "// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection",
+      "// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection"
+    ],
+    "mirage/test/plugin-read-observation.test.mjs": [
+      "// @test-kind parity: native readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction and its row persists after the read's own fault",
+      "// @test-kind parity+contract: native dev-environment recorded contexts (SecondaryEntityName none, nested calls not portal calls); transport flag is local design",
+      "// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is its stage-30 main operation, caller one level up"
+    ],
+    "mirage/test/plugin-read-step-writes.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus (readNested): RetrieveMultiple and Retrieve steps write through the SDK on a Web API read, and a Retrieve step's write stays committed when the read then faults"
+    ],
+    "mirage/test/plugin-registration-parity.test.mjs": [
+      "// @test-kind parity: native sdkmessage/sdkmessagefilter catalogue rows (native filter catalogues native-filters.json and native-filters-2.json, platform constants); tests resting on other evidence carry their own tag",
+      "// @test-kind parity: native filter catalogue rows (native-filters.json 'none' and table filters with their sdkmessage ids and flags; platform constants), standard SDK messages named by the official Microsoft.Xrm.Sdk / Microsoft.Crm.Sdk.Proxy request classes",
+      "// @test-kind parity: native and native-r2 crud (global Create step on the created table) and reads (asynchronous RetrieveMultiple after a collection GET)",
+      "// @test-kind parity: native and native-r2 filters 'Probe: Update 40 filter modifiedon' and 'filter primary key' registered",
+      "// @test-kind parity: native and native-r2 filters 'Probe: Update 40 filter spaced' refused 0x8004f036 with the raw token"
+    ],
+    "mirage/test/plugin-request-root-changes.test.mjs": [
+      "// @test-kind parity: native recorder corpus webApiNamed, soapMessages and mergeAccount (native and native-r2): a named message no plug-in issued owns the request's changes in its PostOperation SharedVariables (sync and asynchronous): sharing lists principalobjectaccess then the table with POADistributionChanged 10760, Merge principalobjectaccess and the table with 1; PreValidation, PreOperation and access reads list none"
+    ],
+    "mirage/test/plugin-retrieve-exchange-rate.test.mjs": [
+      "// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud scenario: a Create carrying a money value runs RetrieveExchangeRate/transactioncurrency PreOperation, PostOperation and asynchronous steps (not its registered PreValidation step) under Create/25 (MultiCurrencyPlugin) < Create/30, as SYSTEM for the caller, input TransactionCurrencyId, output ExchangeRate already at PreOperation; Creates without a money value run none",
+      "// @test-kind parity: native recorder captures 2026-10-30 currency (native and native-r2): a PATCH writing a money value runs RetrieveExchangeRate under Update/25 < Update/30; a PATCH without one runs none",
+      "// @test-kind parity: native-r2 nullSemantics all-null PATCH runs RetrieveExchangeRate 20/40/async under Update/25 < Update/30 (6986, 6989, 6998); a POST with money null and a PATCH without money run none",
+      "// @test-kind parity: native-r2 nullSemantics all-null PATCH runs RetrieveExchangeRate 20/40/async under Update/25 < Update/30 (6986, 6989, 6998); a POST with money null and a PATCH without money run none",
+      "// @test-kind parity: native and native-r2 currency Web API CreateMultiple of two money rows (7075-7077): one RetrieveExchangeRate 20/40/async for the request, under the last record's Create/20 step context (SYSTEM) < CreateMultiple/25 (the caller, both Targets) < CreateMultiple/30"
+    ],
+    "mirage/test/plugin-retrieve-related.test.mjs": [
+      "// @test-kind parity: native and native-r2 relationsReads (GET with $expand of a one-to-many navigation: Retrieve 10/20/40 RelatedEntitiesQuery '<schema>.Referenced' FetchExpression of the nested $select, Retrieve/40 BusinessEntity.RelatedEntities collection with its paging cookie)"
+    ],
+    "mirage/test/plugin-runtime-table-filters.test.mjs": [
+      "// @test-kind parity: native-filters.json custom user-owned table filter template (created with the table)"
+    ],
+    "mirage/test/plugin-sdk-bulk-stamps.test.mjs": [
+      "// @test-kind parity: native-r2 sdkSurface plug-in Execute(CreateMultiple) and Execute(UpdateMultiple) (6202-6207, 6177/6192): Entity.Id allocated before PreValidation; CreateMultiple/20 and the record's Create/20 Targets carry the key, state, audit stamps and organizationid; UpdateMultiple/20 Targets the key and the modification stamps"
+    ],
+    "mirage/test/plugin-sdk-bulk-upsert-key.test.mjs": [
+      "// @test-kind parity: native recorder corpus sdkSurface (dev environment, captures native and native-r2): a synchronous step's SDK UpdateMultiple and CreateMultiple on custom tables succeed without any caller-supplied capability, an SDK Upsert by alternate key creates the row (RecordCreated, Target), and the step's later Creates still succeed"
+    ],
+    "mirage/test/plugin-sdk-caught-refusals.test.mjs": [
+      "// @test-kind parity: native recorder corpus runAsSecond (trial, two captures) and sdkSurface (dev, two captures): a caught SDK Create refused for a missing privilege still fails the operation with 0x8009000c, a caught Update refusal and a caught unknown-column Create (0x80041103) do not"
+    ],
+    "mirage/test/plugin-sdk-fault-transaction.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus (sdkSurface): a synchronous step that catches the 0x80040217 fault of an SDK Update on a missing row keeps its transaction, and the triggering operation succeeds"
+    ],
+    "mirage/test/plugin-sdk-input-sets.test.mjs": [
+      "// @test-kind parity: native recorder corpus sdkSurface, sdkMessages, soapMessages and crud web hook payloads (native and native-r2): FromSandbox, ConcurrencyBehavior and DefaultsAddedFlag presence per stage on SDK bulk requests, a main operation's own Update and asynchronous web hook parents"
+    ],
+    "mirage/test/plugin-sdk-parent.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is stage-30 main operation, entry snapshot above"
+    ],
+    "mirage/test/plugin-sdk-tag.test.mjs": [
+      "// @test-kind parity: native-r2 traceFaults accepts request tags up to 13094 bytes; native depth39 accepts an 8830-byte tag"
+    ],
+    "mirage/test/plugin-sdk-versionnumber.test.mjs": [
+      "// @test-kind parity: native and native-r2 recorder corpora (crud, bulk, reads, async pq.r.0.40.1): no plug-in SDK entity carries a versionnumber attribute; Entity.RowVersion carries the version",
+      "// @test-kind parity: native recorder corpus crud and bulk Targets and images, reads (Retrieve ColumnSet(true)) and async pq.r.0.40.1 attribute lists carry no versionnumber; the value is the row version",
+      "// @test-kind parity: native recorder corpus async pq.r.0.40.1 and crud Update/40 Target: the Retrieve BusinessEntity and PostOperation Targets carry no versionnumber; the row version is Entity.RowVersion"
+    ],
+    "mirage/test/plugin-shared-variables.test.mjs": [
+      "// @test-kind parity: native dev-environment recorder corpus (crud, pipelineEffects): PreValidation variables read from stage-30 main parent"
+    ],
+    "mirage/test/plugin-single-multiple.test.mjs": [
+      "// @test-kind parity: native recorder parity corpus (crud, depth, async, faults, pipelineEffects, upsert): a single Create/Update/Delete runs its paired *Multiple steps inside its own pipeline, requested message first at equal rank"
+    ],
+    "mirage/test/plugin-solution-assembly-bytes.test.mjs": [
+      "// @test-kind parity: native-trial and native-trial-r2 n3-solution: the steps of an imported unmanaged Solution's plug-in assembly run its code (secure configuration null)"
+    ],
+    "mirage/test/plugin-standard-table-semantics.test.mjs": [
+      "// @test-kind parity: native and native-r2 mergeAccount (account Create/10 Target defaults 2737/7368, Create/20 FormattedValues 7371, Merge images without isprivate, rows and reads holding address1_addressid and address2_addressid)"
+    ],
+    "mirage/test/plugin-step-faults.test.mjs": [
+      "// @test-kind parity: native dataverse-recorder faults.json: a plug-in's ordinary exception during Update PreOperation answered 400 0x80040224 with the authored message",
+      "// @test-kind parity: native and native-r2 traceFaults: messageblock joins Trace calls with CRLF and keeps the last 10240 characters; a fault row names the OrganizationServiceFault with the platform frame suffix",
+      "// @test-kind parity: native and native-r2 traceFaults: messageblock joins Trace calls with CRLF, keeps an LF inside one call; a success row's exceptiondetails is empty and it carries the context identities",
+      "// @test-kind parity: native and native-r2 traceFaults traces[]: typename assembly-qualified, configuration = step configuration, requestid = context RequestId, performanceconstructorduration 0",
+      "// @test-kind parity: native traceExceptionOnly (r2, reproduced): with plugintracelogsetting 1 only the failing step's trace row is written"
+    ],
+    "mirage/test/plugin-system-parameters.test.mjs": [
+      "// @test-kind parity: native recorder corpus bypassHeaders (two captures): record-operation contexts at 10/20/40, their asynchronous jobs and ParentContext frames carry the MSCRM bypass headers as InputParameters with the sent values",
+      "// @test-kind parity: native recorder corpus bypassHeaders (native and native-r2): with MSCRM.BypassCustomPluginExecution true or BypassBusinessLogicExecution CustomSync no synchronous step runs, while each asynchronous Create and CreateMultiple step runs once, inside the request's frame (its tag) and with the header as an InputParameter"
+    ],
+    "mirage/test/plugin-trace-correlation.test.mjs": [
+      "// @test-kind parity: native-r2 traceExceptionOnly and native traceFaults: a plug-in trace row's correlationid is the CorrelationId of the step's execution context"
+    ],
+    "mirage/test/plugin-transaction-flags.test.mjs": [
+      "// @test-kind parity: native recorder corpus customApi, customApiNested, webApiNamed, relationsReads, sdkMessages and batch (native and native-r2): IsInTransaction is false at a top-level PreValidation (custom API, SOAP Associate) and on the access reads, true from PreOperation on and inside a caller's transaction or a $batch changeset"
+    ],
+    "mirage/test/plugin-uploaded-assembly.test.mjs": [
+      "// @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a step on a packaged type runs and the package's dependent unsigned assembly resolves at execution"
+    ],
+    "mirage/test/plugin-upsert-identity.test.mjs": [
+      "// @test-kind parity: native recorder parity corpus crud (a bare Web API PATCH): the Upsert's existence RetrieveMultiple and its Update share one RequestId, OperationId and CorrelationId"
+    ],
+    "mirage/test/webhook-message-values.test.mjs": [
+      "// @test-kind parity: executes the official Microsoft.Xrm.Sdk DataContractJsonSerializer and compares RemoteExecutionContext output"
+    ],
+    "mirage/test/webhook-sdk-values.test.mjs": [
+      "// @test-kind parity: executes the official Microsoft.Xrm.Sdk DataContractJsonSerializer as oracle for key metadata and numeric bytes"
+    ]
+  }
+}

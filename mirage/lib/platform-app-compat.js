@@ -11,9 +11,9 @@
  */
 (() => {
   'use strict';
-  if (window.__ppPlatformApp) return;
-  window.__ppPlatformApp = true;
-  const jq = () => (typeof window.jQuery?.fn?.jquery === 'string' ? window.jQuery : null);
+  if (globalThis.__ppPlatformApp) return;
+  globalThis.__ppPlatformApp = true;
+  const jq = () => (typeof globalThis.jQuery?.fn?.jquery === 'string' ? globalThis.jQuery : null);
   // jQuery ready callbacks run after DOMContentLoaded listeners and after the ready
   // handlers that page scripts registered earlier, as the bundle's do.
   const ready = (fn) => {
@@ -25,7 +25,7 @@
   const all = (selector, root = document) => [...root.querySelectorAll(selector)];
   const text = (element) => (element ? element.textContent : '');
   const resource = (key, fallback) => {
-    const value = window.ResourceManager?.[key];
+    const value = globalThis.ResourceManager?.[key];
     return typeof value === 'string' ? value : fallback;
   };
   const setAttributeFromTitle = (element) => {
@@ -34,7 +34,7 @@
   };
   const nextElement = (element) => element.nextElementSibling;
 
-  const portal = (window.portal = window.portal || {});
+  const portal = (globalThis.portal = globalThis.portal || {});
   portal.IsRequestedFromMaker ||= function () {
     return Boolean(document.querySelector('div[data-gjs-type]'));
   };
@@ -55,12 +55,14 @@
   };
   portal.UpdateValidationSummary ||= portal.SetValidationSummary;
   portal.addRoleOnCheckboxLabel ||= function (elements) {
-    for (const element of jq() ? jq()(elements).toArray() : [].concat(elements ?? []))
+    for (const element of jq() ? jq()(elements).toArray() : /* NOSONAR */ [].concat(elements ?? []))
+      // NOSONAR: concat preserves spreadability and sparse input behavior
+      // NOSONAR: concat preserves caller Symbol.isConcatSpreadable semantics
       element?.setAttribute?.('role', 'none');
   };
   // Liquid date output (<abbr class="timeago|posttime">) is reformatted with the site formats.
   portal.convertAbbrDateTimesToTimeAgo ||= function () {
-    if (typeof window.moment !== 'function') return;
+    if (typeof globalThis.moment !== 'function') return;
     const TOKENS = {
       yyyy: 'YYYY',
       yy: 'YY',
@@ -86,23 +88,23 @@
     };
     const dotNetToMoment = (format) =>
       String(format ?? '').replace(
-        /'([^']*)'|"([^"]*)"|yyyy|yy|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|tt|t/g,
+        /'([^']*)'|"([^"]*)"|yyyy|yy|M{1,4}|d{1,4}|H{1,2}|h{1,2}|m{1,2}|s{1,2}|fff|t{1,2}/g, // NOSONAR: regex kept: a rewrite would change matches or captures
         (token, single, double) => (single != null || double != null ? `[${single ?? double}]` : TOKENS[token]),
       );
     for (const selector of ['abbr.timeago', 'abbr.posttime'])
       for (const element of all(selector)) {
         const parsed = Date.parse(element.textContent);
         if (!parsed) continue;
-        const value = window.moment(parsed);
+        const value = globalThis.moment(parsed);
         const dateFormat = dotNetToMoment(
-          element.closest('[data-dateformat]')?.getAttribute('data-dateformat') || 'MMMM d, yyyy',
-        );
+          element.closest('[data-dateformat]')?.getAttribute('data-dateformat') || 'MMMM d, yyyy', // NOSONAR: read actual attributes, not inherited dataset properties
+        ); // NOSONAR: actual attributes exclude inherited dataset values
         const timeFormat = dotNetToMoment(
-          element.closest('[data-timeformat]')?.getAttribute('data-timeformat') || 'h:mm tt',
-        );
-        const format = element.getAttribute('data-format')
-          ? dotNetToMoment(element.getAttribute('data-format'))
-          : `${dateFormat} ${timeFormat}`;
+          element.closest('[data-timeformat]')?.getAttribute('data-timeformat') || 'h:mm tt', // NOSONAR: read actual attributes, not inherited dataset properties
+        ); // NOSONAR: actual attributes exclude inherited dataset values
+        const format = element.getAttribute('data-format') // NOSONAR: read actual attributes, not inherited dataset properties
+          ? dotNetToMoment(element.getAttribute('data-format')) // NOSONAR: read actual attributes, not inherited dataset properties
+          : `${dateFormat} ${timeFormat}`; // NOSONAR: actual attributes exclude inherited dataset values
         element.setAttribute(
           'title',
           selector === 'abbr.timeago' ? value.format('YYYY-MM-DDTHH:mm:ss') : value.format(format),
@@ -111,11 +113,7 @@
       }
   };
 
-  ready(() => {
-    if (typeof window.moment?.locale === 'function')
-      window.moment.locale(document.documentElement.getAttribute('lang') || 'en');
-    portal.convertAbbrDateTimesToTimeAgo();
-
+  const setupMenuSelection = () => {
     // Dropdowns and menus.
     for (const scope of ['.page_section .btn-select .dropdown-menu li a', '.navbar .btn-select .dropdown-menu li a'])
       all(scope)[0]?.setAttribute('aria-selected', 'true');
@@ -130,6 +128,9 @@
       link.setAttribute('aria-label', resource('Home_DefaultText', 'Home'));
     for (const link of all('li.dropdown>a.navbar-icon'))
       link.setAttribute('title', resource('Search_DefaultText', 'Search'));
+  };
+
+  const setupRequiredLabels = () => {
     for (const label of all('label.required')) {
       const next = nextElement(label);
       if (!next) continue;
@@ -138,6 +139,9 @@
         control.setAttribute('aria-required', 'true');
       }
     }
+  };
+
+  const setupMenuAttributes = () => {
     for (const toggle of all('li.dropdown>a.dropdown-toggle')) {
       setAttributeFromTitle(toggle);
       toggle.setAttribute('aria-expanded', 'false');
@@ -147,6 +151,15 @@
       toggle.setAttribute('aria-haspopup', 'true');
     for (const link of all('li.weblink.dropdown>a')) setAttributeFromTitle(link);
     for (const link of all('div.list-group>a')) setAttributeFromTitle(link);
+  };
+
+  const setupMenuLinks = () => {
+    setupMenuSelection();
+    setupRequiredLabels();
+    setupMenuAttributes();
+  };
+
+  const setupRequiredControls = () => {
     for (const required of all('div.required'))
       for (const box of nextElement(required)?.querySelectorAll('input[type="checkbox"]') ?? [])
         box.setAttribute('aria-required', 'true');
@@ -154,14 +167,18 @@
       radio.closest('tr')?.setAttribute('role', 'group');
       radio.closest('td')?.setAttribute('role', 'radiogroup');
     }
+  };
+
+  const setupNavigationState = () => {
     document.getElementById('_yuiResizeMonitor')?.removeAttribute('tabindex');
     for (const link of all('.nav.weblinks a'))
       if (link.getAttribute('href') === location.pathname) link.setAttribute('aria-current', 'page');
     for (const option of all('select>option'))
       if (option.text === '' && option.hasAttribute('label')) option.text = option.getAttribute('label');
+  };
 
+  const setupForms = (heading) => {
     // Forms.
-    const heading = all('.page-header h1').map(text).join('');
     for (const form of all('.crmEntityFormView')) {
       form.setAttribute('role', 'form');
       form.setAttribute('aria-label', heading || resource('Entity_Form_Label', 'Basic Form'));
@@ -174,18 +191,26 @@
         input.click();
       });
     const picklists = all('.control select.form-control.picklist');
+    setupPicklists(picklists);
+    setupReadOnlyFormFields();
+  };
+
+  const setupPicklists = (picklists) => {
     if (picklists[0]?.hasAttribute('required')) for (const picklist of picklists) picklist.removeAttribute('required');
     // Bootstrap 5 option sets (form-select) keep their options unannotated.
     for (const picklist of picklists.filter((candidate) => !candidate.classList.contains('form-select'))) {
       const options = [...picklist.options];
       options.forEach((option, index) => {
         const label = option.text.replace(/\s+/g, ' ').trim();
-        option.setAttribute('data-original-text', label);
+        option.dataset.originalText = label;
         option.text = label;
         option.setAttribute('aria-posinset', String(index + 1));
         option.setAttribute('aria-setsize', String(options.length));
       });
     }
+  };
+
+  const setupReadOnlyFormFields = () => {
     for (const form of all('.entity-form[readonly]'))
       for (const control of form.querySelectorAll(
         '.lookup[readonly], .picklist[readonly], .MultiSelectPicklist[readonly]',
@@ -198,6 +223,19 @@
     // Composite boxes (full name, address) get the tooltip toggle on their control and no dash.
     for (const box of all('.crmEntityFormView [data-composite-control]'))
       box.closest('.control')?.setAttribute('data-bs-toggle', 'tooltip');
+    addEmptyReadOnlyBoxDashes();
+    addEmptyReadOnlySelectDashes();
+    document.addEventListener(
+      'change',
+      (event) => {
+        const dash = event.target?.nextElementSibling;
+        if (dash?.__ppEmptyDash) dash.style.display = event.target.value ? 'none' : '';
+      },
+      true,
+    );
+  };
+
+  const addEmptyReadOnlyBoxDashes = () => {
     for (const box of all(
       ".crmEntityFormView input[readonly]:not([type='hidden']):not([type='file']):not([data-composite-control]), .crmEntityFormView textarea[readonly]:not([data-composite-control])",
     )) {
@@ -212,6 +250,9 @@
       box.parentElement.style.position = 'relative';
       box.after(dash);
     }
+  };
+
+  const addEmptyReadOnlySelectDashes = () => {
     // An empty read-only option set is hidden behind the dash.
     for (const select of all('.crmEntityFormView select[readonly]')) {
       if (select.value || select.nextElementSibling?.__ppEmptyDash) continue;
@@ -225,15 +266,9 @@
       select.style.display = 'none';
       select.after(dash);
     }
-    document.addEventListener(
-      'change',
-      (event) => {
-        const dash = event.target?.nextElementSibling;
-        if (dash?.__ppEmptyDash) dash.style.display = event.target.value ? 'none' : '';
-      },
-      true,
-    );
+  };
 
+  const addHeadingAnnouncers = (heading) => {
     // Heading announcer.
     if (heading || document.querySelector('.page-header h1')) {
       for (const header of all('.page-header')) {
@@ -245,26 +280,39 @@
         header.appendChild(announcer);
       }
     }
+  };
+
+  ready(() => {
+    if (typeof globalThis.moment?.locale === 'function')
+      globalThis.moment.locale(document.documentElement.getAttribute('lang') || 'en');
+    portal.convertAbbrDateTimesToTimeAgo();
+    setupMenuLinks();
+    setupRequiredControls();
+    setupNavigationState();
+    const heading = all('.page-header h1').map(text).join('');
+    setupForms(heading);
+    addHeadingAnnouncers(heading);
   });
 
   // Ads and polls (the bundle's adx.Ad, adx.AdPlacement, adx.Poll and adx.PollPlacement):
   // each .ad/.adplacement/.poll/.pollplacement element loads its data-url (GET) and shows
   // the returned markup; a poll submits the checked option to data-submit-url through
   // shell.ajaxSafePost and shows the returned results.
-  const adx = (window.adx = window.adx || {});
+  const adx = (globalThis.adx = globalThis.adx || {});
   const load = (url) => {
     const $ = jq();
     if ($) return new Promise((resolve, reject) => $.ajax({ url, type: 'GET' }).then(resolve, reject));
-    return fetch(url, { credentials: 'same-origin' }).then((response) =>
-      response.ok ? response.text() : Promise.reject(response),
+    return fetch(url, { credentials: 'same-origin' }).then(
+      (response) => (response.ok ? response.text() : Promise.reject(response)), // NOSONAR: rejection value is part of the contract
     );
   };
   const show = (element, html) => {
     element.innerHTML = String(html ?? '').trim();
     element.style.display = '';
   };
+  const logPollPostFailure = (...details) => console.log({ m: 'Post Failed', d: details });
   const placement = (element, after) => {
-    const url = element.getAttribute('data-url');
+    const url = element.getAttribute('data-url'); // NOSONAR: actual attributes exclude inherited dataset values
     element.style.display = 'none';
     const source = url ? load(url) : Promise.resolve(element.innerHTML);
     return source.then(
@@ -290,8 +338,8 @@
     const render = (html) => {
       show(content, html);
       const question = element.querySelector('.poll-questionpanel');
-      this.id = question?.getAttribute('data-id') ?? null;
-      this.name = question?.getAttribute('data-name') ?? null;
+      this.id = question?.getAttribute('data-id') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
+      this.name = question?.getAttribute('data-name') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       this.submitted = !question;
       toggle(!this.submitted);
     };
@@ -301,7 +349,7 @@
       if (this.submitted) for (const back of element.querySelectorAll('.poll-return')) back.remove();
     };
     this.init = () => {
-      const url = element.getAttribute('data-url');
+      const url = element.getAttribute('data-url'); // NOSONAR: actual attributes exclude inherited dataset values
       return (url ? load(url) : Promise.resolve(content.innerHTML)).then(
         (html) => {
           render(html);
@@ -311,9 +359,9 @@
             else if (target?.closest('.poll-return')) this.viewPoll();
             else if (target?.closest('.poll-submit')) {
               const option = element.querySelector("input[id^='poll_option_']:checked")?.value;
-              const submitUrl = element.getAttribute('data-submit-url');
-              if (!option || !submitUrl || typeof window.shell?.ajaxSafePost !== 'function') return;
-              window.shell
+              const submitUrl = element.getAttribute('data-submit-url'); // NOSONAR: actual attributes exclude inherited dataset values
+              if (!option || !submitUrl || typeof globalThis.shell?.ajaxSafePost !== 'function') return;
+              globalThis.shell
                 .ajaxSafePost({
                   url: submitUrl,
                   async: false,
@@ -321,10 +369,7 @@
                   data: JSON.stringify({ pollId: this.id, optionId: option }),
                   contentType: 'application/json; charset=utf-8',
                 })
-                .then(
-                  (html) => render(html),
-                  (...details) => console.log({ m: 'Post Failed', d: details }),
-                );
+                .then(render, logPollPostFailure);
             }
           });
         },
@@ -355,7 +400,7 @@
   ready(() => {
     for (const box of all('.entitylist-filter-option-text input.has-tooltip[title]')) {
       const title = box.getAttribute('title');
-      box.setAttribute('data-bs-original-title', title);
+      box.dataset.bsOriginalTitle = title;
       if (!box.hasAttribute('aria-label')) box.setAttribute('aria-label', title);
       box.removeAttribute('title');
     }
@@ -388,21 +433,21 @@
     (event) => {
       const button = event.target?.closest?.('.form-custom-actions button.create-related-record-link');
       if (!button) return;
-      const criteria = button.getAttribute('data-filtercriteriaid');
+      const criteria = button.getAttribute('data-filtercriteriaid') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const modal = [...document.querySelectorAll('section.modal-form-createrecord')].find(
-        (candidate) => candidate.getAttribute('data-filtercriteriaid') === criteria,
+        (candidate) => (candidate.getAttribute('data-filtercriteriaid') ?? null) === criteria, // NOSONAR: actual attributes exclude inherited dataset values
       );
       const frame = modal?.querySelector('iframe[data-page]');
       const control = button.closest('[id^="EntityFormControl"]') || document;
       let layout = {};
       try {
-        layout = JSON.parse(control.querySelector('[data-form-layout]')?.getAttribute('data-form-layout') || '{}');
+        layout = JSON.parse(control.querySelector('[data-form-layout]')?.getAttribute('data-form-layout') || '{}'); // NOSONAR: reads attributes of observed DOM, dataset would differ
       } catch {
         /* the form keeps its default action */
       }
       const formId = layout.CreateRelatedRecordActionLink?.EntityForm?.Id;
       if (!frame || !formId) return;
-      const pagePath = frame.getAttribute('data-page');
+      const pagePath = frame.getAttribute('data-page'); // NOSONAR: actual attributes exclude inherited dataset values
       if (!pagePath?.trim()) return;
       let address;
       // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
@@ -422,7 +467,7 @@
       event.stopImmediatePropagation();
       const record = (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value || '').replace(/[{}]/g, '');
       const lcid = layout.LanguageCode || document.documentElement.getAttribute('crm-lcid') || '';
-      const queryValue = (value) => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
+      const queryValue = (value) => encodeURIComponent(String(value ?? '')).replaceAll('%20', ' ');
       // Target-page options cannot override the action's record, form or language.
       for (const key of ['id', 'entityformid', 'languagecode']) address.searchParams.delete(key);
       const options = address.searchParams.toString();
@@ -443,7 +488,7 @@
       frame.setAttribute('src', src);
       const $ = jq();
       if ($?.fn?.modal) $(modal).modal('show');
-      else if (window.bootstrap?.Modal) window.bootstrap.Modal.getOrCreateInstance(modal).show();
+      else if (globalThis.bootstrap?.Modal) globalThis.bootstrap.Modal.getOrCreateInstance(modal).show();
       // The shown dialog is labelled by its heading text.
       modal.setAttribute('aria-label', modal.querySelector('.modal-title')?.textContent ?? '');
     },

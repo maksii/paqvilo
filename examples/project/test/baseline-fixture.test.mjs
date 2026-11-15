@@ -51,7 +51,7 @@ test('contact- and account-filtered item lists show at least four rows whose cod
     const codes = rows.map((row) => row.fields.pqvd_code);
     assert.ok(new Set(codes).size >= 4, codes.join());
     const byName = [...rows]
-      .sort((a, b) => a.fields.pqvd_name.localeCompare(b.fields.pqvd_name))
+      .sort((a, b) => a.fields.pqvd_name.localeCompare(b.fields.pqvd_name, 'en'))
       .map((row) => row.fields.pqvd_code);
     assert.notDeepEqual(byName, [...codes].sort());
   };

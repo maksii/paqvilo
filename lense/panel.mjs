@@ -19,15 +19,15 @@ import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
-import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
-import { observeHttpErrors } from './http-errors.mjs';
+import { createApiRouteObserver, createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
+import { boundedJsonBody, observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
 import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
-const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`);
+const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`); // NOSONAR: intentional local script execution or generated handler
 
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
@@ -68,6 +68,13 @@ const MAX_ACTIVITY = 100;
 const MAX_DIFF_LINES = 3000;
 const MAX_DIFF_BYTES = 3 * 1024 * 1024;
 const MAX_API_BYTES = 32 * 1024;
+// Hang guard for one read of the local Mirage: it ends a request that never answers. It is not an expected answer time.
+const MIRAGE_READ_GUARD_MS = 60_000;
+// Hang guard for opening a launched scenario runtime's first document; matches the launch write's 120 s.
+const SCENARIO_NAVIGATION_GUARD_MS = 120_000;
+// Hang guard for removing the panel from one tab: it ends the wait on a tab whose debugger is paused, which never
+// answers. A closed tab ends the wait at once; an unanswered removal is reported by dispose().
+const PANEL_REMOVAL_HANG_MS = 30_000;
 const BINARY_EXT = /\.(?:png|jpe?g|gif|ico|webp|woff2?|ttf|eot|otf|pdf|zip|mp4|mp3)$/i;
 
 const GROUP_OF = {
@@ -103,6 +110,317 @@ const toLines = (text) =>
     .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .split('\n');
+const clippedDiffLine = (text) => (text.length > 500 ? text.slice(0, 500) + ' ...' : text);
+function createPageHitItem(hit, source, isFile, changed, fresh, session, sourceFile) {
+  return {
+    kind: source.kind ?? (isFile ? 'web-file' : 'other'),
+    group: isFile ? webFileGroup(hit.url) : (GROUP_OF[source.kind] ?? 'other'),
+    rel: source.rel,
+    url: isFile ? hit.url : null,
+    title: isFile ? readableName(hit.url.split('/').pop() || hit.url) : null,
+    count: hit.count ?? 1,
+    edited: changed.has(sourceFile(source.rel)),
+    fresh: fresh.has(session.rel(sourceFile(source.rel))),
+    canPause: true,
+    canDiff: !BINARY_EXT.test(source.rel),
+  };
+}
+function annotatePageHitItem(item, hit, source, isFile, webFileState) {
+  if (isFile) Object.assign(item, webFileState(hit.url), { note: source.action === 'web-file' ? null : source.action });
+  else
+    Object.assign(item, {
+      differs: !/^injected/.test(source.action), // NOSONAR: preserve coercion for absent action metadata
+      isNew: /^injected/.test(source.action), // NOSONAR: preserve coercion for action metadata
+      note: source.action.replace(/^replaced inline block$/, 'replaced').replace(/^injected.*/, 'injected'),
+    });
+}
+function appendDiffContext(lines, source, context) {
+  const { from, to, newStart, oldStart, head, tail, max } = context;
+  const run = to - from;
+  const append = (start, end) => {
+    for (let i = start; i < end && lines.length <= max; i++)
+      lines.push([' ', i + 1, newStart + (i - oldStart) + 1, clippedDiffLine(source[i])]);
+  };
+  if (run <= head + tail + 1) append(from, to);
+  else {
+    append(from, from + head);
+    lines.push(['@', null, null, `${run - head - tail} unchanged lines`]);
+    append(to - tail, to);
+  }
+}
+function collectPageItems(hits, items, changed, fresh, session, sourceFile, webFileState) {
+  for (const hit of hits) {
+    for (const source of hit.sources ?? []) {
+      const isFile = hit.type === 'file';
+      const key = isFile ? `file|${hit.url.toLowerCase()}` : `html|${source.rel}`;
+      const existing = items.get(key);
+      if (existing) {
+        existing.count += hit.count ?? 1;
+        continue;
+      }
+      const item = createPageHitItem(hit, source, isFile, changed, fresh, session, sourceFile);
+      annotatePageHitItem(item, hit, source, isFile, webFileState);
+      items.set(key, item);
+    }
+  }
+}
+
+function syncedItems(document, shown, disabled, changed) {
+  return (document?.matched ?? [])
+    .filter((match) => match.identical && !shown.has(match.rel) && !disabled.has(match.rel))
+    .map((match) => ({
+      kind: match.kind,
+      group: 'insync',
+      rel: match.rel,
+      differs: false,
+      canDiff: false,
+      canPause: false,
+      edited: changed.has(match.file),
+    }));
+}
+
+function pausedItems(disabled, indexSources, changed, sourceFile) {
+  return [...disabled].map((rel) => {
+    const index = indexSources();
+    const webFile = index.webByRel.get(rel);
+    const source = index.inlineByRel.get(rel);
+    return {
+      kind: source?.kind ?? 'web-file',
+      group: 'paused',
+      rel,
+      url: webFile?.url ?? null,
+      title: webFile ? webFile.url.split('/').pop() : null,
+      paused: true,
+      canPause: true,
+      canDiff: !BINARY_EXT.test(rel),
+      edited: changed.has(sourceFile(rel)),
+    };
+  });
+}
+
+function currentPagePath(page) {
+  try {
+    return new URL(page.url()).pathname;
+  } catch {
+    return '/';
+  }
+}
+function stripTrailingSlashes(value) {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+function isCurrentInspection(page, origin, runtime, runtimeByPage, disposed, pathOf) {
+  return (
+    !disposed &&
+    !page.isClosed() &&
+    sameOrigin(page.url(), origin) &&
+    runtimeByPage.get(page) === runtime &&
+    stripTrailingSlashes(pathOf(page.url())) === stripTrailingSlashes(String(runtime.path))
+  );
+}
+function sessionFlowStartFailure(started) {
+  if (started === true) return null;
+  if (typeof started === 'string') return { ok: false, error: started };
+  return { ok: false, error: 'The portal sign-in did not start.' };
+}
+function sessionFlowMethod(contactId, flow, provider) {
+  if (!contactId) return 'the portal sign-out';
+  if (flow.fields.provider) return provider?.caption ?? provider?.name ?? 'the identity provider';
+  return 'the local sign-in page';
+}
+function isLocalScenarioOrigin(destination) {
+  return (
+    ['127.0.0.1', 'localhost', '[::1]'].includes(destination.hostname) &&
+    destination.protocol === 'http:' &&
+    !destination.username &&
+    !destination.password &&
+    destination.pathname === '/' &&
+    !destination.search &&
+    !destination.hash
+  );
+}
+function runtimePageUsable(page, origin, disposed, adminPage) {
+  return !disposed && !page.isClosed() && sameOrigin(page.url(), origin) && !adminPage(page.url());
+}
+function runtimePageStillOnPortal(page, origin, disposed) {
+  return !disposed && !page.isClosed() && sameOrigin(page.url(), origin);
+}
+function refreshedText(baselineChanged, how) {
+  if (baselineChanged) return `Git baseline updated${how === 'reload' ? ', page reloaded' : ' (no reload)'}`;
+  return (
+    {
+      css: 'Styles swapped without a reload',
+      reload: 'Saved, page reloaded',
+      skipped: 'Saved; no open tab shows that page',
+    }[how] ?? 'Saved (no reload)'
+  );
+}
+function recordPendingBeforeRefresh(page, pageHow, pageRels, pendingFor) {
+  if (pageHow === 'none') for (const rel of pageRels) pendingFor(page).add(rel);
+  else if (pageHow === 'reload') pendingFor(page).clear();
+}
+function recordPendingAfterRefresh(page, pageHow, pageRels, baselineChanged, pendingFor, pendingBaseline) {
+  if (pageHow === 'css') for (const rel of pageRels) pendingFor(page).delete(rel);
+  if (baselineChanged && pageHow !== 'reload') pendingBaseline.add(page);
+  else if (pageHow === 'reload') pendingBaseline.delete(page);
+}
+function validSelectionRequest(body) {
+  return (
+    typeof body.sourceKey === 'string' &&
+    body.sourceKey.length <= 16384 &&
+    typeof body.sourceRevision === 'string' &&
+    typeof body.contentRevision === 'string'
+  );
+}
+function admitEditorSource(admission, context) {
+  const { page, runtime, profileFilesByPage, runtimeFilesByPage, annotateRuntime, fileOf } = context;
+  if (admission.state !== 'exact' || !admission.editorTarget?.file)
+    return {
+      failure: {
+        ok: false,
+        error: 'The local source changed or is unavailable. Refresh inspection.',
+        code: 'SOURCE_' + String(admission.state).toUpperCase(),
+      },
+    };
+  const candidate = { file: admission.editorTarget.file };
+  let files;
+  if (admission.editorTarget.externalProfile === true && typeof admission.sourceRef?.ref === 'string') {
+    const exact = fs.realpathSync.native(candidate.file);
+    candidate.ref = admission.sourceRef.ref;
+    const profiles = profileFilesByPage.get(page) ?? new Map();
+    profiles.set(candidate.ref, exact);
+    profileFilesByPage.set(page, profiles);
+    files = new Map([[candidate.ref, exact]]);
+  } else files = annotateRuntime(candidate, runtime?.roots ?? []);
+  if (!candidate.ref || !files.has(candidate.ref))
+    return {
+      failure: { ok: false, error: 'This source is outside the selected source roots.', code: 'SOURCE_NOT_ADMITTED' },
+    };
+  const known = runtimeFilesByPage.get(page) ?? new Map();
+  known.set(candidate.ref, files.get(candidate.ref));
+  runtimeFilesByPage.set(page, known);
+  return { file: fileOf(candidate.ref, page) };
+}
+function revalidateEditorSource(admission, file) {
+  try {
+    admission = admission.revalidate();
+    if (
+      admission.state !== 'exact' ||
+      !admission.editorTarget?.file ||
+      fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
+    )
+      return {
+        failure: {
+          ok: false,
+          error: 'The local source changed while its selection was checked. Refresh inspection.',
+          code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
+        },
+      };
+  } catch {
+    return {
+      failure: {
+        ok: false,
+        error: 'The local source identity could not be verified. Refresh inspection.',
+        code: 'SOURCE_UNAVAILABLE',
+      },
+    };
+  }
+  return {
+    line:
+      Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
+        ? admission.editorTarget.line
+        : 1,
+    col:
+      Number.isSafeInteger(admission.editorTarget.column) && admission.editorTarget.column > 0
+        ? admission.editorTarget.column
+        : 1,
+  };
+}
+function openLocalSource(body, page, fileOf, lineOf) {
+  const file = fileOf(body.rel, page);
+  let line;
+  if (Number.isInteger(body.line) && body.line > 0) line = body.line;
+  else line = (file ? lineOf(file, body.find) : null) ?? 1;
+  const col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
+  return { file, line, col };
+}
+function editorOpenResult(error, editor, file, line, col) {
+  if (!error) return { ok: true };
+  // the editor's command is not on the PATH: its link does the same from the browser
+  return {
+    ok: false,
+    error,
+    url: /^code(?:-insiders)?$/.test(editor)
+      ? `vscode://file/${pathToFileURL(file).pathname.replace(/^\//, '')}:${line}:${col}`
+      : undefined,
+  };
+}
+function comparisonLocalSource(rel, context) {
+  const file = context.fileOf(rel);
+  if (!file) return { failure: { ok: false, error: 'this file is not part of the local sources' } };
+  if (BINARY_EXT.test(file)) return { failure: { ok: false, error: 'not a text file' } };
+  if (fs.statSync(file).size > MAX_DIFF_BYTES)
+    return { failure: { ok: false, error: 'the file is too large to compare here' } };
+  const src = context.indexSources().inlineByRel.get(rel);
+  const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
+  if (local == null) return { failure: { ok: false, error: 'the local file cannot be read' } };
+  return { file, src, local };
+}
+function storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage) {
+  runtimeByPage.set(page, {
+    active: false,
+    error: 'The local Mirage status endpoint did not return runtime metadata.',
+  });
+  runtimeFilesByPage.delete(page);
+}
+function storeMiragePageSummary(page, pathname, session, summaryResponse, answer, context) {
+  const { validInspectionReport, trustedRoots, annotateRuntime, summarize, runtimeByPage, runtimeFilesByPage } =
+    context;
+  if (summaryResponse.ok() && !validInspectionReport(answer))
+    throw new Error('Page inspection returned an invalid report.');
+  // Mirages without summaries answer with the whole report.
+  const report = answer && answer.view !== 'summary' ? answer : null;
+  const roots = trustedRoots();
+  const files = report ? annotateRuntime(report, roots) : new Map();
+  let summary = null;
+  if (answer) summary = report ? summarize(report) : answer;
+  runtimeByPage.set(page, {
+    active: true,
+    status: context.status,
+    summary,
+    session,
+    report,
+    roots,
+    origin: context.origin,
+    path: pathname,
+    version: context.nextVersion(),
+    error: answer ? null : `Page inspection returned HTTP ${summaryResponse.status()}.`,
+  });
+  runtimeFilesByPage.set(page, files);
+}
+function inlineComparisonBase(page, rel, file, src, session, cfg) {
+  const printed = (session.pageHits.get(page) ?? [])
+    .flatMap((hit) => hit.matched ?? [])
+    .find((match) => match.rel === rel && match.online != null);
+  if (printed && src?.mode === 'block') return { before: printed.online, against: `${cfg.envName} online` };
+  const raw = session.baseline.show(file);
+  let before;
+  if (raw == null) before = '';
+  else if (src) before = sourceText(src, raw) ?? '';
+  else before = raw;
+  return { before, against: `git ${session.baseline.spec}` };
+}
+function onlineComparisonAddress(origin, url, resolver, file) {
+  let address;
+  try {
+    address = new URL(portalResourceUrl(origin, url));
+  } catch {
+    /* invalid URL */
+  }
+  const matched = address?.origin === origin && resolver.resolve(address.pathname);
+  return matched && path.resolve(matched.file) === file ? address : null;
+}
 const sameOrigin = (address, origin) => {
   try {
     return new URL(address).origin === origin;
@@ -124,7 +442,7 @@ const readableName = (value) => {
  * @param {string} before
  * @param {string} after
  */
-export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
+/* NOSONAR */ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
   const a = toLines(before);
   const b = toLines(after);
   const hunks = diffLines(a, b);
@@ -132,7 +450,6 @@ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
   const added = hunks.reduce((n, h) => n + h.bEnd - h.bStart, 0);
   const removed = hunks.reduce((n, h) => n + h.aEnd - h.aStart, 0);
   if (!hunks.length) return { lines, added, removed, truncated: false };
-  const clip = (s) => (s.length > 500 ? s.slice(0, 500) + ' ...' : s);
   let ai = 0;
   let bi = 0;
   for (let k = 0; k <= hunks.length && lines.length < max; k++) {
@@ -141,20 +458,12 @@ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
     const run = end - ai;
     const head = k === 0 ? 0 : context;
     const tail = h ? context : 0;
-    const same = (from, to) => {
-      for (let i = from; i < to && lines.length <= max; i++) lines.push([' ', i + 1, bi + (i - ai) + 1, clip(a[i])]);
-    };
-    if (run <= head + tail + 1) same(ai, end);
-    else {
-      same(ai, ai + head);
-      lines.push(['@', null, null, `${run - head - tail} unchanged lines`]);
-      same(end - tail, end);
-    }
+    appendDiffContext(lines, a, { from: ai, to: end, newStart: bi, oldStart: ai, head, tail, max });
     bi += run;
     ai = end;
     if (!h) break;
-    for (; ai < h.aEnd && lines.length <= max; ai++) lines.push(['-', ai + 1, null, clip(a[ai])]);
-    for (; bi < h.bEnd && lines.length <= max; bi++) lines.push(['+', null, bi + 1, clip(b[bi])]);
+    for (; ai < h.aEnd && lines.length <= max; ai++) lines.push(['-', ai + 1, null, clippedDiffLine(a[ai])]);
+    for (; bi < h.bEnd && lines.length <= max; bi++) lines.push(['+', null, bi + 1, clippedDiffLine(b[bi])]);
   }
   const truncated = lines.length > max || ai < a.length || bi < b.length;
   return { lines: lines.slice(0, max), added, removed, truncated };
@@ -310,6 +619,8 @@ export function enablePanel(context, session, opts = {}) {
   /** @type {WeakMap<object, Array<object>>} errors and failed requests per tab since its last navigation */
   const problems = new WeakMap();
   const runtimeByPage = new WeakMap();
+  /** @type {WeakMap<object, object>} Web API routes each tab requested in its current document */
+  const apiRoutesByPage = new WeakMap();
   const personaNames = new Map();
   const runtimeFilesByPage = new WeakMap();
   const profileFilesByPage = new WeakMap();
@@ -354,7 +665,9 @@ export function enablePanel(context, session, opts = {}) {
       if (url != null && !pagesByKey.has(pageKey(url))) pagesByKey.set(pageKey(url), { page, url });
     }
     for (const source of model.inlineSources) {
-      for (const key of new Set([source.pageUrl, ...(source.usedOn ?? [])].filter(Boolean).map(pageKey))) {
+      for (const key of new Set(
+        [source.pageUrl, ...(source.usedOn ?? [])].filter(Boolean).map((url, index) => pageKey(url, index)),
+      )) {
         if (!sourcesByPage.has(key)) sourcesByPage.set(key, []);
         sourcesByPage.get(key).push(source);
       }
@@ -425,7 +738,7 @@ export function enablePanel(context, session, opts = {}) {
   /** Absolute path of a source the panel names, or null: only files of the sources are ever opened. */
   const fileOf = (rel, page = null) => {
     if (typeof rel !== 'string' || !rel) return null;
-    rel = rel.replace(/\\/g, '/');
+    rel = rel.replaceAll('\\', '/');
     const index = indexSources();
     const source = index.inlineByRel.get(rel);
     const webFile = index.webByRel.get(rel);
@@ -458,8 +771,11 @@ export function enablePanel(context, session, opts = {}) {
 
   const webFileState = (url) => {
     const state = session.onlineState.get(urlKey(url));
+    let differs = null;
+    if (state === 'different') differs = true;
+    else if (state === 'same') differs = false;
     return {
-      differs: state === 'different' ? true : state === 'same' ? false : null,
+      differs,
       isNew: state === 'not online (local only)',
     };
   };
@@ -501,8 +817,8 @@ export function enablePanel(context, session, opts = {}) {
         const layer = layers.size > 1 && s.kind.startsWith('page-') ? layerOf(s) : lang;
         return {
           rel: s.rel,
-          label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ` (${layer})` : ''}`,
-          empty: !text || !text.trim(),
+          label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ' (' + layer + ')' : ''}`,
+          empty: !text?.trim(),
         };
       });
       const info = { path: entry.url, name: entry.page.name ?? '', dir: session.rel(entry.page.dir), sources };
@@ -530,12 +846,9 @@ export function enablePanel(context, session, opts = {}) {
     }
   };
   const trustedRoots = () => {
-    const configured =
-      Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length
-        ? cfg.mirageSourceRoots
-        : Array.isArray(cfg.mirageConfig?.solutionRoots)
-          ? cfg.mirageConfig.solutionRoots
-          : [];
+    let configured = [];
+    if (Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length) configured = cfg.mirageSourceRoots;
+    else if (Array.isArray(cfg.mirageConfig?.solutionRoots)) configured = cfg.mirageConfig.solutionRoots;
     return [
       ...new Set([cfg.sourceDir, ...configured].filter((value) => typeof value === 'string' && value).map(realNative)),
     ];
@@ -556,8 +869,8 @@ export function enablePanel(context, session, opts = {}) {
   const readSession = async (page, origin = cfg.origin) => {
     const response =
       origin === cfg.origin
-        ? await mirageGet('/session', 4000, page.context().request)
-        : await page.context().request.get(origin + '/_sim/api/session', { timeout: 4000 });
+        ? await mirageGet('/session', MIRAGE_READ_GUARD_MS, page.context().request)
+        : await page.context().request.get(origin + '/_sim/api/session', { timeout: MIRAGE_READ_GUARD_MS });
     if (response.status() === 404) return { supported: false };
     if (!response.ok())
       return {
@@ -607,8 +920,8 @@ export function enablePanel(context, session, opts = {}) {
   };
   /** The current status shape, or the summary state of Mirages without /status. */
   const readMirageStatus = async () => {
-    let response = await mirageGet('/status', 2500);
-    if (response.status() === 404) response = await mirageGet('/state?summary=1', 4000);
+    let response = await mirageGet('/status', MIRAGE_READ_GUARD_MS);
+    if (response.status() === 404) response = await mirageGet('/state?summary=1', MIRAGE_READ_GUARD_MS);
     if (!response.ok()) return null;
     const data = await response.json();
     if (!data?.status) return data && typeof data === 'object' ? data : null;
@@ -665,93 +978,121 @@ export function enablePanel(context, session, opts = {}) {
         'templateChain',
       ].every((key) => value[key] === undefined || Array.isArray(value[key])),
     );
-  const loadRuntime = async (page, requestedPath) => {
-    if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
+  // Stores the live-source runtime of one page, unless the page has left the portal while it was inspected.
+  const loadLiveSourceRuntime = async (page, pathname) => {
+    const result = await sourceInspector.inspect(pathname);
+    if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
+    const roots = result.roots.map(realNative);
+    runtimeByPage.set(page, {
+      active: true,
+      mode: 'live-sources',
+      status: result.status,
+      summary: summarize(result.report),
+      report: result.report,
+      roots,
+      origin: new URL(pathname, cfg.origin).origin,
+      path: pathname,
+      version: ++runtimeVersion,
+      error: null,
+    });
+    runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
+  };
+  // Stores the summary of one Mirage page. The status becomes the latest Mirage status before the summary is read.
+  const storeMirageSummary = async (page, pathname, status, summaryResponse, session) => {
+    lastMirageStatus = status;
+    const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
+    storeMiragePageSummary(page, pathname, session, summaryResponse, answer, {
+      status,
+      origin: new URL(pathname, cfg.origin).origin,
+      validInspectionReport,
+      trustedRoots,
+      annotateRuntime,
+      summarize,
+      runtimeByPage,
+      runtimeFilesByPage,
+      nextVersion: () => ++runtimeVersion,
+    });
+  };
+  /**
+   * Stores the runtime of one page, unless the page has left the portal while it was read. A failure that
+   * mayReadAgain() still allows returns 'retry' and stores nothing, so no redraw shows a transient inactive runtime;
+   * otherwise the outcome is stored and this returns 'done'.
+   */
+  const loadRuntime = async (page, requestedPath, mayReadAgain) => {
+    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return 'done';
     profileFilesByPage.delete(page);
     // A navigation is reported before the tab commits it; its own path wins over page.url().
     const pathname =
       typeof requestedPath === 'string' && requestedPath.startsWith('/') ? requestedPath : (pathOf(page.url()) ?? '/');
-    if (adminPage(new URL(pathname, cfg.origin).href)) return;
+    if (adminPage(new URL(pathname, cfg.origin).href)) return 'done';
     try {
       if (!cfg.mirage) {
-        const result = await sourceInspector.inspect(pathname);
-        if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
-        const roots = result.roots.map(realNative);
-        runtimeByPage.set(page, {
-          active: true,
-          mode: 'live-sources',
-          status: result.status,
-          summary: summarize(result.report),
-          report: result.report,
-          roots,
-          path: pathname,
-          version: ++runtimeVersion,
-          error: null,
-        });
-        runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
-        return;
+        await loadLiveSourceRuntime(page, pathname);
+        return 'done';
       }
       // Every navigation asks for a small summary; the Inspect tab loads the full report on demand.
       // Page inspection and the session read carry this browser's session cookie.
       const [status, summaryResponse, session] = await Promise.all([
         readMirageStatus(),
-        mirageGet(`/page-resources?path=${encodeURIComponent(pathname)}&view=summary`, 8000, page.context().request),
+        mirageGet(
+          `/page-resources?path=${encodeURIComponent(pathname)}&view=summary`,
+          MIRAGE_READ_GUARD_MS,
+          page.context().request,
+        ),
         readSession(page).catch(() => null),
       ]);
-      if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
+      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return 'done';
       if (!status) {
-        runtimeByPage.set(page, {
-          active: false,
-          error: 'The local Mirage status endpoint did not return runtime metadata.',
-        });
-        runtimeFilesByPage.delete(page);
+        if (mayReadAgain()) return 'retry';
+        storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage);
       } else {
-        lastMirageStatus = status;
-        const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
-        if (summaryResponse.ok() && !validInspectionReport(answer))
-          throw new Error('Page inspection returned an invalid report.');
-        // Mirages without summaries answer with the whole report.
-        const report = answer && answer.view !== 'summary' ? answer : null;
-        const roots = trustedRoots();
-        const files = report ? annotateRuntime(report, roots) : new Map();
-        runtimeByPage.set(page, {
-          active: true,
-          status,
-          summary: answer ? (report ? summarize(report) : answer) : null,
-          session,
-          report,
-          roots,
-          path: pathname,
-          version: ++runtimeVersion,
-          error: answer ? null : `Page inspection returned HTTP ${summaryResponse.status()}.`,
-        });
-        runtimeFilesByPage.set(page, files);
+        await storeMirageSummary(page, pathname, status, summaryResponse, session);
       }
     } catch (error) {
+      if (mayReadAgain()) return 'retry';
       runtimeByPage.set(page, { active: false, error: error.message.split('\n')[0] });
       runtimeFilesByPage.delete(page);
     }
     schedule(page);
+    return 'done';
   };
+  // A failed runtime read is read again at once, at most this many reads per inspection and only inside one read
+  // guard period.
+  const RUNTIME_ATTEMPTS = 3;
   /** One inspection per tab at a time; requests arriving meanwhile collapse into one rerun. */
   const refreshRuntime = (page, requestedPath) => {
     if (disposed || !page || page.isClosed()) return Promise.resolve();
     let job = runtimeJobs.get(page);
-    if (!job) runtimeJobs.set(page, (job = { running: null, again: false, path: undefined }));
+    if (!job) {
+      job = { running: null, again: false, path: undefined };
+      runtimeJobs.set(page, job);
+    }
     job.path = requestedPath;
     if (job.running) {
       job.again = true;
       return job.running;
     }
     job.running = (async () => {
+      let attempts = 0;
+      let startedAt = 0;
+      // Asked after a failed read: no read follows once the guard period since this inspection's first read has passed.
+      const mayReadAgain = () => attempts + 1 < RUNTIME_ATTEMPTS && Date.now() - startedAt < MIRAGE_READ_GUARD_MS;
       do {
         job.id = ++inspectionSequence;
         job.again = false;
         const path = job.path;
         job.path = undefined;
-        await loadRuntime(page, path);
+        if (!attempts) startedAt = Date.now();
+        const outcome = await loadRuntime(page, path, mayReadAgain);
+        if (outcome === 'retry') {
+          attempts += 1;
+          job.path ??= path;
+          job.again = true;
+        } else {
+          attempts = 0;
+        }
         schedule(page);
-      } while (job.again && !disposed && !page.isClosed());
+      } while (job.again && !disposed && !page.isClosed()); // NOSONAR: loop flag is changed asynchronously
     })().finally(() => {
       job.running = null;
       schedule(page);
@@ -760,7 +1101,7 @@ export function enablePanel(context, session, opts = {}) {
   };
   const publicStatus = (status) => {
     if (!status) return null;
-    const { csrf: ignored, presets, scenarios, ...rest } = status;
+    const { csrf: ignored, presets, scenarios, ...rest } = status; // NOSONAR: binding is excluded from the rest object or is a placeholder
     return {
       ...rest,
       presetCount: Array.isArray(presets) ? presets.length : 0,
@@ -772,21 +1113,18 @@ export function enablePanel(context, session, opts = {}) {
     const runtime = runtimeByPage.get(page);
     const job = runtimeJobs.get(page),
       detail = inspectionProgress.get(page);
+    let phase = detail?.phase ?? null;
+    if (phase == null && job?.running)
+      phase = cfg.mirage ? 'Reading local runtime metadata' : 'Reading local export and Solution metadata';
     const progress = {
       loading: Boolean(job?.running || detail),
       loadingId: detail?.id ?? (job?.running ? job.id : null),
-      phase:
-        detail?.phase ??
-        (job?.running
-          ? cfg.mirage
-            ? 'Reading local runtime metadata'
-            : 'Reading local export and Solution metadata'
-          : null),
+      phase,
     };
-    if (!runtime)
-      return progress.loading
-        ? { active: true, version: 0, mode: cfg.mirage ? 'local-runtime' : 'live-sources', ...progress }
-        : null;
+    if (!runtime) {
+      if (!progress.loading) return null;
+      return { active: true, version: 0, mode: cfg.mirage ? 'local-runtime' : 'live-sources', ...progress };
+    }
     if (!runtime.active) return { active: false, error: runtime.error, ...progress };
     const summary = runtime.summary;
     const counts = summary?.counts ? { ...summary.counts } : null;
@@ -874,10 +1212,8 @@ export function enablePanel(context, session, opts = {}) {
     try {
       const url = new URL(page.url());
       if (url.searchParams.has('paqvilo')) url.searchParams.delete('paqvilo');
-      const signIn = String(lastMirageStatus?.signInPath ?? '/signin')
-        .replace(/\/+$/, '')
-        .toLowerCase();
-      const pathname = url.pathname.replace(/\/+$/, '').toLowerCase();
+      const signIn = stripTrailingSlashes(String(lastMirageStatus?.signInPath ?? '/signin')).toLowerCase();
+      const pathname = stripTrailingSlashes(url.pathname).toLowerCase();
       const unprefixed = pathname.replace(/^\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/)/, '');
       if ((signIn && (pathname === signIn || unprefixed === signIn)) || /^\/account\/login(?:\/|$)/.test(unprefixed)) {
         const target = url.searchParams.get('ReturnUrl') ?? url.searchParams.get('returnUrl') ?? '/';
@@ -885,7 +1221,7 @@ export function enablePanel(context, session, opts = {}) {
       }
       if (
         (session?.identityProvider?.callbackPaths ?? []).some(
-          (item) => item.replace(/\/+$/, '').toLowerCase() === pathname,
+          (item) => stripTrailingSlashes(item).toLowerCase() === pathname,
         )
       )
         return '/';
@@ -916,7 +1252,7 @@ export function enablePanel(context, session, opts = {}) {
    * the sign-in form, or goes to /Account/Login/LogOff, which ends the session through the
    * provider's end-session. The page then navigates and comes back to the return path.
    */
-  const startSessionFlow = async (page, contactId, { origin = cfg.origin, returnPath } = {}) => {
+  /* NOSONAR */ const startSessionFlow = async (page, contactId, { origin = cfg.origin, returnPath } = {}) => {
     const session = await readSession(page, origin);
     if (!session.supported) return { ok: false, error: 'This Mirage has no browser sessions.' };
     if (!contactId && !session.signedIn) return { ok: true, navigating: false, session };
@@ -930,8 +1266,8 @@ export function enablePanel(context, session, opts = {}) {
       try {
         const response =
           origin === cfg.origin
-            ? await mirageGet('/personas', 4000)
-            : await page.context().request.get(origin + '/_sim/api/personas', { timeout: 4000 });
+            ? await mirageGet('/personas', MIRAGE_READ_GUARD_MS)
+            : await page.context().request.get(origin + '/_sim/api/personas', { timeout: MIRAGE_READ_GUARD_MS });
         if (response.ok()) {
           const report = await response.json();
           const person = [...(report.personas ?? []), ...(report.other ?? report.contacts ?? [])].find(
@@ -949,38 +1285,31 @@ export function enablePanel(context, session, opts = {}) {
     } catch (error) {
       started = error.message.split('\n')[0];
     }
-    if (started !== true)
-      return { ok: false, error: typeof started === 'string' ? started : 'The portal sign-in did not start.' };
+    const failure = sessionFlowStartFailure(started);
+    if (failure) return failure;
     const provider = session.identityProvider?.provider;
-    const via = !contactId
-      ? 'the portal sign-out'
-      : flow.fields.provider
-        ? (provider?.caption ?? provider?.name ?? 'the identity provider')
-        : 'the local sign-in page';
+    const via = sessionFlowMethod(contactId, flow, provider);
     log({
       type: 'switch',
       text: contactId ? `Signing in as ${personaName ?? contactId} through ${via}` : 'Signing out through the portal',
     });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
   };
-  /** The page's next load, or `ms` later when no reload comes; cancel() drops it. */
-  const nextLoad = (page, ms) => {
-    let timer, listener;
+  /**
+   * The page's next load; cancel() drops it. A Mirage write reloads every portal page through its
+   * reload event (or the ready revision when the stream reconnects), so no deadline stands in for
+   * it: a deadline that expired while a slow reload was still loading ran the session flow in the
+   * document that reload then destroyed.
+   */
+  const nextLoad = (page) => {
+    let listener;
     const promise = new Promise((resolve) => {
-      listener = () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-        resolve();
-      };
-      timer = setTimeout(listener, ms);
+      listener = () => resolve();
       page.once?.('load', listener);
     });
     return {
       promise,
-      cancel: () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-      },
+      cancel: () => page.off?.('load', listener),
     };
   };
   const lineOf = (file, find) => {
@@ -1001,72 +1330,12 @@ export function enablePanel(context, session, opts = {}) {
     const hits = session.pageHits.get(page) ?? [];
     const fresh = lastChange && Date.now() - lastChange.at < 8000 ? new Set(lastChange.files) : new Set();
     const items = new Map();
-    for (const hit of hits) {
-      for (const s of hit.sources ?? []) {
-        const isFile = hit.type === 'file';
-        const key = isFile ? `file|${hit.url.toLowerCase()}` : `html|${s.rel}`;
-        const existing = items.get(key);
-        if (existing) {
-          existing.count += hit.count ?? 1;
-          continue;
-        }
-        const item = {
-          kind: s.kind ?? (isFile ? 'web-file' : 'other'),
-          group: isFile ? webFileGroup(hit.url) : (GROUP_OF[s.kind] ?? 'other'),
-          rel: s.rel,
-          url: isFile ? hit.url : null,
-          title: isFile ? readableName(hit.url.split('/').pop() || hit.url) : null,
-          count: hit.count ?? 1,
-          edited: changed.has(sourceFile(s.rel)),
-          fresh: fresh.has(session.rel(sourceFile(s.rel))),
-          canPause: true,
-          canDiff: !BINARY_EXT.test(s.rel),
-        };
-        if (isFile) Object.assign(item, webFileState(hit.url), { note: s.action === 'web-file' ? null : s.action });
-        else
-          Object.assign(item, {
-            differs: !/^injected/.test(s.action),
-            isNew: /^injected/.test(s.action),
-            note: s.action.replace(/^replaced inline block$/, 'replaced').replace(/^injected.*/, 'injected'),
-          });
-        items.set(key, item);
-      }
-    }
+    collectPageItems(hits, items, changed, fresh, session, sourceFile, webFileState);
     const shown = new Set([...items.values()].map((i) => i.rel));
     const document = hits.findLast((h) => h.type === 'html' && h.navigation) ?? hits.findLast((h) => h.type === 'html');
-    const insync = (document?.matched ?? [])
-      .filter((m) => m.identical && !shown.has(m.rel) && !session.disabled.has(m.rel))
-      .map((m) => ({
-        kind: m.kind,
-        group: 'insync',
-        rel: m.rel,
-        differs: false,
-        canDiff: false,
-        canPause: false,
-        edited: changed.has(m.file),
-      }));
-    const paused = [...session.disabled].map((rel) => {
-      const index = indexSources();
-      const webFile = index.webByRel.get(rel);
-      const src = index.inlineByRel.get(rel);
-      return {
-        kind: src?.kind ?? 'web-file',
-        group: 'paused',
-        rel,
-        url: webFile?.url ?? null,
-        title: webFile ? webFile.url.split('/').pop() : null,
-        paused: true,
-        canPause: true,
-        canDiff: !BINARY_EXT.test(rel),
-        edited: changed.has(sourceFile(rel)),
-      };
-    });
-    let pathname = '/';
-    try {
-      pathname = new URL(page.url()).pathname;
-    } catch {
-      /* about:blank */
-    }
+    const insync = syncedItems(document, shown, session.disabled, changed);
+    const paused = pausedItems(session.disabled, indexSources, changed, sourceFile);
+    const pathname = currentPagePath(page);
     return {
       token,
       origin: cfg.origin,
@@ -1099,7 +1368,7 @@ export function enablePanel(context, session, opts = {}) {
       caution: Boolean(cfg.caution),
       mirageMode: cfg.mirage === true,
       scope: cfg.site.scope,
-      sourceDir: cfg.sourceDir.replace(/\\/g, '/'),
+      sourceDir: cfg.sourceDir.replaceAll('\\', '/'),
       online: cfg.mirage ? false : session.bypass,
       live: cfg.mirage ? false : session.liveReload !== false,
       now: Date.now(),
@@ -1214,33 +1483,47 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
-    const errors = observeHttpErrors(context, page, {
-      origin: cfg.origin,
-      response: (entry) => {
-        const documentProblems = problems.get(page) ?? [];
-        problems.set(page, documentProblems);
-        return (body) => {
-          if (problems.get(page) !== documentProblems) return;
-          const detail = [body?.error?.message, body?.error?.innererror?.message]
-            .map((value) => (typeof value === 'object' ? value?.value : value))
-            .filter((value) => typeof value === 'string')
-            .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
-            .join(' · ');
-          problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
-        };
-      },
+    const apiRoutes = createApiRouteObserver();
+    apiRoutesByPage.set(page, apiRoutes);
+    // Routes are cleared only when the main frame commits the navigation it requested. A same-document navigation,
+    // a download or a 204 keeps them.
+    listen('request', (request) => {
+      if (request.frame() !== page.mainFrame()) return;
+      if (request.isNavigationRequest()) apiRoutes.navigationRequested(request.url());
+      else apiRoutes.record(request.url(), page.url());
     });
+    listen('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) apiRoutes.committed(frame.url());
+    });
+    // A failed same-origin response becomes one Issues row whose detail is its JSON error message and inner message
+    // (redacted). The row belongs to the document that received the response.
+    const httpProblem = (entry) => {
+      const documentProblems = problems.get(page) ?? [];
+      problems.set(page, documentProblems);
+      return (body) => {
+        if (problems.get(page) !== documentProblems) return;
+        const detail = [body?.error?.message, body?.error?.innererror?.message]
+          .map((value) => (typeof value === 'object' ? value?.value : value))
+          .filter((value) => typeof value === 'string')
+          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')) // NOSONAR: redactText enforces a 2000-code-unit bound before this expression.
+          .join(' · ');
+        problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
+      };
+    };
+    const errors = observeHttpErrors(context, page, { origin: cfg.origin, response: httpProblem });
     errorObservers.add(errors);
     errorsByPage.set(page, errors);
     errors.ready.catch(() => {});
+    // Without the DevTools observer (it could not attach or enable in time, as on a loaded CI runner) the row still
+    // keeps the message of a small JSON error body of declared size; any other body keeps only the HTTP metadata.
     listen('response', (res) => {
-      if (errors.failed && res.status() >= 400 && sameOrigin(res.url(), cfg.origin))
-        problem(page, {
-          type: 'http',
-          status: res.status(),
-          text: `${res.request().method()} ${new URL(res.url()).pathname}`,
-          where: '',
-        });
+      if (!errors.failed || res.status() < 400 || !sameOrigin(res.url(), cfg.origin)) return;
+      const finish = httpProblem({
+        status: res.status(),
+        method: res.request().method(),
+        path: new URL(res.url()).pathname,
+      });
+      void boundedJsonBody(res).then(finish);
     });
     listen('pageerror', (err) => {
       if (!sameOrigin(page.url(), cfg.origin)) return;
@@ -1255,7 +1538,7 @@ export function enablePanel(context, session, opts = {}) {
       if (!sameOrigin(page.url(), cfg.origin) || msg.type() !== 'error') return;
       const text = msg.text();
       // the browser's own line about a failed request; the request itself is listed
-      if (/^Failed to load resource/.test(text)) return;
+      if (text.startsWith('Failed to load resource')) return;
       const loc = consoleLocation(msg, page.url());
       problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url, loc.line, loc.column) });
     });
@@ -1265,11 +1548,19 @@ export function enablePanel(context, session, opts = {}) {
       if (/ERR_ABORTED|ERR_CACHE_MISS/.test(reason) || !sameOrigin(req.url(), cfg.origin)) return;
       problem(page, { type: 'failed', text: `${req.method()} ${new URL(req.url()).pathname}`, where: reason });
     });
+    // The document this tab showed at its last load, whatever its origin: a return to a portal
+    // from another origin is a new document even when the path matches the stored report.
+    let seenDocument = null;
     listen('domcontentloaded', () => {
       schedule(page);
-      // A tab whose report describes another address (history navigation, a missed hit) is re-inspected.
-      if (!adminPage(page.url()) && runtimeByPage.get(page)?.path !== pathOf(page.url()))
-        refreshRuntime(page).catch(() => {});
+      // A tab whose report describes another document (another origin or path after a portal switch,
+      // history navigation, a missed hit) is re-inspected.
+      const { origin, pathname } = new URL(page.url());
+      const documentKey = `${origin}${pathname}`;
+      const stored = runtimeByPage.get(page);
+      const changed = stored?.origin !== origin || stored?.path !== pathname || seenDocument !== documentKey;
+      seenDocument = documentKey;
+      if (!adminPage(page.url()) && changed) refreshRuntime(page).catch(() => {});
     });
     listen('load', () => schedule(page));
     listen('close', () => {
@@ -1313,25 +1604,16 @@ export function enablePanel(context, session, opts = {}) {
     pageInfoCache.clear();
     const rels = files.map((f) => session.rel(f));
     lastChange = { at: Date.now(), how, files: rels, baselineChanged };
-    const text = baselineChanged
-      ? `Git baseline updated${how === 'reload' ? ', page reloaded' : ' (no reload)'}`
-      : ({
-          css: 'Styles swapped without a reload',
-          reload: 'Saved, page reloaded',
-          skipped: 'Saved; no open tab shows that page',
-        }[how] ?? 'Saved (no reload)');
+    const text = refreshedText(baselineChanged, how);
     log({ type: 'change', how, text, files: rels });
     for (const page of portalPages()) {
       const result = pageResults?.get(page);
       const pageHow = result?.how ?? how;
       const pageRels = (result?.files ?? filesForPage(session, files, page.url())).map((file) => session.rel(file));
       pageChanges.set(page, { ...lastChange, how: pageHow, files: pageRels });
-      if (pageHow === 'none') for (const rel of pageRels) pendingFor(page).add(rel);
-      else if (pageHow === 'reload') pendingFor(page).clear();
+      recordPendingBeforeRefresh(page, pageHow, pageRels, pendingFor);
       refreshRuntime(page).catch(() => {});
-      if (pageHow === 'css') for (const rel of pageRels) pendingFor(page).delete(rel);
-      if (baselineChanged && pageHow !== 'reload') pendingBaseline.add(page);
-      else if (pageHow === 'reload') pendingBaseline.delete(page);
+      recordPendingAfterRefresh(page, pageHow, pageRels, baselineChanged, pendingFor, pendingBaseline);
     }
     scheduleAll();
   });
@@ -1347,26 +1629,15 @@ export function enablePanel(context, session, opts = {}) {
     }
   };
 
-  const compare = async (page, { rel, url }) => {
-    const file = fileOf(rel);
-    if (!file) return { ok: false, error: 'this file is not part of the local sources' };
-    if (BINARY_EXT.test(file)) return { ok: false, error: 'not a text file' };
-    if (fs.statSync(file).size > MAX_DIFF_BYTES) return { ok: false, error: 'the file is too large to compare here' };
-    const src = indexSources().inlineByRel.get(rel);
-    const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
-    if (local == null) return { ok: false, error: 'the local file cannot be read' };
+  /* NOSONAR */ const compare = async (page, { rel, url }) => {
+    const localSource = comparisonLocalSource(rel, { fileOf, indexSources });
+    if (localSource.failure) return localSource.failure;
+    const { file, src, local } = localSource;
     let before;
     let against;
     if (!src && url) {
-      let address;
-      try {
-        address = new URL(portalResourceUrl(cfg.origin, url));
-      } catch {
-        /* invalid URL */
-      }
-      const matched = address?.origin === cfg.origin && session.resolver.resolve(address.pathname);
-      if (!matched || path.resolve(matched.file) !== file)
-        return { ok: false, error: 'this URL does not map to the selected local source' };
+      const address = onlineComparisonAddress(cfg.origin, url, session.resolver, file);
+      if (!address) return { ok: false, error: 'this URL does not map to the selected local source' };
       // a web file: against what the environment serves right now, with the sign-in of the browser
       let res;
       try {
@@ -1392,18 +1663,8 @@ export function enablePanel(context, session, opts = {}) {
       }
     } else {
       // an inline script or style: against the block the portal printed into this page
-      const printed = (session.pageHits.get(page) ?? [])
-        .flatMap((h) => h.matched ?? [])
-        .find((m) => m.rel === rel && m.online != null);
-      if (printed && src?.mode === 'block') {
-        before = printed.online;
-        against = `${cfg.envName} online`;
-      } else {
-        // a template or snippet is rendered by the portal: the deployed text is what git has
-        const raw = session.baseline.show(file);
-        before = raw == null ? '' : src ? (sourceText(src, raw) ?? '') : raw;
-        against = `git ${session.baseline.spec}`;
-      }
+      // a template or snippet is rendered by the portal: the deployed text is what git has
+      ({ before, against } = inlineComparisonBase(page, rel, file, src, session, cfg));
     }
     if (Buffer.byteLength(before) > MAX_DIFF_BYTES || Buffer.byteLength(local) > MAX_DIFF_BYTES)
       return { ok: false, error: 'the file is too large to compare here' };
@@ -1415,10 +1676,11 @@ export function enablePanel(context, session, opts = {}) {
     const entries = [];
     for (const page of session.model.pages.values()) {
       const rawUrl = session.model.pagePath(page.id);
-      const url = rawUrl ? (rawUrl.endsWith('/') ? rawUrl : rawUrl + '/') : null;
+      let url = null;
+      if (rawUrl) url = rawUrl.endsWith('/') ? rawUrl : rawUrl + '/';
       if (url) entries.push({ t: 'page', title: page.name || url, url });
     }
-    entries.sort((a, b) => a.url.localeCompare(b.url));
+    entries.sort((a, b) => a.url.localeCompare(b.url, 'en'));
     for (const s of session.model.inlineSources)
       entries.push({
         t: s.kind,
@@ -1451,13 +1713,13 @@ export function enablePanel(context, session, opts = {}) {
     open: async (body, page) => {
       let file, line, col;
       if (body.sourceKey !== undefined) {
-        if (
-          typeof body.sourceKey !== 'string' ||
-          body.sourceKey.length > 16384 ||
-          typeof body.sourceRevision !== 'string' ||
-          typeof body.contentRevision !== 'string' ||
-          !(await selectionEvidenceCurrent(page, body))
-        )
+        if (!validSelectionRequest(body))
+          return {
+            ok: false,
+            error: 'The selected source is no longer current. Refresh inspection.',
+            code: 'SOURCE_SELECTION_STALE',
+          };
+        if (!(await selectionEvidenceCurrent(page, body)))
           return {
             ok: false,
             error: 'The selected source is no longer current. Refresh inspection.',
@@ -1483,28 +1745,16 @@ export function enablePanel(context, session, opts = {}) {
             code: 'SOURCE_UNAVAILABLE',
           };
         }
-        if (admission.state !== 'exact' || !admission.editorTarget?.file)
-          return {
-            ok: false,
-            error: 'The local source changed or is unavailable. Refresh inspection.',
-            code: 'SOURCE_' + String(admission.state).toUpperCase(),
-          };
-        const candidate = { file: admission.editorTarget.file };
-        let files;
-        if (admission.editorTarget.externalProfile === true && typeof admission.sourceRef?.ref === 'string') {
-          const exact = fs.realpathSync.native(candidate.file);
-          candidate.ref = admission.sourceRef.ref;
-          const profiles = profileFilesByPage.get(page) ?? new Map();
-          profiles.set(candidate.ref, exact);
-          profileFilesByPage.set(page, profiles);
-          files = new Map([[candidate.ref, exact]]);
-        } else files = annotateRuntime(candidate, runtime?.roots ?? []);
-        if (!candidate.ref || !files.has(candidate.ref))
-          return { ok: false, error: 'This source is outside the selected source roots.', code: 'SOURCE_NOT_ADMITTED' };
-        const known = runtimeFilesByPage.get(page) ?? new Map();
-        known.set(candidate.ref, files.get(candidate.ref));
-        runtimeFilesByPage.set(page, known);
-        file = fileOf(candidate.ref, page);
+        const admitted = admitEditorSource(admission, {
+          page,
+          runtime,
+          profileFilesByPage,
+          runtimeFilesByPage,
+          annotateRuntime,
+          fileOf,
+        });
+        if (admitted.failure) return admitted.failure;
+        file = admitted.file;
         if (!(await selectionEvidenceCurrent(page, body)))
           return {
             ok: false,
@@ -1513,50 +1763,16 @@ export function enablePanel(context, session, opts = {}) {
           };
         // The browser check can wait while a local save changes the physical
         // source or its field location. Re-admit after that last round trip.
-        try {
-          admission = admission.revalidate();
-          if (
-            admission.state !== 'exact' ||
-            !admission.editorTarget?.file ||
-            fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
-          )
-            return {
-              ok: false,
-              error: 'The local source changed while its selection was checked. Refresh inspection.',
-              code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
-            };
-        } catch {
-          return {
-            ok: false,
-            error: 'The local source identity could not be verified. Refresh inspection.',
-            code: 'SOURCE_UNAVAILABLE',
-          };
-        }
-        line =
-          Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
-            ? admission.editorTarget.line
-            : 1;
-        col =
-          Number.isSafeInteger(admission.editorTarget.column) && admission.editorTarget.column > 0
-            ? admission.editorTarget.column
-            : 1;
+        const checked = revalidateEditorSource(admission, file);
+        if (checked.failure) return checked.failure;
+        line = checked.line;
+        col = checked.col;
       } else {
-        file = fileOf(body.rel, page);
-        line =
-          Number.isInteger(body.line) && body.line > 0 ? body.line : ((file ? lineOf(file, body.find) : null) ?? 1);
-        col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
+        ({ file, line, col } = openLocalSource(body, page, fileOf, lineOf));
       }
       if (!file) return { ok: false, error: 'this file is not part of the local sources' };
       const error = await open(cfg.editor ?? 'code', file, line, col);
-      if (!error) return { ok: true };
-      // the editor's command is not on the PATH: its link does the same from the browser
-      return {
-        ok: false,
-        error,
-        url: /^code(?:-insiders)?$/.test(cfg.editor ?? 'code')
-          ? `vscode://file/${pathToFileURL(file).pathname.replace(/^\//, '')}:${line}:${col}`
-          : undefined,
-      };
+      return editorOpenResult(error, cfg.editor ?? 'code', file, line, col);
     },
     toggle: (body) => {
       if (cfg.mirage)
@@ -1578,7 +1794,7 @@ export function enablePanel(context, session, opts = {}) {
       const head = await session.repinBaseline();
       log({
         type: 'switch',
-        text: `Baseline pinned at HEAD ${head.commit.slice(0, 7)}${head.branch ? ` (${head.branch})` : ''}`,
+        text: `Baseline pinned at HEAD ${head.commit.slice(0, 7)}${head.branch ? ' (' + head.branch + ')' : ''}`,
       });
       // other tabs learn about it the way they learn about any baseline change: a banner until reloaded
       session.emit('refreshed', { files: [], how: 'none', baselineChanged: true });
@@ -1614,7 +1830,7 @@ export function enablePanel(context, session, opts = {}) {
     diff: (body, page) => compare(page, body),
     catalog: () => ({ ok: true, entries: catalog() }),
     // ---- Mirage inspection and tweaks (local runtime only)
-    inspect: async (body, page) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ inspect: async (body, page) => {
       const progress = { id: ++inspectionSequence, phase: 'Reading source dependencies' };
       inspectionProgress.set(page, progress);
       schedule(page);
@@ -1651,13 +1867,7 @@ export function enablePanel(context, session, opts = {}) {
             return { ok: false, error: error.message.split('\n')[0] };
           }
         }
-        const current = () =>
-          !disposed &&
-          !page.isClosed() &&
-          sameOrigin(page.url(), cfg.origin) &&
-          runtimeByPage.get(page) === runtime &&
-          pathOf(page.url()).replace(/\/+$/, '') === String(runtime.path).replace(/\/+$/, '');
-        if (!current())
+        if (!isCurrentInspection(page, cfg.origin, runtime, runtimeByPage, disposed, pathOf))
           return {
             ok: false,
             error: 'The page changed during source inspection. Refresh inspection for the current page.',
@@ -1665,26 +1875,30 @@ export function enablePanel(context, session, opts = {}) {
         progress.phase = 'Matching rendered elements to local sources';
         schedule(page);
         const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
+        const merged = apiRoutesByPage.get(page).merge(rendered);
         if (!cfg.mirage) {
-          const answer = await sourceInspector.inspect(runtime.path, rendered);
+          const answer = await sourceInspector.inspect(runtime.path, merged);
           runtime.report = answer.report;
           runtime.roots = answer.roots.map(realNative);
         } else {
           // Supplement runtime evidence with source paths without changing its access verdicts.
           runtime.inspectionBase ??= structuredClone(runtime.report);
           runtime.report = structuredClone(runtime.inspectionBase);
-          await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
-            (runtime.report.unresolved ??= []).push({
-              kind: 'source-inspection',
-              reason: error.message.split('\n')[0],
-            });
+          await sourceInspector.enrich(runtime.report, merged).catch((error) => {
+            {
+              if (runtime.report.unresolved == null) runtime.report.unresolved = [];
+              runtime.report.unresolved.push({
+                kind: 'source-inspection',
+                reason: error.message.split('\n')[0],
+              });
+            }
           });
           // Additional code roots come only from stat-validated mappings in this
           // task's trusted configuration, never from a runtime's claimed paths.
           const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
           runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
         }
-        if (!current())
+        if (!isCurrentInspection(page, cfg.origin, runtime, runtimeByPage, disposed, pathOf))
           return {
             ok: false,
             error: 'The page changed during source inspection. Refresh inspection for the current page.',
@@ -1711,7 +1925,7 @@ export function enablePanel(context, session, opts = {}) {
       if (!cfg.mirage) return { ok: false, error: 'Tweaks change the local Mirage runtime only.' };
       const [status, personasResponse, session] = await Promise.all([
         readMirageStatus(),
-        mirageGet('/personas', 4000),
+        mirageGet('/personas', MIRAGE_READ_GUARD_MS),
         readSession(page),
       ]);
       if (!status) return { ok: false, error: 'The Mirage status endpoint is unavailable.' };
@@ -1837,11 +2051,11 @@ export function enablePanel(context, session, opts = {}) {
       if (result.ok) afterTweak(`Preset applied: ${body.id}`);
       return result.ok ? { ok: true } : result;
     },
-    scenario: async (body, page) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ scenario: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Scenarios change the local Mirage runtime only.' };
       if (typeof body.id !== 'string' || !/^[\w.-]+$/.test(body.id)) return { ok: false, error: 'choose a scenario' };
       if (body.catalogue === true) {
-        const response = await mirageGet('/personas', 4000),
+        const response = await mirageGet('/personas', MIRAGE_READ_GUARD_MS),
           report = response.ok() ? await response.json() : null;
         const selected = report?.scenarios?.find((item) => item.id === body.id);
         if (!selected) return { ok: false, error: 'Catalogue scenario not found.' };
@@ -1849,15 +2063,7 @@ export function enablePanel(context, session, opts = {}) {
         if (!result.ok) return result;
         const opened = result.result,
           destination = new URL(opened.origin);
-        if (
-          !['127.0.0.1', 'localhost', '[::1]'].includes(destination.hostname) ||
-          destination.protocol !== 'http:' ||
-          destination.username ||
-          destination.password ||
-          destination.pathname !== '/' ||
-          destination.search ||
-          destination.hash
-        )
+        if (!isLocalScenarioOrigin(destination))
           return { ok: false, error: 'The scenario returned an invalid local runtime origin.' };
         const returnPath = personaStartPath(opened.path, 'returnUrl');
         if (opened.origin === cfg.origin) return startSessionFlow(page, opened.contactId, { returnPath });
@@ -1865,7 +2071,10 @@ export function enablePanel(context, session, opts = {}) {
         setTimeout(async () => {
           if (disposed || page.isClosed()) return;
           try {
-            await page.goto(destination.origin + '/', { waitUntil: 'domcontentloaded' });
+            await page.goto(destination.origin + '/', {
+              waitUntil: 'domcontentloaded',
+              timeout: SCENARIO_NAVIGATION_GUARD_MS,
+            });
             if (!disposed && !page.isClosed())
               await startSessionFlow(page, opened.contactId, { origin: destination.origin, returnPath });
           } catch (error) {
@@ -1880,10 +2089,10 @@ export function enablePanel(context, session, opts = {}) {
       // sign-in or sign-out. The scenario is applied first (its preset can create the persona);
       // the sign-in runs once the page has taken the Mirage's reload, so the two navigations
       // never race.
-      const session = scenario && scenario.persona !== undefined ? await readSession(page) : null;
+      const session = scenario?.persona !== undefined ? await readSession(page) : null;
       const contactId = scenario?.persona?.contactId ?? null;
       const change = Boolean(session?.supported) && (session.signedIn ? session.contactId : null) !== contactId;
-      const reloaded = change ? nextLoad(page, 4000) : null;
+      const reloaded = change ? nextLoad(page) : null;
       const result = await mirageWrite(`/scenarios/${encodeURIComponent(body.id)}/apply`, 'POST', {});
       if (!result.ok) {
         reloaded?.cancel();
@@ -1892,9 +2101,9 @@ export function enablePanel(context, session, opts = {}) {
       afterTweak(`Scenario applied: ${body.id}`);
       if (!change) return { ok: true };
       reloaded.promise
-        .then(() => startSessionFlow(page, contactId))
+        .then(() => (disposed || page.isClosed() ? null : startSessionFlow(page, contactId)))
         .then((started) => {
-          if (!started.ok)
+          if (started && !started.ok)
             log({
               type: 'switch',
               text: `Scenario applied, but this browser's session did not change: ${started.error}`,
@@ -1953,21 +2162,65 @@ export function enablePanel(context, session, opts = {}) {
     for (const remove of listeners) remove();
     if (session.api === api) session.api = null;
     if (session.sourceInspector === sourceInspector) session.sourceInspector = null;
-    let timer;
-    // A paused debugger must not hold shutdown open indefinitely. The queued cleanup also
-    // retires this token, so a late draw cannot recreate the panel after it resumes.
-    const cleanup = Promise.allSettled(
-      [...portalPages().map((page) => page.evaluate(removePanelUi, { token })), ...errorObservers].map((item) =>
-        item?.close ? item.close() : item,
-      ),
-    );
-    disposal = Promise.race([
-      cleanup,
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, 2000);
-      }),
-    ]).finally(() => clearTimeout(timer));
+    // Resolves once every tab confirmed the removal or closed; rejects naming the tabs that did neither.
+    disposal = Promise.all([
+      Promise.all(portalPages().map(removeFrom)),
+      Promise.allSettled([...errorObservers].map((observer) => observer.close())),
+    ]).then(([outcomes]) => {
+      const unconfirmed = outcomes.filter(Boolean);
+      if (unconfirmed.length)
+        throw new Error(
+          `The development panel could not be confirmed removed from ${unconfirmed.length} tab(s): ${unconfirmed.join('; ')}`,
+        );
+    });
     return disposal;
+  };
+  // Removes the panel from the tab's current document. Settles with null once removed or the tab closed, otherwise
+  // with the reason. The queued cleanup also retires this token, so a late draw cannot recreate the panel after a
+  // paused debugger resumes; the guard ends a wait on such a tab, which never answers. A crashed tab emits `crash`, not
+  // `close`, and is reported with the reason its ask failed.
+  const removeFrom = async (page) => {
+    let timer, onClose, onCrash, next;
+    const ended = new Promise((resolve) => {
+      onClose = () => resolve(null);
+      onCrash = () => resolve('the tab crashed');
+      page.once('close', onClose);
+      page.once('crash', onCrash);
+      timer = setTimeout(resolve, PANEL_REMOVAL_HANG_MS, `a tab did not answer within ${PANEL_REMOVAL_HANG_MS} ms`);
+    });
+    // Documents committed in the tab while it is asked; each one replaces the document an ask was sent to.
+    let commits = 0;
+    const committed = (frame) => {
+      if (frame !== page.mainFrame()) return;
+      commits++;
+      next?.resolve(true);
+    };
+    page.on('framenavigated', committed);
+    const ask = () =>
+      page.evaluate(removePanelUi, { token }).then(
+        () => null,
+        (error) => (page.isClosed() ? null : { failed: String(error?.message ?? error).split('\n')[0] }),
+      );
+    try {
+      for (;;) {
+        const seen = commits;
+        const outcome = await Promise.race([ask(), ended]);
+        if (!outcome?.failed) return outcome;
+        // A failed ask is asked again in the document that replaced the one asked. Its commit may be reported after
+        // the failure, so without one yet the next commit is awaited; the guard or a closed tab ends that wait.
+        if (commits === seen) {
+          next = Promise.withResolvers();
+          const renewed = await Promise.race([next.promise, ended]);
+          next = null;
+          if (renewed !== true) return renewed === null ? null : outcome.failed;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+      page.off('close', onClose);
+      page.off('crash', onCrash);
+      page.off('framenavigated', committed);
+    }
   };
   return {
     keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])),

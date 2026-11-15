@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
 import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
@@ -31,7 +32,7 @@ export function guidOrderKey(value) {
     .replace(/[{}]/g, '')
     .toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(hex)) return null;
-  const digits = hex.replace(/-/g, '');
+  const digits = hex.replaceAll('-', '');
   return [10, 11, 12, 13, 14, 15, 8, 9, 7, 6, 5, 4, 3, 2, 1, 0]
     .map((index) => digits.slice(index * 2, index * 2 + 2))
     .join('');
@@ -100,18 +101,35 @@ export const DATA_MODELS = Object.freeze(['standard', 'enhanced']);
 export { decodeXml } from './xml-text.mjs';
 const field = (record, name, fallback = null) =>
   record[`adx_${name}`] ?? record[`mspp_${name}`] ?? record[name] ?? fallback;
-const id = (value) =>
-  value == null
-    ? null
-    : String(typeof value === 'object' ? (value.id ?? value.value ?? '') : value)
-        .replace(/[{}]/g, '')
-        .toLowerCase();
+const id = (value) => (value == null ? null : String(idValue(value)).replace(/[{}]/g, '').toLowerCase());
+const idValue = (value) => {
+  if (typeof value !== 'object') return value;
+  return value.id ?? value.value ?? '';
+};
+const componentIdField = (kind) => {
+  if (kind === 'basicform') return 'entityformid';
+  if (kind === 'advancedform') return 'webformid';
+  if (kind === 'list') return 'entitylistid';
+  if (kind === 'tablepermission') return 'entitypermissionid';
+  if (kind === 'advancedformstep') return 'webformstepid';
+  if (kind === 'basicformmetadata') return 'entityformmetadataid';
+  if (kind === 'advancedformmetadata') return 'webformmetadataid';
+  return `${kind}id`;
+};
 const active = (r) => Number(field(r, 'statecode', 0)) !== 1;
+// A malformed escape keeps the raw path, so one bad partial URL neither stops an import nor a page request.
+const decodePortalPath = (pathname) => {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+};
 export const normalizePortalPath = (value) => {
   // A portal path never names a host: a leading "//" is a doubled slash, not an authority.
   const url = new URL(String(value || '/').replace(/^\/{2,}/, '/'), 'http://localhost');
   return (
-    decodeURIComponent(url.pathname)
+    decodePortalPath(url.pathname)
       .replace(/\/{2,}/g, '/')
       .replace(/\/$/, '')
       .toLowerCase() || '/'
@@ -119,7 +137,7 @@ export const normalizePortalPath = (value) => {
 };
 
 const IO_CONCURRENCY = 32;
-/** Preserve source readdir ordering and the importer's existing skip policy. */
+/** Source files in name order (lense/directory-files.mjs), with the importer's skip policy. */
 const walk = (dir) => directoryFiles(dir, { skip: new Set(['.git', '.portalconfig']), concurrency: IO_CONCURRENCY });
 // Text sources are prefetched concurrently; reads fall back to disk for other files.
 async function read(file, contents) {
@@ -164,6 +182,171 @@ const localized = (value, lcid = 1033) => {
   return value;
 };
 
+function overlayRecord(previous, patch, kind, recordId, sourceDir) {
+  const record = {
+    ...previous,
+    kind,
+    id: recordId,
+    _file: previous._file ?? path.join(sourceDir, '.paqvilo-overlay', kind, recordId + '.yml'),
+    _profileFields: { ...previous._profileFields },
+  };
+  for (const [name, value] of Object.entries(patch)) {
+    if (name.startsWith('_') || ['kind', 'id'].includes(name)) continue;
+    const bare = name.replace(/^(?:adx|mspp)_/, '');
+    // A sparse edit replaces this field's source spelling, preserving siblings and language/record identity.
+    delete record[`adx_${bare}`];
+    delete record[`mspp_${bare}`];
+    record[bare] = value;
+    record._profileFields[bare] = value;
+  }
+  record.name = field(record, 'name', record.name ?? '');
+  return record;
+}
+
+function applyRecordOverride(key, patch, state) {
+  const [kind, recordId] = key.split('/');
+  if (!kind || !recordId || key.split('/').length !== 2) throw new Error('Invalid local record overlay identity.');
+  if (kind === 'website' && recordId === String(state.website.id ?? field(state.website, 'websiteid'))) {
+    if (patch) state.website = overlayRecord(state.website, patch, kind, recordId, state.sourceDir);
+    return;
+  }
+  const index = state.records.findIndex((record) => record.kind === kind && record.id === recordId);
+  if (patch === null) {
+    if (index >= 0) state.records.splice(index, 1);
+    return;
+  }
+  const previous = index >= 0 ? state.records[index] : {};
+  const record = overlayRecord(previous, patch, kind, recordId, state.sourceDir);
+  if (index >= 0) state.records[index] = record;
+  else state.records.push(record);
+}
+
+function pageUrlFor(pageId, aliases, rootMap, urls, seen = new Set()) {
+  pageId = aliases.get(id(pageId)) ?? id(pageId);
+  if (!pageId) return '/';
+  if (urls.has(pageId)) return urls.get(pageId);
+  const record = rootMap.get(pageId);
+  if (!record || seen.has(pageId)) return null;
+  seen.add(pageId);
+  const parent = id(field(record, 'parentpageid'));
+  const base = parent ? pageUrlFor(parent, aliases, rootMap, urls, seen) : '/';
+  if (base === null) return null;
+  const partial = stripTrailingCharacter(String(field(record, 'partialurl', '')).replace(/^\/+/, ''), '/');
+  const url = partial ? `${base.replace(/\/$/, '')}/${partial}/` : base;
+  urls.set(pageId, url);
+  return url;
+}
+
+function applyWebRoleDefaultFlag(flag, defaultName, roles, diagnostics, flagOf) {
+  const flagged = roles.filter((role) => flagOf(field(role, flag, false)));
+  const named = roles.filter(
+    (role) =>
+      String(role.name ?? '')
+        .trim()
+        .toLowerCase() === defaultName.toLowerCase(),
+  );
+  if (flagged.length) {
+    const unflagged = named.filter((role) => !flagged.includes(role));
+    if (flagged.length > 1 || unflagged.length) {
+      const unflaggedText = unflagged.length
+        ? '; ' + unflagged.map((role) => '"' + role.name + '"').join(', ') + ' is not flagged'
+        : '';
+      diagnostics.push({
+        code: 'WEB_ROLE_FLAG_AS_EXPORTED',
+        flag,
+        roles: flagged.map((role) => role.name),
+        ...(unflagged.length ? { unflagged: unflagged.map((role) => role.name) } : {}),
+        message: `The export flags ${flagged.map((role) => '"' + role.name + '"').join(', ')} as the ${defaultName} role${unflaggedText}. The flags are used as exported.`,
+      });
+    }
+    return;
+  }
+  if (named.length === 1) {
+    named[0][`adx_${flag}`] = true;
+    diagnostics.push({
+      code: 'WEB_ROLE_FLAG_INFERRED',
+      id: named[0].id,
+      name: named[0].name,
+      flag,
+      message: `No active web role is flagged as the ${defaultName} role; the role named "${defaultName}" is used as the documented default.`,
+    });
+  } else if (named.length > 1)
+    diagnostics.push({
+      code: 'WEB_ROLE_FLAG_AMBIGUOUS',
+      ids: named.map((role) => role.id),
+      flag,
+      message: `No active web role is flagged as the ${defaultName} role and ${named.length} roles are named "${defaultName}"; none is used.`,
+    });
+}
+
+function orderUrlClaimants(claimants, kind) {
+  const keys = new Map(claimants.map((entry) => [entry, guidOrderKey(entry.id)]));
+  const ordered = claimants.every((entry) => keys.get(entry));
+  let rule;
+  if (!ordered) rule = 'export-order';
+  else if (kind === 'webpage') rule = 'id-order';
+  else rule = 'id-order-last';
+  let sorted;
+  if (ordered)
+    sorted = [...claimants].sort((a, b) => {
+      if (keys.get(a) < keys.get(b)) return -1;
+      if (keys.get(a) > keys.get(b)) return 1;
+      return 0;
+    });
+  else sorted = claimants;
+  const used = rule === 'id-order-last' ? sorted.at(-1) : sorted[0];
+  let servedOrder;
+  if (rule === 'id-order') servedOrder = 'first in Dataverse ID';
+  else if (rule === 'id-order-last') servedOrder = 'last in Dataverse ID';
+  else servedOrder = 'first in export';
+  return { used, rule, servedOrder };
+}
+
+function reportUrlClaim(entries, kind, key, claimants, diagnostics) {
+  if (claimants.length < 2) return;
+  const { used, rule, servedOrder } = orderUrlClaimants(claimants, kind);
+  if (used !== claimants[0]) {
+    entries.splice(entries.indexOf(used), 1);
+    entries.splice(entries.indexOf(claimants[0]), 0, used);
+  }
+  diagnostics.push({
+    code: 'URL_CLAIMED_TWICE',
+    kind,
+    path: key,
+    usedId: used.id,
+    rule,
+    claimants: claimants.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      url: entry.url,
+      file: entry.metadata?._file ?? null,
+    })),
+    message:
+      claimants.length +
+      ' ' +
+      (kind === 'webpage' ? 'pages' : 'web files') +
+      ' claim ' +
+      claimants[0].url +
+      ': ' +
+      claimants.map((entry) => "'" + entry.name + "'").join(', ') +
+      "; '" +
+      used.name +
+      "' is served (" +
+      servedOrder +
+      ' order).',
+  });
+}
+
+function prioritizeUrlClaims(entries, kind, diagnostics) {
+  const claims = new Map();
+  for (const entry of entries) {
+    const key = normalizePortalPath(entry.url);
+    if (!claims.has(key)) claims.set(key, []);
+    claims.get(key).push(entry);
+  }
+  for (const [key, claimants] of claims) reportUrlClaim(entries, kind, key, claimants, diagnostics);
+}
+
 /**
  * Read a portal source; no source mutation. Layouts: PAC YAML with adx_ keys, the short-key
  * .powerpages-site YAML (unprefixed keys, record IDs in id:, language folders under
@@ -176,7 +359,7 @@ const localized = (value, lcid = 1033) => {
  * model, and short-key YAML, which does not record it, defaults to the enhanced data model with
  * a DATA_MODEL_ASSUMED diagnostic (code sites require it).
  */
-export async function importPortal(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function importPortal(
   sourceDir,
   {
     languageId,
@@ -225,8 +408,18 @@ export async function importPortal(
   let website = {};
   // The data model: the enhanced layout is the enhanced data model; a YAML layout uses the
   // requested model, else standard (adx_ keys) or enhanced (short keys, assumed).
-  const dataModel = enhanced ? 'enhanced' : (requestedDataModel ?? (shortKey ? 'enhanced' : 'standard'));
-  const dataModelSource = enhanced ? 'export' : requestedDataModel ? 'configured' : shortKey ? 'assumed' : 'export';
+  let dataModel, dataModelSource;
+  if (enhanced) {
+    dataModel = 'enhanced';
+    dataModelSource = 'export';
+  } else {
+    if (requestedDataModel != null) dataModel = requestedDataModel;
+    else if (shortKey) dataModel = 'enhanced';
+    else dataModel = 'standard';
+    if (requestedDataModel) dataModelSource = 'configured';
+    else if (shortKey) dataModelSource = 'assumed';
+    else dataModelSource = 'export';
+  }
   if (enhanced && requestedDataModel === 'standard')
     diagnostics.push({
       code: 'DATA_MODEL_OVERRIDE_IGNORED',
@@ -255,9 +448,9 @@ export async function importPortal(
         // <content>; it selects language copies as adx_webpagelanguageid and
         // adx_contentsnippetlanguageid do in standard exports.
         const siteLanguageId = id(
-          /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(
-            xml,
-          )?.[1],
+          /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>\s*)?([^<\s][^<]*)<\/powerpagesitelanguageid>/
+            .exec(xml)?.[1]
+            ?.trimEnd(),
         );
         const languageFields = siteLanguageId
           ? {
@@ -327,7 +520,7 @@ export async function importPortal(
       const xml = await read(file, contents);
       for (const match of xml.matchAll(/<powerpagesitelanguage\b([^>]*)>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
         const element = (name) => {
-          const value = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(match[2])?.[1];
+          const value = new RegExp(String.raw`<${name}>([\s\S]*?)</${name}>`).exec(match[2])?.[1];
           return value === undefined ? undefined : decodeXml(value).trim();
         };
         let content = {};
@@ -369,17 +562,14 @@ export async function importPortal(
           rows = YAML.parse(text, { uniqueKeys: false });
         }
         if (!Array.isArray(rows)) rows = [rows];
+        // Every row of a multi-record file shares the file's revision.
+        const sourceRevision = sourceRevisionOf(text);
         for (const row of rows) {
           if (!row || typeof row !== 'object') continue;
           const record = {
             ...row,
             kind,
-            id: id(
-              field(
-                row,
-                `${kind === 'basicform' ? 'entityform' : kind === 'advancedform' ? 'webform' : kind === 'list' ? 'entitylist' : kind === 'tablepermission' ? 'entitypermission' : kind === 'advancedformstep' ? 'webformstep' : kind === 'basicformmetadata' ? 'entityformmetadata' : kind === 'advancedformmetadata' ? 'webformmetadata' : kind}id`,
-              ) ?? (shortKey ? row.id : undefined),
-            ),
+            id: id(field(row, componentIdField(kind)) ?? (shortKey ? row.id : undefined)),
             name: field(row, 'name', ''),
             // PAC can export enhanced sites with adx_ keys. The selected data model,
             // rather than the YAML key dialect, determines their component tables.
@@ -387,7 +577,7 @@ export async function importPortal(
               ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] }
               : {}),
             _file: file,
-            _sourceRevision: sourceRevisionOf(text),
+            _sourceRevision: sourceRevision,
           };
           records.push(record);
           if (kind === 'website') website = record;
@@ -401,6 +591,7 @@ export async function importPortal(
       }
     }
   }
+  // NOSONAR: keep deduplication and profile reads on their original await boundaries.
   // A record exported twice with identical content is one record (the first copy).
   // Differing copies of one record ID are resolved deterministically: the copy whose file
   // name matches its record name, else the most recently committed file (git), else the
@@ -536,44 +727,9 @@ export async function importPortal(
   }
   // Local model-driven edits are record overlays. Reuse the normal compiler so page
   // hierarchy, language, forms and templates stay consistent without rewriting exports.
-  const overlayRecord = (previous, patch, kind, recordId) => {
-    const record = {
-      ...previous,
-      kind,
-      id: recordId,
-      _file: previous._file ?? path.join(sourceDir, '.paqvilo-overlay', kind, recordId + '.yml'),
-      _profileFields: { ...previous._profileFields },
-    };
-    for (const [name, value] of Object.entries(patch)) {
-      if (name.startsWith('_') || ['kind', 'id'].includes(name)) continue;
-      const bare = name.replace(/^(?:adx|mspp)_/, '');
-      // A sparse edit replaces this field's source spelling, preserving siblings
-      // and language/record identity. Untouched sidecars still come from source.
-      delete record[`adx_${bare}`];
-      delete record[`mspp_${bare}`];
-      record[bare] = value;
-      record._profileFields[bare] = value;
-    }
-    record.name = field(record, 'name', record.name ?? '');
-    return record;
-  };
-  for (const [key, patch] of Object.entries(recordOverrides)) {
-    const [kind, recordId] = key.split('/');
-    if (!kind || !recordId || key.split('/').length !== 2) throw new Error('Invalid local record overlay identity.');
-    if (kind === 'website' && recordId === String(website.id ?? field(website, 'websiteid'))) {
-      if (patch) website = overlayRecord(website, patch, kind, recordId);
-      continue;
-    }
-    const index = records.findIndex((record) => record.kind === kind && record.id === recordId);
-    if (patch === null) {
-      if (index >= 0) records.splice(index, 1);
-      continue;
-    }
-    const previous = index >= 0 ? records[index] : {};
-    const record = overlayRecord(previous, patch, kind, recordId);
-    if (index >= 0) records[index] = record;
-    else records.push(record);
-  }
+  const overlayState = { sourceDir, records, website };
+  for (const [key, patch] of Object.entries(recordOverrides)) applyRecordOverride(key, patch, overlayState);
+  website = overlayState.website;
   const live = records.filter(active);
   const byKind = (kind) => live.filter((r) => r.kind === kind);
   const language = id(languageId ?? field(website, 'defaultlanguage'));
@@ -597,24 +753,12 @@ export async function importPortal(
   }
   const rootMap = new Map(roots.map((r) => [r.id, r]));
   const urls = new Map();
-  const pageUrl = (pageId, seen = new Set()) => {
-    pageId = aliases.get(id(pageId)) ?? id(pageId);
-    if (!pageId) return '/';
-    if (urls.has(pageId)) return urls.get(pageId);
-    const r = rootMap.get(pageId);
-    if (!r || seen.has(pageId)) return null;
-    seen.add(pageId);
-    const parent = id(field(r, 'parentpageid'));
-    const base = parent ? pageUrl(parent, seen) : '/';
-    if (base === null) return null;
-    const partial = String(field(r, 'partialurl', '')).replace(/^\/+|\/+$/g, '');
-    const url = partial ? `${base.replace(/\/$/, '')}/${partial}/` : base;
-    urls.set(pageId, url);
-    return url;
-  };
+  const pageUrl = (pageId, seen) => pageUrlFor(pageId, aliases, rootMap, urls, seen);
   // Preserve the exact imported field origin for lazy provenance indexes. Later disk
   // edits must not relabel already imported/rendered bytes with a newer revision.
   for (const record of records) record._fieldOrigins = {};
+  // Rows of one multi-record file share their sidecar names; read each name once.
+  const sidecars = new Map();
   async function source(record, suffix, fallbackField) {
     const origins = (record._fieldOrigins ??= {});
     const fallback = Object.hasOwn(record._profileFields ?? {}, fallbackField)
@@ -624,8 +768,9 @@ export async function importPortal(
     origins[fallbackField] = { value: fallback, file, sidecar: false };
     if (Object.hasOwn(record._profileFields ?? {}, fallbackField) || enhanced) return String(localized(fallback, lcid));
     const stem = String(record._file ?? '').replace(/\.ya?ml$/i, '');
-    const sidecar = `${stem}.${suffix}`,
-      value = await read(sidecar, contents);
+    const sidecar = `${stem}.${suffix}`;
+    if (!sidecars.has(sidecar)) sidecars.set(sidecar, read(sidecar, contents));
+    const value = await sidecars.get(sidecar);
     if (value) origins[fallbackField] = { value, file: sidecar, sidecar: true };
     return value || String(localized(fallback, lcid));
   }
@@ -709,7 +854,10 @@ export async function importPortal(
     const value = await source(r, 'value.html', 'value');
     snippets[r.name] = value;
     const snippetLanguage = id(field(r, 'contentsnippetlanguageid'));
-    if (snippetLanguage) (snippetTranslations[snippetLanguage] ??= {})[r.name] = value;
+    if (snippetLanguage) {
+      snippetTranslations[snippetLanguage] ??= {};
+      snippetTranslations[snippetLanguage][r.name] = value;
+    }
     if (r._originalName && r._originalName !== r.name) {
       snippets[r._originalName] = value;
       if (snippetLanguage) snippetTranslations[snippetLanguage][r._originalName] = value;
@@ -772,52 +920,9 @@ export async function importPortal(
       metadata: r,
     });
   }
-  // One URL claimed by several pages, or by several web files. Dataverse returns rows in
-  // primary-key order when a query sets no order; ordered by SQL Server uniqueidentifier,
-  // the default routing model selects the FIRST claiming page and LAST claiming web file,
-  // as a lookup that takes the first match for pages and keeps the last entry per URL for files
-  // (docs/bootstrap-and-sources.md). Claimants without GUID IDs keep export order. The
-  // served claimant moves ahead of the others, so every lookup by URL finds it first;
-  // pages answer paths ending with "/", web files others.
-  for (const [kind, entries] of [
-    ['webpage', pages],
-    ['webfile', webFiles],
-  ]) {
-    const claims = new Map();
-    for (const entry of entries) {
-      const key = normalizePortalPath(entry.url);
-      if (!claims.has(key)) claims.set(key, []);
-      claims.get(key).push(entry);
-    }
-    for (const [key, claimants] of claims) {
-      if (claimants.length < 2) continue;
-      const keys = new Map(claimants.map((entry) => [entry, guidOrderKey(entry.id)]));
-      const ordered = claimants.every((entry) => keys.get(entry));
-      const rule = ordered ? (kind === 'webpage' ? 'id-order' : 'id-order-last') : 'export-order';
-      const sorted = ordered
-        ? [...claimants].sort((a, b) => (keys.get(a) < keys.get(b) ? -1 : keys.get(a) > keys.get(b) ? 1 : 0))
-        : claimants;
-      const used = rule === 'id-order-last' ? sorted.at(-1) : sorted[0];
-      if (used !== claimants[0]) {
-        entries.splice(entries.indexOf(used), 1);
-        entries.splice(entries.indexOf(claimants[0]), 0, used);
-      }
-      diagnostics.push({
-        code: 'URL_CLAIMED_TWICE',
-        kind,
-        path: key,
-        usedId: used.id,
-        rule,
-        claimants: claimants.map((entry) => ({
-          id: entry.id,
-          name: entry.name,
-          url: entry.url,
-          file: entry.metadata?._file ?? null,
-        })),
-        message: `${claimants.length} ${kind === 'webpage' ? 'pages' : 'web files'} claim ${claimants[0].url}: ${claimants.map((entry) => `'${entry.name}'`).join(', ')}; '${used.name}' is served (${rule === 'id-order' ? 'first in Dataverse ID' : rule === 'id-order-last' ? 'last in Dataverse ID' : 'first in export'} order).`,
-      });
-    }
-  }
+  // The served claimant is moved ahead of the others so every lookup by URL finds it first.
+  prioritizeUrlClaims(pages, 'webpage', diagnostics);
+  prioritizeUrlClaims(webFiles, 'webfile', diagnostics);
   const pageTemplates = byKind('pagetemplate').map((r) => ({
     id: r.id,
     name: r.name,
@@ -894,7 +999,13 @@ export async function importPortal(
   const all = (kind) => records.filter((r) => r.kind === kind);
   const flagOf = (value) =>
     value === true || value === 1 || (typeof value === 'string' && value.toLowerCase() === 'true');
-  const idList = (value) => (Array.isArray(value) ? value : value == null ? [] : [value]).map(id).filter(Boolean);
+  const idList = (value) => {
+    let values;
+    if (Array.isArray(value)) values = value;
+    else if (value == null) values = [];
+    else values = [value];
+    return values.map(id).filter(Boolean);
+  };
   // The special web roles are identified by their Authenticated/Anonymous Users Role
   // flags. An export without an active flagged role falls back to the documented default
   // role name, with a diagnostic (an enhanced export can leave "Authenticated Users"
@@ -904,43 +1015,7 @@ export async function importPortal(
     ['anonymoususersrole', 'Anonymous Users'],
   ]) {
     const roles = byKind('webrole');
-    const flagged = roles.filter((role) => flagOf(field(role, flag, false)));
-    const named = roles.filter(
-      (role) =>
-        String(role.name ?? '')
-          .trim()
-          .toLowerCase() === defaultName.toLowerCase(),
-    );
-    if (flagged.length) {
-      // Flags are used as exported. An unusual assignment (several flagged roles, or the
-      // role with the default name left unflagged) is reported, never corrected.
-      const unflagged = named.filter((role) => !flagged.includes(role));
-      if (flagged.length > 1 || unflagged.length)
-        diagnostics.push({
-          code: 'WEB_ROLE_FLAG_AS_EXPORTED',
-          flag,
-          roles: flagged.map((role) => role.name),
-          ...(unflagged.length ? { unflagged: unflagged.map((role) => role.name) } : {}),
-          message: `The export flags ${flagged.map((role) => `"${role.name}"`).join(', ')} as the ${defaultName} role${unflagged.length ? `; ${unflagged.map((role) => `"${role.name}"`).join(', ')} is not flagged` : ''}. The flags are used as exported.`,
-        });
-      continue;
-    }
-    if (named.length === 1) {
-      named[0][`adx_${flag}`] = true;
-      diagnostics.push({
-        code: 'WEB_ROLE_FLAG_INFERRED',
-        id: named[0].id,
-        name: named[0].name,
-        flag,
-        message: `No active web role is flagged as the ${defaultName} role; the role named "${defaultName}" is used as the documented default.`,
-      });
-    } else if (named.length > 1)
-      diagnostics.push({
-        code: 'WEB_ROLE_FLAG_AMBIGUOUS',
-        ids: named.map((role) => role.id),
-        flag,
-        message: `No active web role is flagged as the ${defaultName} role and ${named.length} roles are named "${defaultName}"; none is used.`,
-      });
+    applyWebRoleDefaultFlag(flag, defaultName, roles, diagnostics, flagOf);
   }
   // Publishing states are evaluated by their Is Visible flag; the legacy content map
   // loads them without a statecode filter, so inactive state records keep applying.
@@ -994,7 +1069,7 @@ export async function importPortal(
   // language's ID).
   for (const entry of configEntries
     .filter((item) => item.isFile() && /(?:^|\.)portallanguage\.ya?ml$/i.test(item.name))
-    .sort((a, b) => a.name.localeCompare(b.name))) {
+    .sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     const file = path.join(portalConfig, entry.name);
     try {
       const parsed = YAML.parse(await fs.readFile(file, 'utf8')) ?? {};
@@ -1024,12 +1099,16 @@ export async function importPortal(
     const isDefault = Boolean(language) && r.id === language;
     const linked = portalLanguageById.get(id(field(r, 'portallanguageid')));
     const exportedCode = String(field(r, 'languagecode') ?? linked?.code ?? '').trim();
-    const known = exportedCode
-      ? {
-          code: exportedCode,
-          lcid: Number(field(r, 'lcid')) || linked?.lcid || portalLanguage({ name: exportedCode })?.lcid || null,
-        }
-      : (portalLanguage({ name: r.name }) ?? (isDefault ? portalLanguage({ lcid: baseLcid }) : null));
+    let known;
+    if (exportedCode)
+      known = {
+        code: exportedCode,
+        lcid: Number(field(r, 'lcid')) || linked?.lcid || portalLanguage({ name: exportedCode })?.lcid || null,
+      };
+    else {
+      known = portalLanguage({ name: r.name });
+      if (known == null && isDefault) known = portalLanguage({ lcid: baseLcid });
+    }
     if (!known)
       diagnostics.push({
         code: 'WEBSITE_LANGUAGE_CODE_UNKNOWN',
@@ -1094,7 +1173,13 @@ export async function importPortal(
           `${record._file.replace(/\.ya?ml$/i, '')}.js`,
         ];
     let file = null;
-    for (const candidate of candidates.filter(Boolean)) if ((file = await containedFile(sourceDir, candidate))) break;
+    for (const candidate of candidates.filter(Boolean)) {
+      const contained = await containedFile(sourceDir, candidate);
+      if (contained) {
+        file = contained;
+        break;
+      }
+    }
     if (!file)
       diagnostics.push({
         code: 'SERVER_LOGIC_CODE_MISSING',
@@ -1122,7 +1207,7 @@ export async function importPortal(
     const apiUrl = field(record, 'flowapiurl');
     let triggerPath = null;
     try {
-      triggerPath = apiUrl ? new URL(String(apiUrl), 'http://local.invalid').pathname : null;
+      triggerPath = apiUrl ? new URL(String(apiUrl), 'http://local.invalid').pathname : null; // NOSONAR: reserved or loopback placeholder host, not a real transport
     } catch {
       /* Optional metadata remains absent when its source cannot be parsed or read. */
     }
@@ -1229,5 +1314,7 @@ export function pageTemplateKind(template) {
   if (Number(value) === 756150000) return 'rewrite';
   if (Number(value) === 756150001) return 'web-template';
   // Older or partial exports omit the choice; infer the source from the references.
-  return template?.webTemplateId ? 'web-template' : template?.rewriteUrl ? 'rewrite' : null;
+  if (template?.webTemplateId) return 'web-template';
+  if (template?.rewriteUrl) return 'rewrite';
+  return null;
 }

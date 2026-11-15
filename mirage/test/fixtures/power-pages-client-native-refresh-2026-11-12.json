@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "power-pages-client-native-refresh-2026-11-12",
+  "recordedDate": "2026-11-12",
+  "scope": "Reproduces the existing 189 client-context results after the readiness deadline change; no additional assertions, cases or platform coverage.",
+  "historicalEvidence": {
+    "file": "frontend-parity-evidence.json",
+    "suite": "power-pages-rendered-controls",
+    "previousClientProbeFunctionSha256": "e7c6f5f00060bb4462c9793fc1b73c1e67e8c6c8f447653c49f73a82a170fc7a",
+    "changedField": "clientProbeFunctionSha256",
+    "otherSuiteFieldsUnchanged": true
+  },
+  "producer": {
+    "file": "mirage/testing/power-pages-client.mjs",
+    "export": "capturePowerPagesClientContract",
+    "functionSha256": "7a77facc295d5313ec4ec7e1338d95b5d5574901bcf3a99e48b469683e727150",
+    "moduleSha256": "6f770fbace5da014b49d34eecf2b05e1437c1cf8ef177232756ea128a5b1f764",
+    "change": "readiness deadline removed; optional positive-integer readyTimeoutMs"
+  },
+  "input": {
+    "planSha256": "6a4baf9a30311b753050ebb2f546d62fc8519749bc31b2dd65d1c5cf4823cc72",
+    "inputMatchesPlan": true,
+    "resultCount": 189,
+    "readyTimeoutMs": "not supplied"
+  },
+  "fixture": {
+    "file": "power-pages-client-expected.json",
+    "sha256": "7c380709e7abaee657543aeb4815a6bcd8eec7eeb478e6c7354d5c3e7dcc1779",
+    "unchanged": true
+  },
+  "source": {
+    "currentNativeFormXmlSha256": "2df19b283c49b798af9d30b5a647d1f34dcf30a6ee98861d5799b209fadbb34b",
+    "unchangedSinceProducerRefresh": true
+  },
+  "recording": {
+    "capturedDate": "2026-11-12",
+    "runs": 1,
+    "resultsSha256": "7c380709e7abaee657543aeb4815a6bcd8eec7eeb478e6c7354d5c3e7dcc1779",
+    "resultCount": 189,
+    "readOnly": true,
+    "probeRunsOnce": true
+  },
+  "comparison": {
+    "results": "The native 189-row array matches the unchanged public fixture with no differences; its results hash equals the pinned fixture hash.",
+    "clientApi": "The modern and legacy client functions were present and enabled."
+  },
+  "limits": [
+    "The visitor identity, authentication and submission behavior are excluded.",
+    "The rendered-control producer, the 26-property producer and their fixtures are unchanged.",
+    "The portal sign-in was completed by the user-owned browser before the single read; no credential was entered or stored.",
+    "Environment identities, source bodies, rendered native names and browser state are not committed."
+  ]
+}

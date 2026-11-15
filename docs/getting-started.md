@@ -72,7 +72,7 @@ Keep the terminal running. Close the demo browser or press **Ctrl+C** to stop. R
 
 For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./another-demo`. An unrelated nonempty folder is never overwritten. The [project starter](../examples/project/README.md) explains how to adapt the example.
 
-`mirage serve` is a server-only command. It neither opens the development browser nor loads a project's data pack when given only `--source`. Use `demo` for the first trial and `dev` for your own configured project.
+`mirage serve` is a server-only command. It neither opens the development browser nor loads a project's data pack when given only `--source`. Use `demo` for a first run and `dev` for your own configured project.
 
 ## 2. Scaffold your project
 
@@ -143,11 +143,11 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 The first command creates a local runtime project under `.paqvilo/`. The second opens your rendered portal in a dedicated browser. **Alt+Shift+P** opens the panel:
 
-| Tool         | Use it for                                                                             |
-| ------------ | -------------------------------------------------------------------------------------- |
-| **Inspect**  | Follow templates, snippets, settings, forms, tables and access rules to their sources. |
-| **Tweaks**   | Sign this browser in as a local persona and select permission or data scenarios.       |
-| **`/_sim/`** | Manage simulated records and runtime settings.                                         |
+| Tool           | Use it for                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| **Inspect**    | Follow templates, snippets, settings, forms, tables and access rules to their sources.           |
+| **Tweaks**     | Sign this browser in as a local persona and select permission or data scenarios.                 |
+| **`adminUrl`** | Manage simulated records and runtime settings (the `/_sim/` page on the administration address). |
 
 New states contain portal configuration and empty business tables. Local sign-in is separate from your Microsoft account. Each runtime has its own session cookie.
 

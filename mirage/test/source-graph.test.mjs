@@ -6,6 +6,7 @@ import path from 'node:path';
 import { loadSourceGraph } from '../api.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const manifest = (name, version, missing = '') =>
   `<ImportExportXml><SolutionManifest><UniqueName>${name}</UniqueName><Version>${version}</Version>${missing}</SolutionManifest></ImportExportXml>`;
@@ -21,7 +22,7 @@ const MISSING = `<MissingDependencies>
 <MissingDependency><Required type="1" schemaName="x_absent"/><Dependent type="300" schemaName="x_app"/></MissingDependency></MissingDependencies>`;
 
 async function layers(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-graph-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-graph-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'A/Other/Solution.xml': manifest('InventedBase', '1.0.0.0'),

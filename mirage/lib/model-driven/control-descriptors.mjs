@@ -31,36 +31,22 @@ const dataverseTypes = new Set([
 ]);
 export function controlDescriptor(field = {}) {
   const native = String(field.dataverseType).toLowerCase();
-  const inferred = [
-    'int',
-    'integer',
-    'bigint',
-    'decimal',
-    'double',
-    'float',
-    'money',
-    'picklist',
-    'state',
-    'status',
-  ].includes(native)
-    ? 'number'
-    : ['bit', 'boolean'].includes(native)
-      ? 'boolean'
-      : ['datetime', 'date'].includes(native)
-        ? 'date'
-        : ['lookup', 'owner', 'customer'].includes(native)
-          ? 'lookup'
-          : ['ntext', 'memo'].includes(native)
-            ? 'textarea'
-            : native === 'json'
-              ? 'json'
-              : 'text';
-  const type =
-    field.dataverseType && !dataverseTypes.has(native)
-      ? 'unsupported'
-      : native === 'multiselectpicklist'
-        ? 'multiselect'
-        : (field.type ?? inferred);
+  let inferred;
+  if (
+    ['int', 'integer', 'bigint', 'decimal', 'double', 'float', 'money', 'picklist', 'state', 'status'].includes(native)
+  )
+    inferred = 'number';
+  else if (['bit', 'boolean'].includes(native)) inferred = 'boolean';
+  else if (['datetime', 'date'].includes(native)) inferred = 'date';
+  else if (['lookup', 'owner', 'customer'].includes(native)) inferred = 'lookup';
+  else if (['ntext', 'memo'].includes(native)) inferred = 'textarea';
+  else if (native === 'json') inferred = 'json';
+  else inferred = 'text';
+  let type;
+  if (field.dataverseType && !dataverseTypes.has(native)) type = 'unsupported';
+  else if (native === 'multiselectpicklist') type = 'multiselect';
+  else if (['bit', 'boolean'].includes(native)) type = 'boolean';
+  else type = field.type ?? inferred;
   const supported = CONTROL_TYPES.includes(type);
   return {
     type,

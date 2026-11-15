@@ -7,10 +7,10 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('explicit portal metadata activates exported form-bound PCF and saves through the native form', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-pcf-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-pcf-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');
@@ -72,7 +72,6 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   const page = await context.newPage(),
     errors = [],
     external = [];
-  page.setDefaultTimeout(10000);
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
     if (!request.url().startsWith(app.url)) external.push(request.url());

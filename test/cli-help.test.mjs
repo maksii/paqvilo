@@ -1,12 +1,12 @@
+// @test-kind contract: the lense help names every option its parser accepts, so the help cannot drift from the parser
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const bin = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -18,7 +18,7 @@ const run = (args, options = {}) =>
         execFile(
           process.execPath,
           [bin, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options },
+          { env, encoding: 'utf8', windowsHide: true, ...options },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -45,8 +45,23 @@ test('public tool registry routes each tool-specific help and prints the package
   assert.match(doctor.stdout, /Usage: paqvilo doctor --setup \[--json\] \[--config FILE\] \[--browser CHANNEL\]/);
 });
 
+test('lense --help names every option the lense parser accepts', async () => {
+  const source = fs.readFileSync(new URL('../lense/cli.mjs', import.meta.url), 'utf8');
+  const table = /^const options = \{\n([\s\S]*?)^\};/m.exec(source)?.[1];
+  assert.ok(table, 'the lense option table is found in lense/cli.mjs');
+  const accepted = [...table.matchAll(/^ {2}(?:'([^']+)'|([a-z][\w-]*)):/gm)].map(
+    ([, quoted, plain]) => quoted ?? plain,
+  );
+  assert.ok(accepted.length > 50, 'the option table is read in full');
+  const help = await run(['lense', '--help']);
+  assert.equal(help.status, 0, help.stderr);
+  // --help itself is the usage line's subject, not a listed option.
+  const missing = accepted.filter((name) => name !== 'help' && !new RegExp(`--${name}(?![\\w-])`).test(help.stdout));
+  assert.deepEqual(missing, []);
+});
+
 test('unknown Mirage commands reject before project and source resolution in an empty directory', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unknown-mirage-'));
+  const root = tempDirSync('paqvilo-unknown-mirage-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const unknown = [
     ['mirage', 'nosuchcommand'],
@@ -75,4 +90,26 @@ test('unknown Mirage commands reject before project and source resolution in an 
     assert.ok(typo.stderr.includes(command), command);
     assert.ok(help.stdout.includes(command), command);
   }
+});
+
+// @test-kind tooling: mirage init --help prints the init usage and its options rather than the lense overview
+test('mirage init --help prints its own usage with the options init accepts', async () => {
+  const result = await run(['mirage', 'init', '--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^paqvilo mirage init /);
+  for (const option of [
+    '--config',
+    '--site',
+    '--env',
+    '--url',
+    '--source',
+    '--repo',
+    '--portals',
+    '--out',
+    '--force',
+    '--json',
+  ]) {
+    assert.ok(result.stdout.includes(option), option);
+  }
+  assert.doesNotMatch(result.stdout, /paqvilo lense - work on Power Pages/);
 });

@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "date": "2026-11-08",
+  "scope": "Exact successful ordinary record-collection JSON serialization and hidden lookup redaction from two authenticated323 cohorts. The configured source metadata version, same owned record ID, its opaque row-version token and request origin are explicit parameters; all other JSON properties, order, values, CRLF and indentation remain exact. Query-filter semantics and unknown schemas are not inferred.",
+  "captures": [
+    {
+      "runSha256": "9e5d551f6f68e4f533b75d0c0317307e125de4fd40da68801c6402303cf50d4d",
+      "planSha256": "653261a8bd1b2fc791d9a5ed6edff1f1881fc230544abbf16d001fcdf5e767fe",
+      "journalSha256": "8920c9583d390f9dd4792bcf28e246824e09a9f2995e63f50fe2b53d675c757b",
+      "reads": [
+        {
+          "caseIdentitySha256": "4c6837da64405729f59af2c0d16073eff14b251a61aaa4f9021e5273a8ea6815",
+          "responseBodySha256": "5f209d378ef810b07269fa21506fce6393eca297cabf9f11e1bb856ab16067d3",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "1355e2d2d15423dd4b84e2daeb43ca762e4f66a3b8def6aafb6716ddf28da8a9",
+          "responseBodySha256": "5f209d378ef810b07269fa21506fce6393eca297cabf9f11e1bb856ab16067d3",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "4445db7123b8e05deedcfa7334582eb1c1c59f35a9e479e9d1431103ba91d78d",
+          "responseBodySha256": "5f209d378ef810b07269fa21506fce6393eca297cabf9f11e1bb856ab16067d3",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "0c7cdcae4171c8e914160195a88968e8887db62ea1d8baeecfdde3ddbf2abfde",
+          "responseBodySha256": "5f209d378ef810b07269fa21506fce6393eca297cabf9f11e1bb856ab16067d3",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "d410cb5b9a324515ce7765cf5fc1bf060b2fcf5402520a1cd8a3a9a9a311445e",
+          "responseBodySha256": "be13ae7e700ba461734784ad3d84c7594d2d324f0126beba418b198f7f80232d",
+          "variant": "empty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "aa377733c710518dacc9e912a441a5b26f62e811b9cbab9332f5fe12c2a3fc4b",
+          "responseBodySha256": "5f209d378ef810b07269fa21506fce6393eca297cabf9f11e1bb856ab16067d3",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "16e56d2172f77c20194eafc85d424b46d6c00d75217c7ba433fb824717ca33c5",
+          "responseBodySha256": "be13ae7e700ba461734784ad3d84c7594d2d324f0126beba418b198f7f80232d",
+          "variant": "empty",
+          "globalMetadataVersionIsNumericString": true
+        }
+      ],
+      "hiddenLookupResponseSha256": "2ad9116e364b4e5a105187bd78044a31a97c7f42f3cc0e9816e216bec1858a70"
+    },
+    {
+      "runSha256": "d10fc6af219cfe2f595990f1fd3b3fb32f202490f3e13b814576ea0d30bcd63c",
+      "planSha256": "00e6c965949089b0aea91470c5a5663c721f6ff6aaba9a5a9420a50d5fe50b70",
+      "journalSha256": "8aad3952a56227423bb2fcfd0de8eb8de073a7cb9d3402f3d88c9854069c0dd6",
+      "reads": [
+        {
+          "caseIdentitySha256": "4c6837da64405729f59af2c0d16073eff14b251a61aaa4f9021e5273a8ea6815",
+          "responseBodySha256": "71fdd5e7f80fd0d0f0faef4ee810ea91e1684a70c2a03ddac6a09a1f9211a600",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "1355e2d2d15423dd4b84e2daeb43ca762e4f66a3b8def6aafb6716ddf28da8a9",
+          "responseBodySha256": "71fdd5e7f80fd0d0f0faef4ee810ea91e1684a70c2a03ddac6a09a1f9211a600",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "4445db7123b8e05deedcfa7334582eb1c1c59f35a9e479e9d1431103ba91d78d",
+          "responseBodySha256": "71fdd5e7f80fd0d0f0faef4ee810ea91e1684a70c2a03ddac6a09a1f9211a600",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "0c7cdcae4171c8e914160195a88968e8887db62ea1d8baeecfdde3ddbf2abfde",
+          "responseBodySha256": "71fdd5e7f80fd0d0f0faef4ee810ea91e1684a70c2a03ddac6a09a1f9211a600",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "d410cb5b9a324515ce7765cf5fc1bf060b2fcf5402520a1cd8a3a9a9a311445e",
+          "responseBodySha256": "be13ae7e700ba461734784ad3d84c7594d2d324f0126beba418b198f7f80232d",
+          "variant": "empty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "aa377733c710518dacc9e912a441a5b26f62e811b9cbab9332f5fe12c2a3fc4b",
+          "responseBodySha256": "71fdd5e7f80fd0d0f0faef4ee810ea91e1684a70c2a03ddac6a09a1f9211a600",
+          "variant": "nonempty",
+          "globalMetadataVersionIsNumericString": true
+        },
+        {
+          "caseIdentitySha256": "16e56d2172f77c20194eafc85d424b46d6c00d75217c7ba433fb824717ca33c5",
+          "responseBodySha256": "be13ae7e700ba461734784ad3d84c7594d2d324f0126beba418b198f7f80232d",
+          "variant": "empty",
+          "globalMetadataVersionIsNumericString": true
+        }
+      ],
+      "hiddenLookupResponseSha256": "2ad9116e364b4e5a105187bd78044a31a97c7f42f3cc0e9816e216bec1858a70"
+    }
+  ],
+  "parameters": {
+    "origin": "Runtime request origin",
+    "ownedId": "Source-bound owned record identity",
+    "rowVersion": "Numeric weak ETag for the configured source row; held stable across reads without intervening writes",
+    "metadataVersion": "Explicit observed source metadata-version string"
+  },
+  "reads": {
+    "nonempty": "{\r\n  \"@odata.context\": \"__ORIGIN__/_api/$metadata#probes(title)\",\r\n  \"@Microsoft.Dynamics.CRM.totalrecordcount\": -1,\r\n  \"@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded\": false,\r\n  \"@Microsoft.Dynamics.CRM.globalmetadataversion\": \"__METADATA_VERSION__\",\r\n  \"value\": [\r\n    {\r\n      \"@odata.etag\": \"W/\\\"__ROW_VERSION__\\\"\",\r\n      \"probeid\": \"__OWNED_ID__\",\r\n      \"title\": \"PaqProbe O'Brien 100% _ [1] 😀\"\r\n    }\r\n  ]\r\n}",
+    "empty": "{\r\n  \"@odata.context\": \"__ORIGIN__/_api/$metadata#probes(title)\",\r\n  \"@Microsoft.Dynamics.CRM.totalrecordcount\": -1,\r\n  \"@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded\": false,\r\n  \"@Microsoft.Dynamics.CRM.globalmetadataversion\": \"__METADATA_VERSION__\",\r\n  \"value\": []\r\n}"
+  },
+  "hiddenLookup": {
+    "status": 404,
+    "body": {
+      "error": {
+        "code": "9004010D",
+        "message": "Common Data Service error occurred."
+      }
+    }
+  }
+}

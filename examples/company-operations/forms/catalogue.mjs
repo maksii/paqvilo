@@ -151,6 +151,353 @@ names.pqvd_currencyreference = 'Currency Reference';
 safe.pqvd_currencyreference = 'pqvd_name pqvd_code pqvd_symbol pqvd_precision pqvd_systemcurrencyid';
 viewNames.pqvd_currencyreference = ['Currency References', 'Currency Reference Lookup Candidates'];
 portable.pqvd_currencyreference = ['Summary', 'pqvd_name pqvd_code pqvd_symbol pqvd_precision'];
+
+function addAccountFilter(parts, name, condition, value) {
+  parts.push(condition('pqvd_orgkind', name === 'Vendors' ? 'eq' : 'ne', value('pqvd_orgkind', 'Vendor')));
+  if (name !== 'Vendors' && !parts.length) parts.push(condition('statecode', 'eq', 0));
+}
+
+function addPrimaryChoiceFilter(parts, table, name, choiceFilter, condition, value) {
+  if (table === 'pqvd_orgcontact' && !name.endsWith('All')) choiceFilter('pqvd_membershipstate', 'Active');
+  if (table === 'pqvd_employment' && name === 'Active Engagements') choiceFilter('pqvd_employmentstate', 'Active');
+  if (table === 'pqvd_employment' && name === 'Ended Engagements') choiceFilter('pqvd_employmentstate', 'Ended');
+  if (table === 'pqvd_accesspermission' && name === 'Active Access Permissions')
+    choiceFilter('pqvd_accessstate', 'Active');
+  if (table === 'pqvd_accesspermission' && name === 'Suspended Access Permissions')
+    addSuspendedPermissionFilter(parts, condition, value);
+  if (table === 'pqvd_equipment' && /^(?:Available|Assigned|Retired) /.test(name))
+    addEquipmentChoiceFilter(name, choiceFilter);
+  if (table === 'pqvd_assignment' && name === 'Open Assignments') choiceFilter('pqvd_assignmentstate', 'Issued');
+}
+
+function addSuspendedPermissionFilter(parts, condition, value) {
+  const values = ['Suspended', 'Expired', 'Revoked']
+    .map((v) => `<value>${value('pqvd_accessstate', v)}</value>`)
+    .join('');
+  parts.push(`<condition attribute="pqvd_accessstate" operator="in">${values}</condition>`);
+}
+
+function addEquipmentChoiceFilter(name, choiceFilter) {
+  let state = 'Retired';
+  if (name.startsWith('Available')) state = 'Stock';
+  else if (name.startsWith('Assigned')) state = 'Assigned';
+  choiceFilter('pqvd_equipmentstate', state);
+}
+
+function addOtherViewFilters(parts, table, name, choiceFilter, condition) {
+  if (
+    table === 'pqvd_currencyreference' &&
+    ['Currency References', 'Currency Reference Lookup Candidates'].includes(name)
+  )
+    parts.push(condition('statecode', 'eq', 0));
+  if (name === 'Test Runs Incomplete') parts.push(condition('pqvd_finishedat', 'null'));
+  if (name === 'Failed Test Results') choiceFilter('pqvd_verdict', 'Fail');
+  if (name === 'Pending Captures') choiceFilter('pqvd_capturestate', 'Pending');
+  if (name === 'Quarantined Captures') choiceFilter('pqvd_capturestate', 'Quarantined');
+  if (name === 'Failed Capture Operations') choiceFilter('pqvd_capturestate', 'CaptureFailed');
+}
+
+function viewFilters(table, name, field, value, condition) {
+  const parts = [];
+  const choiceFilter = (attribute, text) => parts.push(condition(attribute, 'eq', value(attribute, text)));
+  if (/^(?:Active |Available |Assigned |Open )/.test(name) || /Lookup Candidates|Directory Contacts/.test(name))
+    parts.push(condition('statecode', 'eq', 0));
+  if (table === 'account') addAccountFilter(parts, name, condition, value);
+  addPrimaryChoiceFilter(parts, table, name, choiceFilter, condition, value);
+  if (name.startsWith('Open ') && field(table, 'pqvd_workstate'))
+    for (const state of ['Completed', 'Cancelled'])
+      parts.push(condition('pqvd_workstate', 'ne', value('pqvd_workstate', state)));
+  addOtherViewFilters(parts, table, name, choiceFilter, condition);
+  return parts.length ? `<filter type="and">${parts.join('')}</filter>` : '';
+}
+
+function makeView(table, name, fields, { queryType = 0, filter = '', order } = {}, context) {
+  const { valid, field, primary, pk, metadata, solution } = context;
+  fields = valid(table, fields);
+  const first = fields.find((f) => /code$|number$|sequence$|assettag$|attempt$|token$/.test(f)) || primary(table);
+  order ??= [
+    { field: first, descending: false },
+    { field: pk(table), descending: false },
+  ];
+  const selected = [...new Set([pk(table), ...fields, ...order.map((o) => o.field)])];
+  const attributes = selected.map((f) => `<attribute name="${f}"/>`).join('');
+  const orders = order.map((o) => `<order attribute="${o.field}" descending="${o.descending}"/>`).join('');
+  const fetchXml = `<fetch version="1.0" mapping="logical"><entity name="${table}">${attributes}${orders}${filter}</entity></fetch>`;
+  const cellWidth = (f) => {
+    if (f === primary(table)) return 220;
+    return field(table, f)?.AttributeType === 'Memo' ? 300 : 140;
+  };
+  const cells = fields.map((f) => `<cell name="${f}" width="${cellWidth(f)}"/>`).join('');
+  const layoutXml = `<grid name="resultset" object="${metadata[table].ObjectTypeCode}" jump="${primary(table)}" select="1" icon="1" preview="1"><row name="result" id="${pk(table)}">${cells}</row></grid>`;
+  return {
+    id: componentId('view:' + table + ':' + name),
+    table,
+    name: 'CO ' + name,
+    solution: solution(table),
+    queryType,
+    fetchXml,
+    layoutXml,
+  };
+}
+
+function customViewOrder(table, name, pk) {
+  let order;
+  if (name === 'Test Runs Recent')
+    order = [
+      { field: 'createdon', descending: true },
+      { field: pk(table), descending: false },
+    ];
+  if (table === 'pqvd_assignment')
+    order = [
+      { field: 'pqvd_issuedat', descending: true },
+      { field: 'pqvd_number', descending: false },
+      { field: pk(table), descending: false },
+    ];
+  if (table === 'pqvd_servicerequest')
+    order = [
+      { field: 'pqvd_priority', descending: true },
+      { field: 'pqvd_number', descending: false },
+      { field: pk(table), descending: false },
+    ];
+  if (table === 'pqvd_workorder')
+    order = [
+      { field: 'pqvd_duedate', descending: false },
+      { field: 'pqvd_number', descending: false },
+      { field: pk(table), descending: false },
+    ];
+  if (table === 'pqvd_testresult')
+    order = ['pqvd_caseid', 'pqvd_engine', 'pqvd_phase', 'pqvd_pagenumber', 'pqvd_partnumber', pk(table)].map(
+      (field) => ({ field, descending: false }),
+    );
+  return order;
+}
+
+function addQuickFindViews(table, own, base, context) {
+  const { primary, condition, viewContext, adjustments } = context;
+  if (own.existing) return;
+  let reference = base.find((f) => /code$|number$|token$|caseid$|runkey$/.test(f));
+  if (table === 'pqvd_employmentterms') reference = 'pqvd_contractreference';
+  else if (table === 'pqvd_equipmentfinance') reference = 'pqvd_invoicereference';
+  const search = [primary(table), reference].filter(Boolean);
+  const active = condition('statecode', 'eq', 0);
+  for (const queryType of [64, 4]) {
+    const quick =
+      queryType === 4
+        ? `<filter type="or" isquickfindfields="1">${search.map((f) => condition(f, 'like', '{0}')).join('')}</filter>`
+        : '';
+    adjustments.push({
+      ...makeView(
+        table,
+        queryType === 64 ? 'Lookup' : 'Quick Find',
+        search,
+        { queryType, filter: `<filter type="and">${active}</filter>${quick}` },
+        viewContext,
+      ),
+      isQuickFind: queryType === 4,
+    });
+  }
+}
+
+function addAllRecordsView(table, own, base, context) {
+  if (own.existing || ['pqvd_employmentterms', 'pqvd_equipmentfinance'].includes(table)) return;
+  const { names, primary, viewContext, schema, views } = context;
+  const code = base.find((f) => /code$|number$|sequence$|assettag$|attempt$|token$/.test(f));
+  const state = own.columns.find((c) => c.name.endsWith('state'))?.name;
+  const parent = schema.relationships.find(
+    (r) => r.kind === 'oneToMany' && r.child === table && r.lookup.required === 'required',
+  )?.lookup.name;
+  views.push(
+    makeView(table, names[table] + ' All', [primary(table), code, state, parent].filter(Boolean), {}, viewContext),
+  );
+}
+
+function buildTableViews(table, context) {
+  const { schema, safe, viewNames, valid, pk, field, value, condition, viewContext, views } = context;
+  const own = schema.tables.find((t) => t.name === table);
+  const base = valid(table, safe[table].split(' ').filter(Boolean));
+  for (const name of viewNames[table]) {
+    let fields = base;
+    if (name === 'Access Permission Diagnostics')
+      fields = [
+        ...base,
+        ...schema.relationships
+          .filter((r) => r.child === table && r.lookup?.name.endsWith('principalid'))
+          .map((r) => r.lookup.name),
+      ];
+    const order = customViewOrder(table, name, pk);
+    views.push(
+      makeView(table, name, fields, { filter: viewFilters(table, name, field, value, condition), order }, viewContext),
+    );
+  }
+  addAllRecordsView(table, own, base, context);
+  addQuickFindViews(table, own, base, context);
+}
+
+function buildSelectedViews(selected, context) {
+  for (const table of selected) buildTableViews(table, context);
+}
+
+function formFieldRows(table, fields, fid, isPortable, context) {
+  const rows = [];
+  for (const f of fields) {
+    const a = context.field(table, f);
+    const type =
+      a.AttributeTypeName?.Value === 'MultiSelectPicklistType'
+        ? 'multichoice'
+        : {
+            String: 'string',
+            Memo: 'memo',
+            Integer: 'integer',
+            Decimal: 'decimal',
+            Double: 'double',
+            Money: 'money',
+            Boolean: 'boolean',
+            DateTime: 'datetime',
+            Picklist: 'choice',
+            State: 'choice',
+            Status: 'choice',
+            Lookup: 'lookup',
+            Customer: 'lookup',
+            Owner: 'lookup',
+          }[a.AttributeType];
+    if (!classes[type]) throw new Error(`Unsupported form control ${table}.${f}:${a.AttributeType}`);
+    const locked =
+      table === 'pqvd_currencyreference' ||
+      isPortable ||
+      a.IsValidForUpdate === false ||
+      f === 'pqvd_scopekey' ||
+      f.endsWith('principalid') ||
+      ['pqvd_testoperation', 'pqvd_pluginevent'].includes(table);
+    rows.push(
+      `<row><cell id="{${componentId(fid + f)}}">${context.labels(context.label(a))}<control id="${f}" classid="{${classes[type]}}" datafieldname="${f}" disabled="${locked}"/></cell></row>`,
+    );
+  }
+  return rows;
+}
+
+function formRelationships(table, pipeline, schema) {
+  const rels = (childGrids[table] || [])
+    .map((child) => schema.relationships.find((r) => r.kind === 'oneToMany' && r.parent === table && r.child === child))
+    .filter(Boolean);
+  if (pipeline && table === 'pqvd_testrun')
+    rels.push(
+      schema.relationships.find(
+        (r) => r.kind === 'oneToMany' && r.parent === table && r.child === 'pqvd_testoperation',
+      ),
+    );
+  if (pipeline && table === 'pqvd_testoperation')
+    rels.push(
+      schema.relationships.find((r) => r.kind === 'oneToMany' && r.parent === table && r.child === 'pqvd_testresult'),
+    );
+  if (table === 'pqvd_accesspermission')
+    rels.push(
+      ...schema.relationships.filter(
+        (r) =>
+          r.kind === 'manyToMany' &&
+          r.parent === table &&
+          !['pqvd_access_currencies', 'pqvd_access_currencyreferences', 'pqvd_access_referenceaccounts'].includes(
+            r.name,
+          ),
+      ),
+    );
+  return rels;
+}
+
+function formGridMarkup(fid, rels, context) {
+  const grids = [];
+  for (const r of rels) {
+    const v = context.allFor(r.child),
+      control = 'grid_' + r.name;
+    grids.push(
+      `<section name="${control}" id="{${componentId(fid + control)}}" showlabel="true" showbar="false" columns="1">${context.labels(names[r.child] || r.child)}<rows><row><cell id="{${componentId(fid + control + 'cell')}}" showlabel="false">${context.labels(names[r.child] || r.child)}<control id="${control}" indicationOfSubgrid="true" classid="{E7A81278-8635-4D9E-8D4D-59480B391C5B}"><parameters><ViewId>{${v.id}}</ViewId><IsUserView>false</IsUserView><RelationshipName>${r.name}</RelationshipName><TargetEntityType>${r.child}</TargetEntityType><RecordsPerPage>10</RecordsPerPage><EnableQuickFind>true</EnableQuickFind><EnableViewPicker>false</EnableViewPicker></parameters></control></cell></row></rows></section>`,
+    );
+  }
+  return grids;
+}
+
+function createForm(table, name, fields, isPortable, pipeline, context) {
+  context.valid(table, fields);
+  const fid = componentId('form:' + table + ':' + name);
+  const rows = formFieldRows(table, fields, fid, isPortable, context);
+  const grids = isPortable ? [] : formGridMarkup(fid, formRelationships(table, pipeline, context.schema), context);
+  const formXml = `<form><tabs><tab name="general" id="{${componentId(fid + 'tab')}}" verticallayout="true" IsUserDefined="1">${context.labels('General')}<columns><column width="100%"><sections><section name="details" id="{${componentId(fid + 'section')}}" showlabel="true" showbar="false" columns="1">${context.labels(isPortable ? 'Profile' : 'Administration')}<rows>${rows.join('')}</rows></section>${grids.join('')}</sections></column></columns></tab></tabs></form>`;
+  context.forms.push({
+    id: fid,
+    table,
+    name,
+    solution: pipeline ? 'PaqviloBehaviorPlugins' : context.solution(table),
+    type: 2,
+    formXml,
+    portable: isPortable,
+    fields,
+  });
+}
+
+function buildStandardForms(selected, context) {
+  for (const table of selected) {
+    const own = context.schema.tables.find((t) => t.name === table);
+    let standard = ['pqvd_name'];
+    if (table === 'account') standard = ['name', 'accountnumber', 'parentaccountid'];
+    else if (table === 'contact') standard = ['firstname', 'lastname', 'emailaddress1', 'telephone1'];
+    const scalar = own.columns.filter((c) => c.solution !== 'PaqviloBehaviorPlugins').map((c) => c.name);
+    const lookups = context.schema.relationships
+      .filter((r) => r.kind === 'oneToMany' && r.child === table && r.solution !== 'PaqviloBehaviorPlugins')
+      .map((r) => r.lookup.name);
+    const fields = [
+      ...new Set([
+        ...standard,
+        ...scalar,
+        ...lookups,
+        ...(['pqvd_employmentterms', 'pqvd_equipmentfinance'].includes(table) ? ['transactioncurrencyid'] : []),
+        ...(table === 'pqvd_chainnode' ? ['ownerid'] : []),
+      ]),
+    ];
+    let name = 'CO ' + names[table] + ' Administration';
+    if (table === 'pqvd_employmentterms') name = 'CO Private Employment Terms';
+    else if (table === 'pqvd_equipmentfinance') name = 'CO Equipment Finance';
+    else if (['pqvd_testoperation', 'pqvd_pluginevent', 'pqvd_chainnode'].includes(table)) name = 'CO ' + names[table];
+    createForm(table, name, fields, false, false, context);
+    if (portable[table])
+      createForm(
+        table,
+        'CO ' + names[table] + ' ' + portable[table][0],
+        context.split(portable[table][1]),
+        true,
+        false,
+        context,
+      );
+  }
+}
+
+function buildPipelineForms(selected, context) {
+  const tables = ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe', 'pqvd_testoperation'].filter((table) =>
+    selected.includes(table),
+  );
+  for (const table of tables) {
+    const own = context.schema.tables.find((t) => t.name === table);
+    const fields = [
+      context.primary(table),
+      ...own.columns.map((column) => column.name),
+      ...context.schema.relationships
+        .filter((r) => r.kind === 'oneToMany' && r.child === table)
+        .map((r) => r.lookup.name),
+    ];
+    createForm(table, 'CO ' + names[table] + ' Pipeline', [...new Set(fields)], false, true, context);
+  }
+}
+
+function buildEquipmentCanaryForm(selected, context) {
+  if (selected.includes('pqvd_equipment'))
+    createForm(
+      'pqvd_equipment',
+      'CO Equipment Canary Diagnostics',
+      ['pqvd_name', 'pqvd_assettag', 'pqvd_equipmentstate', 'pqvd_currentassignmentid', 'pqvd_canaryrunid'],
+      false,
+      true,
+      context,
+    );
+}
+
 export function compileForms(schema, metadata, { tables } = {}) {
   const selected = tables ?? Object.keys(names);
   if (
@@ -168,12 +515,10 @@ export function compileForms(schema, metadata, { tables } = {}) {
     a.DisplayName?.UserLocalizedLabel?.Label ||
     a.DisplayName?.LocalizedLabels?.find((l) => l.LanguageCode === 1033)?.Label ||
     a.LogicalName;
-  const solution = (table) =>
-    table === 'pqvd_testoperation' || table === 'pqvd_pluginevent' || table === 'pqvd_chainnode'
-      ? evidence
-      : ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe'].includes(table)
-        ? support
-        : core;
+  const solution = (table) => {
+    if (table === 'pqvd_testoperation' || table === 'pqvd_pluginevent' || table === 'pqvd_chainnode') return evidence;
+    return ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe'].includes(table) ? support : core;
+  };
   const primary = (table) => metadata[table].PrimaryNameAttribute,
     pk = (table) => metadata[table].PrimaryIdAttribute;
   const valid = (table, fields) => {
@@ -186,278 +531,44 @@ export function compileForms(schema, metadata, { tables } = {}) {
     if (!opt) throw new Error(`Unknown filter ${choice}:${label}`);
     return opt.value;
   };
-  const condition = (a, op, v) =>
-    `<condition attribute="${a}" operator="${op}"${v === undefined ? '' : ` value="${xml(v)}"`}/>`;
-  function filters(table, name) {
-    const parts = [];
-    const choiceFilter = (a, label) => parts.push(condition(a, 'eq', value(a, label)));
-    if (/^(?:Active |Available |Assigned |Open )/.test(name) || /Lookup Candidates|Directory Contacts/.test(name))
-      parts.push(condition('statecode', 'eq', 0));
-    if (table === 'account') {
-      parts.push(condition('pqvd_orgkind', name === 'Vendors' ? 'eq' : 'ne', value('pqvd_orgkind', 'Vendor')));
-      if (name !== 'Vendors' && !parts.length) parts.push(condition('statecode', 'eq', 0));
-    }
-    if (table === 'pqvd_orgcontact' && !name.endsWith('All')) choiceFilter('pqvd_membershipstate', 'Active');
-    if (table === 'pqvd_employment' && name === 'Active Engagements') choiceFilter('pqvd_employmentstate', 'Active');
-    if (table === 'pqvd_employment' && name === 'Ended Engagements') choiceFilter('pqvd_employmentstate', 'Ended');
-    if (table === 'pqvd_accesspermission' && name === 'Active Access Permissions')
-      choiceFilter('pqvd_accessstate', 'Active');
-    if (table === 'pqvd_accesspermission' && name === 'Suspended Access Permissions')
-      parts.push(
-        `<condition attribute="pqvd_accessstate" operator="in">${['Suspended', 'Expired', 'Revoked'].map((v) => `<value>${value('pqvd_accessstate', v)}</value>`).join('')}</condition>`,
-      );
-    if (table === 'pqvd_equipment' && /^(?:Available|Assigned|Retired) /.test(name))
-      choiceFilter(
-        'pqvd_equipmentstate',
-        name.startsWith('Available') ? 'Stock' : name.startsWith('Assigned') ? 'Assigned' : 'Retired',
-      );
-    if (table === 'pqvd_assignment' && name === 'Open Assignments') choiceFilter('pqvd_assignmentstate', 'Issued');
-    if (name.startsWith('Open ') && field(table, 'pqvd_workstate'))
-      for (const state of ['Completed', 'Cancelled'])
-        parts.push(condition('pqvd_workstate', 'ne', value('pqvd_workstate', state)));
-    if (
-      table === 'pqvd_currencyreference' &&
-      ['Currency References', 'Currency Reference Lookup Candidates'].includes(name)
-    )
-      parts.push(condition('statecode', 'eq', 0));
-    if (name === 'Test Runs Incomplete') parts.push(condition('pqvd_finishedat', 'null'));
-    if (name === 'Failed Test Results') choiceFilter('pqvd_verdict', 'Fail');
-    if (name === 'Pending Captures') choiceFilter('pqvd_capturestate', 'Pending');
-    if (name === 'Quarantined Captures') choiceFilter('pqvd_capturestate', 'Quarantined');
-    if (name === 'Failed Capture Operations') choiceFilter('pqvd_capturestate', 'CaptureFailed');
-    return parts.length ? `<filter type="and">${parts.join('')}</filter>` : '';
-  }
-  function view(table, name, fields, { queryType = 0, filter = '', order } = {}) {
-    fields = valid(table, fields);
-    const first = fields.find((f) => /code$|number$|sequence$|assettag$|attempt$|token$/.test(f)) || primary(table);
-    order ??= [
-      { field: first, descending: false },
-      { field: pk(table), descending: false },
-    ];
-    const selected = [...new Set([pk(table), ...fields, ...order.map((o) => o.field)])];
-    const fetchXml = `<fetch version="1.0" mapping="logical"><entity name="${table}">${selected.map((f) => `<attribute name="${f}"/>`).join('')}${order.map((o) => `<order attribute="${o.field}" descending="${o.descending}"/>`).join('')}${filter}</entity></fetch>`;
-    const layoutXml = `<grid name="resultset" object="${metadata[table].ObjectTypeCode}" jump="${primary(table)}" select="1" icon="1" preview="1"><row name="result" id="${pk(table)}">${fields.map((f) => `<cell name="${f}" width="${f === primary(table) ? 220 : field(table, f)?.AttributeType === 'Memo' ? 300 : 140}"/>`).join('')}</row></grid>`;
-    return {
-      id: componentId('view:' + table + ':' + name),
-      table,
-      name: 'CO ' + name,
-      solution: solution(table),
-      queryType,
-      fetchXml,
-      layoutXml,
-    };
-  }
-  for (const table of selected) {
-    const own = schema.tables.find((t) => t.name === table),
-      base = valid(table, split(safe[table]));
-    for (const name of viewNames[table]) {
-      let fields = base;
-      if (name === 'Access Permission Diagnostics')
-        fields = [
-          ...base,
-          ...schema.relationships
-            .filter((r) => r.child === table && r.lookup?.name.endsWith('principalid'))
-            .map((r) => r.lookup.name),
-        ];
-      let order;
-      if (name === 'Test Runs Recent')
-        order = [
-          { field: 'createdon', descending: true },
-          { field: pk(table), descending: false },
-        ];
-      if (table === 'pqvd_assignment')
-        order = [
-          { field: 'pqvd_issuedat', descending: true },
-          { field: 'pqvd_number', descending: false },
-          { field: pk(table), descending: false },
-        ];
-      if (table === 'pqvd_servicerequest')
-        order = [
-          { field: 'pqvd_priority', descending: true },
-          { field: 'pqvd_number', descending: false },
-          { field: pk(table), descending: false },
-        ];
-      if (table === 'pqvd_workorder')
-        order = [
-          { field: 'pqvd_duedate', descending: false },
-          { field: 'pqvd_number', descending: false },
-          { field: pk(table), descending: false },
-        ];
-      if (table === 'pqvd_testresult')
-        order = ['pqvd_caseid', 'pqvd_engine', 'pqvd_phase', 'pqvd_pagenumber', 'pqvd_partnumber', pk(table)].map(
-          (field) => ({ field, descending: false }),
-        );
-      views.push(view(table, name, fields, { filter: filters(table, name), order }));
-    }
-    if (!own.existing && !['pqvd_employmentterms', 'pqvd_equipmentfinance'].includes(table)) {
-      const code = base.find((f) => /code$|number$|sequence$|assettag$|attempt$|token$/.test(f)),
-        state = own.columns.find((c) => c.name.endsWith('state'))?.name,
-        parent = schema.relationships.find(
-          (r) => r.kind === 'oneToMany' && r.child === table && r.lookup.required === 'required',
-        )?.lookup.name;
-      views.push(view(table, names[table] + ' All', [primary(table), code, state, parent].filter(Boolean)));
-    }
-    if (!own.existing) {
-      const reference =
-        table === 'pqvd_employmentterms'
-          ? 'pqvd_contractreference'
-          : table === 'pqvd_equipmentfinance'
-            ? 'pqvd_invoicereference'
-            : base.find((f) => /code$|number$|token$|caseid$|runkey$/.test(f));
-      const search = [primary(table), reference].filter(Boolean);
-      const active = condition('statecode', 'eq', 0);
-      for (const queryType of [64, 4]) {
-        const quick =
-          queryType === 4
-            ? `<filter type="or" isquickfindfields="1">${search.map((f) => condition(f, 'like', '{0}')).join('')}</filter>`
-            : '';
-        adjustments.push({
-          ...view(table, queryType === 64 ? 'Lookup' : 'Quick Find', search, {
-            queryType,
-            filter: `<filter type="and">${active}</filter>${quick}`,
-          }),
-          isQuickFind: queryType === 4,
-        });
-      }
-    }
-  }
+  const condition = (a, op, v) => {
+    const valueXml = v === undefined ? '' : ` value="${xml(v)}"`;
+    return `<condition attribute="${a}" operator="${op}"${valueXml}/>`;
+  };
+  const viewContext = { valid, field, primary, pk, metadata, solution };
+  buildSelectedViews(selected, {
+    schema,
+    safe,
+    viewNames,
+    names,
+    valid,
+    field,
+    primary,
+    pk,
+    value,
+    condition,
+    viewContext,
+    views,
+    adjustments,
+  });
   const allFor = (table) =>
     views.find((v) => v.table === table && v.name.endsWith(' All')) || views.find((v) => v.table === table);
   const labels = (s) => `<labels><label description="${xml(s)}" languagecode="1033"/></labels>`;
-  function form(table, name, fields, isPortable = false, pipeline = false) {
-    valid(table, fields);
-    const fid = componentId('form:' + table + ':' + name);
-    const rows = fields.map((f) => {
-      const a = field(table, f),
-        type =
-          a.AttributeTypeName?.Value === 'MultiSelectPicklistType'
-            ? 'multichoice'
-            : {
-                String: 'string',
-                Memo: 'memo',
-                Integer: 'integer',
-                Decimal: 'decimal',
-                Double: 'double',
-                Money: 'money',
-                Boolean: 'boolean',
-                DateTime: 'datetime',
-                Picklist: 'choice',
-                State: 'choice',
-                Status: 'choice',
-                Lookup: 'lookup',
-                Customer: 'lookup',
-                Owner: 'lookup',
-              }[a.AttributeType];
-      if (!classes[type]) throw new Error(`Unsupported form control ${table}.${f}:${a.AttributeType}`);
-      const locked =
-        table === 'pqvd_currencyreference' ||
-        isPortable ||
-        a.IsValidForUpdate === false ||
-        f === 'pqvd_scopekey' ||
-        f.endsWith('principalid') ||
-        ['pqvd_testoperation', 'pqvd_pluginevent'].includes(table);
-      return `<row><cell id="{${componentId(fid + f)}}">${labels(label(a))}<control id="${f}" classid="{${classes[type]}}" datafieldname="${f}" disabled="${locked}"/></cell></row>`;
-    });
-    const grids = [];
-    if (!isPortable) {
-      const rels = (childGrids[table] || [])
-        .map((child) =>
-          schema.relationships.find((r) => r.kind === 'oneToMany' && r.parent === table && r.child === child),
-        )
-        .filter(Boolean);
-      if (pipeline && table === 'pqvd_testrun')
-        rels.push(
-          schema.relationships.find(
-            (r) => r.kind === 'oneToMany' && r.parent === table && r.child === 'pqvd_testoperation',
-          ),
-        );
-      if (pipeline && table === 'pqvd_testoperation')
-        rels.push(
-          schema.relationships.find(
-            (r) => r.kind === 'oneToMany' && r.parent === table && r.child === 'pqvd_testresult',
-          ),
-        );
-      if (table === 'pqvd_accesspermission')
-        rels.push(
-          ...schema.relationships.filter(
-            (r) =>
-              r.kind === 'manyToMany' &&
-              r.parent === table &&
-              !['pqvd_access_currencies', 'pqvd_access_currencyreferences', 'pqvd_access_referenceaccounts'].includes(
-                r.name,
-              ),
-          ),
-        );
-      for (const r of rels) {
-        const v = allFor(r.child),
-          control = 'grid_' + r.name;
-        grids.push(
-          `<section name="${control}" id="{${componentId(fid + control)}}" showlabel="true" showbar="false" columns="1">${labels(names[r.child] || r.child)}<rows><row><cell id="{${componentId(fid + control + 'cell')}}" showlabel="false">${labels(names[r.child] || r.child)}<control id="${control}" indicationOfSubgrid="true" classid="{E7A81278-8635-4D9E-8D4D-59480B391C5B}"><parameters><ViewId>{${v.id}}</ViewId><IsUserView>false</IsUserView><RelationshipName>${r.name}</RelationshipName><TargetEntityType>${r.child}</TargetEntityType><RecordsPerPage>10</RecordsPerPage><EnableQuickFind>true</EnableQuickFind><EnableViewPicker>false</EnableViewPicker></parameters></control></cell></row></rows></section>`,
-        );
-      }
-    }
-    const formXml = `<form><tabs><tab name="general" id="{${componentId(fid + 'tab')}}" verticallayout="true" IsUserDefined="1">${labels('General')}<columns><column width="100%"><sections><section name="details" id="{${componentId(fid + 'section')}}" showlabel="true" showbar="false" columns="1">${labels(isPortable ? 'Profile' : 'Administration')}<rows>${rows.join('')}</rows></section>${grids.join('')}</sections></column></columns></tab></tabs></form>`;
-    forms.push({
-      id: fid,
-      table,
-      name,
-      solution: pipeline ? 'PaqviloBehaviorPlugins' : solution(table),
-      type: 2,
-      formXml,
-      portable: isPortable,
-      fields,
-    });
-  }
-  for (const table of selected) {
-    const own = schema.tables.find((t) => t.name === table),
-      standard =
-        table === 'account'
-          ? ['name', 'accountnumber', 'parentaccountid']
-          : table === 'contact'
-            ? ['firstname', 'lastname', 'emailaddress1', 'telephone1']
-            : ['pqvd_name'];
-    const scalar = own.columns.filter((c) => c.solution !== 'PaqviloBehaviorPlugins').map((c) => c.name),
-      lookups = schema.relationships
-        .filter((r) => r.kind === 'oneToMany' && r.child === table && r.solution !== 'PaqviloBehaviorPlugins')
-        .map((r) => r.lookup.name);
-    const fields = [
-      ...new Set([
-        ...standard,
-        ...scalar,
-        ...lookups,
-        ...(['pqvd_employmentterms', 'pqvd_equipmentfinance'].includes(table) ? ['transactioncurrencyid'] : []),
-        ...(table === 'pqvd_chainnode' ? ['ownerid'] : []),
-      ]),
-    ];
-    const name =
-      table === 'pqvd_employmentterms'
-        ? 'CO Private Employment Terms'
-        : table === 'pqvd_equipmentfinance'
-          ? 'CO Equipment Finance'
-          : ['pqvd_testoperation', 'pqvd_pluginevent', 'pqvd_chainnode'].includes(table)
-            ? 'CO ' + names[table]
-            : 'CO ' + names[table] + ' Administration';
-    form(table, name, fields);
-    if (portable[table]) form(table, 'CO ' + names[table] + ' ' + portable[table][0], split(portable[table][1]), true);
-  }
-  for (const table of ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe', 'pqvd_testoperation'].filter((t) =>
-    selected.includes(t),
-  )) {
-    const own = schema.tables.find((t) => t.name === table),
-      fields = [
-        primary(table),
-        ...own.columns.map((c) => c.name),
-        ...schema.relationships.filter((r) => r.kind === 'oneToMany' && r.child === table).map((r) => r.lookup.name),
-      ];
-    form(table, 'CO ' + names[table] + ' Pipeline', [...new Set(fields)], false, true);
-  }
-  if (selected.includes('pqvd_equipment'))
-    form(
-      'pqvd_equipment',
-      'CO Equipment Canary Diagnostics',
-      ['pqvd_name', 'pqvd_assettag', 'pqvd_equipmentstate', 'pqvd_currentassignmentid', 'pqvd_canaryrunid'],
-      false,
-      true,
-    );
+  const formContext = {
+    schema,
+    names,
+    split,
+    primary,
+    valid,
+    field,
+    label,
+    solution,
+    allFor,
+    labels,
+    forms,
+  };
+  buildStandardForms(selected, formContext);
+  buildPipelineForms(selected, formContext);
+  buildEquipmentCanaryForm(selected, formContext);
   return { schemaVersion: 1, forms, views, adjustments };
 }

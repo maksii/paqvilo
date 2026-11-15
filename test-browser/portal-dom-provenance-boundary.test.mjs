@@ -1,3 +1,5 @@
+// @test-kind contract: Paqvilo's own portal provenance boundary, including the origin gate's refusal of page-script administration requests.
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -20,7 +22,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, source, { scriptFor } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(path.join(directory, 'Main.webtemplate.source.html'), source);
@@ -53,7 +55,7 @@ async function fixture(t, source, { scriptFor } = {}) {
     result.writeHead(200, { 'content-type': 'text/html' }).end(response.html);
   });
   let context, detach;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await detach?.();
     await context?.close();
     server.closeAllConnections();
@@ -64,7 +66,6 @@ async function fixture(t, source, { scriptFor } = {}) {
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -116,6 +117,7 @@ for (const [name, source, relationship, call] of [
     'append',
   ],
 ])
+  // @test-kind security: an authored script cannot obtain parser-original proof for a node it created
   test('actual composite response never grants parser proof to ' + name, async (t) => {
     const fx = await fixture(t, source);
     const dom = await fx.domProof();
@@ -163,6 +165,7 @@ test('actual inert parser original keeps its literal identity when moved into th
   assert.deepEqual(fx.errors, []);
 });
 
+// @test-kind security: a script that writes a valid marker cannot forge literal proof
 test('native document.write cannot grant literal proof even with the valid future raw HTML and marker', async (t) => {
   const source =
     '<!doctype html><html><body><p id="earlier">Earlier</p><script src="/write.js"></script><button id="claimed">Future literal</button></body></html>';
@@ -196,6 +199,7 @@ test('native document.write cannot grant literal proof even with the valid futur
   assert.deepEqual(fx.errors, []);
 });
 
+// @test-kind security: an authored script cannot read response descriptors even with a valid proof ID
 test('actual Mirage keeps response descriptors private from authored scripts that know a public proof ID', async (t) => {
   const fx = inspectionFixture();
   let app, context, detach;
@@ -227,19 +231,28 @@ attackStatus.status=request.status;attackStatus.descriptorExposed=request.respon
   app.server.removeAllListeners('request');
   app.server.on('request', (request, response) => {
     const deliver = () => handlers.forEach((handler) => handler.call(app.server, request, response));
-    // Keep the parser at a real exported script while CDP admits the earlier document proof.
-    if (new URL(request.url, 'http://fixture.invalid').pathname === '/attack.js') setTimeout(deliver, 1200);
+    // Keep the parser at a real exported script until CDP has admitted the earlier document proof, as observed by the
+    // same query the script makes.
+    if (new URL(request.url, 'http://fixture.invalid').pathname === '/attack.js')
+      page
+        .waitForFunction(
+          (slot) =>
+            window[slot]?.query(document.getElementById('earlier'), { scope: {}, anchorGeneration: 1 }).facts.length ===
+            1,
+          transport.slot,
+          { polling: 50 },
+        )
+        .then(deliver, deliver);
     else deliver();
   });
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage();
   const transport = createInspectionProvenanceTransport(context, [{ origin: app.url, mirage: true }]);
   detach = await interceptOrigin(context, app.url, (route) => route.fallback(), { onAttach: transport.onAttach });
   await page.goto(app.url);
   assert.deepEqual(await page.evaluate(() => window.attackStatus), {
     earlyFacts: 1,
-    status: 404,
+    status: 403,
     descriptorExposed: false,
   });
   await page.waitForFunction(

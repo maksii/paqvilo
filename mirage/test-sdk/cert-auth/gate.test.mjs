@@ -22,7 +22,10 @@ const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
 
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
-const dotnetSkip = dotnet.status === 0 ? false : 'dotnet is not installed: MSAL.NET half of the gate skipped';
+const dotnetSkip =
+  dotnet.status === 0 || process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1'
+    ? false
+    : 'dotnet is not installed: MSAL.NET half of the gate skipped';
 
 const gate = await startGate({ tls: true });
 after(() => gate.close());

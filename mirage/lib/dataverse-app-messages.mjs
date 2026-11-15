@@ -29,7 +29,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -40,9 +40,32 @@ function operations(api) {
   const uniqueOf = (app) => idOf(app.appmoduleidunique) ?? idOf(app.appmoduleid);
   const components = (app) =>
     tableOf(store, 'appmodulecomponent').filter((row) => sameId(idOf(row.appmoduleidunique), uniqueOf(app)));
-  const reportOf = (c) => {
+  // The row check of an operation on one report (its depth and shares), refused with the same 403 as the Web API.
+  const authorizeReport = (c, operation, row) =>
+    api.principals.authorize({
+      user: c.user,
+      entity: 'report',
+      operation,
+      row,
+      mapping: api.store.resolveMapping('report'),
+    });
+  const reportOf = (c, operation) => {
     const id = c.target?.id;
-    return rowOf(store, 'report', 'reportid', id) ?? throwNotFound('report', id);
+    const row = rowOf(store, 'report', 'reportid', id) ?? throwNotFound('report', id);
+    authorizeReport(c, operation, row);
+    return row;
+  };
+  // The categories of a report, replaced through the records layer: each category row is removed, then created again.
+  const replaceCategories = async (c, reportId, categories) => {
+    for (const row of store.tableRows('reportcategory').filter((entry) => sameId(entry.reportid, reportId)))
+      await api.records.removeInternal(c, 'reportcategory', row.reportcategoryid, { authorized: true });
+    for (const code of categories)
+      await api.records.createInternal(
+        c,
+        'reportcategory',
+        { reportcategoryid: uuidV5(reportId, `rc:${code}`), reportid: reportId, categorycode: code },
+        { authorized: true },
+      );
   };
 
   return [
@@ -68,7 +91,7 @@ function operations(api) {
           if (!entry || typeof entry !== 'object') throw invalid('Each component must be an entity reference.');
           const logical = String(entry['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
           const sourceId = idOf(entry.objectid ?? entry);
-          const type = Number(entry.componenttype ?? sourceTypes[logical] ?? (logical === 'entity' ? 1 : NaN));
+          const type = Number(entry.componenttype ?? sourceTypes[logical] ?? (logical === 'entity' ? 1 : Number.NaN));
           let exists = componentsOf(store.state).some(
             (component) => component.type === type && sameId(component.id, sourceId),
           );
@@ -199,7 +222,7 @@ function operations(api) {
       signature: { response: [['BodyText', 'Edm.String']] },
       handle: (c) => {
         need(c, 'report', 'Read');
-        const row = reportOf(c);
+        const row = reportOf(c, 'read');
         return respond(c, 'DownloadReportDefinition', { BodyText: row.bodytext ?? null });
       },
     },
@@ -212,7 +235,7 @@ function operations(api) {
       // A fixed stand-in of 0: no snapshot history is kept.
       handle: (c) => {
         need(c, 'report', 'Read');
-        reportOf(c);
+        reportOf(c, 'read');
         return respond(c, 'GetReportHistoryLimit', { HistoryLimit: 0 });
       },
     },
@@ -234,17 +257,14 @@ function operations(api) {
         need(c, 'report', 'Write');
         const args = argsOf(c);
         const reportId = idOf(args.ReportId);
-        if (!rowOf(store, 'report', 'reportid', reportId)) throw notFound('report', reportId ?? ZERO_GUID);
+        const report = rowOf(store, 'report', 'reportid', reportId);
+        if (!report) throw notFound('report', reportId ?? ZERO_GUID);
+        authorizeReport(c, 'write', report);
         integers(args.Entities, 'Entities');
         const categories = [...new Set(integers(args.Categories, 'Categories'))];
         if (categories.some((code) => ![1, 2, 3, 4].includes(code))) throw invalid('Categories must be 1, 2, 3 or 4.');
         integers(args.Visibility, 'Visibility');
-        await write(() => {
-          const rows = tableOf(store, 'reportcategory');
-          for (let i = rows.length - 1; i >= 0; i -= 1) if (sameId(idOf(rows[i].reportid), reportId)) rows.splice(i, 1);
-          for (const code of categories)
-            rows.push({ reportcategoryid: uuidV5(reportId, `rc:${code}`), reportid: reportId, categorycode: code });
-        });
+        await write(() => replaceCategories(c, reportId, categories));
         return { status: 204 };
       },
     },

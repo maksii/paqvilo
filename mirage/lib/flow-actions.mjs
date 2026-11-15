@@ -14,14 +14,12 @@ const fail = (message, status = 400, code = 'LocalFlowExpression') => {
   throw new DataError(message, status, code);
 };
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-const text = (value) =>
-  value == null
-    ? ''
-    : isExactNumeric(value)
-      ? value.value
-      : typeof value === 'string'
-        ? value
-        : stringifyExactJson(value);
+export const flowValueText = (value) => {
+  if (value == null) return '';
+  if (isExactNumeric(value)) return value.value;
+  if (typeof value === 'string') return value;
+  return stringifyExactJson(value);
+};
 const array = (value, ctx, type) => {
   if (!Array.isArray(value)) fail(`${type} requires a 'from' array.`);
   if (value.length > ctx.maxIterations)
@@ -29,10 +27,13 @@ const array = (value, ctx, type) => {
   return value;
 };
 const escapeHtml = (value) =>
-  text(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  flowValueText(value).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+  );
 // The native CSV quoting rule is not known; RFC 4180 quoting is applied (a value with a comma, quote or line break is quoted).
 const escapeCsv = (value) => {
-  const s = text(value);
+  const s = flowValueText(value);
   return /[",\r\n]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
 };
 
@@ -86,6 +87,7 @@ export const FLOW_ACTIONS = Object.freeze({
       try {
         ctx.validate(body, inputs.schema, 'content');
       } catch (error) {
+        if (error.code === 'LocalFlowUnsupported') throw error;
         fail('The schema validation failed: ' + error.message, 400, 'ValidationFailed');
       }
     }
@@ -111,7 +113,7 @@ export const FLOW_ACTIONS = Object.freeze({
       from = array(ctx.resolve(inputs.from), ctx, 'Join'),
       joinWith = ctx.resolve(inputs.joinWith);
     if (typeof joinWith !== 'string') fail("Join requires a 'joinWith' string.");
-    return { body: from.map(text).join(joinWith) };
+    return { body: from.map(flowValueText).join(joinWith) };
   },
   // columns: [{ header, value }] (value resolved per item) or the keys of the first item (format CSV or HTML).
   // The native HTML markup and the header row of automatic columns are a guess.
@@ -161,7 +163,7 @@ registerPackExport('flowActions', {
   check(value, packId) {
     if (!isMap(value)) throw new Error(`Data pack ${packId}: flowActions must map action types to functions`);
     for (const [type, handler] of Object.entries(value))
-      if (!/^[A-Za-z][\w]{0,99}$/.test(type) || reserved(type) || typeof handler !== 'function')
+      if (!/^[A-Za-z]\w{0,99}$/.test(type) || reserved(type) || typeof handler !== 'function')
         throw new Error(`Data pack ${packId}: flowActions.${type} must be a function under a new action type`);
   },
 });

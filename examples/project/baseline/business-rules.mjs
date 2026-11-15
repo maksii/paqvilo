@@ -12,12 +12,12 @@ const PRIMARY = '[InputEntities(&quot;primaryEntity&quot;)]';
 const TEMP = '[CreatedEntities(&quot;primaryEntity#Temp&quot;)]';
 
 const xml = (value) =>
-  String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const vbString = (value) => `"${String(value).replace(/"/g, '""')}"`;
+  String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+const vbString = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const compact = (id) => {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
     throw new Error(`Business rule id must be a GUID: ${id}`);
-  return id.replace(/-/g, '').toLowerCase();
+  return id.replaceAll('-', '').toLowerCase();
 };
 const ref = (name) =>
   `mxswa:ActivityReference AssemblyQualifiedName="Microsoft.Crm.Workflow.Activities.${name}, ${CRM}"`;
@@ -129,7 +129,7 @@ function action(table, a, step, ruleId) {
     case 'clearValue':
       return `<Sequence DisplayName="SetAttributeValueStep${step}"><Assign x:TypeArguments="mxs:Entity" To="${TEMP}" Value="[New Entity(&quot;${xml(table)}&quot;)]" /><Assign x:TypeArguments="s:Guid" To="[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]" Value="[InputEntities(&quot;primaryEntity&quot;).Id]" /><mxswa:SetEntityProperty Attribute="${xml(a.field)}" Entity="${TEMP}" EntityName="${xml(table)}" Value="[Nothing]"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments="s:Type"><mxswa:ReferenceLiteral x:TypeArguments="s:Type"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName="SetAttributeValueStep${step}" Entity="${TEMP}" EntityName="${xml(table)}" /><Assign x:TypeArguments="mxs:Entity" To="${PRIMARY}" Value="${TEMP}" /></Sequence>`;
     case 'error':
-      return `<Sequence DisplayName="SetMessageStep${step}"><mcwc:SetMessage ControlId="${xml(a.field)}" Entity="${PRIMARY}" EntityName="${xml(table)}" Level="[Nothing]"><mcwc:SetMessage.StepLabels><mcwo:StepLabel Description="${xml(a.message)}" LabelId="${labelId(`${ruleId}:${step}`)}" LanguageCode="1033" /></mcwc:SetMessage.StepLabels></mcwc:SetMessage></Sequence>`;
+      return `<Sequence DisplayName="SetMessageStep${step}"><mcwc:SetMessage ControlId="${xml(a.field)}" Entity="${PRIMARY}" EntityName="${xml(table)}" Level="[Nothing]"><mcwc:SetMessage.StepLabels><mcwo:StepLabel Description="${xml(a.message)}" LabelId="${labelId(ruleId + ':' + step)}" LanguageCode="1033" /></mcwc:SetMessage.StepLabels></mcwc:SetMessage></Sequence>`;
     default:
       throw new Error(`Unsupported business rule action ${a.type}`);
   }
@@ -157,7 +157,10 @@ export function businessRuleXaml(rule) {
 
 const isEmpty = (v) => `((${v}) == undefined || (${v}) == null || (${v}) === "")`;
 // Client data may be embedded in an HTML script after the XML is decoded.
-const scriptLiteral = (value) => JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+const scriptLiteral = (value) =>
+  JSON.stringify(value)
+    .replaceAll('<', String.raw`\u003c`)
+    .replaceAll('>', String.raw`\u003e`);
 
 function clientAction(a, v, id) {
   const controls = (call) => `${v}.controls.forEach(function(c,i){c.${call};});`;
@@ -173,7 +176,7 @@ function clientAction(a, v, id) {
     case 'clearValue':
       return `${v}.setValue(null);`;
     case 'setDefault':
-      return `if(formType===1 && ${isEmpty(`${v}.getValue()`)}){${v}.setValue(${scriptLiteral(a.value)});}`;
+      return `if(formType===1 && ${isEmpty(v + '.getValue()')}){${v}.setValue(${scriptLiteral(a.value)});}`;
     case 'error':
       return controls(`setNotification(${scriptLiteral(a.message)},'${id}')`);
     default:
@@ -188,18 +191,15 @@ export function businessRuleClientData(rule) {
   const fields = [...new Set([rule.when.field, ...all.map((a) => a.field), ...(rule.guard ? [rule.guard.field] : [])])];
   const v = (field) => `v${fields.indexOf(field) + 1}`,
     value = `v${fields.length + 1}`;
-  const check = (c, x) =>
-    c.isNull === true
-      ? isEmpty(`(${x})`)
-      : c.notNull === true
-        ? `!${isEmpty(`(${x})`)}`
-        : 'equals' in c
-          ? `(${x}) === (${scriptLiteral(c.equals)})`
-          : 'notEqual' in c
-            ? `(${x}) !== (${scriptLiteral(c.notEqual)})`
-            : `(${x}) != null && (${x}) > (${Number(c.greaterThan)})`;
+  const check = (c, x) => {
+    if (c.isNull === true) return isEmpty('(' + x + ')');
+    if (c.notNull === true) return '!' + isEmpty('(' + x + ')');
+    if ('equals' in c) return `(${x}) === (${scriptLiteral(c.equals)})`;
+    if ('notEqual' in c) return `(${x}) !== (${scriptLiteral(c.notEqual)})`;
+    return `(${x}) != null && (${x}) > (${Number(c.greaterThan)})`;
+  };
   const test =
-    check(rule.when, value) + (rule.guard ? ` && ${check(rule.guard, `${v(rule.guard.field)}.getValue()`)}` : '');
+    check(rule.when, value) + (rule.guard ? ` && ${check(rule.guard, v(rule.guard.field) + '.getValue()')}` : '');
   const run = (list) => list.map((a) => clientAction(a, v(a.field), id)).join('');
   // A shown error is cleared once the condition no longer holds, as designer-generated rules do.
   const clear = rule.actions
@@ -210,7 +210,9 @@ export function businessRuleClientData(rule) {
   const formType = all.some((a) => a.type === 'setDefault')
     ? `var formType=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().ui.getFormType() : Xrm.Page.ui.getFormType();`
     : '';
-  const code = `function pbl_${id}(eventContext){try{var v0=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().data.entity : Xrm.Page.data.entity;${fields.map((f) => `var ${v(f)}=v0.attributes.get(${scriptLiteral(f)});`).join('')}if (${fields.map((f) => isEmpty(v(f))).join(' || ')}){return;}${formType}var ${value}=(v1) ? v1.getValue() : null;if(${test}){${run(rule.actions)}}${elseCode ? `else if(true){${elseCode}}` : ''}}catch (e){Mscrm.BusinessRules.ErrorHandlerFactory.getHandler(e, arguments.callee).handleError();}}`;
+  const declarations = fields.map((f) => 'var ' + v(f) + '=v0.attributes.get(' + scriptLiteral(f) + ');').join('');
+  const alternative = elseCode ? 'else if(true){' + elseCode + '}' : '';
+  const code = `function pbl_${id}(eventContext){try{var v0=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().data.entity : Xrm.Page.data.entity;${declarations}if (${fields.map((f) => isEmpty(v(f))).join(' || ')}){return;}${formType}var ${value}=(v1) ? v1.getValue() : null;if(${test}){${run(rule.actions)}}${alternative}}catch (e){Mscrm.BusinessRules.ErrorHandlerFactory.getHandler(e, arguments.callee).handleError();}}`;
   if (code.includes(']]>')) throw new Error('Business rule client code cannot contain a CDATA terminator.');
   return `<clientdata><labels></labels><clientcode><![CDATA[${code}]]></clientcode></clientdata>`;
 }

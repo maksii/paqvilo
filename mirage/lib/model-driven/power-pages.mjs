@@ -137,7 +137,7 @@ const platformLabels = {
 const pretty = (value) =>
   String(value)
     .replace(/^(?:adx|mspp)_/, '')
-    .replace(/_/g, ' ')
+    .replaceAll('_', ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
 const idOf = (value) =>
   String(value?.id ?? value ?? '')
@@ -163,144 +163,181 @@ const fieldType = (name, values) => {
 };
 
 /** Export columns retain their identity; only the documented adx -> mspp façade changes. */
+const powerPagesEntity = (kind, raw, prefix) => {
+  if (!systemTables.has(kind)) return prefix + raw;
+  return kind === 'contact' ? 'contact' : `adx_${raw}`;
+};
 export function powerPagesTables(portal, metadata = {}) {
   const prefix = prefixOf(portal);
   const definitions = [...managementGroups.flatMap(([, items]) => items), ...auxiliaries];
   const tables = {};
   for (const [kind, plural, raw = kind] of definitions) {
-    const entity = systemTables.has(kind) ? (kind === 'contact' ? 'contact' : `adx_${raw}`) : prefix + raw;
-    const projected = !systemTables.has(kind);
-    if (!projected) continue;
+    const entity = powerPagesEntity(kind, raw, prefix);
+    if (systemTables.has(kind)) continue;
     const idColumn = `${entity}id`,
       nameColumn = `${prefix}name`;
     const primaryWebsiteId = portal.website.id ?? portalField(portal.website, 'websiteid');
-    const records =
-      kind === 'website'
-        ? [
-            { ...portal.website, kind: 'website', id: primaryWebsiteId },
-            ...(portal.records ?? []).filter((record) => record.kind === 'website' && record.id !== primaryWebsiteId),
-          ]
-        : (portal.records ?? []).filter((record) => record.kind === kind);
-    const rows = records
-      .filter((record) => record.id)
-      .map((record) => {
-        const row = {
-          [idColumn]: record.id,
-          [nameColumn]: record.name ?? portalField(record, 'name', ''),
-          statecode: Number(portalField(record, 'statecode', 0)),
-        };
-        if (kind !== 'website') row[prefix + 'websiteid'] = primaryWebsiteId;
-        for (const [key, value] of Object.entries(record)) {
-          if (key.startsWith('_') || ['id', 'kind', 'name', 'filename', 'powerpagecomponenttype'].includes(key))
-            continue;
-          const bare = key.replace(/^(?:adx|mspp)_/, '');
-          const column = ['statecode', 'statuscode', 'createdon', 'createdby', 'modifiedon', 'modifiedby'].includes(
-            bare,
-          )
-            ? bare
-            : prefix + bare;
-          row[column] = value;
-        }
-        // Source sidecars are compiled into the portal; make their content editable too.
-        if (kind === 'webtemplate')
-          row[prefix + 'source'] = portal.templates?.[record.id]?.source ?? portalField(record, 'source', '');
-        if (kind === 'contentsnippet')
-          row[prefix + 'value'] =
-            portal.snippetTranslations?.[idOf(portalField(record, 'contentsnippetlanguageid'))]?.[row[nameColumn]] ??
-            portal.snippets?.[row[nameColumn]] ??
-            portalField(record, 'value', '');
-        const page = portal.pages?.find((page) => page.id === record.id);
-        if (page)
-          for (const [column, value] of Object.entries({
-            copy: page.html,
-            customcss: page.css,
-            customjavascript: page.js,
-            summary: page.summary,
-          }))
-            row[prefix + column] = value;
-        return row;
-      });
-    const fields = {};
-    const keys = new Set([
-      idColumn,
-      nameColumn,
-      ...(kind === 'website' ? [] : [prefix + 'websiteid']),
-      ...rows.flatMap(Object.keys),
-    ]);
-    for (const column of keys) {
-      const bare = column.replace(/^(?:adx|mspp)_/, '');
-      fields[column] = {
-        name: column,
-        label: column === nameColumn ? 'Name' : (platformLabels[bare] ?? pretty(column)),
-        ...fieldType(
-          bare,
-          rows.map((row) => row[column]),
-        ),
-      };
-    }
-    for (const spec of [
-      ...(kind === 'website' ? [] : ['websiteid:lookup:website']),
-      ...(platformColumns[kind] ?? []),
-    ]) {
-      const [name, type = 'text', target] = spec.split(':'),
-        column = prefix + name;
-      fields[column] = {
-        ...fields[column],
-        name: column,
-        label: platformLabels[name] ?? pretty(name),
-        type,
-        dataverseType: { text: 'nvarchar', textarea: 'memo', number: 'int', boolean: 'bit', lookup: 'lookup' }[type],
-        ...(target ? { targets: [prefix + target] } : {}),
-      };
-    }
-    fields[idColumn] = {
-      name: idColumn,
-      label: 'ID',
-      type: 'text',
-      dataverseType: 'uniqueidentifier',
-      isPrimaryId: true,
-      validForCreate: false,
-      validForUpdate: false,
-    };
-    fields[nameColumn].required = true;
-    fields[nameColumn].isPrimaryName = true;
-    fields.statecode = {
-      name: 'statecode',
-      label: 'Status',
-      type: 'number',
-      dataverseType: 'state',
-      options: [
-        { value: 0, label: 'Active' },
-        { value: 1, label: 'Inactive' },
-      ],
-    };
-    Object.assign(fields, metadata.entities?.[entity]?.fields);
-    // These documented portal columns contain editable source, rather than a
-    // standard memo field. Keep the management editor spacious when metadata
-    // replaces the projected column definition.
-    for (const name of ['source', 'copy', 'customjavascript', 'customcss'])
-      if (fields[prefix + name]?.type === 'textarea') fields[prefix + name].editorRows ??= 12;
-    if (kind !== 'website' && fields[prefix + 'websiteid'])
-      fields[prefix + 'websiteid'].defaultValue = primaryWebsiteId;
-    tables[entity] = {
+    const rows = projectedRows(portal, kind, prefix, idColumn, nameColumn, primaryWebsiteId);
+    const fields = projectedFields({ kind, prefix, idColumn, nameColumn, rows, metadata, entity, primaryWebsiteId });
+    tables[entity] = projectedTable({
       entity,
       kind,
-      label: plural,
-      singular: plural === 'Websites' ? 'Website' : plural.replace(/s$/, ''),
-      entitySet: metadata.entities?.[entity]?.entitySet,
-      ownership: metadata.entities?.[entity]?.ownership,
-      tableType: metadata.entities?.[entity]?.tableType ?? (prefix === 'mspp_' ? 'Virtual' : 'Standard'),
+      plural,
+      prefix,
       idColumn,
       nameColumn,
       fields,
       rows,
-      source: 'power-pages-export',
-      projected: true,
-      prefix,
-      protectedIds: kind === 'website' ? [primaryWebsiteId] : [],
-    };
+      metadata,
+      primaryWebsiteId,
+    });
   }
   return tables;
+}
+
+function projectedRows(portal, kind, prefix, idColumn, nameColumn, primaryWebsiteId) {
+  const records =
+    kind === 'website'
+      ? [
+          { ...portal.website, kind: 'website', id: primaryWebsiteId },
+          ...(portal.records ?? []).filter((record) => record.kind === 'website' && record.id !== primaryWebsiteId),
+        ]
+      : (portal.records ?? []).filter((record) => record.kind === kind);
+  return records
+    .filter((record) => record.id)
+    .map((record) => projectedRow(portal, record, kind, prefix, idColumn, nameColumn, primaryWebsiteId));
+}
+
+function projectedRow(portal, record, kind, prefix, idColumn, nameColumn, primaryWebsiteId) {
+  const row = {
+    [idColumn]: record.id,
+    [nameColumn]: record.name ?? portalField(record, 'name', ''),
+    statecode: Number(portalField(record, 'statecode', 0)),
+  };
+  if (kind !== 'website') row[prefix + 'websiteid'] = primaryWebsiteId;
+  for (const [key, value] of Object.entries(record)) {
+    if (key.startsWith('_') || ['id', 'kind', 'name', 'filename', 'powerpagecomponenttype'].includes(key)) continue;
+    const bare = key.replace(/^(?:adx|mspp)_/, '');
+    const column = ['statecode', 'statuscode', 'createdon', 'createdby', 'modifiedon', 'modifiedby'].includes(bare)
+      ? bare
+      : prefix + bare;
+    row[column] = value;
+  }
+  addSidecarColumns(row, portal, record, kind, prefix, nameColumn);
+  return row;
+}
+
+function addSidecarColumns(row, portal, record, kind, prefix, nameColumn) {
+  if (kind === 'webtemplate')
+    row[prefix + 'source'] = portal.templates?.[record.id]?.source ?? portalField(record, 'source', '');
+  if (kind === 'contentsnippet')
+    row[prefix + 'value'] =
+      portal.snippetTranslations?.[idOf(portalField(record, 'contentsnippetlanguageid'))]?.[row[nameColumn]] ??
+      portal.snippets?.[row[nameColumn]] ??
+      portalField(record, 'value', '');
+  const page = portal.pages?.find((item) => item.id === record.id);
+  if (page)
+    for (const [column, value] of Object.entries({
+      copy: page.html,
+      customcss: page.css,
+      customjavascript: page.js,
+      summary: page.summary,
+    }))
+      row[prefix + column] = value;
+}
+
+function projectedFields({ kind, prefix, idColumn, nameColumn, rows, metadata, entity, primaryWebsiteId }) {
+  const fields = {};
+  const keys = new Set([
+    idColumn,
+    nameColumn,
+    ...(kind === 'website' ? [] : [prefix + 'websiteid']),
+    ...rows.flatMap(Object.keys),
+  ]);
+  for (const column of keys) {
+    const bare = column.replace(/^(?:adx|mspp)_/, '');
+    fields[column] = {
+      name: column,
+      label: column === nameColumn ? 'Name' : (platformLabels[bare] ?? pretty(column)),
+      ...fieldType(
+        bare,
+        rows.map((row) => row[column]),
+      ),
+    };
+  }
+  addPlatformFields(fields, kind, prefix, idColumn, nameColumn);
+  Object.assign(fields, metadata.entities?.[entity]?.fields);
+  for (const name of ['source', 'copy', 'customjavascript', 'customcss'])
+    if (fields[prefix + name]?.type === 'textarea') fields[prefix + name].editorRows ??= 12;
+  if (kind !== 'website' && fields[prefix + 'websiteid']) fields[prefix + 'websiteid'].defaultValue = primaryWebsiteId;
+  return fields;
+}
+
+function addPlatformFields(fields, kind, prefix, idColumn, nameColumn) {
+  for (const spec of [...(kind === 'website' ? [] : ['websiteid:lookup:website']), ...(platformColumns[kind] ?? [])]) {
+    const [name, type = 'text', target] = spec.split(':'),
+      column = prefix + name;
+    fields[column] = {
+      ...fields[column],
+      name: column,
+      label: platformLabels[name] ?? pretty(name),
+      type,
+      dataverseType: { text: 'nvarchar', textarea: 'memo', number: 'int', boolean: 'bit', lookup: 'lookup' }[type],
+      ...(target ? { targets: [prefix + target] } : {}),
+    };
+  }
+  fields[idColumn] = {
+    name: idColumn,
+    label: 'ID',
+    type: 'text',
+    dataverseType: 'uniqueidentifier',
+    isPrimaryId: true,
+    validForCreate: false,
+    validForUpdate: false,
+  };
+  fields[nameColumn].required = true;
+  fields[nameColumn].isPrimaryName = true;
+  fields.statecode = {
+    name: 'statecode',
+    label: 'Status',
+    type: 'number',
+    dataverseType: 'state',
+    options: [
+      { value: 0, label: 'Active' },
+      { value: 1, label: 'Inactive' },
+    ],
+  };
+}
+
+function projectedTable({
+  entity,
+  kind,
+  plural,
+  prefix,
+  idColumn,
+  nameColumn,
+  fields,
+  rows,
+  metadata,
+  primaryWebsiteId,
+}) {
+  return {
+    entity,
+    kind,
+    label: plural,
+    singular: plural === 'Websites' ? 'Website' : plural.replace(/s$/, ''),
+    entitySet: metadata.entities?.[entity]?.entitySet,
+    ownership: metadata.entities?.[entity]?.ownership,
+    tableType: metadata.entities?.[entity]?.tableType ?? (prefix === 'mspp_' ? 'Virtual' : 'Standard'),
+    idColumn,
+    nameColumn,
+    fields,
+    rows,
+    source: 'power-pages-export',
+    projected: true,
+    prefix,
+    protectedIds: kind === 'website' ? [primaryWebsiteId] : [],
+  };
 }
 
 export function defaultManagementApp(portal) {
@@ -320,7 +357,7 @@ export function defaultManagementApp(portal) {
           items: items.map(([kind, title, raw = kind]) => ({
             id: kind,
             title,
-            entity: systemTables.has(kind) ? (kind === 'contact' ? 'contact' : `adx_${raw}`) : prefix + raw,
+            entity: powerPagesEntity(kind, raw, prefix),
             supported: true,
           })),
         })),

@@ -1,3 +1,4 @@
+// @test-kind contract: portal import, bootstrap and runtime routing over invented exports, including path normalisation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { portalWebRoles, resolvePortalIdentity } from '../lib/permissions.mjs';
 import { languageRoute, deniedPageRoute } from '../lib/redirects.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function write(root, files) {
   for (const [name, body] of Object.entries(files)) {
@@ -21,8 +22,8 @@ async function write(root, files) {
   }
 }
 async function temp(t, prefix) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   return fs.realpath(dir);
 }
 const portalFiles = {
@@ -388,7 +389,7 @@ test('a running runtime reloads solution changes, recompiles metadata and report
   const dir = await temp(t, 'pp-reload-');
   // Keep the spelling os.tmpdir() gives (possibly a Windows 8.3 short path): the watcher
   // reports paths in this spelling while scanned layers use real paths.
-  const solutions = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-reload-solutions-'));
+  const solutions = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-reload-solutions-'));
   ownedFixture(t).remove(() => fs.rm(solutions, { recursive: true, force: true }));
   await write(dir, portalFiles);
   await write(solutions, {
@@ -427,6 +428,25 @@ test('a running runtime reloads solution changes, recompiles metadata and report
   assert.equal(mapping(before).schemaComplete, true);
   assert.equal(mapping(before).fieldMetadata.sample_name.maxLength, 100);
   await fs.access(path.join(stateDir, 'cache', 'solution-sources.json'));
+  // The runtime announces each completed reload on its event stream (after SOURCES_RELOADED is recorded). The watcher is
+  // ready once createSimulator resolves; a reload that never comes is ended by the runner's --test-timeout.
+  const stream = await fetch(app.url + '/__sim/events');
+  const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+  ownedFixture(t).add(() => reader.cancel().catch(() => {}));
+  let received = '';
+  const nextEvent = async (name) => {
+    for (;;) {
+      const match = new RegExp(`event: ${name}\\ndata: (\\d+)\\n\\n`).exec(received);
+      if (match) {
+        received = received.slice(match.index + match[0].length);
+        return Number(match[1]);
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`The event stream ended before a ${name} event.`);
+      received += value;
+    }
+  };
+  assert.equal(await nextEvent('ready'), before.status.revision);
   // Change the solution layer on disk; the watcher reloads and recompiles.
   await write(solutions, {
     'Entities/sample_item/Entity.xml': entity(
@@ -435,13 +455,12 @@ test('a running runtime reloads solution changes, recompiles metadata and report
     ),
   });
   let after;
-  // A reload is complete once it records its SOURCES_RELOADED diagnostic.
-  for (let attempt = 0; attempt < 150; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  // A reload that saw the write before it finished leaves the old set; the watcher reports the rest of it as a further reload.
+  do {
+    const revision = await nextEvent('reload');
     after = await state();
-    if (after.diagnostics.some((d) => d.code === 'SOURCES_RELOADED') && mapping(after).entitySet === 'sample_itemrows')
-      break;
-  }
+    assert.ok(after.status.revision >= revision);
+  } while (mapping(after).entitySet !== 'sample_itemrows');
   assert.equal(mapping(after).entitySet, 'sample_itemrows');
   assert.equal(mapping(after).fieldMetadata.sample_code.maxLength, 12);
   assert.notEqual(after.status.sourceFingerprint, before.status.sourceFingerprint);
@@ -525,7 +544,7 @@ test('form and view changes in a solution layer reach the next rendered page aft
     watch: false,
     solutionRoots: [solutions],
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.match(await (await fetch(app.url + '/')).text(), /Name label v1/);
   await write(solutions, {
     'Entities/sample_item/FormXml/main/{11111111-1111-1111-1111-111111111111}.xml': form('Name label v2'),
@@ -623,6 +642,35 @@ test('same-name web link sets stay reachable by ID; the name lookup takes the fi
     portal.diagnostics.filter((d) => d.code === 'WEBLINK_SET_NAME_SHARED').map((d) => [d.name, d.id, d.usedId]),
     [['Default', 'set-b', 'set-a']],
   );
+});
+
+test('a malformed percent escape keeps the raw path and does not stop the import', async (t) => {
+  assert.equal(normalizePortalPath('/100%-cotton/'), '/100%-cotton');
+  assert.equal(normalizePortalPath('/%E0%A4%A'), '/%e0%a4%a');
+  const dir = await temp(t, 'pp-import-percent-');
+  await write(dir, {
+    ...portalFiles,
+    'web-pages/cotton/Cotton.webpage.yml':
+      '- adx_webpageid: cotton\n  adx_name: Cotton\n  adx_partialurl: 50%-off\n  adx_parentpageid: home\n  adx_pagetemplateid: main',
+  });
+  const portal = await importPortal(dir);
+  assert.ok(portal.pages.some((page) => normalizePortalPath(page.url) === '/50%-off'));
+});
+
+test('a page path with a malformed percent escape answers below 500', async (t) => {
+  const dir = await temp(t, 'pp-percent-runtime-');
+  await write(dir, portalFiles);
+  const stateDir = await temp(t, 'pp-percent-state-');
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(stateDir, 'state.json'),
+    port: 0,
+    environmentVariables: {},
+  });
+  ownedFixture(t).add(() => app.close());
+  const response = await fetch(app.url + '/%E0%A4%A');
+  await response.text();
+  assert.ok(response.status < 500, `status ${response.status}`);
 });
 
 test('one URL claimed by several pages or web files is reported; parentless web files keep their partial URL', async (t) => {
@@ -861,4 +909,17 @@ test('duplicate-copy commit lookups are cached by file and content, asked again 
   head = null;
   assert.equal((await resolve()).reason, 'its file was modified most recently');
   assert.deepEqual(asked, []);
+});
+
+test('a portal content JSON wrapped in CDATA keeps its entity text literal when the importer parses it', async (t) => {
+  // Real exports write <content> as escaped text without CDATA; a CDATA body is XML text and is not entity-decoded.
+  const dir = await temp(t, 'pp-cdata-content-');
+  await write(dir, {
+    'Assets/powerpagesites.xml': `<powerpagesites><powerpagesite powerpagesiteid="site"><content><![CDATA[{"defaultlanguage":"lang-en","website_language":1033,"description":"Tom &amp; Jerry"}]]></content><name>Enhanced</name><statecode>0</statecode></powerpagesite></powerpagesites>`,
+    'powerpagecomponents/home/powerpagecomponent.xml': `<powerpagecomponent powerpagecomponentid="home"><content>{&quot;partialurl&quot;:&quot;/&quot;}</content><name>Home</name><powerpagecomponenttype>2</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`,
+  });
+  const portal = await importPortal(dir);
+  assert.equal(portal.format, 'enhanced');
+  assert.equal(portal.website.description, 'Tom &amp; Jerry');
+  assert.equal(portal.website.name, 'Enhanced');
 });

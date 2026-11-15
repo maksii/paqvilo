@@ -77,26 +77,18 @@ const paths = {
 export const icon = (name, className = '') =>
   `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
 // Column browsers use metadata glyphs, including types whose form editor is unavailable.
-export const columnIcon = (field) =>
-  field?.type === 'date'
-    ? 'calendar'
-    : field?.type === 'lookup'
-      ? field.dataverseType === 'owner'
-        ? 'person'
-        : 'lookupColumn'
-      : field?.type === 'boolean'
-        ? 'booleanColumn'
-        : field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType)
-          ? 'choiceColumn'
-          : field?.dataverseType === 'money'
-            ? 'moneyColumn'
-            : field?.dataverseType === 'image'
-              ? 'imageColumn'
-              : field?.dataverseType === 'file'
-                ? 'help'
-                : field?.type === 'number'
-                  ? 'numericColumn'
-                  : 'text';
+export const columnIcon = (field) => {
+  if (field?.type === 'date') return 'calendar';
+  if (field?.type === 'lookup') return field.dataverseType === 'owner' ? 'person' : 'lookupColumn';
+  if (field?.type === 'boolean') return 'booleanColumn';
+  if (field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType))
+    return 'choiceColumn';
+  if (field?.dataverseType === 'money') return 'moneyColumn';
+  if (field?.dataverseType === 'image') return 'imageColumn';
+  if (field?.dataverseType === 'file') return 'help';
+  if (field?.type === 'number') return 'numericColumn';
+  return 'text';
+};
 export const navigationIcon = (item) =>
   ({
     website: 'globe',

@@ -39,7 +39,7 @@ function safeMenuStyle(value) {
       .split(';')
       .filter((v) => v.trim())
       .some(
-        (v) => !/^\s*(?:left|width|padding)\s*:\s*(?:-?\d+(?:\.\d+)?(?:px|rem|%)|auto)(?:\s*!important)?\s*$/i.test(v),
+        (v) => !/^\s*(?:left|width|padding)\s*:\s*(?:-?\d+(?:\.\d+)?(?:px|rem|%)|auto)(?:\s*!important)?\s*$/i.test(v), // NOSONAR: regex kept: a rewrite would change matches or captures
       )
   )
     throw fail('Notification dropdown layout contains unsupported CSS.');
@@ -50,37 +50,40 @@ function validateItem(markup) {
     roots = fragment.childNodes.filter((n) => n.tagName);
   if (roots.length !== 1 || roots[0].tagName !== 'li' || markup.length > 16384)
     throw fail('Notification item must be one bounded static list item.');
-  const allowed = new Set(['li', 'div', 'p', 'button', 'span', 'svg']);
-  let descriptions = 0;
-  function visit(node, _inSvg = false) {
-    if (node.tagName === 'svg') {
-      validateFooterLogoMarkup(serialize({ childNodes: [node] }));
-      return;
-    }
-    if (node.tagName) {
-      if (!allowed.has(node.tagName)) throw fail('Notification item contains a non-static element.');
-      for (const a of node.attrs ?? []) {
-        if (!['class', 'style', 'type', 'data-dismiss', 'aria-label', 'aria-hidden'].includes(a.name))
-          throw fail('Notification item contains an unsupported attribute.');
-        if (a.name === 'style' && /[\\@<>]|url\s*\(|expression\s*\(|javascript:/i.test(a.value))
-          throw fail('Notification item contains active styles.');
-        if (a.name === 'data-dismiss' && a.value !== 'alert')
-          throw fail('Notification item contains an unsupported action.');
-        if (a.name === 'aria-label' && a.value !== 'Close')
-          throw fail('Notification item contains an unexpected label.');
-      }
-      if (node.tagName === 'p' && hasClass(node, 'description')) {
-        descriptions++;
-        if (node.childNodes.some((n) => n.nodeName !== '#text' || n.value.trim()))
-          throw fail('Observed item descriptions must be empty.');
-      }
-    } else if (node.nodeName !== '#text' || (node.value.trim() && node.value.trim() !== '×'))
-      throw fail('Notification item contains unexpected text.');
-    for (const child of node.childNodes ?? []) visit(child);
-  }
-  visit(roots[0]);
-  if (descriptions !== 1) throw fail('Notification item requires one empty description.');
+  const descriptions = { count: 0 };
+  visitNotificationNode(roots[0], descriptions);
+  if (descriptions.count !== 1) throw fail('Notification item requires one empty description.');
   return serialize(fragment);
+}
+
+function validateNotificationAttribute(attribute) {
+  if (!['class', 'style', 'type', 'data-dismiss', 'aria-label', 'aria-hidden'].includes(attribute.name))
+    throw fail('Notification item contains an unsupported attribute.');
+  if (attribute.name === 'style' && /[\\@<>]|url\s*\(|expression\s*\(|javascript:/i.test(attribute.value))
+    throw fail('Notification item contains active styles.');
+  if (attribute.name === 'data-dismiss' && attribute.value !== 'alert')
+    throw fail('Notification item contains an unsupported action.');
+  if (attribute.name === 'aria-label' && attribute.value !== 'Close')
+    throw fail('Notification item contains an unexpected label.');
+}
+
+function visitNotificationNode(node, descriptions) {
+  if (node.tagName === 'svg') {
+    validateFooterLogoMarkup(serialize({ childNodes: [node] }));
+    return;
+  }
+  if (node.tagName) {
+    if (!['li', 'div', 'p', 'button', 'span', 'svg'].includes(node.tagName))
+      throw fail('Notification item contains a non-static element.');
+    for (const attribute of node.attrs ?? []) validateNotificationAttribute(attribute);
+    if (node.tagName === 'p' && hasClass(node, 'description')) {
+      descriptions.count++;
+      if (node.childNodes.some((n) => n.nodeName !== '#text' || n.value.trim()))
+        throw fail('Observed item descriptions must be empty.');
+    }
+  } else if (node.nodeName !== '#text' || (node.value.trim() && node.value.trim() !== '×'))
+    throw fail('Notification item contains unexpected text.');
+  for (const child of node.childNodes ?? []) visitNotificationNode(child, descriptions);
 }
 function captureItems(menu) {
   const templates = new Map();
@@ -113,6 +116,21 @@ function captureItems(menu) {
 function plainDescription(value) {
   return String(value ?? '').slice(0, 4096);
 }
+function observedMenuStyle(html, menu) {
+  let menuStyle = menu?.attrs?.find((a) => a.name === 'style')?.value ?? '';
+  if (!menuStyle) {
+    const styles = find(html, (n) => n.tagName === 'style');
+    for (const node of styles) {
+      const css = (node.childNodes ?? []).map((n) => n.value ?? '').join('');
+      const matches = [...css.matchAll(/(?:^|})\s*\.alerts-dropdown\s*\{([^{}]*)\}/g)];
+      if (matches.length) {
+        if (menuStyle) throw fail('Multiple observed notification dropdown layouts.');
+        menuStyle = safeMenuStyle(matches[0][1]);
+      }
+    }
+  }
+  return safeMenuStyle(menuStyle);
+}
 /** Capture only the observed bell/count presentation. Native dropdown contents are discarded. */
 export function observedHeaderNotifications(html, { headerSource, origin, path = '/' }) {
   const counts = find(html, (n) => hasClass(n, 'notificationsCount'));
@@ -127,19 +145,7 @@ export function observedHeaderNotifications(html, { headerSource, origin, path =
   if (!anchor || !svg || anchor.attrs?.find((a) => a.name === 'href')?.value !== '#')
     throw fail('Notification presentation has an unsupported action.');
   const menu = li.childNodes?.find((n) => n.tagName === 'ul' && hasClass(n, 'alerts-dropdown'));
-  let menuStyle = menu?.attrs?.find((a) => a.name === 'style')?.value ?? '';
-  if (!menuStyle) {
-    const styles = find(html, (n) => n.tagName === 'style');
-    for (const node of styles) {
-      const css = (node.childNodes ?? []).map((n) => n.value ?? '').join('');
-      const matches = [...css.matchAll(/(?:^|})\s*\.alerts-dropdown\s*\{([^{}]*)\}/g)];
-      if (matches.length) {
-        if (menuStyle) throw fail('Multiple observed notification dropdown layouts.');
-        menuStyle = safeMenuStyle(matches[0][1]);
-      }
-    }
-  }
-  menuStyle = safeMenuStyle(menuStyle);
+  const menuStyle = observedMenuStyle(html, menu);
   const itemTemplates = captureItems(menu);
   const graphic = validateFooterLogoMarkup(serialize({ childNodes: [svg] }));
   const style = counts[0].attrs.find((a) => a.name === 'style')?.value ?? '';

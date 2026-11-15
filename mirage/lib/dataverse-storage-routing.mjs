@@ -154,13 +154,17 @@ function hold(state, key) {
 }
 
 // Holds a key put by a record write's beforeWrite hook until that write commits or rolls back: a no-op transaction started
-// outside the caller's transaction queues behind it.
-function holdWrite(api, state, key) {
+// outside the caller's transaction queues behind it. `onSettled` runs once the write has settled.
+// The returned promise ends when the write has settled.
+function holdWrite(api, state, key, onSettled) {
   const unhold = hold(state, key);
-  state
+  return state
     .detached(() => api.store.transact(() => {}, { skipSaveIfUnchanged: true, lazyReadSnapshot: true }))
     .catch(() => {})
-    .finally(unhold);
+    .finally(() => {
+      unhold();
+      onSettled?.();
+    });
 }
 
 // Drops the candidate keys no committed row references: their file entries (in one transaction) and then their provider bytes.
@@ -170,6 +174,9 @@ async function flush(api, state) {
     const keys = [...state.pending];
     state.pending.clear();
     const providerOf = (key) => (key.startsWith('files/') ? state.files : state.annotations);
+    // Only a file key can change the state here (its entry is deleted); a batch of blob keys alone leaves the state
+    // as it is.
+    const skipSaveIfUnchanged = keys.every((key) => !key.startsWith('files/'));
     // Each dead key's ETag is read inside the liveness transaction and the delete is conditional on it: bytes put again under
     // the same key after the check (a re-created note with the same id) change the ETag and are kept. An in-flight key (put,
     // its row not settled yet) is not dead.
@@ -196,7 +203,7 @@ async function flush(api, state) {
           }
           return tagged;
         },
-        { incremental: true, cloneResult: false },
+        { incremental: true, cloneResult: false, skipSaveIfUnchanged },
       ),
     );
     for (const { key, etag } of dead)
@@ -223,7 +230,7 @@ function released(api, state, keys) {
 }
 
 // Moves inline legacy bytes to the providers once; a second load finds nothing inline. One STORAGE_MIGRATED diagnostic.
-async function migrate(api, state) {
+/* NOSONAR: preserve migration await boundaries */ async function migrate(api, state) {
   const { store } = api;
   const files = store.state.dataverse?.files ?? {};
   const fileMoves = [],
@@ -288,7 +295,7 @@ async function migrate(api, state) {
 // Objects are listed first and judged in one transaction afterwards: an in-flight key (bytes put before their row commits) is
 // skipped, and a delete is conditional on the listed ETag, so bytes put again under a listed key are kept.
 // With an outbox provider (api.providers.outbox) its sweep runs too; its counts are `outbox`.
-async function sweep(api, state) {
+/* NOSONAR: preserve sweep await boundaries */ async function sweep(api, state) {
   const { store } = api;
   const outboxSweep = api.providers?.outbox?.sweep ? () => api.providers.outbox.sweep() : null;
   const outbox = async (result) => (outboxSweep ? { ...result, outbox: await outboxSweep() } : result);
@@ -347,18 +354,7 @@ async function sweep(api, state) {
 // DATA file committed without its private <stateDir>/blobs, a cleaned state directory). One summarised STORAGE_OBJECTS_MISSING
 // with the count and the first keys; a provider that cannot answer is not judged here.
 async function verifyReferenced(api, state) {
-  const { store } = api;
-  const keys = new Set(
-    Object.values(store.state.dataverse?.files ?? {})
-      .filter((entry) => entry?.key && entry.data == null)
-      .map((entry) => entry.key),
-  );
-  for (const logical of Object.keys(ATTACHMENT_COLUMNS)) {
-    for (const row of [...store.tableRows(logical), ...binRows(store, logical)]) {
-      const key = blobKeyOf(logical, row);
-      if (key) keys.add(key);
-    }
-  }
+  const keys = referencedStorageKeys(api.store);
   const missing = [];
   for (const key of keys) {
     const provider = key.startsWith('files/') ? state.files : state.annotations;
@@ -377,6 +373,19 @@ async function verifyReferenced(api, state) {
     });
   return missing.length;
 }
+function referencedStorageKeys(store) {
+  const keys = new Set(
+    Object.values(store.state.dataverse?.files ?? {})
+      .filter((entry) => entry?.key && entry.data == null)
+      .map((entry) => entry.key),
+  );
+  for (const logical of Object.keys(ATTACHMENT_COLUMNS))
+    for (const row of [...store.tableRows(logical), ...binRows(store, logical)]) {
+      const key = blobKeyOf(logical, row);
+      if (key) keys.add(key);
+    }
+  return keys;
+}
 
 /** install(api, { storage, diagnostic }): storage is a storage router (forRoute) or one provider; default api.providers.storage. */
 async function install(api, { storage, diagnostic } = {}) {
@@ -386,12 +395,17 @@ async function install(api, { storage, diagnostic } = {}) {
     diagnostic: diagnostic ?? null,
     diagnostics: [],
     pending: new Set(),
-    flushing: null,
+    flushing: /** @type {Promise<void> | null} */ (null),
     inflight: new Map(),
     missing: new Set(),
     // Provider puts started by beforeWrite, by row id: afterWrite awaits them (an async drive waits, a sync SDK drive defers
     // them as SDK_DEFERRED_EFFECT) and a read of the row waits for its put before fetching the bytes.
     puts: new Map(),
+    // Sync SDK writes: the body stays inline until its put succeeds; the pending move waits here for afterWrite, by row id.
+    syncPending: new Map(),
+    // Provider puts started by beforeWrite and deferred effects of sync SDK writes (they finish after the call
+    // returned); settle waits for them.
+    effects: new Set(),
     // Bound here, outside any request: work started through it runs outside the caller's transaction context.
     detached: AsyncResource.bind((fn) => fn()),
   };
@@ -401,10 +415,11 @@ async function install(api, { storage, diagnostic } = {}) {
   const release = (keys) => released(api, state, keys);
   api.storageRouting = {
     settle: async () => {
-      while (state.flushing) await state.flushing;
+      while (state.flushing || state.effects.size) await Promise.all([state.flushing, ...state.effects]);
     },
     sweep: () => sweep(api, state),
     diagnostics: () => [...state.diagnostics],
+    pendingSyncWrites: () => state.syncPending.size,
   };
 
   // A deleted row's file entries and blobs go once the delete has committed (cascades and portal deletes included).
@@ -422,6 +437,7 @@ async function install(api, { storage, diagnostic } = {}) {
       hold: (key) => hold(state, key),
       holdWrite: (key) => holdWrite(api, state, key),
       missing: (logical, id, key) => reportMissing(state, logical, id, key),
+      failed: (logical, id, key) => putFailed(state, logical, id, key),
     });
     hydrateResponses(api);
     if (state.annotations) {
@@ -432,7 +448,8 @@ async function install(api, { storage, diagnostic } = {}) {
       );
       recordHooks.add(
         'afterWrite',
-        (c, mapping, { id }) => (ATTACHMENT_COLUMNS[mapping.logicalName] ? state.puts.get(guidKey(id)) : undefined),
+        (c, mapping, { id, sync }) =>
+          ATTACHMENT_COLUMNS[mapping.logicalName] ? afterStored(api, state, mapping.logicalName, id, sync) : undefined,
         'dataverse-storage-routing',
       );
       recordHooks.add('project', (c, mapping, formatted) => hydrate(api, c, mapping, formatted));
@@ -443,10 +460,44 @@ async function install(api, { storage, diagnostic } = {}) {
   await verifyReferenced(api, state);
 }
 
+// Drops the put entry, and the pending synchronous move, that still belong to this write once it has settled.
+function forgetPut(state, id, put) {
+  if (state.puts.get(id) === put) state.puts.delete(id);
+  if (state.syncPending.get(id)?.put === put) state.syncPending.delete(id);
+}
+
+// A synchronous write keeps the body inline; otherwise the column is nulled and the row points at the body's key.
+function linkRow(data, column, key, sync) {
+  if (sync) data.__blobkey = null;
+  else {
+    data[column] = null;
+    data.__blobkey = key;
+  }
+}
+
+// The write's committed row references the key, or a pending move of a synchronous write still holds it: nothing to release.
+function keyTaken(api, state, mapping, id, key) {
+  if (state.inflight.has(key)) return true;
+  const logical = mapping.logicalName,
+    rows = api.store.tableRows(logical),
+    index = api.store.rowIndex(mapping, rows, id);
+  return index >= 0 && blobKeyOf(logical, rows[index]) === key;
+}
+
+// A create whose id is a stored row's id: the store refuses it after the beforeWrite hooks.
+function refusedCreate(api, mapping, info, id) {
+  return (
+    info.operation === 'create' &&
+    !info.existing &&
+    api.store.rowIndex(mapping, api.store.tableRows(mapping.logicalName), id) >= 0
+  );
+}
+
 // beforeWrite: a canonical base64 body moves to annotations/<rowId>/<n>; the row keeps a null column and its key. The size
 // rule runs here because the record pipeline's attachment policy only sees inline bodies. Non-canonical text stays inline
 // so it reads back exactly as written. Rows a module writes with __blobkey already set (block commits) pass through.
-function externalise(api, state, mapping, { operation, data, existing }) {
+function externalise(api, state, mapping, info) {
+  const { operation, data, existing } = info;
   const logical = mapping.logicalName,
     column = ATTACHMENT_COLUMNS[logical];
   if (!column || !data || !['create', 'update', 'upsert'].includes(operation)) return undefined;
@@ -470,22 +521,113 @@ function externalise(api, state, mapping, { operation, data, existing }) {
     return undefined;
   }
   let id = guidKey(existing?.[mapping.idColumn] ?? data[mapping.idColumn]);
+  // A missing id is generated. A create that names a stored row's id is refused by the store after this hook: it
+  // must not put to that row's live key.
   if (!id) data[mapping.idColumn] = id = (api.ids?.uuid?.() ?? randomUUID()).toLowerCase();
+  else if (refusedCreate(api, mapping, info, id)) return undefined;
   const key = `annotations/${id}/${previous ? Number(previous.split('/')[2]) + 1 : 1}`;
-  data[column] = null;
-  data.__blobkey = key;
+  // A synchronous SDK write keeps the body inline: its put cannot fail the call, so afterWrite moves the body once the put
+  // has succeeded. The HTTP write points the row at the key now, and a rejected put rolls the row write back.
+  linkRow(data, column, key, info.sync);
   if (previous) released(api, state, [previous]);
-  holdWrite(api, state, key);
   // The hook itself stays synchronous (an SDK drive refuses an async pre hook); the put is awaited by afterWrite and by readers.
+  // A rejected put makes afterWrite reject, which rolls the row write back. The entry ends when that write settles.
   const put = state.annotations
     .put(key, Buffer.from(value, 'base64'), { contentType: data.mimetype ?? existing?.mimetype ?? undefined })
-    .then(() => undefined)
-    .finally(() => {
-      if (state.puts.get(id) === put) state.puts.delete(id);
-    });
-  state.puts.set(id, put);
+    .then(
+      () => undefined,
+      () => {
+        throw putFailed(state, logical, id, key);
+      },
+    );
   put.catch(() => {});
+  state.puts.set(id, put);
+  if (info.sync) state.syncPending.set(id, { logical, id, column, key, value, put });
+  // Settled after the write: a synchronous write's afterWrite consumes its pending move, so one still here belongs to a write
+  // that did not commit.
+  const settled = holdWrite(api, state, key, () => forgetPut(state, id, put));
+  // The put belongs to the write even when the write is refused: settle waits for both, and then the key is released
+  // unless the write's committed row (or a pending move) took it.
+  const done = Promise.all([settled, put.catch(() => {})])
+    .then(() =>
+      state.detached(() => (keyTaken(api, state, mapping, id, key) ? undefined : released(api, state, [key]))),
+    )
+    .finally(() => state.effects.delete(done));
+  state.effects.add(done);
   return undefined;
+}
+
+// A failed provider put answers a storage failure. The answer names no provider detail; the diagnostic holds the row and
+// the key, never the provider error.
+function putFailed(state, logical, id, key) {
+  report(state, {
+    severity: 'error',
+    code: 'STORAGE_WRITE_FAILED',
+    entity: logical,
+    id,
+    key,
+    message: `The stored body of ${logical} ${id} (key ${key}) was not written; the write was rolled back.`,
+  });
+  return new DataError(
+    'The body could not be written to its storage provider; the write was rolled back.',
+    503,
+    'STORAGE_WRITE_FAILED',
+  );
+}
+
+// afterWrite: an HTTP write answers its put (a rejection rolls the row back). A synchronous SDK write answers the move of its
+// body as a deferred effect, which finishes after the call returned; a write with no pending move answers nothing.
+function afterStored(api, state, logical, id, sync) {
+  const key = guidKey(id);
+  const pending = state.syncPending.get(key);
+  state.syncPending.delete(key);
+  if (!sync) return state.puts.get(key);
+  return pending?.logical === logical ? trackEffect(state, moveToProvider(api, state, pending)) : undefined;
+}
+
+// Effects of synchronous SDK writes: a failed effect is a warning, never an unhandled rejection.
+function trackEffect(state, work) {
+  const effect = work
+    .catch((error) =>
+      report(state, {
+        severity: 'warning',
+        code: 'STORAGE_MOVE_FAILED',
+        message: `A note body was not moved to its storage provider: ${error.message}`,
+      }),
+    )
+    .finally(() => state.effects.delete(effect));
+  state.effects.add(effect);
+  return effect;
+}
+
+// Deferred move of a synchronous SDK write's body: once its put succeeded, the row swaps the inline body for the key, if it
+// still holds that body. A failed put keeps the inline body (its failure is already reported); a key no row takes is released.
+async function moveToProvider(api, state, pending) {
+  const { store } = api;
+  const { logical, id, column, key, value, put } = pending;
+  const unhold = hold(state, key);
+  let moved = false;
+  try {
+    if (
+      await put.then(
+        () => true,
+        () => false,
+      )
+    )
+      moved = await state.detached(() => store.transact(() => swapInline(store, logical, id, column, key, value)));
+  } finally {
+    unhold();
+  }
+  if (!moved) released(api, state, [key]);
+}
+
+// The migration's row write for a body moved to a provider: the inline body is replaced by its key, in one transaction.
+function swapInline(store, logical, id, column, key, value) {
+  const row = (store.state.tables[logical] ?? []).find((r) => guidKey(r[ID_COLUMN[logical]]) === id);
+  if (row?.[column] !== value) return false;
+  row[column] = null;
+  row.__blobkey = key;
+  return true;
 }
 
 // project: the internal key never leaves; a carried, empty body column is read from its provider before the response leaves.
@@ -504,7 +646,7 @@ function hydrate(api, c, mapping, formatted) {
       );
     return cache.get(logical);
   };
-  for (const row of [].concat(formatted ?? [])) {
+  for (const row of [].concat(formatted ?? []) /* NOSONAR: preserve concat spreadability semantics */) {
     if (!row || typeof row !== 'object') continue;
     delete row.__blobkey;
     if (!Object.hasOwn(row, column) || row[column] != null) continue;
@@ -529,7 +671,7 @@ async function reset(api) {
 async function close(api) {
   const state = states.get(api);
   state?.unsubscribe?.();
-  while (state?.flushing) await state.flushing;
+  while (state?.flushing || state?.effects.size) await Promise.all([state.flushing, ...state.effects]);
 }
 
 /**

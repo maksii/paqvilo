@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DataError, DataStore } from '../lib/data.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const entity = (name) =>
   `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><attributes><attribute PhysicalName="${name}Id"><Type>primarykey</Type><LogicalName>${name}id</LogicalName></attribute><attribute PhysicalName="name"><Type>nvarchar</Type><LogicalName>name</LogicalName></attribute><attribute PhysicalName="parentid"><Type>lookup</Type><LogicalName>parentid</LogicalName></attribute><attribute PhysicalName="ownerid"><Type>lookup</Type><LogicalName>ownerid</LogicalName></attribute></attributes><EntitySetName>${name}s</EntitySetName></entity></EntityInfo></Entity>`;
@@ -14,7 +15,7 @@ const relationship = (child, parent) => {
 };
 
 test('metadata-derived 27-table graph supports 16-level navigation with deepest scope filtering', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-deep-metadata-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-deep-metadata-'));
   try {
     const names = Array.from({ length: 27 }, (_, i) => `fixture_level${String(i).padStart(2, '0')}`);
     const metadataFile = join(root, 'customizations.xml');

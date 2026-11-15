@@ -1,4 +1,6 @@
+// @test-kind contract: the simulator's public entry points and their runtime behaviour, exercised with invented projects
 import test from 'node:test';
+import { inventedProjectFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,22 +10,18 @@ import { connectRuntime } from '../testing.mjs';
 import { resolveLocalOverrides } from '../lib/local-overrides.mjs';
 import { injectRuntimeCompatibility } from '../lib/source-dependencies.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from '../lib/platform-styles.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-async function project(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-public-api-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  await fs.mkdir(path.join(root, 'portal/web-pages'), { recursive: true });
-  await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
-  await fs.writeFile(
-    path.join(root, 'portal/web-pages/home.webpage.yml'),
-    'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_copy: <div>Home</div>\n',
-  );
-  await fs.writeFile(
-    path.join(root, 'paqvilo.config.yml'),
-    'sourceRoot: .\nsites:\n  invented:\n    source: portal\n    environments:\n      dev: https://invented.example.test\n',
-  );
-  return root;
-}
+const project = (t) => inventedProjectFixture(t, 'paqvilo-public-api-');
+
+// @test-kind tooling: the public API document lists every export of the testing entry point
+test('every export of the testing entry point appears in the paqvilo/mirage/testing row of the public API table', async () => {
+  const doc = await fs.readFile(new URL('../../docs/public-api.md', import.meta.url), 'utf8');
+  const row = doc.split('\n').find((line) => line.startsWith('| `paqvilo/mirage/testing`'));
+  assert.ok(row, 'docs/public-api.md has a paqvilo/mirage/testing row');
+  const missing = Object.keys(await import('../testing.mjs')).filter((name) => !row.includes(`\`${name}\``));
+  assert.deepEqual(missing, []);
+});
 
 test('bootstrap preset mode preserves records on restart and always mode resets them', async (t) => {
   const root = await project(t),
@@ -81,6 +79,7 @@ test('bootstrap preset mode preserves records on restart and always mode resets 
   }
 });
 
+// @test-kind security: local override files cannot be read from outside the configured directory
 test('local overrides confine files, preserve head order and disable bundled footer code', async (t) => {
   const root = await project(t);
   await fs.writeFile(path.join(root, 'extra.css'), 'body{color:purple}');
@@ -90,8 +89,8 @@ test('local overrides confine files, preserve head order and disable bundled foo
     root,
   );
   assert.throws(() => resolveLocalOverrides({ compat: { typo: false } }, root), /Unknown adapter/);
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
-  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
+  ownedFixture(t).remove(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.writeFile(path.join(outside, 'outside.css'), 'body{}');
   assert.throws(
     () => resolveLocalOverrides({ head: { stylesheets: [path.join(outside, 'outside.css')] } }, root),
@@ -129,10 +128,11 @@ test('local overrides confine files, preserve head order and disable bundled foo
   assert.deepEqual(formStyleDiagnostics('<div class="crmEntityFormView">', profile), []);
 });
 
+// @test-kind security: a directory replaced after startup cannot expose files outside the asset root
 test('local head assets remain confined when a directory is replaced after startup', async (t) => {
   const root = await project(t),
-    outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
-  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+    outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
+  ownedFixture(t).remove(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'local'));
   await fs.writeFile(path.join(root, 'local/extra.css'), 'body{color:purple}');
   await fs.writeFile(path.join(outside, 'extra.css'), 'OUTSIDE_SOURCE_MUST_NOT_BE_SERVED');
@@ -304,7 +304,7 @@ test('a site-bound context reuses its portal import and exposes effective Soluti
   });
   const context = await createMirageContext({ config, site: 'sample' }),
     app = await context.createSimulator({ watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal(imports, 1);
   const status = await (await fetch(app.url + '/__sim/api/status')).json(); // The configured spelling may be a short Windows path (RUNNER~1); compare the folder each root names.
   assert.deepEqual(await Promise.all(status.solutionRoots.map((folder) => fs.realpath(folder))), [
@@ -312,6 +312,6 @@ test('a site-bound context reuses its portal import and exposes effective Soluti
   ]);
   assert.deepEqual(app.state().status.solutionRoots, status.solutionRoots);
   const override = await context.createSimulator({ sourceDir: portalDir, watch: false });
-  t.after(() => override.close());
+  ownedFixture(t).add(() => override.close());
   assert.equal(imports, 2);
 });

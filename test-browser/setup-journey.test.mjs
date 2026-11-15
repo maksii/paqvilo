@@ -1,4 +1,6 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +33,7 @@ after(() => browser?.close());
 test('All settings saves Mirage sourceMaps at site and project scope independently of Lense source maps', async (t) => {
   for (const kind of ['catalogue', 'project'])
     await t.test(kind, async (t) => {
-      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
+      const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
       const file = path.join(directory, kind === 'catalogue' ? 'paqvilo.config.yml' : 'mirage.project.yml');
       await fs.writeFile(
         file,
@@ -222,369 +224,330 @@ async function saved(page, click) {
     .filter({ hasText: /^Saved\./ })
     .waitFor();
 }
+// One owned context and page on the setup server, with every setting shown and page errors collected.
+async function openSetup(t, directory, server, viewport) {
+  const context = await browser.newContext();
+  ownedFixture(t).add(async () => {
+    await context.close();
+  });
+  ownedFixture(t).add(async () => {
+    await server.close();
+  });
+  ownedFixture(t).remove(async () => {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const page = await context.newPage();
+  if (viewport) await page.setViewportSize(viewport);
+  await allSettings(page);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  return { page, errors };
+}
 const stageLink = (page, name) => page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name });
 
-test(
-  'setup journey: template, stage rail, packs, setting editor, restart command and planned-to-live system map',
-  { timeout: 120000 },
-  async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
-    const server = await journeyServer(directory);
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
+test('setup journey: template, stage rail, packs, setting editor, restart command and planned-to-live system map', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
+  const server = await journeyServer(directory);
+  const { page, errors } = await openSetup(t, directory, server, { width: 1280, height: 900 });
+  const file = path.join(directory, 'paqvilo.config.yml'),
+    read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
+
+  // Create from a template: the placeholder findings are explained as next steps, not errors.
+  await page.goto(server.url);
+  await page.locator('details[data-section-key=templates] > summary').click();
+  const template = page.locator('form[data-form=template]');
+  await template.getByLabel(/Power Pages portal/).check();
+  await template.locator('#template-target').fill('invented-portal');
+  await saved(page, () => template.getByRole('button', { name: 'Create from example' }).click());
+  assert.equal((await read()).sites['invented-portal'].environments.dev, 'https://invented-portal.example.test');
+  const overview = page.locator('#overview');
+  assert.match(await overview.innerText(), /They are not errors/);
+  assert.ok(
+    (await overview
+      .locator('.findings li')
+      .filter({ hasText: 'still has an example address' })
+      .filter({ hasText: 'next step' })
+      .count()) >= 1,
+  );
+  assert.match(await stageLink(page, /^Exported files/).innerText(), /next step/);
+  assert.match(
+    await stageLink(page, /^Live environments/).innerText(),
+    /optional/,
+    'an example live address only matters to Lense',
+  );
+  assert.equal(await page.locator('#portals').evaluate((node) => node.open), true, 'the next stage opens');
+  assert.equal(await page.locator('#providers').evaluate((node) => node.open), false, 'other stages stay collapsed');
+
+  // Restart command of the running preview, and runtime presets offered as suggestions.
+  assert.match(
+    await page.locator('#restart-command').innerText(),
+    /^npx paqvilo mirage dev --config .*paqvilo\.config\.yml --site invented-portal$/,
+  );
+  assert.equal(await page.locator('#preset-options option[value="invented-starter"]').count(), 1);
+  assert.equal(await page.locator('#app-options option[value="00000000-0000-4000-8000-0000000000aa"]').count(), 1);
+
+  // Live environments and sample data are forms of their own; the rail follows each save.
+  await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'portal-export'), { recursive: true });
+  await stageLink(page, /^Live environments/).click();
+  const environments = page.locator('form[data-form=environments][data-site=invented-portal]');
+  await environments.locator('[name=env-url]').fill('http://127.0.0.1:8787');
+  await saved(page, () => environments.getByRole('button', { name: 'Save', exact: true }).click());
+  await stageLink(page, /^Sample data/).click();
+  const data = page.locator('form[data-form=data][data-site=invented-portal]');
+  await data.locator('[name=packs]').fill('invented | ./pack/pack.mjs');
+  assert.equal(
+    await data.locator('select[name=preset] option[value="invented-starter"]').count(),
+    1,
+    'running preview data sets are offered as a list',
+  );
+  await saved(page, () => data.getByRole('button', { name: 'Save', exact: true }).click());
+  const sitesAfter = (await read()).sites['invented-portal'];
+  assert.deepEqual(sitesAfter.mirage.dataPacks, [{ id: 'invented', module: './pack/pack.mjs' }]);
+  assert.equal(sitesAfter.environments.dev.url, 'http://127.0.0.1:8787');
+  assert.match(await stageLink(page, /^Exported files/).innerText(), /done/);
+  assert.match(await stageLink(page, /^Live environments/).innerText(), /done/);
+  assert.match(
+    await stageLink(page, /^Sample data/).innerText(),
+    /next step/,
+    'the missing pack module is the next step',
+  );
+  assert.match(await page.locator('#data-invented-portal').innerText(), /pack\.mjs[\s\S]*file missing/);
+
+  // A service the person runs themselves is a row of a guided form: a name, what it is, its address and a path to check.
+  await stageLink(page, /^Outside services/).click();
+  const services = page.locator('form[data-form=services][data-site=invented-portal]');
+  await services.getByRole('button', { name: 'Add a service' }).click();
+  await services.locator('[name=svc-id]').fill('invented-api');
+  await services.locator('[name=svc-address]').fill('http://127.0.0.1:7071');
+  await services.locator('[name=svc-probe]').fill('/health');
+  await saved(page, () => services.getByRole('button', { name: 'Save', exact: true }).click());
+  assert.deepEqual((await read()).sites['invented-portal'].mirage.localServices, {
+    'invented-api': { kind: 'http', baseUrl: 'http://127.0.0.1:7071', probe: '/health' },
+  });
+  assert.equal(
+    await page.locator('#providers').evaluate((node) => node.open),
+    true,
+    'the edited section stays open after the save',
+  );
+  // The other keys of the stage stay in the setting editor; an unset one is empty, its example sits in the (i).
+  await page.locator('#providers summary').filter({ hasText: 'More settings · Outside services' }).click();
+  assert.equal(
+    await page.locator('form[data-form=setting][data-key=localServices]').count(),
+    0,
+    'local services have a form of their own',
+  );
+  const unset = page.locator(
+    'form[data-form=setting][data-key=connectorScripts][data-site=invented-portal] [name=value]',
+  );
+  assert.equal(await unset.count(), 1);
+  assert.equal(await unset.inputValue(), '');
+  assert.match(await unset.getAttribute('placeholder'), /^Not set/);
+
+  // The system map shows the plan from the settings file until a preview runs, then the same live map as the simulator's
+  // Infrastructure view, so setup and the simulator never show different states.
+  await page
+    .getByRole('navigation', { name: 'Setup navigation' })
+    .getByRole('link', { name: 'Your system at a glance' })
+    .click();
+  const system = page.locator('#system');
+  await system.locator('.ui-dashboard[data-dashboard-mode=planned]').waitFor();
+  assert.ok((await system.locator('[data-node]').count()) > 0);
+  server.fake.live = true;
+  await system.locator('.ui-dashboard[data-dashboard-mode=live]').waitFor();
+  await system.locator('[data-node="host:portal"]').click();
+  // The drawer names the product of the clicked node; the node's own label stays a fact.
+  await system
+    .locator('.ui-drawer[data-node-detail="host:portal"] h3')
+    .filter({ hasText: 'Power Pages site' })
+    .waitFor();
+  const verify = page.locator('#guidance');
+  await stageLink(page, /^Start & check/).click();
+  assert.match(
+    await verify.getByRole('link', { name: /Check what the project needs/ }).getAttribute('href'),
+    /\/_sim\/#capabilities$/,
+  );
+  assert.match(
+    await verify.getByRole('link', { name: /Open the live system map/ }).getAttribute('href'),
+    /\/_sim\/#health$/,
+  );
+
+  // Narrow screens keep every opened section inside the viewport.
+  if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
+    await fs.mkdir(path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS), { recursive: true });
+    await page.screenshot({
+      path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-desktop.png'),
+      fullPage: true,
     });
-    ownedFixture(t).add(async () => {
-      await server.close();
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Every disclosure open, including the setting examples whose rows hold visually hidden labels.
+  await page.evaluate(() => {
+    for (const node of document.querySelectorAll('details')) node.open = true;
+  });
+  if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
+    await page.screenshot({
+      path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-mobile.png'),
+      fullPage: true,
     });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    const file = path.join(directory, 'paqvilo.config.yml'),
-      read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
+  }
+  const overflow = await page.evaluate(() =>
+    [...document.querySelectorAll('body *')]
+      .filter((node) => node.getBoundingClientRect().right > innerWidth + 1)
+      .map((node) => `${node.tagName}.${node.className}`)
+      .slice(0, 8),
+  );
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+    overflow.join(', '),
+  );
+  assert.deepEqual(errors, []);
+});
 
-    // Create from a template: the placeholder findings are explained as next steps, not errors.
-    await page.goto(server.url);
-    await page.locator('details[data-section-key=templates] > summary').click();
-    const template = page.locator('form[data-form=template]');
-    await template.getByLabel(/Power Pages portal/).check();
-    await template.locator('#template-target').fill('invented-portal');
-    await saved(page, () => template.getByRole('button', { name: 'Create from example' }).click());
-    assert.equal((await read()).sites['invented-portal'].environments.dev, 'https://invented-portal.example.test');
-    const overview = page.locator('#overview');
-    assert.match(await overview.innerText(), /They are not errors/);
-    assert.ok(
-      (await overview
-        .locator('.findings li')
-        .filter({ hasText: 'still has an example address' })
-        .filter({ hasText: 'next step' })
-        .count()) >= 1,
-    );
-    assert.match(await stageLink(page, /^Exported files/).innerText(), /next step/);
-    assert.match(
-      await stageLink(page, /^Live environments/).innerText(),
-      /optional/,
-      'an example live address only matters to Lense',
-    );
-    assert.equal(await page.locator('#portals').evaluate((node) => node.open), true, 'the next stage opens');
-    assert.equal(await page.locator('#providers').evaluate((node) => node.open), false, 'other stages stay collapsed');
-
-    // Restart command of the running preview, and runtime presets offered as suggestions.
-    assert.match(
-      await page.locator('#restart-command').innerText(),
-      /^npx paqvilo mirage dev --config .*paqvilo\.config\.yml --site invented-portal$/,
-    );
-    assert.equal(await page.locator('#preset-options option[value="invented-starter"]').count(), 1);
-    assert.equal(await page.locator('#app-options option[value="00000000-0000-4000-8000-0000000000aa"]').count(), 1);
-
-    // Live environments and sample data are forms of their own; the rail follows each save.
-    await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'portal-export'), { recursive: true });
-    await stageLink(page, /^Live environments/).click();
-    const environments = page.locator('form[data-form=environments][data-site=invented-portal]');
-    await environments.locator('[name=env-url]').fill('http://127.0.0.1:8787');
-    await saved(page, () => environments.getByRole('button', { name: 'Save', exact: true }).click());
-    await stageLink(page, /^Sample data/).click();
-    const data = page.locator('form[data-form=data][data-site=invented-portal]');
-    await data.locator('[name=packs]').fill('invented | ./pack/pack.mjs');
-    assert.equal(
-      await data.locator('select[name=preset] option[value="invented-starter"]').count(),
-      1,
-      'running preview data sets are offered as a list',
-    );
-    await saved(page, () => data.getByRole('button', { name: 'Save', exact: true }).click());
-    const sitesAfter = (await read()).sites['invented-portal'];
-    assert.deepEqual(sitesAfter.mirage.dataPacks, [{ id: 'invented', module: './pack/pack.mjs' }]);
-    assert.equal(sitesAfter.environments.dev.url, 'http://127.0.0.1:8787');
-    assert.match(await stageLink(page, /^Exported files/).innerText(), /done/);
-    assert.match(await stageLink(page, /^Live environments/).innerText(), /done/);
-    assert.match(
-      await stageLink(page, /^Sample data/).innerText(),
-      /next step/,
-      'the missing pack module is the next step',
-    );
-    assert.match(await page.locator('#data-invented-portal').innerText(), /pack\.mjs[\s\S]*file missing/);
-
-    // A service the person runs themselves is a row of a guided form: a name, what it is, its address and a path to check.
-    await stageLink(page, /^Outside services/).click();
-    const services = page.locator('form[data-form=services][data-site=invented-portal]');
-    await services.getByRole('button', { name: 'Add a service' }).click();
-    await services.locator('[name=svc-id]').fill('invented-api');
-    await services.locator('[name=svc-address]').fill('http://127.0.0.1:7071');
-    await services.locator('[name=svc-probe]').fill('/health');
-    await saved(page, () => services.getByRole('button', { name: 'Save', exact: true }).click());
-    assert.deepEqual((await read()).sites['invented-portal'].mirage.localServices, {
-      'invented-api': { kind: 'http', baseUrl: 'http://127.0.0.1:7071', probe: '/health' },
-    });
-    assert.equal(
-      await page.locator('#providers').evaluate((node) => node.open),
-      true,
-      'the edited section stays open after the save',
-    );
-    // The other keys of the stage stay in the setting editor; an unset one is empty, its example sits in the (i).
-    await page.locator('#providers summary').filter({ hasText: 'More settings · Outside services' }).click();
-    assert.equal(
-      await page.locator('form[data-form=setting][data-key=localServices]').count(),
-      0,
-      'local services have a form of their own',
-    );
-    const unset = page.locator(
-      'form[data-form=setting][data-key=connectorScripts][data-site=invented-portal] [name=value]',
-    );
-    assert.equal(await unset.count(), 1);
-    assert.equal(await unset.inputValue(), '');
-    assert.match(await unset.getAttribute('placeholder'), /^Not set/);
-
-    // The system map shows the plan from the settings file until a preview runs, then the same live map as the simulator's
-    // Infrastructure view, so setup and the simulator never show different states.
-    await page
-      .getByRole('navigation', { name: 'Setup navigation' })
-      .getByRole('link', { name: 'Your system at a glance' })
-      .click();
-    const system = page.locator('#system');
-    await system.locator('.ui-dashboard[data-dashboard-mode=planned]').waitFor();
-    assert.ok((await system.locator('[data-node]').count()) > 0);
-    server.fake.live = true;
-    await system.locator('.ui-dashboard[data-dashboard-mode=live]').waitFor({ timeout: 20_000 });
-    await system.locator('[data-node="host:portal"]').click();
-    // The drawer names the product of the clicked node; the node's own label stays a fact.
-    await system
-      .locator('.ui-drawer[data-node-detail="host:portal"] h3')
-      .filter({ hasText: 'Power Pages site' })
-      .waitFor();
-    const verify = page.locator('#guidance');
-    await stageLink(page, /^Start & check/).click();
-    assert.match(
-      await verify.getByRole('link', { name: /Check what the project needs/ }).getAttribute('href'),
-      /\/_sim\/#capabilities$/,
-    );
-    assert.match(
-      await verify.getByRole('link', { name: /Open the live system map/ }).getAttribute('href'),
-      /\/_sim\/#dashboard$/,
-    );
-
-    // Narrow screens keep every opened section inside the viewport.
-    if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
-      await fs.mkdir(path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS), { recursive: true });
-      await page.screenshot({
-        path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-desktop.png'),
-        fullPage: true,
-      });
-    }
-    await page.setViewportSize({ width: 390, height: 844 });
-    // Every disclosure open, including the setting examples whose rows hold visually hidden labels.
-    await page.evaluate(() => {
-      for (const node of document.querySelectorAll('details')) node.open = true;
-    });
-    if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
-      await page.screenshot({
-        path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-mobile.png'),
-        fullPage: true,
-      });
-    }
-    const overflow = await page.evaluate(() =>
-      [...document.querySelectorAll('body *')]
-        .filter((node) => node.getBoundingClientRect().right > innerWidth + 1)
-        .map((node) => `${node.tagName}.${node.className}`)
-        .slice(0, 8),
-    );
-    assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-      true,
-      overflow.join(', '),
-    );
-    assert.deepEqual(errors, []);
-  },
-);
-
-test(
-  'identity and persona forms write only changed keys and leave declared users and app registrations alone',
-  { timeout: 60000 },
-  async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
-    const file = path.join(directory, 'paqvilo.config.yml'),
-      read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
-    const application = {
-      appId: '00000000-0000-4000-8000-000000000001',
-      displayName: 'Invented client',
-      secretEnvironmentVariable: 'INVENTED_CLIENT_SECRET',
-    };
-    await fs.writeFile(
-      file,
-      YAML.stringify({
-        sourceRoot: '.',
-        defaultSite: 'invented',
-        sites: {
-          invented: {
-            source: '.',
-            defaultEnv: 'local',
-            environments: { local: 'http://127.0.0.1:8787' },
-            mirage: {
-              port: 0,
-              runtime: { kind: 'power-pages' },
-              simulation: { level: 'dry-run' },
-              dataverse: { enabled: true, port: 0, applications: [application] },
-            },
+test('identity and persona forms write only changed keys and leave declared users and app registrations alone', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
+  const file = path.join(directory, 'paqvilo.config.yml'),
+    read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
+  const application = {
+    appId: '00000000-0000-4000-8000-000000000001',
+    displayName: 'Invented client',
+    secretEnvironmentVariable: 'INVENTED_CLIENT_SECRET',
+  };
+  await fs.writeFile(
+    file,
+    YAML.stringify({
+      sourceRoot: '.',
+      defaultSite: 'invented',
+      sites: {
+        invented: {
+          source: '.',
+          defaultEnv: 'local',
+          environments: { local: 'http://127.0.0.1:8787' },
+          mirage: {
+            port: 0,
+            runtime: { kind: 'power-pages' },
+            simulation: { level: 'dry-run' },
+            dataverse: { enabled: true, port: 0, applications: [application] },
           },
         },
-      }),
-    );
-    const server = await startSetupServer({ directory, processEnv: {} });
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      await server.close();
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(server.url + '#identity');
-    await page.locator('#identity summary').filter({ hasText: 'secure address and tenant' }).click();
-    const identity = page.locator('form[data-form=identity][data-site=invented]');
-    // Users and app registrations are managed in the simulator; the form names how many the settings file declares.
-    assert.match(await identity.innerText(), /declares 0 users and 1 app registration/);
-    await identity.locator('[name=tenantId]').fill('11111111-1111-4111-8111-111111111111');
-    await saved(page, () => identity.getByRole('button', { name: 'Save identity & API' }).click());
-    const dataverse = (await read()).sites.invented.mirage.dataverse;
-    assert.equal(dataverse.tenantId, '11111111-1111-4111-8111-111111111111');
-    assert.deepEqual(
-      dataverse.applications,
-      [application],
-      'declared app registrations are never touched by this form',
-    );
-    assert.match(await page.locator('#identity').innerText(), /Manage Web API users and app registrations/);
+      },
+    }),
+  );
+  const server = await startSetupServer({ directory, processEnv: {} });
+  const { page, errors } = await openSetup(t, directory, server);
+  await page.goto(server.url + '#identity');
+  await page.locator('#identity summary').filter({ hasText: 'secure address and tenant' }).click();
+  const identity = page.locator('form[data-form=identity][data-site=invented]');
+  // Users and app registrations are managed in the simulator; the form names how many the settings file declares.
+  assert.match(await identity.innerText(), /declares 0 users and 1 app registration/);
+  await identity.locator('[name=tenantId]').fill('11111111-1111-4111-8111-111111111111');
+  await saved(page, () => identity.getByRole('button', { name: 'Save identity & API' }).click());
+  const dataverse = (await read()).sites.invented.mirage.dataverse;
+  assert.equal(dataverse.tenantId, '11111111-1111-4111-8111-111111111111');
+  assert.deepEqual(dataverse.applications, [application], 'declared app registrations are never touched by this form');
+  assert.match(await page.locator('#identity').innerText(), /Manage Web API users and app registrations/);
 
-    await page.locator('#personas > summary').click();
-    // One website: its form is open already.
-    {
-      const node = page.locator('#personas details[data-section-key="personas-invented"]');
-      if ((await node.getAttribute('open')) === null) await node.locator('summary').click();
-    }
-    const personas = page.locator('form[data-form=personas][data-site=invented]');
-    await personas.locator('[name=maxInstances]').fill('2');
-    await saved(page, () => personas.getByRole('button', { name: 'Save', exact: true }).click());
-    assert.deepEqual((await read()).sites.invented.mirage.personaContexts, { maxInstances: 2 });
-    assert.equal((await read()).sites.invented.mirage.identityProvider, undefined, 'untouched fields stay absent');
+  await page.locator('#personas > summary').click();
+  // One website: its form is open already.
+  {
+    const node = page.locator('#personas details[data-section-key="personas-invented"]');
+    if ((await node.getAttribute('open')) === null) await node.locator('summary').click();
+  }
+  const personas = page.locator('form[data-form=personas][data-site=invented]');
+  await personas.locator('[name=maxInstances]').fill('2');
+  await saved(page, () => personas.getByRole('button', { name: 'Save', exact: true }).click());
+  assert.deepEqual((await read()).sites.invented.mirage.personaContexts, { maxInstances: 2 });
+  assert.equal((await read()).sites.invented.mirage.identityProvider, undefined, 'untouched fields stay absent');
 
-    // Secret-bearing keys of the setting editor carry the references-only note.
-    await page.locator('#providers > summary').click();
-    await page.locator('#providers summary').filter({ hasText: 'More settings' }).click();
-    const secrets = page.locator('#providers tr').filter({ has: page.locator('form[data-key=secrets]') });
-    assert.match(await secrets.innerText(), /references only/);
-    assert.deepEqual(errors, []);
-  },
-);
+  // Secret-bearing keys of the setting editor carry the references-only note.
+  await page.locator('#providers > summary').click();
+  await page.locator('#providers summary').filter({ hasText: 'More settings' }).click();
+  const secrets = page.locator('#providers tr').filter({ has: page.locator('form[data-key=secrets]') });
+  assert.match(await secrets.innerText(), /references only/);
+  assert.deepEqual(errors, []);
+});
 
-test(
-  'setting rows show current values, references only for secrets, and Settings reflect the file',
-  { timeout: 60000 },
-  async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
-    const file = path.join(directory, 'paqvilo.config.yml'),
-      projectFile = path.join(directory, 'alpha.project.yml');
-    const secrets = { 'invented-vault/api-key': { source: 'environment', variable: 'INVENTED_PRIVATE_VARIABLE' } };
-    await fs.writeFile(projectFile, 'version: 2\nportals: []\n');
-    await fs.writeFile(
-      file,
-      YAML.stringify({
-        sourceRoot: '.',
-        defaultSite: 'invented',
-        includeCaution: true,
-        sourceMaps: true,
-        editor: 'code',
-        defaults: { mirage: { simulation: { level: 'dry-run' } } },
-        sites: {
-          invented: {
-            webFiles: { enabled: true },
-            mirage: {
-              port: 0,
-              runtime: { kind: 'dataverse-api' },
-              dataverse: { enabled: true },
-              secrets,
-              project: './alpha.project.yml',
-            },
+// @test-kind contract+security: setup shows secret references only, never values
+test('setting rows show current values, references only for secrets, and Settings reflect the file', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
+  const file = path.join(directory, 'paqvilo.config.yml'),
+    projectFile = path.join(directory, 'alpha.project.yml');
+  const secrets = { 'invented-vault/api-key': { source: 'environment', variable: 'INVENTED_PRIVATE_VARIABLE' } };
+  await fs.writeFile(projectFile, 'version: 2\nportals: []\n');
+  await fs.writeFile(
+    file,
+    YAML.stringify({
+      sourceRoot: '.',
+      defaultSite: 'invented',
+      includeCaution: true,
+      sourceMaps: true,
+      editor: 'code',
+      defaults: { mirage: { simulation: { level: 'dry-run' } } },
+      sites: {
+        invented: {
+          webFiles: { enabled: true },
+          mirage: {
+            port: 0,
+            runtime: { kind: 'dataverse-api' },
+            dataverse: { enabled: true },
+            secrets,
+            project: './alpha.project.yml',
           },
         },
-      }),
-    );
-    const server = await startSetupServer({ directory, processEnv: {} });
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      await server.close();
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(server.url + '#settings');
-    assert.equal(await page.locator('#settings-include-caution').isChecked(), true, 'includeCaution reflects the file');
-    await page.locator('#settings summary').filter({ hasText: 'Browser profile' }).click();
-    assert.equal(await page.locator('#settings-source-maps').isChecked(), true);
-    assert.equal(await page.locator('#settings-editor').inputValue(), 'code');
-    const before = await fs.readFile(file, 'utf8');
-    await page.locator('form[data-form=settings]').getByRole('button', { name: 'Save', exact: true }).click();
-    await page.locator('#notice').filter({ hasText: 'Nothing to save' }).waitFor();
-    assert.equal(await fs.readFile(file, 'utf8'), before, 'an unchanged Settings form writes nothing');
+      },
+    }),
+  );
+  const server = await startSetupServer({ directory, processEnv: {} });
+  const { page, errors } = await openSetup(t, directory, server);
+  await page.goto(server.url + '#settings');
+  assert.equal(await page.locator('#settings-include-caution').isChecked(), true, 'includeCaution reflects the file');
+  await page.locator('#settings summary').filter({ hasText: 'Browser profile' }).click();
+  assert.equal(await page.locator('#settings-source-maps').isChecked(), true);
+  assert.equal(await page.locator('#settings-editor').inputValue(), 'code');
+  const before = await fs.readFile(file, 'utf8');
+  await page.locator('form[data-form=settings]').getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#notice').filter({ hasText: 'Nothing to save' }).waitFor();
+  assert.equal(await fs.readFile(file, 'utf8'), before, 'an unchanged Settings form writes nothing');
 
-    // A mapping row shows its current value; submitting it unchanged writes nothing.
-    await page.locator('#runtime-configuration > summary').click();
-    await page.locator('#runtime-configuration summary').filter({ hasText: 'More settings · What to run' }).click();
-    const defaults = page.locator('form[data-form=setting][data-key=defaults]');
-    // Shown as the YAML it is typed in.
-    assert.equal(await defaults.locator('[name=value]').inputValue(), 'mirage:\n  simulation:\n    level: dry-run');
-    await defaults.getByRole('button', { name: 'Save setting defaults' }).click();
-    await page.locator('#notice').filter({ hasText: 'Nothing to save: defaults is unchanged' }).waitFor();
-    assert.equal(await fs.readFile(file, 'utf8'), before);
+  // A mapping row shows its current value; submitting it unchanged writes nothing.
+  await page.locator('#runtime-configuration > summary').click();
+  await page.locator('#runtime-configuration summary').filter({ hasText: 'More settings · What to run' }).click();
+  const defaults = page.locator('form[data-form=setting][data-key=defaults]');
+  // Shown as the YAML it is typed in.
+  assert.equal(await defaults.locator('[name=value]').inputValue(), 'mirage:\n  simulation:\n    level: dry-run');
+  await defaults.getByRole('button', { name: 'Save setting defaults' }).click();
+  await page.locator('#notice').filter({ hasText: 'Nothing to save: defaults is unchanged' }).waitFor();
+  assert.equal(await fs.readFile(file, 'utf8'), before);
 
-    // Secret references are names and kinds only; the verbatim YAML editor is the one place showing the document.
-    await page.locator('#providers > summary').click();
-    await page.locator('#providers summary').filter({ hasText: 'More settings' }).click();
-    const row = page.locator('#providers tr').filter({ hasText: 'invented-vault/api-key' });
-    assert.match(await row.innerText(), /invented-vault\/api-key · environment variable[\s\S]*references only/i);
-    assert.equal(
-      await page.locator('form[data-key=secrets][data-site=invented]').count(),
-      0,
-      'no replace or delete control for references',
-    );
-    assert.equal(
-      await page.evaluate(() =>
-        [...document.querySelectorAll('#content *:not(textarea)')].some((node) =>
-          [...node.childNodes].some(
-            (child) => child.nodeType === 3 && child.textContent.includes('INVENTED_PRIVATE_VARIABLE'),
-          ),
+  // Secret references are names and kinds only; the verbatim YAML editor is the one place showing the document.
+  await page.locator('#providers > summary').click();
+  await page.locator('#providers summary').filter({ hasText: 'More settings' }).click();
+  const row = page.locator('#providers tr').filter({ hasText: 'invented-vault/api-key' });
+  assert.match(await row.innerText(), /invented-vault\/api-key · environment variable[\s\S]*references only/i);
+  assert.equal(
+    await page.locator('form[data-key=secrets][data-site=invented]').count(),
+    0,
+    'no replace or delete control for references',
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      [...document.querySelectorAll('#content *:not(textarea)')].some((node) =>
+        [...node.childNodes].some(
+          (child) => child.nodeType === 3 && child.textContent.includes('INVENTED_PRIVATE_VARIABLE'),
         ),
       ),
-      false,
-    );
+    ),
+    false,
+  );
 
-    // A linked-project finding opens that document in the Settings file section.
-    await page
-      .locator('#overview .findings li')
-      .filter({ hasText: 'portal source is required' })
-      .getByRole('link', { name: 'Review' })
-      .click();
-    assert.equal(await page.locator('#advanced').evaluate((node) => node.open), true);
-    assert.equal(await page.locator('#yaml-layer').inputValue(), 'project:invented');
-    assert.match(await page.locator('#advanced textarea.yaml').inputValue(), /portals: \[\]/);
-    assert.deepEqual(errors, []);
-  },
-);
+  // A linked-project finding opens that document in the Settings file section.
+  await page
+    .locator('#overview .findings li')
+    .filter({ hasText: 'portal source is required' })
+    .getByRole('link', { name: 'Review' })
+    .click();
+  assert.equal(await page.locator('#advanced').evaluate((node) => node.open), true);
+  assert.equal(await page.locator('#yaml-layer').inputValue(), 'project:invented');
+  assert.match(await page.locator('#advanced textarea.yaml').inputValue(), /portals: \[\]/);
+  assert.deepEqual(errors, []);
+});

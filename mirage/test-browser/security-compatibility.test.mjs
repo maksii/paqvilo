@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,13 +32,13 @@ test('step announcers and postback success messages preserve text without interp
     );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
   const page = await browser.newPage(),
     errors = [];
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   page.on('pageerror', (error) => errors.push(error.message));
   const hostile = 'Step <img src=x onerror="window.injected=true"> & details';
   await page.addInitScript((message) => {
@@ -94,14 +95,14 @@ test('readonly links and grid frames reject executable URLs; the published sampl
     );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
   const page = await browser.newPage(),
     errors = [],
     external = [];
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   page.on('pageerror', (error) => errors.push(error.message));
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route('**/*', (route) => {

@@ -1,0 +1,11 @@
+{
+  "appId": "44444444-4444-4444-8444-444444444444",
+  "environmentId": "invented-local",
+  "connectionReferences": {
+    "sample-connector": {
+      "id": "/providers/Microsoft.PowerApps/apis/shared_invented",
+      "displayName": "Invented connector",
+      "dataSources": ["Sample"]
+    }
+  }
+}

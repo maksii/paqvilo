@@ -1,13 +1,18 @@
+// @test-kind contract: the staff context a model-driven browser receives and the staff session route that selects it
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { staffContext } from '../lib/staff-session.mjs';
+import { createStaffSessions, staffContext } from '../lib/staff-session.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { pcfUserSettings, staffFormatting, ANONYMOUS_STAFF_CONTEXT } from '../lib/model-driven/pcf-runtime.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
+import { dataverseSettings } from '../lib/dataverse-settings.mjs';
+import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
+import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const USER = '77777777-7777-4777-8777-777777777777',
   ROLE = '77777777-7777-4777-8777-777777777778',
@@ -137,7 +142,7 @@ test('an unknown session answers the documented anonymous context', () => {
 });
 
 test('the staff session payload carries the server-built context and record capabilities flag secured columns', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'staff-context-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'staff-context-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const entity =
     '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes>' +
@@ -192,4 +197,39 @@ test('the staff session payload carries the server-built context and record capa
   ).json();
   assert.equal(read.capabilities.fields.x_secret.secured, true);
   assert.equal(read.capabilities.fields.x_name.secured, false);
+});
+
+// @test-kind contract: the staff session route lets a browser recover from a selection it cannot use
+test('describe lists the staff users and names an unverifiable selection instead of refusing', async (t) => {
+  const ids = ['77777777-7777-4777-8777-777777777781', '77777777-7777-4777-8777-777777777782'];
+  const store = await new DataStore({ state: emptyState() }).init();
+  const settings = dataverseSettings({
+    enabled: false,
+    users: [
+      { objectId: ids[0], domainname: 'one@example.test', fullname: 'One', roles: ['Basic User'] },
+      { objectId: ids[1], domainname: 'two@example.test', fullname: 'Two', roles: ['Basic User'] },
+    ],
+  });
+  const core = await createOrganizationRuntime({ store, settings, extensions: await sourceOrganizationExtensions() });
+  ownedFixture(t).add(() => core.close());
+  const users = ids.map((id) => core.principals.byObjectId(id));
+  const sessions = createStaffSessions({ organization: core, port: () => 4001 });
+  const one = sessions.select({}, users[0].systemuserid).split(';')[0];
+  const restarted = createStaffSessions({ organization: core, port: () => 4001 });
+  const described = restarted.describe({ headers: { cookie: one } });
+  assert.equal(described.current.kind, 'unavailable');
+  assert.equal(described.current.code, 'StaffPrincipalUnavailable');
+  assert.match(described.current.message, /earlier runtime/);
+  assert.ok(described.users.length > 0);
+  assert.throws(
+    () => restarted.resolve({ headers: { cookie: one } }),
+    (error) => error.status === 401,
+  );
+  await core.store.transact(() => {
+    core.principals.byId(users[0].systemuserid).isdisabled = true;
+  });
+  const disabled = sessions.describe({ headers: { cookie: one } });
+  assert.equal(disabled.current.kind, 'unavailable');
+  assert.match(disabled.current.message, /unavailable or disabled/);
+  assert.ok(disabled.users.length > 0);
 });

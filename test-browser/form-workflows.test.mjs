@@ -1,4 +1,6 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: edited form sources reach the overlay through the real watcher and recover after a failed edit.
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,8 +17,11 @@ import { watchSources } from '../lense/commands/dev.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { componentContent } from '../lense/portal-model.mjs';
 import { createFixture, SITE } from '../test/fixture.mjs';
+import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
 
-const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
+// Round evidence the CI collector publishes; each run writes its own files.
+const evidence = (name) =>
+  syntheticEvidencePath(fileURLToPath(new URL('../.paqvilo/', import.meta.url)), 'extended-round', name);
 const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
 const xmlEscape = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const component = (id, type, content) =>
@@ -56,69 +61,63 @@ async function localBrowser(t, handler) {
     ],
   });
   const context = await browser.newContext({ serviceWorkers: 'block' });
-  context.setDefaultTimeout(15_000);
   const page = await context.newPage();
   return { context, page, origin };
 }
 
-test(
-  'interception preserves multipart file uploads, empty files and Unicode form values exactly once',
-  { timeout: 45_000 },
-  async (t) => {
-    const received = [];
-    const { context, page, origin } = await localBrowser(t, async (request, response) => {
-      if (request.method === 'POST') {
-        const chunks = [];
-        for await (const chunk of request) chunks.push(chunk);
-        received.push({ headers: request.headers, bytes: Buffer.concat(chunks) });
-      }
-      response
-        .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        .end(
-          '<form action="/upload" method="post" enctype="multipart/form-data"><input type="file" name="uploads" multiple><textarea name="notes"></textarea><button>Upload fixture</button></form>',
-        );
-    });
-    const detach = await interceptOrigin(context, origin, async (route) => {
-      if (route.request().method() === 'POST') return route.fulfill({ response: await route.fetch() });
-      return route.fallback();
-    });
-    t.after(detach);
-    await page.goto(origin, { waitUntil: 'load' });
-    const binary = Buffer.from(Array.from({ length: 24_000 }, (_, index) => index % 256));
-    await page.locator('input[type=file]').setInputFiles([
-      { name: 'fixture.bin', mimeType: 'application/octet-stream', buffer: binary },
-      { name: 'empty.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0) },
-    ]);
-    const notes = 'Synthetic résumé: λ & + = 🌍';
-    await page.locator('textarea').fill(notes);
-    await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), page.locator('button').click()]);
-    assert.equal(received.length, 1, 'a file submission is never replayed');
-    assert.match(received[0].headers['content-type'], /^multipart\/form-data; boundary=/);
-    assert.ok(received[0].bytes.includes(binary), 'all file bytes, including NUL and non-UTF8 data, arrive intact');
-    assert.ok(received[0].bytes.includes(Buffer.from('filename="empty.txt"')));
-    assert.ok(received[0].bytes.includes(Buffer.from(notes)));
-    fs.mkdirSync(evidenceDir, { recursive: true });
-    fs.writeFileSync(
-      new URL('multipart.json', evidenceDir),
-      JSON.stringify(
-        {
-          submissions: received.length,
-          binaryBytes: binary.length,
-          bodyBytes: received[0].bytes.length,
-          emptyFile: true,
-          unicodeText: true,
-        },
-        null,
-        2,
-      ),
-    );
-  },
-);
+test('interception preserves multipart file uploads, empty files and Unicode form values exactly once', async (t) => {
+  const received = [];
+  const { context, page, origin } = await localBrowser(t, async (request, response) => {
+    if (request.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      received.push({ headers: request.headers, bytes: Buffer.concat(chunks) });
+    }
+    response
+      .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      .end(
+        '<form action="/upload" method="post" enctype="multipart/form-data"><input type="file" name="uploads" multiple><textarea name="notes"></textarea><button>Upload fixture</button></form>',
+      );
+  });
+  const detach = await interceptOrigin(context, origin, async (route) => {
+    if (route.request().method() === 'POST') return route.fulfill({ response: await route.fetch() });
+    return route.fallback();
+  });
+  t.after(detach);
+  await page.goto(origin, { waitUntil: 'load' });
+  const binary = Buffer.from(Array.from({ length: 24_000 }, (_, index) => index % 256));
+  await page.locator('input[type=file]').setInputFiles([
+    { name: 'fixture.bin', mimeType: 'application/octet-stream', buffer: binary },
+    { name: 'empty.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0) },
+  ]);
+  const notes = 'Synthetic résumé: λ & + = 🌍';
+  await page.locator('textarea').fill(notes);
+  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), page.locator('button').click()]);
+  assert.equal(received.length, 1, 'a file submission is never replayed');
+  assert.match(received[0].headers['content-type'], /^multipart\/form-data; boundary=/);
+  assert.ok(received[0].bytes.includes(binary), 'all file bytes, including NUL and non-UTF8 data, arrive intact');
+  assert.ok(received[0].bytes.includes(Buffer.from('filename="empty.txt"')));
+  assert.ok(received[0].bytes.includes(Buffer.from(notes)));
+  fs.writeFileSync(
+    evidence('multipart.json'),
+    JSON.stringify(
+      {
+        submissions: received.length,
+        binaryBytes: binary.length,
+        bodyBytes: received[0].bytes.length,
+        emptyFile: true,
+        unicodeText: true,
+      },
+      null,
+      2,
+    ),
+  );
+});
 
 for (const layout of ['classic', 'enhanced'])
-  test(`${layout} form sources edit and recover through the real watcher`, { timeout: 90_000 }, async (t) => {
+  test(`${layout} form sources edit and recover through the real watcher`, async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-form-workflows-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-form-workflows-'));
     const sourceDir = layout === 'enhanced' ? fx.file('enhanced-source') : fx.dir;
     let watcher;
     let detach;
@@ -207,7 +206,7 @@ for (const layout of ['classic', 'enhanced'])
     await once(watcher, 'ready');
     const observations = [];
     const save = async (file, change) => {
-      const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(25_000) });
+      const refreshed = once(session, 'refreshed');
       change();
       const [event] = await refreshed;
       assert.ok(event.files.includes(path.resolve(file)), 'the watcher observed the edited physical source');
@@ -278,10 +277,9 @@ for (const layout of ['classic', 'enhanced'])
       methods.every((method) => method === 'GET'),
       'watcher scenarios send only GET to the synthetic fixture',
     );
-    fs.mkdirSync(evidenceDir, { recursive: true });
     fs.writeFileSync(
-      new URL(`${layout}-workflows.json`, evidenceDir),
+      evidence(`${layout}-workflows.json`),
       JSON.stringify({ layout, observations, faults, pageErrors, documentReads: methods.length }, null, 2),
     );
-    await page.screenshot({ path: fileURLToPath(new URL(`${layout}-workflows.png`, evidenceDir)) });
+    await page.screenshot({ path: evidence(`${layout}-workflows.png`) });
   });

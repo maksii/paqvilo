@@ -5,7 +5,7 @@ import { parse } from 'yaml';
 import { branchToken, previewRelease } from './release-version.mjs';
 
 const gh = (args) =>
-  execFileSync('gh', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('gh', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
 
 export function requestPreview({ repo, branch, publish = false, timestamp, runGh = gh }) {
   if (typeof repo !== 'string' || repo.trim() !== repo || !/^[\w.-]+\/[\w.-]+$/.test(repo))

@@ -1,5 +1,7 @@
+// @test-kind unproven: local Web API record handler models; a test with native evidence carries its own tag
 // Simulated Dataverse record handlers: collections, single rows, properties,
 // navigation, $ref, paging, writes and bound actions.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +19,7 @@ import { fieldSecurity } from '../lib/dataverse-fls.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { stringifyExactJson } from '../lib/exact-numeric.mjs';
+import { readFile } from 'node:fs/promises';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -165,6 +168,108 @@ async function failure(promise) {
 
 const lowerId = (value) => String(value?.id ?? value).toLowerCase();
 
+test('wide single-record reads reuse metadata during projection and observe later changes', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  ownedFixture(t).add(() => runtime.handlers.close());
+  const id = randomUUID();
+  runtime.store.state.tables.widget.push({
+    widgetid: id,
+    name: 'Wide',
+    statuscode: 1,
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, 'Value ' + i])),
+  });
+  const url = `/api/data/${VERSION}/widgets(${id})`;
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.body.extra199, 'Value 199');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one record`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
+test('a single-record read checks only its own row for a stored currency, not every row of the table', async (t) => {
+  const runtime = await setup();
+  ownedFixture(t).add(() => runtime.handlers.close());
+  let currencyReads = 0;
+  const counted = (row) =>
+    Object.defineProperty(row, 'transactioncurrencyid', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        currencyReads++;
+        return null;
+      },
+    });
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids) runtime.store.state.tables.widget.push(counted({ widgetid: id, name: 'Invented' }));
+  const url = `/api/data/${VERSION}/widgets(${ids[1500]})`;
+  assert.equal((await runtime.send('GET', url)).status, 200);
+  currencyReads = 0;
+  const response = await runtime.send('GET', url);
+  assert.equal(response.status, 200);
+  assert.ok(currencyReads <= 4, `One record read the currency of ${currencyReads} rows`);
+});
+
+test('wide FetchXML pages derive record metadata per table and refresh it on the next request', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 80 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  ownedFixture(t).add(() => runtime.handlers.close());
+  runtime.store.state.tables.widget.push(
+    ...Array.from({ length: 25 }, (_, i) => ({
+      widgetid: randomUUID(),
+      name: 'Wide ' + i,
+      statuscode: 1,
+      ...Object.fromEntries(Array.from({ length: 80 }, (_, j) => ['extra' + j, 'Value ' + j])),
+    })),
+  );
+  const url =
+    `/api/data/${VERSION}/widgets?fetchXml=` +
+    encodeURIComponent('<fetch count="25"><entity name="widget"><all-attributes/></entity></fetch>');
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.value.length, 25);
+  assert.equal(first.body.value[0].extra79, 'Value 79');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one table's page`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body.value[0]['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
 test('wide read definitions resolve original metadata once per list and retain observed option labels', async (t) => {
   const fields = {
     widgetid: { dataverseType: 'uniqueidentifier' },
@@ -186,7 +291,7 @@ test('wide read definitions resolve original metadata once per list and retain o
       return fields;
     },
   });
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   const id = randomUUID();
   runtime.store.state.tables.widget.push({
     widgetid: id,
@@ -202,8 +307,9 @@ test('wide read definitions resolve original metadata once per list and retain o
   assert.equal(result.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Observed active');
   assert.equal(result.body.extra79, 'Value 79');
   assert.ok(definitionsRead > 0);
+  // One source resolution per definition list; resolving per field would read it once for each of the 80+ columns.
   assert.ok(
-    originalRead <= definitionsRead + 10,
+    originalRead <= definitionsRead,
     `${originalRead} source resolutions for ${definitionsRead} definition lists`,
   );
 });
@@ -357,6 +463,42 @@ test('entity GET by GUID and by alternate key, with 404 for a missing row', asyn
   const missing = await failure(t.send('GET', `/api/data/${VERSION}/widgets(${MISSING})`));
   assert.equal(missing.status, 404);
   assert.equal(missing.message, `widget With Id = ${MISSING} Does Not Exist`);
+});
+
+test('an organization-service lookup finds its target row through the primary key instead of scanning the target table', async () => {
+  const t = await setup();
+  let idReads = 0;
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids)
+    t.store.state.tables.widget.push(
+      Object.defineProperty({ name: 'Invented' }, 'widgetid', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          idReads++;
+          return id;
+        },
+      }),
+    );
+  // An organization-service create names its lookup as { id, logical_name } and checks appendTo on that row.
+  const context = {
+    user: t.admin,
+    caller: t.admin,
+    url: new URL(ORIGIN),
+    origin: ORIGIN,
+    version: VERSION,
+    identity: { admin: true, id: t.admin.systemuserid, systemUserId: t.admin.systemuserid },
+  };
+  const bind = (name) =>
+    t.handlers.createInternal(context, 'gadget', {
+      name,
+      widgetid: { id: ids.at(-1), logical_name: 'widget' },
+    });
+  await bind('First');
+  idReads = 0;
+  await bind('Second');
+  assert.equal(t.store.state.tables.gadget.at(-1).widgetid.id, ids.at(-1));
+  assert.ok(idReads < 200, `One lookup bind read the id of ${idReads} target rows`);
 });
 
 test('POST creates with OData-EntityId, honours return=representation and binds absolute references', async () => {
@@ -518,6 +660,8 @@ test('DELETE removes the row, then GET answers 404', async () => {
   assert.equal(after.status, 404);
 });
 
+// @test-kind parity: native recorder corpus 2026-10-30, bulk scenario captured twice: Web API DeleteMultiple on a non-elastic table answers 405 0x8004023b "DeleteMultiple has not yet been implemented"
+// @parity-evidence: native recorder corpus 2026-10-30 bulk and native-r2/bulk: DeleteMultiple 405 0x8004023b in both captures; the captured table is a custom non-elastic table
 test('CreateMultiple returns Ids; DeleteMultiple is not implemented', async () => {
   const t = await setup();
   const res = await t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.CreateMultiple`, {
@@ -529,10 +673,15 @@ test('CreateMultiple returns Ids; DeleteMultiple is not implemented', async () =
     `${ORIGIN}/api/data/${VERSION}/$metadata#Microsoft.Dynamics.CRM.CreateMultipleResponse`,
   );
   assert.equal(res.body.Ids.length, 2);
+  const id = await create(t, 'widgets', { name: 'kept' });
   const deleted = await failure(
-    t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.DeleteMultiple`, { body: { Targets: [] } }),
+    t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.DeleteMultiple`, {
+      body: { Targets: [{ '@odata.type': 'Microsoft.Dynamics.CRM.widget', widgetid: id }] },
+    }),
   );
-  assert.equal(deleted.status, 501);
+  assert.equal(deleted.status, 405);
+  assert.equal(deleted.details.innerCode, '0x8004023b');
+  assert.equal((await t.send('GET', `/api/data/${VERSION}/widgets(${id})`)).status, 200);
 });
 
 test('FetchXML collection omits null columns and reports more records only when requested', async () => {
@@ -1183,6 +1332,64 @@ test('deep insert authorizes each nested child as a create, append and appendto,
   assert.equal(t.store.state.tables.gadget.length, 1);
 });
 
+// A gadget child that can bind to a vault through its own navigation. The widget relationship is the parent link of a deep insert,
+// so a bind on it would be refused as a second supply of the same lookup; the vault link is independent of that parent link.
+async function deepBindSetup() {
+  const t = await setup();
+  const { mappings, tables } = t.store.state;
+  mappings.vault = {
+    logicalName: 'vault',
+    entitySet: 'vaults',
+    idColumn: 'vaultid',
+    nameColumn: 'name',
+    ownership: 'UserOwned',
+    fields: { name: text },
+  };
+  tables.vault = [];
+  mappings.gadget.fields.vaultref = lookup;
+  mappings.gadget.relationships.vaultref = { entity: 'vault', from: 'vaultref', to: 'vaultid', many: false };
+  await ensureSecurityModel(t.store, SETTINGS);
+  return t;
+}
+
+// @test-kind security: A bind nested in a deep insert is authorized as the same bind on its own request is, so a caller cannot attach a child to a row it may not append to.
+test('a bind nested in a deep insert is authorized like a direct bind, and a refused insert stores no parent', async () => {
+  const t = await deepBindSetup();
+  const adminVault = await create(t, 'vaults', { name: "Admin's" });
+  const direct = await failure(
+    t.send('POST', `/api/data/${VERSION}/gadgets`, {
+      body: { name: 'direct', 'vaultref@odata.bind': `/vaults(${adminVault})` },
+      user: t.basic,
+    }),
+  );
+  assert.equal(direct.details.innerCode, '0x80048306');
+  const refused = await failure(
+    t.send('POST', `/api/data/${VERSION}/widgets`, {
+      body: { name: 'Parent', widget_gadgets: [{ name: 'deep', 'vaultref@odata.bind': `/vaults(${adminVault})` }] },
+      user: t.basic,
+    }),
+  );
+  assert.equal(refused.status, 403);
+  assert.equal(refused.details.innerCode, '0x80048306');
+  assert.equal(t.store.state.tables.widget.length, 0, 'a refused deep insert stores no parent');
+  assert.equal(t.store.state.tables.gadget.length, 0);
+  const missing = await failure(
+    t.send('POST', `/api/data/${VERSION}/widgets`, {
+      body: { name: 'Parent', widget_gadgets: [{ name: 'lost', 'vaultref@odata.bind': `/vaults(${MISSING})` }] },
+      user: t.basic,
+    }),
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(missing.details.innerCode, '0x80040217');
+  assert.equal(t.store.state.tables.widget.length, 0, 'a missing bound row stores no parent');
+  const allowed = await t.send('POST', `/api/data/${VERSION}/widgets`, {
+    body: { name: 'Parent', widget_gadgets: [{ name: 'kid', 'vaultref@odata.bind': `/vaults(${adminVault})` }] },
+  });
+  assert.equal(allowed.status, 204);
+  assert.equal(t.store.state.tables.gadget.length, 1);
+  assert.equal(lowerId(t.store.state.tables.gadget[0].vaultref), adminVault.toLowerCase());
+});
+
 test("deep-inserted children carry their own table's audit and owner columns, with the caller on behalf", async () => {
   const t = await setup();
   await t.send('POST', `/api/data/${VERSION}/widgets`, {
@@ -1800,6 +2007,48 @@ test('a row with a money value answers its base amount, the base currency and ex
   assert.equal(row[CURRENCY], baseCurrencyId(ORG));
 });
 
+// @test-kind contract: The count is of reads of stored id values, not of elapsed time; a scan of the table reads every row's id, so each returned row that scans the table adds a pass.
+test('a collection read with $select of exchangerate reads stored ids per row without growing with the page size', async () => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    price: { dataverseType: 'money' },
+    transactioncurrencyid: lookup,
+    exchangerate: { dataverseType: 'decimal' },
+  };
+  const base = baseCurrencyId(ORG);
+  const readPage = async (rowCount) => {
+    const runtime = await setup({ metadata: { recordFields: () => fields }, metadataFields: () => fields });
+    const ids = Array.from({ length: rowCount }, () => randomUUID());
+    let idReads = 0;
+    runtime.store.state.tables.widget = ids.map((id) =>
+      Object.defineProperty({ name: 'Invented', price: 12.5, transactioncurrencyid: base }, 'widgetid', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          idReads++;
+          return id;
+        },
+      }),
+    );
+    idReads = 0;
+    const response = await runtime.send('GET', `/api/data/${VERSION}/widgets?$select=name,exchangerate`);
+    assert.equal(response.status, 200);
+    return { response, ids, passes: idReads / rowCount };
+  };
+  const small = await readPage(10);
+  const large = await readPage(50);
+  const row = { ...large.response.body.value[0] };
+  delete row['@odata.etag'];
+  assert.deepEqual(row, { widgetid: row.widgetid, name: 'Invented', exchangerate: 1 });
+  assert.ok(large.ids.includes(row.widgetid));
+  assert.equal(small.response.body.value[0].exchangerate, 1);
+  assert.ok(
+    large.passes <= small.passes + 1,
+    `stored id reads per row grew from ${small.passes} at 10 rows to ${large.passes} at 50 rows`,
+  );
+});
+
 test('a full-row read formats the base companion like its money column and the rate at 12 places', async () => {
   const t = await setup();
   await create(t, 'widgets', { name: 'Priced', price: 12.5 });
@@ -1826,6 +2075,81 @@ test('the @odata.context lists a repeated $select column once, then each expansi
   assert.equal(filtered.body['@odata.context'], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(widget_gadgets())`);
 });
 
+// @test-kind observation: two native captures in fixtures/dataverse-native-record-shapes.json record this back-reference as derived facts and hashes; the inputs are typed in this test, so it is not a replay case.
+test('a selected expanded child retains its relationship back-reference', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+  const proof = JSON.parse(bytes);
+  assert.equal(proof.captures.length, 2);
+  assert.equal(proof.expected.expandedChild.unselectedBackReferenceEqualsParentPrimaryId, true);
+  const t = await setup();
+  const parent = await create(t, 'widgets', { name: 'Parent' });
+  const child = await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${parent})` });
+  const result = await t.send('GET', `/api/data/${VERSION}/widgets?$select=name&$expand=widget_gadgets($select=name)`);
+  const selected = result.body.value.find((row) => row.widgetid === parent).widget_gadgets;
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].gadgetid, child);
+  assert.equal(selected[0]._widgetid_value, parent);
+});
+
+// @test-kind security: Synthesized relationship keys remain subject to the child projection hooks and are never invented for an intersect relationship.
+test('expanded back-references preserve child masking and intersect semantics', async () => {
+  const hooks = createRecordHooks();
+  hooks.add('project', (_context, mapping, formatted) => {
+    if (mapping.logicalName === 'gadget') formatted._widgetid_value = null;
+  });
+  const t = await setup({ hooks });
+  const parent = await create(t, 'widgets', { name: 'Parent' });
+  await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${parent})` });
+  const expanded = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`);
+  assert.equal(expanded.body.value[0].widget_gadgets[0]._widgetid_value, null);
+  const tag = await create(t, 'tags', { name: 'Related' });
+  await t.send('POST', `/api/data/${VERSION}/widgets(${parent})/widget_tags/$ref`, {
+    body: { '@odata.id': `${ORIGIN}/api/data/${VERSION}/tags(${tag})` },
+  });
+  const intersect = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_tags($select=name)`);
+  assert.equal(Object.hasOwn(intersect.body.value[0].widget_tags[0], '_tagid_value'), false);
+});
+
+// @test-kind security: An implicit expanded back-reference cannot reveal a secured child lookup that ordinary row projection denied.
+test('expanded parent back-references still pass through actual field-security projection', async () => {
+  const runtime = await securedSetup();
+  const parent = await securedRow(runtime, 'widgets', { name: 'Parent' });
+  await securedRow(runtime, 'gadgets', { name: 'Child', bind: `/widgets(${parent})` });
+  runtime.store.state.mappings.gadget.fields.widgetid = {
+    dataverseType: 'lookup',
+    columnMetadata: { isSecured: true },
+  };
+  const response = await runtime.send(
+    'GET',
+    `/api/data/${VERSION}/widgets?$select=name&$expand=widget_gadgets($select=name)`,
+    { user: runtime.basic },
+  );
+  assert.equal(response.body.value.length, 1);
+  assert.equal(response.body.value[0].widget_gadgets.length, 1);
+  assert.equal(response.body.value[0].widget_gadgets[0]._widgetid_value, null);
+});
+
+// @test-kind observation: two native captures in fixtures/dataverse-native-record-shapes.json record the context column orders as derived facts and hashes; the FetchXML input is typed in this test, so it is not a replay case.
+test('a FetchXML context retains its complete projection when native column order varies', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+  const proof = JSON.parse(bytes);
+  assert.deepEqual(proof.contextOrders, [
+    [0, 1, 2],
+    [0, 2, 1],
+  ]);
+  assert.equal(proof.expected.fetchContext.explicitColumnsAndImplicitPrimaryId, true);
+  const t = await setup();
+  const xml = '<fetch><entity name="widget"><attribute name="name"/><attribute name="code"/></entity></fetch>';
+  const result = await t.send('GET', `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent(xml)}`);
+  const context = new URL(result.body['@odata.context']);
+  assert.equal(context.origin, ORIGIN);
+  assert.equal(context.pathname, `/api/data/${VERSION}/$metadata`);
+  assert.equal(context.search, '');
+  const columns = /^#widgets\(([^)]+)\)$/.exec(context.hash)[1].split(',');
+  assert.equal(columns.length, 3);
+  assert.deepEqual([...columns].sort(), ['code', 'name', 'widgetid']);
+});
+
 test('a FetchXML context lists the columns alphabetically with the id, and an aggregate has no column list', async () => {
   const t = await setup();
   await create(t, 'widgets', { name: 'Listed', price: 2 });
@@ -1850,11 +2174,11 @@ test('a single-valued $ref answers the $ref context', async () => {
   assert.equal(ref.body['@odata.id'], `${ORIGIN}/api/data/${VERSION}/widgets(${widget})`);
 });
 
-test('an expanded collection links its children, each child carries its parent lookup, and an unselected expansion answers every column', async () => {
-  const t = await setup();
-  const id = await create(t, 'widgets', { name: 'Parent' });
-  await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${id})` });
-  const selected = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`, {
+test('an expanded collection links its children and an unselected expansion answers every column', async (t) => {
+  const runtime = await setup();
+  const id = await create(runtime, 'widgets', { name: 'Parent' });
+  await create(runtime, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${id})` });
+  const selected = await runtime.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`, {
     headers: annotate('*'),
   });
   const row = selected.body.value[0];
@@ -1862,15 +2186,24 @@ test('an expanded collection links its children, each child carries its parent l
     row['widget_gadgets@odata.nextLink'],
     `${ORIGIN}/api/data/${VERSION}/widgets(${id})/widget_gadgets?$select=name`,
   );
-  assert.equal(row.widget_gadgets[0]._widgetid_value, id);
+  await t.test('selected children retain the parent lookup', async () => {
+    const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+    assert.equal(JSON.parse(bytes).captures.length, 2);
+    assert.equal(row.widget_gadgets[0]._widgetid_value, id);
+  });
   assert.ok(
     !('OData.Community.Display.V1.FormattedValue' in row.widget_gadgets[0]) &&
       !Object.keys(row.widget_gadgets[0]).some((key) => key.includes('@OData')),
     'no formatted annotation leaks into an expanded row without a Prefer',
   );
-  const all = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
+  const all = await runtime.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
   assert.ok('createdon' in all.body.value[0].widget_gadgets[0], 'a child with no $select answers every column');
-  const single = await t.send('GET', `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
+  assert.equal(
+    all.body.value[0].widget_gadgets[0]._widgetid_value,
+    id,
+    'a child with no $select carries its parent lookup',
+  );
+  const single = await runtime.send('GET', `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
   assert.match(single.body.value[0].widgetid['@odata.etag'], /^W\/"\d+"$/);
 });
 
@@ -2036,13 +2369,34 @@ test('owner lookups carry the annotations native gives each owner column', async
   assert.equal(res.body[`_ownerid_value${nav}`], 'ownerid');
 });
 
-test('an organization-owned row always answers the organization lookup, selected or not', async () => {
-  const t = await setup();
-  const id = await create(t, 'tags', { name: 'Shared' });
-  const single = await t.send('GET', `/api/data/${VERSION}/tags(${id})?$select=name`);
-  assert.equal(single.body._organizationid_value, ORG);
-  const list = await t.send('GET', `/api/data/${VERSION}/tags?$select=name`);
-  assert.equal(list.body.value[0]._organizationid_value, ORG);
+test('organization-owned key reads retain the organization lookup while a selected collection omits it', async (t) => {
+  const runtime = await setup();
+  runtime.store.state.mappings.tag.relationships = {
+    widget: { entity: 'widget', from: 'widgetid', to: 'widgetid', many: false },
+  };
+  runtime.store.state.mappings.tag.fields.widgetid = lookup;
+  const parent = await create(runtime, 'widgets', { name: 'Parent' });
+  const id = await create(runtime, 'tags', { name: 'Shared', 'widget@odata.bind': `/widgets(${parent})` });
+  await t.test('native keyed and collection organization projections', async () => {
+    const bytes = await readFile(new URL('./fixtures/dataverse-native-deep-facts.json', import.meta.url));
+    const proof = JSON.parse(bytes);
+    assert.equal(proof.captures.length, 2);
+    assert.deepEqual(proof.expected.organizationLookup, {
+      selectedSingle: true,
+      selectedSingleExpanded: true,
+      selectedCollection: false,
+    });
+    for (const expand of ['', '&$expand=widget($select=name)']) {
+      const single = await runtime.send('GET', `/api/data/${VERSION}/tags(${id})?$select=name` + expand);
+      assert.equal(single.body._organizationid_value, ORG);
+    }
+    const list = await runtime.send('GET', `/api/data/${VERSION}/tags?$select=name`);
+    assert.equal(Object.hasOwn(list.body.value[0], '_organizationid_value'), false);
+  });
+  const list = await runtime.send('GET', `/api/data/${VERSION}/tags?$select=name`);
+  assert.equal(Object.hasOwn(list.body.value[0], '_organizationid_value'), false);
+  const unselected = await runtime.send('GET', `/api/data/${VERSION}/tags`);
+  assert.equal(unselected.body.value[0]._organizationid_value, ORG);
 });
 
 test('an explicit navigation collection projection omits the unselected organization lookup', async () => {
@@ -2097,7 +2451,7 @@ test('DateOnly values imply the time-zone rule stamp without a UserLocal value',
 
 test('organization date writes persist their rule version across clearing every date and later unrelated patches', async (t) => {
   const runtime = await setup();
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   Object.assign(runtime.store.state.mappings.widget.fields, {
     timezoneruleversionnumber: { dataverseType: 'int' },
     independenton: { dataverseType: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' },
@@ -2144,7 +2498,7 @@ test('organization date writes persist their rule version across clearing every 
 
 test('legacy date rows acquire history only on organization writes and portal storage does not stamp it', async (t) => {
   const runtime = await setup();
-  t.after(() => runtime.handlers.close());
+  ownedFixture(t).add(() => runtime.handlers.close());
   runtime.store.state.mappings.widget.fields.localon = { dataverseType: 'datetime', dateTimeBehavior: 'UserLocal' };
   const legacyId = randomUUID(),
     unknownId = randomUUID();

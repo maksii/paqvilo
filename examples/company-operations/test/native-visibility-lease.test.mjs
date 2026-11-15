@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -8,6 +8,7 @@ import {
   activateNativeVisibilityLease,
   restoreNativeVisibilityLease,
 } from '../portal-harness/native-visibility-lease.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const id = '10000000-0000-4000-8000-000000000001',
   record = '20000000-0000-4000-8000-000000000001',
   target = {
@@ -17,7 +18,7 @@ const id = '10000000-0000-4000-8000-000000000001',
     websiteUrl: 'https://demo.example.invalid/',
   };
 test('visibility lease journals uncertain writes, restores exact private demo and refuses another target', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'paqvilo-visibility-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-visibility-'));
   try {
     const current = {
       id,

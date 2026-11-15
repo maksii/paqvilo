@@ -7,6 +7,10 @@ const invalid = (message) => new DataError(message, 400, 'InvalidRequest', { inn
 const unsupported = () =>
   new DataError('This Cosmos SQL expression is not simulated.', 501, 'NotImplemented', { innerCode: '0x80040216' });
 const own = (object, key) => (object != null && Object.hasOwn(Object(object), key) ? object[key] : undefined);
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const PRECEDENCE = {
   OR: 1,
   AND: 2,
@@ -49,6 +53,19 @@ const FUNCTIONS = {
   FLOOR: (value) => (typeof value === 'number' ? Math.floor(value) : undefined),
 };
 
+function appendToken(match, tokens) {
+  if (match[1] !== undefined) tokens.push({ type: 'literal', value: match[1].replaceAll("''", "'") });
+  else if (match[2] !== undefined) {
+    try {
+      tokens.push({ type: 'literal', value: JSON.parse(`"${match[2]}"`) });
+    } catch {
+      throw invalid('Invalid Cosmos SQL string.');
+    }
+  } else if (match[3]) tokens.push({ type: 'parameter', value: match[3] });
+  else if (match[4]) tokens.push({ type: 'literal', value: Number(match[4]) });
+  else tokens.push({ type: match[5] ? 'word' : 'symbol', value: match[5] ?? match[6] });
+}
+
 function tokensOf(text) {
   const tokens = [];
   let at = 0;
@@ -60,21 +77,12 @@ function tokensOf(text) {
       continue;
     }
     const match =
-      /^(?:'((?:''|[^'])*)'|"((?:\\.|[^"\\])*)"|(@[a-zA-Z_][\w]*)|(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([a-zA-Z_][\w]*)|(!=|<>|<=|>=|[=<>+*/%(),.[\]-]))/.exec(
+      /* NOSONAR */ /^(?:'((?:''|[^'])*)'|"((?:\\.|[^"\\])*)"|(@[a-zA-Z_]\w*)|(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([a-zA-Z_]\w*)|(!=|<>|<=|>=|[=<>+*/%(),.[\]-]))/.exec(
         rest,
       );
     if (!match) throw invalid('Invalid Cosmos SQL syntax.');
     at += match[0].length;
-    if (match[1] !== undefined) tokens.push({ type: 'literal', value: match[1].replaceAll("''", "'") });
-    else if (match[2] !== undefined) {
-      try {
-        tokens.push({ type: 'literal', value: JSON.parse(`"${match[2]}"`) });
-      } catch {
-        throw invalid('Invalid Cosmos SQL string.');
-      }
-    } else if (match[3]) tokens.push({ type: 'parameter', value: match[3] });
-    else if (match[4]) tokens.push({ type: 'literal', value: Number(match[4]) });
-    else tokens.push({ type: match[5] ? 'word' : 'symbol', value: match[5] ?? match[6] });
+    appendToken(match, tokens);
     if (tokens.length > 10000) throw invalid('Cosmos SQL query is too complex.');
   }
   return tokens;
@@ -116,6 +124,68 @@ export function cosmosParameters(collection) {
   return params;
 }
 
+function parseSelections(star, scalar, expression, take, name) {
+  const selections = [];
+  if (!star) {
+    do {
+      const value = expression();
+      const alias = take('AS') ? name() : (value.path?.at(-1) ?? `$${selections.length + 1}`);
+      selections.push({ value, alias });
+      if (scalar) break;
+    } while (take(','));
+  }
+  return selections;
+}
+
+function evaluateUnary(node, evaluate, document) {
+  const value = evaluate(node.value, document);
+  return chooseLazily(
+    () => node.unary === 'NOT',
+    () =>
+      chooseLazily(
+        () => typeof value === 'boolean',
+        () => !value,
+        () => undefined,
+      ),
+    () =>
+      chooseLazily(
+        () => typeof value === 'number',
+        () => -value,
+        () => undefined,
+      ),
+  );
+}
+
+function evaluateOperator(operator, left, right) {
+  switch (operator) {
+    case '=':
+      return left === right;
+    case '!=':
+    case '<>':
+      return left !== right;
+    case '<':
+      return left < right;
+    case '<=':
+      return left <= right;
+    case '>':
+      return left > right;
+    case '>=':
+      return left >= right;
+    case '+':
+      return typeof left === 'number' ? left + right : undefined;
+    case '-':
+      return typeof left === 'number' ? left - right : undefined;
+    case '*':
+      return typeof left === 'number' ? left * right : undefined;
+    case '/':
+      return typeof left === 'number' && right !== 0 ? left / right : undefined;
+    case '%':
+      return typeof left === 'number' && right !== 0 ? left % right : undefined;
+    default:
+      throw unsupported();
+  }
+}
+
 export function compileCosmosQuery(text, parameters = {}) {
   if (typeof text !== 'string' || !text.trim()) throw invalid('QueryText is required.');
   const tokens = tokensOf(text);
@@ -143,64 +213,77 @@ export function compileCosmosQuery(text, parameters = {}) {
       throw invalid('Expected a non-negative integer in Cosmos SQL query.');
     return token.value;
   };
+  function parsePath(token) {
+    const path = [token.value];
+    while (peek('.') || peek('[')) {
+      if (take('.')) path.push(name());
+      else {
+        expect('[');
+        const key = tokens[position++];
+        if (key?.type !== 'literal' || !['string', 'number'].includes(typeof key.value))
+          throw invalid('Invalid JSON path.');
+        path.push(key.value);
+        expect(']');
+      }
+    }
+    return { path };
+  }
+  function parseWordExpression(token) {
+    const upper = token.value.toUpperCase();
+    if (['TRUE', 'FALSE', 'NULL'].includes(upper)) return { literal: upper === 'NULL' ? null : upper === 'TRUE' };
+    if (take('(')) {
+      if (!Object.hasOwn(FUNCTIONS, upper)) throw unsupported();
+      const args = [];
+      if (!take(')')) {
+        do {
+          args.push(expression());
+        } while (take(','));
+        expect(')');
+      }
+      return { call: upper, args };
+    }
+    return parsePath(token);
+  }
+  function parseExpressionAtom() {
+    const token = tokens[position++];
+    if (!token) throw invalid('Incomplete Cosmos SQL expression.');
+    if (token.type === 'literal') return { literal: token.value };
+    if (token.type === 'parameter') {
+      if (!Object.hasOwn(parameters, token.value)) throw invalid(`Missing query parameter ${token.value}.`);
+      return { literal: parameters[token.value] };
+    }
+    if (token.type === 'word') return parseWordExpression(token);
+    throw unsupported();
+  }
+  function parseExpressionPrefix() {
+    if (take('NOT')) return { unary: 'NOT', value: expression(6) };
+    if (take('-')) return { unary: '-', value: expression(6) };
+    if (take('(')) {
+      const value = expression();
+      expect(')');
+      return value;
+    }
+    return parseExpressionAtom();
+  }
+  function parseInList(left) {
+    const values = [];
+    expect('(');
+    do {
+      values.push(expression(4));
+    } while (take(','));
+    expect(')');
+    return { operator: 'IN', left, values };
+  }
   const expression = (minimum = 0) => {
     if (++depth > 64) throw invalid('Cosmos SQL expression is too deeply nested.');
-    let left;
-    if (take('NOT')) left = { unary: 'NOT', value: expression(6) };
-    else if (take('-')) left = { unary: '-', value: expression(6) };
-    else if (take('(')) {
-      left = expression();
-      expect(')');
-    } else {
-      const token = tokens[position++];
-      if (!token) throw invalid('Incomplete Cosmos SQL expression.');
-      if (token.type === 'literal') left = { literal: token.value };
-      else if (token.type === 'parameter') {
-        if (!Object.hasOwn(parameters, token.value)) throw invalid(`Missing query parameter ${token.value}.`);
-        left = { literal: parameters[token.value] };
-      } else if (token.type === 'word') {
-        const upper = token.value.toUpperCase();
-        if (['TRUE', 'FALSE', 'NULL'].includes(upper)) left = { literal: upper === 'NULL' ? null : upper === 'TRUE' };
-        else if (take('(')) {
-          if (!Object.hasOwn(FUNCTIONS, upper)) throw unsupported();
-          const args = [];
-          if (!take(')')) {
-            do {
-              args.push(expression());
-            } while (take(','));
-            expect(')');
-          }
-          left = { call: upper, args };
-        } else {
-          const path = [token.value];
-          while (peek('.') || peek('[')) {
-            if (take('.')) path.push(name());
-            else {
-              expect('[');
-              const key = tokens[position++];
-              if (key?.type !== 'literal' || !['string', 'number'].includes(typeof key.value))
-                throw invalid('Invalid JSON path.');
-              path.push(key.value);
-              expect(']');
-            }
-          }
-          left = { path };
-        }
-      } else throw unsupported();
-    }
+    let left = parseExpressionPrefix();
     while (position < tokens.length) {
       const operator = String(tokens[position].value).toUpperCase();
       const precedence = PRECEDENCE[operator];
       if (precedence === undefined || precedence < minimum) break;
       position++;
       if (operator === 'IN') {
-        const values = [];
-        expect('(');
-        do {
-          values.push(expression(4));
-        } while (take(','));
-        expect(')');
-        left = { operator, left, values };
+        left = parseInList(left);
       } else left = { operator, left, right: expression(precedence + 1) };
     }
     depth--;
@@ -211,15 +294,7 @@ export function compileCosmosQuery(text, parameters = {}) {
   const top = take('TOP') ? integer() : null;
   const scalar = take('VALUE');
   const star = take('*');
-  const selections = [];
-  if (!star) {
-    do {
-      const value = expression();
-      const alias = take('AS') ? name() : (value.path?.at(-1) ?? `$${selections.length + 1}`);
-      selections.push({ value, alias });
-      if (scalar) break;
-    } while (take(','));
-  }
+  const selections = parseSelections(star, scalar, expression, take, name);
   expect('FROM');
   const root = name();
   const where = take('WHERE') ? expression() : null;
@@ -259,16 +334,7 @@ export function compileCosmosQuery(text, parameters = {}) {
       return node.path.slice(1).reduce(own, document);
     }
     if (node.call) return FUNCTIONS[node.call](...node.args.map((arg) => evaluate(arg, document)));
-    if (node.unary) {
-      const value = evaluate(node.value, document);
-      return node.unary === 'NOT'
-        ? typeof value === 'boolean'
-          ? !value
-          : undefined
-        : typeof value === 'number'
-          ? -value
-          : undefined;
-    }
+    if (node.unary) return evaluateUnary(node, evaluate, document);
     const left = evaluate(node.left, document);
     if (node.operator === 'IN')
       return left !== undefined && node.values.some((item) => left === evaluate(item, document));
@@ -276,33 +342,7 @@ export function compileCosmosQuery(text, parameters = {}) {
     if (node.operator === 'AND') return left === true && right === true;
     if (node.operator === 'OR') return left === true || right === true;
     if (left === undefined || right === undefined || typeof left !== typeof right) return undefined;
-    switch (node.operator) {
-      case '=':
-        return left === right;
-      case '!=':
-      case '<>':
-        return left !== right;
-      case '<':
-        return left < right;
-      case '<=':
-        return left <= right;
-      case '>':
-        return left > right;
-      case '>=':
-        return left >= right;
-      case '+':
-        return typeof left === 'number' ? left + right : undefined;
-      case '-':
-        return typeof left === 'number' ? left - right : undefined;
-      case '*':
-        return typeof left === 'number' ? left * right : undefined;
-      case '/':
-        return typeof left === 'number' && right !== 0 ? left / right : undefined;
-      case '%':
-        return typeof left === 'number' && right !== 0 ? left % right : undefined;
-      default:
-        throw unsupported();
-    }
+    return evaluateOperator(node.operator, left, right);
   };
   // The JSON paths the query compares (WHERE and ORDER BY), for the caller's column-security operand rule.
   const operands = [];
@@ -321,22 +361,24 @@ export function compileCosmosQuery(text, parameters = {}) {
         for (const item of order) {
           const a = evaluate(item.value, left),
             b = evaluate(item.value, right);
-          const compared = a === b ? 0 : a == null ? -1 : b == null ? 1 : a < b ? -1 : 1;
+          let compared;
+          if (a === b) compared = 0;
+          else if (a == null) compared = -1;
+          else if (b == null) compared = 1;
+          else compared = a < b ? -1 : 1;
           if (compared) return item.descending ? -compared : compared;
         }
         return 0;
       });
-    rows = rows.map((document) =>
-      star
-        ? document
-        : scalar
-          ? evaluate(selections[0].value, document)
-          : Object.fromEntries(
-              selections
-                .map(({ alias, value }) => [alias, evaluate(value, document)])
-                .filter(([, value]) => value !== undefined),
-            ),
-    );
+    rows = rows.map((document) => {
+      if (star) return document;
+      if (scalar) return evaluate(selections[0].value, document);
+      return Object.fromEntries(
+        selections
+          .map(({ alias, value }) => [alias, evaluate(value, document)])
+          .filter(([, value]) => value !== undefined),
+      );
+    });
     if (distinct) {
       const seen = new Set();
       rows = rows.filter((row) => {

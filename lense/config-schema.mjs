@@ -2,6 +2,10 @@
 import { catalogueKeys, parseSetting } from '../mirage/lib/config-keys.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const SITE_KEYS = [
   'source',
   'defaultEnv',
@@ -130,15 +134,24 @@ function siteSettings(site, name) {
     throw new Error(`${name}.scope must be 'all' or 'changed'`);
   for (const field of ['webFiles', 'inline', 'markup']) {
     if (site[field] === undefined) continue;
-    const allowed =
-      field === 'webFiles'
-        ? ['enabled', 'exclude']
-        : field === 'inline'
-          ? ['enabled', 'kinds', 'minSimilarity', 'injectMissingPageBlocks']
-          : ['enabled', 'kinds', 'baseline'];
+    const allowed = chooseLazily(
+      () => field === 'webFiles',
+      () => ['enabled', 'exclude'],
+      () =>
+        chooseLazily(
+          () => field === 'inline',
+          () => ['enabled', 'kinds', 'minSimilarity', 'injectMissingPageBlocks'],
+          () => ['enabled', 'kinds', 'baseline'],
+        ),
+    );
     keys(site[field], allowed, `${name}.${field}`);
     if (site[field].enabled !== undefined) boolean(site[field].enabled, `${name}.${field}.enabled`);
   }
+  validateSiteOptions(site, name);
+  if (site.routes !== undefined) validateRoutes(site, name);
+}
+
+function validateSiteOptions(site, name) {
   if (site.webFiles?.exclude !== undefined) array(site.webFiles.exclude, `${name}.webFiles.exclude`);
   if (site.inline?.kinds !== undefined) array(site.inline.kinds, `${name}.inline.kinds`, BLOCK_KINDS);
   if (site.markup?.kinds !== undefined) array(site.markup.kinds, `${name}.markup.kinds`, MARKUP_KINDS);
@@ -153,18 +166,68 @@ function siteSettings(site, name) {
   if (site.inline?.injectMissingPageBlocks !== undefined)
     boolean(site.inline.injectMissingPageBlocks, `${name}.inline.injectMissingPageBlocks`);
   if (site.markup?.baseline !== undefined) string(site.markup.baseline, `${name}.markup.baseline`);
-  if (site.routes !== undefined) {
-    if (!Array.isArray(site.routes)) throw new Error(`${name}.routes must be an array`);
-    for (const [i, rule] of site.routes.entries()) {
-      const at = `${name}.routes[${i}]`;
-      keys(rule, ['url', 'file', 'dir', 'passthrough'], at);
-      string(rule.url, `${at}.url`);
-      if (!rule.url.startsWith('/') || rule.url.startsWith('//') || rule.url.includes('\\'))
-        throw new Error(`${at}.url must be a URL path starting with a single /`);
-      if (rule.passthrough !== undefined) boolean(rule.passthrough, `${at}.passthrough`);
-      if (Number(rule.file !== undefined) + Number(rule.dir !== undefined) + Number(rule.passthrough === true) !== 1)
-        throw new Error(`${at} must select exactly one of file, dir or passthrough: true`);
-      for (const field of ['file', 'dir']) if (rule[field] !== undefined) string(rule[field], `${at}.${field}`);
+}
+
+function validateRoutes(site, name) {
+  if (!Array.isArray(site.routes)) throw new Error(`${name}.routes must be an array`);
+  for (const [i, rule] of site.routes.entries()) validateRoute(rule, `${name}.routes[${i}]`);
+}
+
+function validateRoute(rule, at) {
+  keys(rule, ['url', 'file', 'dir', 'passthrough'], at);
+  string(rule.url, `${at}.url`);
+  if (!rule.url.startsWith('/') || rule.url.startsWith('//') || rule.url.includes('\\'))
+    throw new Error(`${at}.url must be a URL path starting with a single /`);
+  if (rule.passthrough !== undefined) boolean(rule.passthrough, `${at}.passthrough`);
+  if (Number(rule.file !== undefined) + Number(rule.dir !== undefined) + Number(rule.passthrough === true) !== 1)
+    throw new Error(`${at} must select exactly one of file, dir or passthrough: true`);
+  for (const field of ['file', 'dir']) if (rule[field] !== undefined) string(rule[field], `${at}.${field}`);
+}
+
+function validateBrowser(browser) {
+  keys(
+    browser,
+    [
+      'channel',
+      'headless',
+      'profileDir',
+      'profile',
+      'userDataDir',
+      'profileDirectory',
+      'cdpUrl',
+      'debugPort',
+      'bypassCSP',
+    ],
+    'browser',
+  );
+  string(browser.channel, 'browser.channel');
+  boolean(browser.headless, 'browser.headless');
+  boolean(browser.bypassCSP, 'browser.bypassCSP');
+  string(browser.profileDir, 'browser.profileDir');
+  if (browser.profile !== null) browserProfile(browser.profile);
+  if (browser.userDataDir !== null) browserUserDataDir(browser.userDataDir);
+  if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
+  debugPort(browser.debugPort);
+  if (browser.cdpUrl !== null) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+}
+
+function validateSites(sites) {
+  object(sites ?? {}, 'sites');
+  for (const [name, site] of Object.entries(sites ?? {})) {
+    identifier(name, 'site name');
+    keys(site, SITE_KEYS, `sites.${name}`);
+    siteSettings(site, `sites.${name}`);
+    if (site.source !== undefined) string(site.source, `sites.${name}.source`);
+    if (site.defaultEnv !== undefined) identifier(site.defaultEnv, `sites.${name}.defaultEnv`);
+    object(site.environments ?? {}, `sites.${name}.environments`);
+    for (const [envName, env] of Object.entries(site.environments ?? {})) {
+      identifier(envName, 'environment name');
+      const at = `sites.${name}.environments.${envName}`;
+      keys(env, ['url', 'baseline', 'scope', 'startPath', 'caution'], at);
+      httpUrl(env.url, `${at}.url`);
+      if (env.caution !== undefined) boolean(env.caution, `${at}.caution`);
+      if (env.baseline !== undefined) string(env.baseline, `${at}.baseline`);
+      siteSettings({ scope: env.scope, startPath: env.startPath }, at);
     }
   }
 }
@@ -196,30 +259,7 @@ export function validateCatalogue(root) {
   if (root.defaultSite !== undefined) identifier(root.defaultSite, 'defaultSite');
   for (const field of ['liveReload', 'panel', 'sourceMaps']) boolean(root[field], field);
   string(root.editor, 'editor');
-  keys(
-    root.browser,
-    [
-      'channel',
-      'headless',
-      'profileDir',
-      'profile',
-      'userDataDir',
-      'profileDirectory',
-      'cdpUrl',
-      'debugPort',
-      'bypassCSP',
-    ],
-    'browser',
-  );
-  string(root.browser.channel, 'browser.channel');
-  boolean(root.browser.headless, 'browser.headless');
-  boolean(root.browser.bypassCSP, 'browser.bypassCSP');
-  string(root.browser.profileDir, 'browser.profileDir');
-  if (root.browser.profile !== null) browserProfile(root.browser.profile);
-  if (root.browser.userDataDir !== null) browserUserDataDir(root.browser.userDataDir);
-  if (root.browser.profileDirectory !== null) browserProfileDirectory(root.browser.profileDirectory);
-  debugPort(root.browser.debugPort);
-  if (root.browser.cdpUrl !== null) httpUrl(root.browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  validateBrowser(root.browser);
   if (root.defaults !== undefined) {
     keys(
       root.defaults,
@@ -228,24 +268,7 @@ export function validateCatalogue(root) {
     );
     siteSettings(root.defaults, 'defaults');
   }
-  object(root.sites ?? {}, 'sites');
-  for (const [name, site] of Object.entries(root.sites ?? {})) {
-    identifier(name, 'site name');
-    keys(site, SITE_KEYS, `sites.${name}`);
-    siteSettings(site, `sites.${name}`);
-    if (site.source !== undefined) string(site.source, `sites.${name}.source`);
-    if (site.defaultEnv !== undefined) identifier(site.defaultEnv, `sites.${name}.defaultEnv`);
-    object(site.environments ?? {}, `sites.${name}.environments`);
-    for (const [envName, env] of Object.entries(site.environments ?? {})) {
-      identifier(envName, 'environment name');
-      const at = `sites.${name}.environments.${envName}`;
-      keys(env, ['url', 'baseline', 'scope', 'startPath', 'caution'], at);
-      httpUrl(env.url, `${at}.url`);
-      if (env.caution !== undefined) boolean(env.caution, `${at}.caution`);
-      if (env.baseline !== undefined) string(env.baseline, `${at}.baseline`);
-      siteSettings({ scope: env.scope, startPath: env.startPath }, at);
-    }
-  }
+  validateSites(root.sites);
 }
 
 // Normalize shorthand before merging, so a personal baseline override retains the shared URL.

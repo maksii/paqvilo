@@ -1,4 +1,5 @@
-import { chromium } from 'playwright-core';
+await import('../../test/browser-bootstrap.mjs');
+const { chromium } = await import('playwright-core');
 
 // The subprocess browser uses this fixture's HTTP listener as a rejecting proxy.
 // Keep configuration as data rather than constructing executable preload text.

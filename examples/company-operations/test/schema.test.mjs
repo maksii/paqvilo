@@ -1,3 +1,4 @@
+// @test-kind tooling: the schema preparation script reproduces the committed reviewed cohort from its inputs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readManifest, compileManifest } from 'paqvilo/dataverse';
@@ -6,18 +7,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { makeTemporaryDirectorySync } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const prepare = (args) =>
   spawnSync(process.execPath, [path.join(project, 'prepare-schema.mjs'), ...args], {
     cwd: project,
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 10000,
+    timeout: CLI_HANG_GUARD_MS,
   });
 
 test('default schema preparation reproduces the committed reviewed cohort', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-schema-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-schema-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const output = path.join(directory, 'manifest.json'),
     result = prepare(['--out', output]);
@@ -30,7 +34,7 @@ test('default schema preparation reproduces the committed reviewed cohort', (t) 
 });
 
 test('Source5 requires explicit selection and a separate output while preserving the reviewed schema', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-schema-source5-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-schema-source5-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const committed = path.join(project, 'dataverse/manifest.json'),
     before = fs.readFileSync(committed, 'utf8');

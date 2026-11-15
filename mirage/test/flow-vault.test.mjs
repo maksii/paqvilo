@@ -8,9 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { flowVault, restrictToCurrentUser, VAULT_KEY_FILE } from '../lib/flow-vault.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const temporary = async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-vault-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-vault-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   return directory;
 };

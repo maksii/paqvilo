@@ -79,7 +79,10 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
       resolve();
     }
   };
-  const woken = () => (wake ??= Promise.withResolvers()).promise;
+  const woken = () => {
+    wake ??= Promise.withResolvers();
+    return wake.promise;
+  };
 
   const disarm = (entry) => {
     if (entry.timer) clearTimeout(entry.timer);

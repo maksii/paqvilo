@@ -56,7 +56,10 @@ export default async function status(cfg, args) {
   for (const [state, rows] of groups) {
     if (state === 'same') continue;
     console.log(`${state.toUpperCase()} (${rows.length})`);
-    for (const r of rows) console.log(`  ${r.url}  <-  ${r.local}${r.detail ? `   (${r.detail})` : ''}`);
+    for (const r of rows) {
+      const detail = r.detail ? `   (${r.detail})` : '';
+      console.log(`  ${r.url}  <-  ${r.local}${detail}`);
+    }
     console.log('');
   }
   console.log([...groups].map(([state, rows]) => `${rows.length} ${state}`).join(', '));

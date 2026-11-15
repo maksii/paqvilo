@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs';
 import { browserSettings, readEnvSettings, resolveMirageConfig, loadCatalogue } from './config.mjs';
 import { openBrowser } from './browser.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
-import { startupProgress, waitForStartupPage } from './startup-progress.mjs';
+import { startupProgress, startupWaitOptions, waitForStartupPage } from './startup-progress.mjs';
+import { guardShutdownSignals } from './signal-forwarding.mjs';
 
 export function standaloneMirageConfiguration(project, args = {}) {
   const configDir = project ? path.dirname(project.configFile) : process.cwd();
@@ -72,7 +73,8 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
 }
 
 /** Open the local application directly. No portal overlay or source model is created. */
-export async function developStandalone(cfg, args, session, { open = openBrowser } = {}) {
+export async function developStandalone(cfg, args, session, { open = openBrowser, signal, source = process } = {}) {
+  if (signal?.aborted) throw signal.reason;
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
   const { context, close, attached } = await open(
@@ -87,8 +89,10 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   const browser = context.browser();
   context.once('close', stop);
   browser?.once('disconnected', stop);
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  source.once('SIGINT', stop);
+  source.once('SIGTERM', stop);
+  signal?.addEventListener('abort', stop, { once: true });
+  if (signal?.aborted) stop();
   try {
     page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
     // Observe this owned tab before navigation/readiness can yield. In an
@@ -97,28 +101,46 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
     const destination = args.path ?? (cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/');
     if (!destination.startsWith('/') || destination.startsWith('//') || destination.includes('\\'))
       throw new Error('The starting path must be local to this runtime.');
+    if (session.adminUrl) console.log(`admin       ${session.adminUrl}`);
     console.log(`Opening ${session.url}${destination}. Close the dedicated browser or press Ctrl+C to stop.`);
-    await waitForStartupPage(page, session.url + destination, {
-      progress,
-      stopped,
-      modelDriven: cfg.runtime.kind === 'model-driven',
-    });
+    const loaded = await waitForStartupPage(
+      page,
+      session.url + destination,
+      startupWaitOptions(args, {
+        progress,
+        stopped,
+        modelDriven: cfg.runtime.kind === 'model-driven',
+      }),
+    );
+    // A closed page ends the session, whatever the browser still shows; the finally block then closes the browser.
+    if (!loaded && page.isClosed()) {
+      console.log('browser closed before start-up finished');
+      stop();
+    }
     await stopped;
   } finally {
     progress.close();
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
+    source.off('SIGINT', stop);
+    source.off('SIGTERM', stop);
+    signal?.removeEventListener('abort', stop);
     context.off('close', stop);
     browser?.off('disconnected', stop);
     page?.off('close', stop);
-    for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
+    await guardShutdownSignals(
+      async () => {
+        for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
+          try {
+            await cleanup();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      },
+      undefined,
+      { source },
+    );
   }
   if (errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
+  if (signal?.aborted) throw signal.reason;
   return 0;
 }

@@ -27,6 +27,13 @@ function find(node, names, depth = 0, max = 4) {
   return undefined;
 }
 // The client data of a document: { properties: { definition, connectionReferences } }, or null.
+function flowProperties(document) {
+  if (isMap(document?.properties) && isMap(document.properties.definition)) return document.properties;
+  if (isMap(document?.definition) && isMap(document.definition.triggers))
+    return { definition: document.definition, connectionReferences: document.connectionReferences };
+  return null;
+}
+
 function clientData(document) {
   let data = find(document, ['clientdata']);
   if (typeof data === 'string') {
@@ -37,12 +44,7 @@ function clientData(document) {
     }
   }
   if (isMap(data)) document = data;
-  const properties =
-    isMap(document?.properties) && isMap(document.properties.definition)
-      ? document.properties
-      : isMap(document?.definition) && isMap(document.definition.triggers)
-        ? { definition: document.definition, connectionReferences: document.connectionReferences }
-        : null;
+  const properties = flowProperties(document);
   return properties
     ? {
         properties: {
@@ -68,16 +70,71 @@ function parseModernFlowFile(text, file) {
   } catch (error) {
     const line = error.linePos?.[0]?.line ?? null;
     const reason = String(error.message ?? error).split(/\r?\n/)[0];
+    const lineText = line ? ` line ${line}` : '';
     return {
       invalid: {
         code: YAML_INVALID,
         severity: 'error',
         file,
         line,
-        message: `${YAML_INVALID}: ${file}${line ? ` line ${line}` : ''} does not parse (${reason}); quote values that start with @ or other YAML indicators.`,
+        message: `${YAML_INVALID}: ${file}${lineText} does not parse (${reason}); quote values that start with @ or other YAML indicators.`,
       },
     };
   }
+}
+
+function groupModernFlowFiles(files) {
+  const folders = new Map();
+  for (const file of files) {
+    const relative = String(file.relative ?? '').replaceAll('\\', '/');
+    const match = /^modernflows\/([^/]+)\/.+\.(?:ya?ml|json)$/i.exec(relative);
+    if (!match) continue;
+    const list = folders.get(match[1]) ?? [];
+    list.push(file);
+    folders.set(match[1], list);
+  }
+  return folders;
+}
+
+function inspectModernFlowFile(file, state, read, diagnostic) {
+  const text = read(file);
+  if (text == null) return;
+  const { document, invalid } = parseModernFlowFile(text, String(file.relative).replaceAll('\\', '/'));
+  if (invalid) {
+    diagnostic(invalid);
+    return;
+  }
+  const workflowId = find(document, ['workflowid'], 0, 1);
+  if (!state.id && typeof workflowId === 'string' && GUID.test(workflowId))
+    state.id = GUID.exec(workflowId)[1].toLowerCase();
+  const named = find(document, ['name'], 0, 1);
+  state.name ??= typeof named === 'string' ? named : null;
+  const code = find(document, ['statecode'], 0, 1);
+  if (state.state === null && code !== undefined) state.state = String(code?.value ?? code);
+  const data = clientData(document);
+  if (data && !state.definition) {
+    state.definition = data;
+    state.source = file.path;
+  }
+}
+
+function modernFlowEntry(folder, list, read, diagnostic) {
+  const state = { id: null, name: null, state: null, definition: null, source: null };
+  for (const file of list.sort((a, b) => String(a.relative).localeCompare(String(b.relative))))
+    inspectModernFlowFile(file, state, read, diagnostic);
+  if (!state.id || !state.definition) return null;
+  const active = state.state === null ? null : ['1', 'activated'].includes(state.state.toLowerCase());
+  return [
+    state.id,
+    {
+      file: state.source,
+      name: state.name ?? folder,
+      active,
+      activation: { sourceValue: state.state, sourceFile: state.source ? path.dirname(state.source) : null },
+      definition: parseExactJson(stringifyExactJson(state.definition)),
+      format: 'yaml',
+    },
+  ];
 }
 
 /** What one modernflows/ file carries: { workflowId, definition } (booleans), for the inventory level of its flow, and invalid. */
@@ -93,52 +150,11 @@ export function modernFlowFacts(text, file) {
  * read(file) answers its UTF-8 text or null; diagnostic(entry) receives MODERNFLOW_YAML_INVALID for a file that does not parse.
  */
 export function modernFlowWorkflows(files, read, { diagnostic = () => {} } = {}) {
-  const folders = new Map();
-  for (const file of files) {
-    const relative = String(file.relative ?? '').replaceAll('\\', '/');
-    const match = /^modernflows\/([^/]+)\/.+\.(?:ya?ml|json)$/i.exec(relative);
-    if (!match) continue;
-    const list = folders.get(match[1]) ?? [];
-    list.push(file);
-    folders.set(match[1], list);
-  }
+  const folders = groupModernFlowFiles(files);
   const result = new Map();
   for (const [folder, list] of folders) {
-    let id = null,
-      name = null,
-      state = null,
-      definition = null,
-      source = null;
-    for (const file of list.sort((a, b) => String(a.relative).localeCompare(String(b.relative)))) {
-      const text = read(file);
-      if (text == null) continue;
-      const { document, invalid } = parseModernFlowFile(text, String(file.relative).replaceAll('\\', '/'));
-      if (invalid) {
-        diagnostic(invalid);
-        continue;
-      }
-      const workflowId = find(document, ['workflowid'], 0, 1);
-      if (!id && typeof workflowId === 'string' && GUID.test(workflowId)) id = GUID.exec(workflowId)[1].toLowerCase();
-      const named = find(document, ['name'], 0, 1);
-      name ??= typeof named === 'string' ? named : null;
-      const code = find(document, ['statecode'], 0, 1);
-      if (state === null && code !== undefined) state = String(code?.value ?? code);
-      const data = clientData(document);
-      if (data && !definition) {
-        definition = data;
-        source = file.path;
-      }
-    }
-    if (!id || !definition) continue;
-    const active = state === null ? null : ['1', 'activated'].includes(state.toLowerCase());
-    result.set(id, {
-      file: source,
-      name: name ?? folder,
-      active,
-      activation: { sourceValue: state, sourceFile: source ? path.dirname(source) : null },
-      definition: parseExactJson(stringifyExactJson(definition)),
-      format: 'yaml',
-    });
+    const entry = modernFlowEntry(folder, list, read, diagnostic);
+    if (entry) result.set(...entry);
   }
   return result;
 }

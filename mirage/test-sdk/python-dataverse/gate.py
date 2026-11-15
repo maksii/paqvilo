@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 import warnings
+from importlib import metadata
 
 import msal
 import requests
@@ -57,6 +58,10 @@ REQUIRED_FAILED = []
 
 def emit(step, ok, detail=None, optional=False):
     print(json.dumps({"step": step, "ok": ok, "optional": optional, "detail": detail}, default=str), flush=True)
+
+
+# The installed distributions, so the runner can compare them with the pins in requirements.txt.
+emit("versions", True, {name: metadata.version(name) for name in ("msal", "PowerPlatform-Dataverse-Client")})
 
 
 def http_facts(error):

@@ -1,10 +1,11 @@
+// @test-kind contract: public init --ready composes sites and layouts, and readiness rejects empty exports and component folders.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, execFile } from 'node:child_process';
+import childProcess, { spawnSync, execFile } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   checkProject,
   inspectProjectAdoption,
@@ -14,6 +15,9 @@ import {
 } from '../lense/project-check.mjs';
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
@@ -27,7 +31,7 @@ const run = (directory, ...args) =>
         execFile(
           process.execPath,
           [cli, 'init', directory, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+          { env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -40,7 +44,7 @@ const write = async (directory, file, body) => {
 };
 const configFile = 'paqvilo.config.json';
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-ready-'));
+  const directory = await tempDir('paqvilo-ready-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const config = {
     sourceRoot: './sources',
@@ -197,7 +201,7 @@ test('nonselected invalid profile gates project readiness while preserving the e
   const doctor = spawnSync(
     process.execPath,
     [cli, 'lense', 'doctor', '--config', path.join(directory, configFile), '--all', '--mirage', '--json'],
-    { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+    { env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
   );
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.equal(
@@ -249,6 +253,7 @@ test('custom development scripts remain advisory when required wiring is present
   );
 });
 
+// @test-kind security: adoption flags unignored private paths without reading private files
 test('adoption detects effective private-path unignore rules without creating or reading private files', async (t) => {
   const { directory } = await fixture(t);
   assert.equal(
@@ -284,6 +289,67 @@ test('adoption detects effective private-path unignore rules without creating or
   );
 });
 
+// @test-kind security: a Git check that gave no answer is reported, never read as a folder outside Git
+test('completion and adoption report a Git command that gave no answer instead of reading it as no repository', async (t) => {
+  const { directory } = await fixture(t);
+  const original = childProcess.spawnSync;
+  let failure;
+  // The product imports spawnSync by name; syncBuiltinESMExports carries the replacement to that binding.
+  const replaced = t.mock.method(childProcess, 'spawnSync', (command, ...rest) =>
+    command === 'git'
+      ? { status: null, signal: failure.signal ?? null, error: failure.error, stdout: '' }
+      : original(command, ...rest),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  // Killed at its hang guard, and not started at all.
+  for (failure of [
+    { signal: 'SIGTERM', error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }) },
+    { error: Object.assign(new Error('spawnSync git ENOENT'), { code: 'ENOENT' }) },
+  ]) {
+    assert.throws(() => scaffoldMarkers(directory), /Git did not answer which project files to check/);
+    const adoption = inspectProjectAdoption(directory, { config: configFile, processEnv: {} });
+    assert.equal(adoption.ok, false);
+    assert.ok(
+      adoption.diagnostics.some(
+        (item) => item.code === 'PRIVATE_IGNORE_REVIEW' && /Git did not answer the ignore check/.test(item.action),
+      ),
+      JSON.stringify(adoption.diagnostics),
+    );
+  }
+});
+
+test('a Git command that exited has answered, also when writing its input failed', async (t) => {
+  const { directory } = await fixture(t);
+  const original = childProcess.spawnSync;
+  // Outside a repository Git exits at once with 128; the write of the probe list to its closed input then fails.
+  const replaced = t.mock.method(childProcess, 'spawnSync', (command, ...rest) =>
+    command === 'git'
+      ? {
+          status: 128,
+          signal: null,
+          error: Object.assign(new Error('spawnSync git EPIPE'), { code: 'EPIPE' }),
+          stdout: '',
+          stderr: 'fatal: not a git repository',
+        }
+      : original(command, ...rest),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const adoption = inspectProjectAdoption(directory, { config: configFile, processEnv: {} });
+  assert.deepEqual(
+    adoption.diagnostics.filter((item) => /Git did not answer/.test(item.action ?? '')),
+    [],
+  );
+  assert.doesNotThrow(() => scaffoldMarkers(directory));
+});
+
 test('targeted private exceptions require review even when representative Git probes remain excluded', async (t) => {
   const { directory } = await fixture(t);
   const git = spawnSync('git', ['-C', directory, 'init', '-q'], { env, encoding: 'utf8', windowsHide: true });
@@ -312,6 +378,7 @@ test('targeted private exceptions require review even when representative Git pr
   assert.equal(inspectProjectAdoption(directory, { config: configFile, processEnv: {} }).ok, false);
 });
 
+// @test-kind security: adoption reports indexed private paths without altering them
 test('adoption reports indexed private paths even when ignore rules are correct without altering the index or private files', async (t) => {
   const { directory } = await fixture(t);
   const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
@@ -342,24 +409,22 @@ test('adoption reports indexed private paths even when ignore rules are correct 
   );
 });
 
-test(
-  'completion excludes Windows case aliases of private paths while retaining the public environment example',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const { directory } = await fixture(t);
-    await write(directory, '.ENV.FIXTURE', 'TODO(paqvilo-init): private alias must not be scanned');
-    await write(directory, '.PAQVILO/private.txt', 'TODO(paqvilo-init): private evidence alias must not be scanned');
-    await write(directory, '.ENV.EXAMPLE', 'TODO(paqvilo-init): public example should be scanned');
-    const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
-    assert.equal(git(['init', '-q']).status, 0);
-    assert.equal(git(['add', '-f', '.ENV.FIXTURE', '.PAQVILO/private.txt', '.ENV.EXAMPLE']).status, 0);
-    const markers = scaffoldMarkers(directory);
-    assert.deepEqual(
-      markers.map((item) => item.file),
-      ['.ENV.EXAMPLE'],
-    );
-  },
-);
+test('completion follows the platform path case rules for private paths and the public environment example', async (t) => {
+  const { directory } = await fixture(t);
+  await write(directory, '.ENV.FIXTURE', 'TODO(paqvilo-init): private alias must not be scanned');
+  await write(directory, '.PAQVILO/private.txt', 'TODO(paqvilo-init): private evidence alias must not be scanned');
+  await write(directory, '.ENV.EXAMPLE', 'TODO(paqvilo-init): public example should be scanned');
+  const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
+  assert.equal(git(['init', '-q']).status, 0);
+  assert.equal(git(['add', '-f', '.ENV.FIXTURE', '.PAQVILO/private.txt', '.ENV.EXAMPLE']).status, 0);
+  const markers = scaffoldMarkers(directory);
+  // Windows paths are case-insensitive: the upper-case names are aliases of .env.fixture, .paqvilo and .env.example.
+  // POSIX paths are case-sensitive: .PAQVILO is an ordinary folder, and neither .ENV file is the public example.
+  assert.deepEqual(
+    markers.map((item) => item.file),
+    process.platform === 'win32' ? ['.ENV.EXAMPLE'] : ['.PAQVILO/private.txt'],
+  );
+});
 
 test('readiness validates project-owned paths without importing project packs', async (t) => {
   const { directory, config, save } = await fixture(t);
@@ -395,10 +460,12 @@ test('readiness validates project-owned paths without importing project packs', 
   await write(directory, 'absent-project-pack.mjs', "throw new Error('DORMANT_PACK_MUST_NOT_EXECUTE');\n");
   await write(directory, 'absent-project-profile.json', 'dormant project mapping: only its file path is checked');
   assert.equal((await inspectProjectPaths(directory, { config: configFile, processEnv: {} })).ok, true);
+  const ready = await readyProject(directory, { config: configFile, processEnv: {} });
+  // The report names the check and the diagnostic codes that refused readiness, so a failure states its cause.
   assert.equal(
-    (await readyProject(directory, { config: configFile, processEnv: {} })).ok,
+    ready.ok,
     true,
-    'catalogue runtime mappings override dormant project mappings; those bodies are not a new syntax gate',
+    `catalogue runtime mappings override dormant project mappings; those bodies are not a new syntax gate: ${JSON.stringify(ready)}`,
   );
 });
 

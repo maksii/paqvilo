@@ -1,9 +1,14 @@
 // Predefined queries (savedQuery / userQuery) answered as FetchXML by the query hook.
+// @test-kind contract: Paqvilo's own designed predefined-query and message behaviour, with the guessed wire shapes named in the code.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createPrincipals, ensureSecurityModel, ownerColumns } from '../lib/dataverse-security.mjs';
 import { install, reset } from '../lib/dataverse-predefined.mjs';
+import { createRecordHandlers } from '../lib/dataverse-records.mjs';
+import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
 const ADMIN_OID = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -270,9 +275,10 @@ test('a navigation predefined query that names no collection-valued relationship
 test('install registers the hook and returns its seeding, so awaiting install means the mappings exist', async () => {
   const store = new DataStore({ state: emptyState() });
   const hooks = {};
-  // A write already queued on the store delays the seeding, so only an awaited install sees it done.
-  const earlier = store.transact(() => new Promise((resolve) => setTimeout(resolve, 20)));
-  await install({
+  // A write already queued on the store holds the seeding until it is released, so only an awaited install sees it done.
+  const { promise: held, resolve: release } = Promise.withResolvers();
+  const earlier = store.transact(() => held);
+  const installed = install({
     store,
     registry: { register() {} },
     recordHooks: {
@@ -282,6 +288,9 @@ test('install registers the hook and returns its seeding, so awaiting install me
     },
   });
   assert.equal(typeof hooks.query, 'function');
+  assert.equal(store.state.mappings.savedquery, undefined, 'the seeding waits behind the queued write');
+  release();
+  await installed;
   assert.equal(store.state.mappings.savedquery?.entitySet, 'savedqueries');
   assert.equal(store.state.mappings.userquery?.entitySet, 'userqueries');
   await earlier;
@@ -338,6 +347,8 @@ async function messageSetup() {
   await install(api);
   await ensureSecurityModel(store, SETTINGS);
   api.principals = createPrincipals(store, SETTINGS);
+  // The record layer the organization runtime gives the handlers (SendAppNotification creates its row through it).
+  api.records = createRecordHandlers({ store, change: api.change, principals: api.principals });
   return {
     store,
     op: (name) => ops.find((o) => o.name === name),
@@ -374,6 +385,7 @@ test('RetrieveExchangeRate answers the exchange rate of a currency, and refuses 
   );
 });
 
+// @test-kind security: a caller without write on the table cannot send an app notification
 test('SendAppNotification writes one appnotification row for a systemuser, and a caller without write on the table is refused', async () => {
   const t = await messageSetup();
   const send = t.op('SendAppNotification');
@@ -411,4 +423,115 @@ test('SendAppNotification writes one appnotification row for a systemuser, and a
     }),
     (e) => e.status === 404,
   );
+});
+
+// SendAppNotification over HTTP: the recipient owns the notification, and sending needs Create on appnotification plus
+// prvSendAppNotification. Four application users: an administrator sender, a Basic User recipient, a Basic User bystander
+// and a Basic User sender without the privilege.
+const NOTIFY_APPS = {
+  admin: { appId: 'c0000000-0000-4000-8000-0000000000a1', roles: ['System Administrator'] },
+  recipient: { appId: 'c0000000-0000-4000-8000-0000000000a2', roles: ['Basic User'] },
+  bystander: { appId: 'c0000000-0000-4000-8000-0000000000a3', roles: ['Basic User'] },
+  sender: { appId: 'c0000000-0000-4000-8000-0000000000a4', roles: ['Basic User'] },
+};
+const secretVarOf = (name) => `PAQVILO_NOTIFY_${name.toUpperCase()}_SECRET`;
+
+async function notificationHarness() {
+  const store = await new DataStore({ state: emptyState() }).init();
+  const applications = Object.entries(NOTIFY_APPS).map(([name, app]) => {
+    process.env[secretVarOf(name)] = `notify-${name}-secret`;
+    return {
+      appId: app.appId,
+      displayName: `Notify ${name}`,
+      secretEnvironmentVariable: secretVarOf(name),
+      roles: app.roles,
+    };
+  });
+  const api = await startDataverseApi({
+    store,
+    settings: dataverseSettings({ enabled: true, applications }),
+    log: () => {},
+    extensions: EXTENSIONS,
+  });
+  const tokens = {};
+  for (const [name, app] of Object.entries(NOTIFY_APPS)) {
+    const response = await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: app.appId,
+        client_secret: process.env[secretVarOf(name)],
+        scope: `${api.origin}/.default`,
+      }),
+    });
+    tokens[name] = (await response.json()).access_token;
+  }
+  const call = async (who, method, path, body) => {
+    const result = await fetch(`${api.origin}/api/data/v9.2/${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await result.text();
+    return { status: result.status, body: text ? JSON.parse(text) : null };
+  };
+  const userOf = (name) => store.state.tables.systemuser.find((u) => u.applicationid === NOTIFY_APPS[name].appId);
+  const close = async () => {
+    for (const name of Object.keys(NOTIFY_APPS)) delete process.env[secretVarOf(name)];
+    await api.close();
+  };
+  return { store, call, close, recipientId: userOf('recipient').systemuserid };
+}
+
+// @test-kind compatibility: Learn "Send in-app notifications" makes the Owner column the recipient, who reads the notification with Basic Read.
+test('the recipient reads the notification an administrator sent, and the recipient is its owner', async () => {
+  const t = await notificationHarness();
+  try {
+    const sent = await t.call('admin', 'POST', 'Microsoft.Dynamics.CRM.SendAppNotification', {
+      Title: 'Invented notice',
+      Recipient: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: t.recipientId },
+    });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    const read = await t.call('recipient', 'GET', 'appnotifications');
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.equal(read.body.value.length, 1);
+    assert.equal(read.body.value[0].title, 'Invented notice');
+    assert.equal(read.body.value[0]._ownerid_value, t.recipientId);
+  } finally {
+    await t.close();
+  }
+});
+
+// @test-kind compatibility+security: Learn "Send in-app notifications" requires Create on appnotification and the
+// prvSendAppNotification privilege to send.
+test('a Basic User without prvSendAppNotification is refused, and no notification is written', async () => {
+  const t = await notificationHarness();
+  try {
+    const refused = await t.call('sender', 'POST', 'Microsoft.Dynamics.CRM.SendAppNotification', {
+      Title: 'Invented refused notice',
+      Recipient: { systemuserid: t.recipientId },
+    });
+    assert.equal(refused.status, 403, JSON.stringify(refused.body));
+    assert.equal(t.store.state.tables.appnotification?.length ?? 0, 0, 'a refused call writes no row');
+  } finally {
+    await t.close();
+  }
+});
+
+// @test-kind compatibility: Learn "Send in-app notifications" says the notification belongs to its recipient, so another Basic User does not read it.
+test('another Basic User does not read a notification sent to someone else', async () => {
+  const t = await notificationHarness();
+  try {
+    const sent = await t.call('admin', 'POST', 'Microsoft.Dynamics.CRM.SendAppNotification', {
+      Title: 'Invented private notice',
+      Recipient: { systemuserid: t.recipientId },
+    });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    const read = await t.call('bystander', 'GET', 'appnotifications');
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.deepEqual(read.body.value, []);
+  } finally {
+    await t.close();
+  }
 });

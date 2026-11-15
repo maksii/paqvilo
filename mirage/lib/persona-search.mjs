@@ -18,7 +18,12 @@ export const foldPersonaText = (value) =>
     .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/[øæœßđðłþ]/g, (letter) => transliterations[letter]);
-const values = (value) => (Array.isArray(value) ? value : value ? [value] : []).map(foldPersonaText);
+const values = (value) => {
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (value) list = [value];
+  return list.map(foldPersonaText);
+};
 export const personaRowKey = (persona) => persona.key ?? `@contact:${persona.contactId}`;
 
 export function personaFilters(parameters) {
@@ -35,7 +40,8 @@ export function personaFilters(parameters) {
   };
 }
 
-export function indexPersonaCatalog(report) {
+/** work (optional, { compared }) counts the display-order comparisons of the sort. */
+export function indexPersonaCatalog(report, work = null) {
   const groups = new Map((report.groups ?? []).map((group) => [group.id, group]));
   const groupOrder = new Map([...groups.keys()].map((id, index) => [id, index]));
   const subgroupOrder = new Map(
@@ -48,8 +54,14 @@ export function indexPersonaCatalog(report) {
     (a.order ?? 1000) - (b.order ?? 1000) ||
     displayCollator.compare(String(a.label ?? a.name ?? a.key), String(b.label ?? b.name ?? b.key)) ||
     personaRowKey(a).localeCompare(personaRowKey(b));
+  const order = work
+    ? (a, b) => {
+        work.compared += 1;
+        return displayOrder(a, b);
+      }
+    : displayOrder;
   return [...(report.personas ?? []), ...(report.other ?? []).map((persona) => ({ ...persona, group: '__other' }))]
-    .sort(displayOrder)
+    .sort(order)
     .map((persona) => {
       const group = groups.get(persona.group),
         subgroup = group?.subgroups?.find((entry) => entry.id === persona.subgroup);
@@ -86,24 +98,31 @@ export function indexPersonaCatalog(report) {
     });
 }
 
-export function filterPersonaIndex(index, filters = {}) {
+/** work (optional, { scanned }) counts the index entries the filters examine. */
+export function filterPersonaIndex(index, filters = {}, work = null) {
   const terms = foldPersonaText(filters.q).trim().split(/\s+/).filter(Boolean);
   const roles = values(filters.roles),
     accounts = values(filters.accounts),
     groups = values(filters.groups),
     tags = values(filters.tags),
     subgroups = values(filters.subgroups);
+  const matches = (entry) =>
+    terms.every((term) => entry.text.includes(term)) &&
+    (!roles.length || roles.some((role) => entry.roles.has(role))) &&
+    (!accounts.length || accounts.some((account) => entry.accounts.has(account))) &&
+    (!groups.length || groups.includes(entry.group)) &&
+    (!tags.length || tags.some((tag) => entry.tags.has(tag))) &&
+    (!subgroups.length ||
+      subgroups.some((group) => group === entry.subgroup || group === `${entry.group}:${entry.subgroup}`)) &&
+    (!filters.hideNoRoles || entry.roles.size > 0) &&
+    (!filters.withoutRoles || entry.roles.size === 0);
   return index.filter(
-    (entry) =>
-      terms.every((term) => entry.text.includes(term)) &&
-      (!roles.length || roles.some((role) => entry.roles.has(role))) &&
-      (!accounts.length || accounts.some((account) => entry.accounts.has(account))) &&
-      (!groups.length || groups.includes(entry.group)) &&
-      (!tags.length || tags.some((tag) => entry.tags.has(tag))) &&
-      (!subgroups.length ||
-        subgroups.some((group) => group === entry.subgroup || group === `${entry.group}:${entry.subgroup}`)) &&
-      (!filters.hideNoRoles || entry.roles.size > 0) &&
-      (!filters.withoutRoles || entry.roles.size === 0),
+    work
+      ? (entry) => {
+          work.scanned += 1;
+          return matches(entry);
+        }
+      : matches,
   );
 }
 

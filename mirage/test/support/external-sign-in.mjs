@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../../server.mjs';
+import { adminServes } from '../../lib/admin-origin.mjs';
 import { ownedFixture } from '../../testing/owned-fixture.mjs';
 
 export const AUTHORITY = 'https://idp.example.test/local/';
@@ -136,7 +137,7 @@ export function initialState({ tables = {}, mappings = {} } = {}) {
 }
 
 export async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-')));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -168,18 +169,25 @@ export function client(app) {
     }
     return response;
   };
-  const request = async (target, { headers = {}, ...init } = {}) =>
-    remember(
-      await fetch(new URL(target, app.url), {
+  // The administration's pages and API answer on its own origin; the portal's pages keep the portal origin.
+  // A same-origin browser write to the administration also carries its Origin.
+  const originFor = (target) => (adminServes(new URL(target, app.url).pathname) ? app.adminOrigin : app.url);
+  const request = async (target, { headers = {}, ...init } = {}) => {
+    const base = originFor(target);
+    const write = !['GET', 'HEAD'].includes(init.method ?? 'GET');
+    return remember(
+      await fetch(new URL(target, base), {
         redirect: 'manual',
         ...init,
         headers: {
           'sec-fetch-site': 'same-origin',
+          ...(write && base === app.adminOrigin ? { origin: base } : {}),
           ...(jar.size ? { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
           ...headers,
         },
       }),
     );
+  };
   return { jar, request };
 }
 

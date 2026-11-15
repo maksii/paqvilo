@@ -12,6 +12,8 @@ export const correlationOf = (value) => (typeof value === 'string' && CORRELATIO
  * initiator: who asked ({ kind: 'contact'|'staff'|'app'|'anonymous'|'system', id }); principal: who executes (the organization
  * principal context or a service profile); portal / connection: surface facts. organization (an organization runtime or its
  * api) supplies organizationId, clock and ids; clock / ids may be given directly. mode: 'sync' | 'async' | 'job'.
+ * traceId / spanId: the trace-store span that roots this call (trace-store.mjs falls back to them when its own span stack is
+ * empty); child() and with() keep them.
  */
 export function createRequestContext({
   organization = null,
@@ -22,6 +24,8 @@ export function createRequestContext({
   correlationId,
   requestId = null,
   parentId = null,
+  traceId = null,
+  spanId = null,
   depth = 0,
   signal = null,
   inBatch = false,
@@ -38,6 +42,8 @@ export function createRequestContext({
     correlationId: correlationOf(correlationId) ?? ids.uuid(),
     requestId,
     parentId,
+    traceId,
+    spanId,
     depth,
     signal,
     inBatch,

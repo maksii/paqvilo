@@ -10,7 +10,10 @@ function listen(t, handler) {
   const server = http.createServer(handler);
   return new Promise((resolve) =>
     server.listen(0, '127.0.0.1', () => {
-      t.after(() => new Promise((done) => server.close(done)));
+      t.after(() => {
+        server.closeAllConnections();
+        return new Promise((done) => server.close(done));
+      });
       resolve(server.address().port);
     }),
   );

@@ -32,6 +32,7 @@
 // ponytail: a workflow row written by a store-level path (not the records pipeline) inside an open transaction is seen by later
 // writes of that transaction only after it commits; workflow writes through the records pipeline drop the index at once.
 import { DataError } from './data-error.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
@@ -93,53 +94,55 @@ const requiredError = (table, column) =>
 
 function parseSteps(nodes, client, depth = 0) {
   if (depth >= MAX_DEPTH) unsupported(`The business rule nests deeper than ${MAX_DEPTH} condition branches.`);
-  return nodes
-    .map((node) => {
-      const kind = localName(node.name);
-      if (CLIENT_STEPS.has(kind)) {
-        client.push(kind);
-        return null;
-      }
-      if (!SERVER_STEPS.has(kind)) unsupported(`Business rule step <${node.name}> is not supported.`);
-      const column = attr(node, 'Attribute')?.trim().toLowerCase();
-      if (kind === 'conditionbranchstep') {
-        const children = elements(node);
-        const conditions = children
-          .filter((item) => localName(item.name) === 'condition')
-          .map((item) => {
-            const operator = String(attr(item, 'Operator') ?? 'eq').toLowerCase();
-            if (!OPERATORS.has(operator)) unsupported(`Condition operator '${operator}' is not supported.`);
-            const attribute = attr(item, 'Attribute')?.trim().toLowerCase();
-            if (!attribute) unsupported('A condition names no Attribute.');
-            return { attribute, operator, value: valueOf(attr(item, 'Value')) };
-          });
-        if (!conditions.length) unsupported('A ConditionBranchStep has no Condition.');
-        const branch = (name) => elements(children.find((item) => localName(item.name) === name));
-        const logic = String(attr(node, 'Logic') ?? 'and').toLowerCase();
-        if (logic !== 'and' && logic !== 'or') unsupported(`Condition logic '${logic}' is not supported.`);
-        for (const item of children)
-          if (!['condition', 'then', 'else'].includes(localName(item.name)))
-            unsupported(`<${item.name}> is not part of a ConditionBranchStep.`);
-        return {
-          kind: 'condition',
-          logic,
-          conditions,
-          then: parseSteps(branch('then'), client, depth + 1),
-          else: parseSteps(branch('else'), client, depth + 1),
-        };
-      }
-      if (kind === 'setmessagestep')
-        return { kind: 'error', message: attr(node, 'Message') ?? node.text.trim(), column: column ?? null };
-      if (!column) unsupported(`<${node.name}> names no Attribute.`);
-      if (kind === 'setfieldrequiredlevelstep')
-        return {
-          kind: 'required',
-          column,
-          required: String(attr(node, 'RequiredLevel') ?? '').toLowerCase() === 'required',
-        };
-      return { kind: kind === 'setdefaultvaluestep' ? 'default' : 'set', column, value: valueOf(attr(node, 'Value')) };
-    })
-    .filter(Boolean);
+  return nodes.map((node) => parseStep(node, client, depth)).filter(Boolean);
+}
+
+function parseStep(node, client, depth) {
+  const kind = localName(node.name);
+  if (CLIENT_STEPS.has(kind)) {
+    client.push(kind);
+    return null;
+  }
+  if (!SERVER_STEPS.has(kind)) unsupported(`Business rule step <${node.name}> is not supported.`);
+  const column = attr(node, 'Attribute')?.trim().toLowerCase();
+  if (kind === 'conditionbranchstep') return parseConditionBranch(node, client, depth);
+  if (kind === 'setmessagestep')
+    return { kind: 'error', message: attr(node, 'Message') ?? node.text.trim(), column: column ?? null };
+  if (!column) unsupported(`<${node.name}> names no Attribute.`);
+  if (kind === 'setfieldrequiredlevelstep')
+    return {
+      kind: 'required',
+      column,
+      required: String(attr(node, 'RequiredLevel') ?? '').toLowerCase() === 'required',
+    };
+  return { kind: kind === 'setdefaultvaluestep' ? 'default' : 'set', column, value: valueOf(attr(node, 'Value')) };
+}
+
+function parseConditionBranch(node, client, depth) {
+  const children = elements(node);
+  const conditions = children.filter((item) => localName(item.name) === 'condition').map(parseCondition);
+  if (!conditions.length) unsupported('A ConditionBranchStep has no Condition.');
+  const branch = (name) => elements(children.find((item) => localName(item.name) === name));
+  const logic = String(attr(node, 'Logic') ?? 'and').toLowerCase();
+  if (logic !== 'and' && logic !== 'or') unsupported(`Condition logic '${logic}' is not supported.`);
+  for (const item of children)
+    if (!['condition', 'then', 'else'].includes(localName(item.name)))
+      unsupported(`<${item.name}> is not part of a ConditionBranchStep.`);
+  return {
+    kind: 'condition',
+    logic,
+    conditions,
+    then: parseSteps(branch('then'), client, depth + 1), // NOSONAR: `then` is a domain property, not a thenable
+    else: parseSteps(branch('else'), client, depth + 1),
+  };
+}
+
+function parseCondition(item) {
+  const operator = String(attr(item, 'Operator') ?? 'eq').toLowerCase();
+  if (!OPERATORS.has(operator)) unsupported(`Condition operator '${operator}' is not supported.`);
+  const attribute = attr(item, 'Attribute')?.trim().toLowerCase();
+  if (!attribute) unsupported('A condition names no Attribute.');
+  return { attribute, operator, value: valueOf(attr(item, 'Value')) };
 }
 
 /** Parses a business rule's XAML into { steps, clientOnly[] } or { unsupported: reason, clientOnly: [] }. */
@@ -188,19 +191,22 @@ function test(condition, row) {
 
 // Applies the steps to the payload (data) and the merged row; collects required columns; throws a rule's error.
 function apply(steps, { data, merged, creating, required }) {
-  for (const step of steps) {
-    if (step.kind === 'condition') {
-      const results = step.conditions.map((condition) => test(condition, merged));
-      const passed = step.logic === 'or' ? results.some(Boolean) : results.every(Boolean);
-      apply(passed ? step.then : step.else, { data, merged, creating, required });
-    } else if (step.kind === 'error') throw ruleError(step.message);
-    else if (step.kind === 'required') {
-      if (step.required) required.add(step.column);
-      else required.delete(step.column);
-    } else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
-      data[step.column] = step.value;
-      merged[step.column] = step.value;
-    }
+  for (const step of steps) applyBusinessRuleStep(step, { data, merged, creating, required });
+}
+
+function applyBusinessRuleStep(step, context) {
+  const { data, merged, creating, required } = context;
+  if (step.kind === 'condition') {
+    const results = step.conditions.map((condition) => test(condition, merged));
+    const passed = step.logic === 'or' ? results.some(Boolean) : results.every(Boolean);
+    apply(passed ? step.then : step.else, context);
+  } else if (step.kind === 'error') throw ruleError(step.message);
+  else if (step.kind === 'required') {
+    if (step.required) required.add(step.column);
+    else required.delete(step.column);
+  } else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
+    data[step.column] = step.value;
+    merged[step.column] = step.value;
   }
 }
 
@@ -226,7 +232,10 @@ function ruleOf(row, parsed) {
   const workflowId = bare(row.workflowid);
   const xaml = row.xaml ?? '';
   let entry = parsed.get(workflowId);
-  if (entry?.xaml !== xaml) parsed.set(workflowId, (entry = { xaml, parsed: parseBusinessRule(xaml) }));
+  if (entry?.xaml !== xaml) {
+    entry = { xaml, parsed: parseBusinessRule(xaml) };
+    parsed.set(workflowId, entry);
+  }
   return {
     workflowId,
     name: row.name ?? null,
@@ -286,6 +295,7 @@ export function validateBusinessRules(map) {
 
 // ---- Extension
 
+// Runs one rule; answers how it ran: 'override' (a pack handler), 'unsupported' (not evaluated) or 'evaluated'.
 function runRule(state, c, mapping, rule, { operation, data, merged, creating, required }) {
   const override = state.overrides[rule.workflowId];
   if (override) {
@@ -310,7 +320,7 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
       Object.assign(data, result.target);
       Object.assign(merged, result.target);
     }
-    return;
+    return 'override';
   }
   if (rule.clientOnly.length)
     report(state, {
@@ -329,9 +339,40 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
       table: mapping.logicalName,
       message: `${rule.unsupported} The rule is not evaluated; supply a pack businessRules['${rule.workflowId}'] handler.`,
     });
-    return;
+    return 'unsupported';
   }
   apply(rule.steps, { data, merged, creating, required });
+  return 'evaluated';
+}
+
+// Tracing: each rule run is one business-rule event on the write's span, naming the rule, how it ran, the columns it set and
+// the error it raised (a raised error fails the write); under a bulk span the rows' runs are one event and the span's
+// `businessRules` counts (dataverse-security.mjs traceDecision), never one event per row.
+function tracedRule(span, state, c, mapping, rule, facts) {
+  if (!span) return runRule(state, c, mapping, rule, facts);
+  const before = { ...facts.data };
+  const event = (attributes) =>
+    traceDecision(span, 'business-rule', {
+      attributes: {
+        workflowId: rule.workflowId,
+        name: rule.name ?? null,
+        table: mapping.logicalName,
+        operation: facts.operation,
+        ...attributes,
+      },
+    });
+  let mode;
+  try {
+    mode = runRule(state, c, mapping, rule, facts);
+  } catch (error) {
+    event({ mode: 'error', code: error?.code ?? null, error: error?.message ?? String(error) });
+    throw error;
+  }
+  const changed = Object.keys(facts.data).filter(
+    (key) => !Object.hasOwn(before, key) || before[key] !== facts.data[key],
+  );
+  event({ mode, changed });
+  return mode;
 }
 
 /**
@@ -357,9 +398,11 @@ function install(api, options = {}) {
     const rules = rulesFor(mapping.logicalName).filter((rule) => rule.scope === 'entity');
     if (!rules.length) return;
     const creating = operation === 'create' || (operation === 'upsert' && !existing);
-    const merged = { ...(existing ?? {}), ...data };
+    const merged = { ...existing, ...data };
     const required = new Set();
-    for (const rule of rules) runRule(state, c, mapping, rule, { operation, data, merged, creating, required });
+    const span = api.store.traces?.enabled ? api.store.traces.current() : null;
+    for (const rule of rules)
+      tracedRule(span, state, c, mapping, rule, { operation, data, merged, creating, required });
     for (const column of required) if (empty(refId(merged[column]))) throw requiredError(mapping.logicalName, column);
   });
 }

@@ -1,7 +1,8 @@
+// @test-kind contract: the stop command prints shell-safe hints and stops only the Mirage runtimes it owns across shells.
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { execFile } from 'node:child_process';
@@ -10,6 +11,7 @@ import { writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../lense/stop-command.mjs';
+import { tempDir } from './fixture.mjs';
 
 const execute = promisify(execFile);
 const shells = process.platform === 'win32' ? ['cmd', 'cmd-delayed', 'powershell'] : ['posix'];
@@ -62,7 +64,6 @@ async function capture(command, shell, directory, cli, bashFile, { batch = false
     cwd: directory,
     windowsHide: true,
     windowsVerbatimArguments: cmd,
-    timeout: 15000,
     env: {
       ...process.env,
       PATH: (posix ? path.join(directory, 'posix-bin') : directory) + path.delimiter + process.env.PATH,
@@ -89,7 +90,7 @@ async function capture(command, shell, directory, cli, bashFile, { batch = false
 }
 
 async function collectorFixture(t, { reportCwd = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-stop-argv-'));
+  const directory = await tempDir('paqvilo-stop-argv-');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const cli = path.join(directory, 'collector.mjs');
   await fs.writeFile(
@@ -107,21 +108,13 @@ async function collectorFixture(t, { reportCwd = false } = {}) {
   await fs.chmod(shim, 0o755);
   let bashFile;
   if (process.platform === 'win32') {
-    for (const candidate of [
-      path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git/bin/bash.exe'),
-      path.join(process.env.LOCALAPPDATA ?? '', 'Programs/Git/bin/bash.exe'),
-    ]) {
-      if (
-        await fs.access(candidate).then(
-          () => true,
-          () => false,
-        )
-      ) {
-        bashFile = candidate;
-        break;
-      }
-    }
-    if (bashFile) t.diagnostic('POSIX argv is also exercised through Git Bash with MSYS path conversion disabled.');
+    // Git for Windows, the Git the toolkit requires, ships Git Bash as bin/bash.exe of its install root, three folders
+    // above its exec path. Taking it from the Git in use, instead of probing install folders, runs the lane on every
+    // Windows machine; a missing Git Bash fails here with its path.
+    const execPath = (await execute('git', ['--exec-path'], { windowsHide: true })).stdout.trim();
+    bashFile = path.resolve(execPath, '..', '..', '..', 'bin', 'bash.exe');
+    await fs.access(bashFile);
+    t.diagnostic('POSIX argv is also exercised through Git Bash with MSYS path conversion disabled.');
   }
   return { directory, cli, bashFile, availableShells: [...shells, ...(bashFile ? ['git-bash'] : [])] };
 }
@@ -144,16 +137,15 @@ test('Windows and POSIX formatters keep copied hints on one line while retaining
   assert.ok(mirageStopCommand(['--project', "O'Brien"], { cli, platform: 'linux' }).includes("'O'\"'\"'Brien'"));
 });
 
-test(
-  'printed stop commands preserve literal argv in every native shell without downloads or shell side effects',
-  { timeout: 60000 },
-  async (t) => {
-    const { directory, cli, bashFile, availableShells } = await collectorFixture(t);
-    for (const { values, windowsReadable, posixReadable } of cases) {
-      const args = values.flatMap((value) => ['--project', value]);
-      // Execute each exact hint. A fixture-owned npx shim forwards to the collector
-      // without a network install; fallback hints invoke that same CLI directly.
-      for (const shell of availableShells) {
+test('printed stop commands preserve literal argv in every native shell without downloads or shell side effects', async (t) => {
+  const { directory, cli, bashFile, availableShells } = await collectorFixture(t);
+  for (const { values, windowsReadable, posixReadable } of cases) {
+    const args = values.flatMap((value) => ['--project', value]);
+    // Execute each exact hint. A fixture-owned npx shim forwards to the collector
+    // without a network install; fallback hints invoke that same CLI directly.
+    // Shells share no state here (the collector only prints), so they run together.
+    await Promise.all(
+      availableShells.map(async (shell) => {
         const platform = shell === 'posix' || shell === 'git-bash' ? 'linux' : 'win32';
         const hint = mirageStopCommand(args, { cli, platform });
         assert.doesNotMatch(hint, /[\r\n]/, 'the copyable command remains a single line');
@@ -163,12 +155,12 @@ test(
           ['mirage', 'stop', ...args],
           shell + ': ' + hint,
         );
-      }
-    }
-    assert.throws(() => mirageStopCommand(['--project', 'invalid\0path'], { cli }), /NUL/);
-    assert.throws(() => mirageStopCommand([], { cli: './relative-cli.mjs' }), /absolute CLI/);
-  },
-);
+      }),
+    );
+  }
+  assert.throws(() => mirageStopCommand(['--project', 'invalid\0path'], { cli }), /NUL/);
+  assert.throws(() => mirageStopCommand([], { cli: './relative-cli.mjs' }), /absolute CLI/);
+});
 
 test('listener selectors retain default HTTP ports and distinguish an absent listener', () => {
   assert.equal(listenerPort('http://127.0.0.1:80'), '80');
@@ -178,59 +170,56 @@ test('listener selectors retain default HTTP ports and distinguish an absent lis
   assert.equal(listenerPort('file:///invented'), undefined);
 });
 
-test(
-  'directory-bound hints execute in their original ownership directory across shells',
-  { timeout: 60000 },
-  async (t) => {
-    const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
-    const selected = path.join(directory, "runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
-    await fs.mkdir(selected);
-    const cwd = await fs.realpath(selected),
-      args = ['--state', path.join(directory, 'invented state.json'), '--port', '9000'];
-    for (const shell of availableShells) {
+test('directory-bound hints execute in their original ownership directory across shells', async (t) => {
+  const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
+  const selected = path.join(directory, "runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
+  await fs.mkdir(selected);
+  const cwd = await fs.realpath(selected),
+    args = ['--state', path.join(directory, 'invented state.json'), '--port', '9000'];
+  await Promise.all(
+    availableShells.map(async (shell) => {
       const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
       const hint = mirageStopCommand(args, { cli, platform, cwd });
       assert.match(hint, /^node -e /);
       assert.deepEqual(await capture(hint, shell, directory, cli, bashFile), [cwd, 'mirage', 'stop', ...args]);
-    }
-    assert.throws(() => mirageStopCommand(args, { cli, cwd: './relative' }), /working directory/);
-    assert.throws(() => mirageStopCommand(args, { cli, cwd: cwd + '\0' }), /working directory/);
-  },
-);
+    }),
+  );
+  assert.throws(() => mirageStopCommand(args, { cli, cwd: './relative' }), /working directory/);
+  assert.throws(() => mirageStopCommand(args, { cli, cwd: cwd + '\0' }), /working directory/);
+});
 
-test(
-  'a compressed sixteen-target command fits CMD and attempts every target after a failure',
-  { timeout: 120000 },
-  async (t) => {
-    const { directory, cli, bashFile, availableShells } = await collectorFixture(t);
-    const commands = Array.from({ length: 16 }, (_, i) => [
-      'mirage',
-      'stop',
-      '--config',
-      path.join(directory, 'catalogues/invented-workspace/paqvilo.config.yml'),
-      '--repo',
-      path.join(directory, 'source-checkouts/invented-workspace'),
-      '--site',
-      `portal-${i}`,
-      '--portals',
-      'selected',
-      '--project',
-      path.join(directory, `projects/portal-${i}/mirage.project.yml`),
-      '--portal',
-      `portal-${i}`,
-      '--runtime',
-      'power-pages',
-      '--state',
-      path.join(directory, `catalogues/invented-workspace/.paqvilo/simulator/projects/project-${i}/state.json`),
-      '--port',
-      String(20000 + i),
-      ...(i === 7 ? ['--fail'] : []),
-    ]);
-    assert.ok(
-      Buffer.from(JSON.stringify(commands.map((args) => [cli, ...args]))).toString('base64').length > 8191,
-      'the representative uncompressed transport exceeds CMD capacity on either platform',
-    );
-    for (const shell of availableShells) {
+test('a compressed sixteen-target command fits CMD and attempts every target after a failure', async (t) => {
+  const { directory, cli, bashFile, availableShells } = await collectorFixture(t);
+  const commands = Array.from({ length: 16 }, (_, i) => [
+    'mirage',
+    'stop',
+    '--config',
+    path.join(directory, 'catalogues/invented-workspace/paqvilo.config.yml'),
+    '--repo',
+    path.join(directory, 'source-checkouts/invented-workspace'),
+    '--site',
+    `portal-${i}`,
+    '--portals',
+    'selected',
+    '--project',
+    path.join(directory, `projects/portal-${i}/mirage.project.yml`),
+    '--portal',
+    `portal-${i}`,
+    '--runtime',
+    'power-pages',
+    '--state',
+    path.join(directory, `catalogues/invented-workspace/.paqvilo/simulator/projects/project-${i}/state.json`),
+    '--port',
+    String(20000 + i),
+    ...(i === 7 ? ['--fail'] : []),
+  ]);
+  assert.ok(
+    Buffer.from(JSON.stringify(commands.map((args) => [cli, ...args]))).toString('base64').length > 8191,
+    'the representative uncompressed transport exceeds CMD capacity on either platform',
+  );
+  // Every shell replays the same printed commands into the read-only collector, so they run together.
+  await Promise.all(
+    availableShells.map(async (shell) => {
       const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
       const hint = mirageCommandHint(commands, { cli, platform });
       assert.ok(hint.length <= 8000, shell);
@@ -239,11 +228,11 @@ test(
         commands,
         shell,
       );
-    }
-  },
-);
+    }),
+  );
+});
 
-test('oversized incompressible commands use immutable file transport across shells', { timeout: 120000 }, async (t) => {
+test('oversized incompressible commands use immutable file transport across shells', async (t) => {
   const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
   const selected = path.join(directory, "file runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
   await fs.mkdir(selected);
@@ -299,7 +288,7 @@ test('oversized incompressible commands use immutable file transport across shel
   );
 });
 
-test('external command replay refuses a pipe before reading or executing any child', { timeout: 10000 }, async (t) => {
+test('external command replay refuses a pipe before reading or executing any child', async (t) => {
   const { directory, cli } = await collectorFixture(t);
   let file;
   if (process.platform === 'win32') {
@@ -313,7 +302,7 @@ test('external command replay refuses a pipe before reading or executing any chi
       server.once('error', reject);
       server.listen(file, resolve);
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     });
@@ -327,7 +316,6 @@ test('external command replay refuses a pipe before reading or executing any chi
   await assert.rejects(
     execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
       cwd: directory,
-      timeout: 3000,
       windowsHide: true,
     }),
     (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',

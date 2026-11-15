@@ -6,13 +6,17 @@ import YAML from 'yaml';
 import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
+import { hasDelimitedText } from '../mirage/lib/text-scanning.mjs';
 
 const CODE_FILE = /\.(?:[cm]?js|css|html?)$/i;
 const CODE_FIELD = /(?:javascript|stylesheet|(?:^|_)css$|(?:^|_)html$|customcss|customscript)/i;
-const MARKUP = /<(?:[a-z][\w:-]*)(?:\s[^<>]*|\s*\/?)>|\{%[\s\S]*?%\}|\{\{[\s\S]*?\}\}/i;
+const MARKUP = /<(?:[a-z][\w:-]*)(?:\s[^<>]*|\/?)>/i;
 const SKIP = new Set(['.git', '.paqvilo', 'node_modules']);
-const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-const normalize = (file) => file.replace(/\\/g, '/');
+const compare = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
+const normalize = (file) => file.replaceAll('\\', '/');
 const SOURCE_FIELDS = new Set([
   'adx_copy',
   'adx_summary',
@@ -29,8 +33,14 @@ const SOURCE_FIELDS = new Set([
 function languageOf(key, value, context) {
   if (/javascript|customscript/i.test(key)) return 'javascript';
   if (/stylesheet|(?:^|_)css$|customcss/i.test(key)) return 'css';
-  if (/(?:^|_)html$/i.test(key) || MARKUP.test(value)) return 'html';
-  if (SOURCE_FIELDS.has(key) && /(?:webpage|webtemplate|contentsnippet|type:(?:2|7|8))\b/i.test(context)) return 'html';
+  if (
+    /(?:^|_)html$/i.test(key) ||
+    MARKUP.test(value) ||
+    hasDelimitedText(value, '{%', '%}') ||
+    hasDelimitedText(value, '{{', '}}')
+  )
+    return 'html';
+  if (SOURCE_FIELDS.has(key) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context)) return 'html';
   return null;
 }
 
@@ -85,243 +95,276 @@ function metadataReason(rel, key) {
   return null;
 }
 
-/** Inventory every code file, web-file record and code-bearing YAML/component field. */
-export function auditResources(model, site) {
-  const root = model.sourceDir;
-  const relative = (file) => normalize(path.relative(root, file));
-  const entries = new Map();
-  const errors = [];
-  const diagnostics = [];
-  const excluded = [];
-  const files = [];
-  const metadata = new Map();
-  const add = (file, field, extra = {}) => {
-    const rel = relative(file);
-    const id = `${rel}${field ? `#${field}` : ''}`;
-    const existing = entries.get(id);
-    if (existing) {
-      Object.assign(existing, extra);
-      return existing;
-    }
-    const item = {
-      id,
-      relativePath: rel,
-      field: field ?? null,
-      kind: null,
-      language: null,
-      empty: null,
-      status: 'gap',
-      reason: 'No resource handler recognized this source.',
-      ...extra,
-    };
-    entries.set(id, item);
-    return item;
+function addAuditEntry(state, file, field, extra = {}) {
+  const rel = state.relative(file);
+  const suffix = field ? `#${field}` : '';
+  const id = `${rel}${suffix}`;
+  const existing = state.entries.get(id);
+  if (existing) {
+    Object.assign(existing, extra);
+    return existing;
+  }
+  const item = {
+    id,
+    relativePath: rel,
+    field: field ?? null,
+    kind: null,
+    language: null,
+    empty: null,
+    status: 'gap',
+    reason: 'No resource handler recognized this source.',
+    ...extra,
   };
-  const walk = (dir) => {
-    let children;
-    try {
-      children = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      errors.push({ relativePath: relative(dir), reason: `Cannot inventory directory: ${err.code ?? 'read failure'}` });
-      return;
-    }
-    for (const child of children.sort((a, b) => compare(a.name, b.name))) {
-      const file = path.join(dir, child.name);
-      if (child.isSymbolicLink()) {
-        excluded.push({ relativePath: relative(file), reason: 'Symbolic links and junctions are not traversed.' });
-        continue;
-      }
-      if (child.isDirectory()) {
-        if (SKIP.has(child.name)) {
-          excluded.push({
-            relativePath: relative(file),
-            reason: 'Tool state or dependencies, not portal export content.',
-          });
-          continue;
-        }
-        walk(file);
-      } else if (child.isFile()) files.push(file);
-    }
-  };
-  walk(root);
-  const read = (file) => {
-    try {
-      if (!isSourceFile(root, file)) throw Object.assign(new Error(), { code: 'UNSAFE_SOURCE' });
-      return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-    } catch (err) {
-      errors.push({ relativePath: relative(file), reason: `Cannot read source: ${err.code ?? 'read failure'}` });
-      return null;
-    }
-  };
-
-  for (const file of files) {
-    const rel = relative(file);
-    if (isEnhancedSiteMetadata(rel)) {
-      const raw = read(file);
-      add(file, null, {
-        kind: 'site-metadata',
-        empty: raw === null ? null : !raw.trim(),
-        status: 'deployment',
-        reason:
-          'Enhanced site and language configuration document; the overlay cannot apply its fields. This file classification does not attest field parsing or runtime behavior.',
+  state.entries.set(id, item);
+  return item;
+}
+function readAuditSource(state, file) {
+  try {
+    if (!isSourceFile(state.root, file))
+      throw Object.assign(new Error('Source path is unsafe.'), { code: 'UNSAFE_SOURCE' });
+    return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  } catch (err) {
+    state.errors.push({
+      relativePath: state.relative(file),
+      reason: `Cannot read source: ${err.code ?? 'read failure'}`,
+    });
+    return null;
+  }
+}
+function walkAuditDirectory(dir, state) {
+  let children;
+  try {
+    children = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    state.errors.push({
+      relativePath: state.relative(dir),
+      reason: `Cannot inventory directory: ${err.code ?? 'read failure'}`,
+    });
+    return;
+  }
+  for (const child of children.sort((a, b) => compare(a.name, b.name))) {
+    const file = path.join(dir, child.name);
+    if (child.isSymbolicLink()) {
+      state.excluded.push({
+        relativePath: state.relative(file),
+        reason: 'Symbolic links and junctions are not traversed.',
       });
       continue;
     }
-    if (CODE_FILE.test(file)) {
-      const text = read(file);
-      add(file, null, {
-        language: /\.[cm]?js$/i.test(file) ? 'javascript' : /\.css$/i.test(file) ? 'css' : 'html',
-        empty: text === null ? null : !text.trim(),
-      });
-    }
-    let record;
-    let document;
-    let context = rel;
-    let inactive = false;
-    if (/\.ya?ml$/i.test(file)) {
-      const raw = read(file);
-      if (raw === null) continue;
-      document = YAML.parseDocument(raw);
-      const fatal = document.errors.filter((error) => error.code !== 'DUPLICATE_KEY');
-      if (fatal.length) {
-        errors.push({ relativePath: rel, reason: 'Cannot parse YAML; fields were not inventoried.' });
+    if (child.isDirectory()) {
+      if (SKIP.has(child.name)) {
+        state.excluded.push({
+          relativePath: state.relative(file),
+          reason: 'Tool state or dependencies, not portal export content.',
+        });
         continue;
       }
-      for (const error of document.errors)
-        diagnostics.push({
-          relativePath: rel,
-          code: error.code,
-          reason: 'Duplicate YAML key; every occurrence was inventoried, but deployment interpretation is ambiguous.',
-        });
-      inactive = YAML.isMap(document.contents) && Number(document.get('statecode')) === 1;
-    } else if (/^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel)) {
-      const raw = read(file);
-      if (raw === null) continue;
-      context = `type:${/<powerpagecomponenttype>\s*(\d+)\s*</.exec(raw)?.[1] ?? '?'}`;
-      // Metadata-only components can legitimately have no <content> (e.g. page templates).
-      if (!/<content\b/i.test(raw) && !/^type:(?:2|3|7|8|15|17|20)$/.test(context)) continue;
-      const inspected = inspectComponentJson(raw);
-      for (const diagnostic of inspected.diagnostics) errors.push({ relativePath: rel, ...diagnostic });
-      record = inspected.value;
-      if (!record) continue;
-      inactive = /<statecode>\s*1\s*<\/statecode>/.test(raw);
-    } else continue;
-    metadata.set(file, { inactive });
-    const visit = (parts, value, inheritedReason = null, depth = 0) => {
-      const key = parts.at(-1) ?? '';
-      const language = languageOf(key, value, context);
-      let reason = inheritedReason ?? metadataReason(rel, key);
-      const entryInactive =
-        inactive ||
-        Boolean(
-          document &&
-          parts.some((_part, index) => {
-            const prefix = parts.slice(0, index);
-            return (
-              Number(document.getIn([...prefix, 'statecode'])) === 1 ||
-              ['adx_entityform', 'adx_webform', 'entityform', 'webform'].some((key) =>
-                model.inactiveForms?.has(String(document.getIn([...prefix, key]) ?? '').toLowerCase()),
-              )
-            );
-          }),
-        );
-      let nestedCount = 0;
-      // Localized metadata is a serialized JSON array. Inventory its literal strings
-      // independently; the container's LCIDs and server settings still need deployment.
-      if (/^\s*[[{]/.test(value)) {
-        try {
-          const nested = JSON.parse(value);
-          if (nested && typeof nested === 'object') {
-            if (depth >= 16) {
-              errors.push({
-                relativePath: rel,
-                reason: 'Serialized JSON nesting limit reached; inventory is incomplete.',
-              });
-              return 0;
-            }
-            const nestedDocument = YAML.parseDocument(value);
-            for (const error of nestedDocument.errors)
-              diagnostics.push({
-                relativePath: rel,
-                code: error.code,
-                reason:
-                  'Duplicate serialized JSON key; every occurrence was inventoried, but its interpretation is ambiguous.',
-              });
-            yamlStrings(nestedDocument.contents, nestedDocument, (keys, text) => {
-              nestedCount += visit([...parts, ...keys], text, reason, depth + 1);
-            });
-            reason ??=
-              'Serialized metadata container; literal text values are inventoried separately from server configuration.';
-          }
-        } catch {
-          /* not JSON: retain as a candidate, never silently ignore it */
-        }
-      }
-      if (!nestedCount && (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(key)))) return 0;
-      add(file, parts.join('.'), {
-        language: language ?? 'container',
-        empty: !value.trim(),
-        ...(reason ? { status: 'deployment', reason } : {}),
-        ...(entryInactive ? { status: 'inactive', reason: 'Inactive portal record is not rendered.' } : {}),
-      });
-      return nestedCount + 1;
-    };
-    if (document) yamlStrings(document.contents, document, visit);
-    else strings(record, visit);
+      walkAuditDirectory(file, state);
+    } else if (child.isFile()) state.files.push(file);
   }
-
-  // Content can be inactive because its language root is inactive, even if the content
-  // record itself is active. The mapper exposes this explicit metadata relationship.
-  const inactiveSources = new Set((model.inactiveSources ?? []).map((source) => source.file));
-  for (const item of entries.values()) {
-    const file = path.join(root, item.relativePath);
-    const mirage = /[\\/]web-files[\\/]/.test(file)
-      ? `${file}.webfile.yml`
-      : /\.[^./\\]+\.[^./\\]+$/.test(file)
-        ? file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml')
-        : null;
-    if (((!item.field || model.format === 'enhanced') && inactiveSources.has(file)) || metadata.get(mirage)?.inactive)
+}
+function parseAuditYamlFile(file, rel, state) {
+  const raw = readAuditSource(state, file);
+  if (raw === null) return null;
+  const document = YAML.parseDocument(raw);
+  const fatal = document.errors.filter((error) => error.code !== 'DUPLICATE_KEY');
+  if (fatal.length) {
+    state.errors.push({ relativePath: rel, reason: 'Cannot parse YAML; fields were not inventoried.' });
+    return null;
+  }
+  for (const error of document.errors)
+    state.diagnostics.push({
+      relativePath: rel,
+      code: error.code,
+      reason: 'Duplicate YAML key; every occurrence was inventoried, but deployment interpretation is ambiguous.',
+    });
+  const inactive = YAML.isMap(document.contents) && Number(document.get('statecode')) === 1;
+  return { document, record: undefined, context: rel, inactive };
+}
+function parseAuditComponentFile(file, rel, state) {
+  const raw = readAuditSource(state, file);
+  if (raw === null) return null;
+  const context = `type:${/<powerpagecomponenttype>\s*(\d+)\s*</.exec(raw)?.[1] ?? '?'}`;
+  // Metadata-only components can legitimately have no <content> (e.g. page templates).
+  if (!/<content\b/i.test(raw) && !/^type:(?:2|3|7|8|15|17|20)$/.test(context)) return null;
+  const inspected = inspectComponentJson(raw);
+  for (const diagnostic of inspected.diagnostics) state.errors.push({ relativePath: rel, ...diagnostic });
+  const record = inspected.value;
+  if (!record) return null;
+  const inactive = /<statecode>\s*1\s*<\/statecode>/.test(raw);
+  return { document: undefined, record, context, inactive };
+}
+function parseAuditStructuredFile(file, rel, state) {
+  let source;
+  if (/\.ya?ml$/i.test(file)) source = parseAuditYamlFile(file, rel, state);
+  else if (/^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel))
+    source = parseAuditComponentFile(file, rel, state);
+  else return null;
+  if (!source) return null;
+  state.metadata.set(file, { inactive: source.inactive });
+  return { ...source, rel };
+}
+function auditValueIsInactive(parts, state, source) {
+  return (
+    source.inactive ||
+    Boolean(
+      source.document &&
+      parts.some((_part, index) => {
+        const prefix = parts.slice(0, index);
+        return (
+          Number(source.document.getIn([...prefix, 'statecode'])) === 1 ||
+          ['adx_entityform', 'adx_webform', 'entityform', 'webform'].some((formKey) =>
+            state.model.inactiveForms?.has(String(source.document.getIn([...prefix, formKey]) ?? '').toLowerCase()),
+          )
+        );
+      }),
+    )
+  );
+}
+function nestedAuditStrings(parts, value, inheritedReason, depth, state, source) {
+  let count = 0;
+  try {
+    const nested = JSON.parse(value);
+    if (!nested || typeof nested !== 'object') return { count: 0, reason: inheritedReason };
+    if (depth >= 16) {
+      state.errors.push({
+        relativePath: source.rel,
+        reason: 'Serialized JSON nesting limit reached; inventory is incomplete.',
+      });
+      return { count: 0, reason: inheritedReason, stopped: true };
+    }
+    const nestedDocument = YAML.parseDocument(value);
+    for (const error of nestedDocument.errors)
+      state.diagnostics.push({
+        relativePath: source.rel,
+        code: error.code,
+        reason: 'Duplicate serialized JSON key; every occurrence was inventoried, but its interpretation is ambiguous.',
+      });
+    yamlStrings(nestedDocument.contents, nestedDocument, (keys, text) => {
+      count += visitAuditValue([...parts, ...keys], text, state, source, inheritedReason, depth + 1);
+    });
+    return {
+      count,
+      reason:
+        inheritedReason ??
+        'Serialized metadata container; literal text values are inventoried separately from server configuration.',
+    };
+  } catch {
+    /* not JSON: retain as a candidate, never silently ignore it */
+    return { count, reason: inheritedReason };
+  }
+}
+function visitAuditValue(parts, value, state, source, inheritedReason = null, depth = 0) {
+  const key = parts.at(-1) ?? '';
+  const language = languageOf(key, value, source.context);
+  let reason = inheritedReason ?? metadataReason(source.rel, key);
+  const entryInactive = auditValueIsInactive(parts, state, source);
+  let nestedCount = 0;
+  // Localized metadata is a serialized JSON array. Inventory its literal strings
+  // independently; the container's LCIDs and server settings still need deployment.
+  if (/^\s*[[{]/.test(value)) {
+    const nested = nestedAuditStrings(parts, value, reason, depth, state, source);
+    if (nested.stopped) return 0;
+    nestedCount = nested.count;
+    reason = nested.reason;
+  }
+  if (!nestedCount && (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(key)))) return 0;
+  addAuditEntry(state, source.file, parts.join('.'), {
+    language: language ?? 'container',
+    empty: !value.trim(),
+    ...(reason ? { status: 'deployment', reason } : {}),
+    ...(entryInactive ? { status: 'inactive', reason: 'Inactive portal record is not rendered.' } : {}),
+  });
+  return nestedCount + 1;
+}
+function scanAuditFile(file, state) {
+  const rel = state.relative(file);
+  if (isEnhancedSiteMetadata(rel)) {
+    const raw = readAuditSource(state, file);
+    addAuditEntry(state, file, null, {
+      kind: 'site-metadata',
+      empty: raw === null ? null : !raw.trim(),
+      status: 'deployment',
+      reason:
+        'Enhanced site and language configuration document; the overlay cannot apply its fields. This file classification does not attest field parsing or runtime behavior.',
+    });
+    return;
+  }
+  if (CODE_FILE.test(file)) {
+    const text = readAuditSource(state, file);
+    let language = 'html';
+    if (/\.[cm]?js$/i.test(file)) language = 'javascript';
+    else if (/\.css$/i.test(file)) language = 'css';
+    addAuditEntry(state, file, null, { language, empty: text === null ? null : !text.trim() });
+  }
+  const source = parseAuditStructuredFile(file, rel, state);
+  if (!source) return;
+  source.file = file;
+  if (source.document)
+    yamlStrings(source.document.contents, source.document, (parts, value) =>
+      visitAuditValue(parts, value, state, source),
+    );
+  else strings(source.record, (parts, value) => visitAuditValue(parts, value, state, source));
+}
+function applyInactiveEntries(state) {
+  const inactiveSources = new Set((state.model.inactiveSources ?? []).map((source) => source.file));
+  for (const item of state.entries.values()) {
+    const file = path.join(state.root, item.relativePath);
+    let mirage = null;
+    if (/[\\/]web-files[\\/]/.test(file)) mirage = `${file}.webfile.yml`;
+    else if (/\.[^./\\]+\.[^./\\]+$/.test(file)) mirage = file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml');
+    if (
+      ((!item.field || state.model.format === 'enhanced') && inactiveSources.has(file)) ||
+      state.metadata.get(mirage)?.inactive
+    )
       Object.assign(item, {
         status: 'inactive',
         reason: 'Inactive portal record or inactive language root is not rendered.',
       });
   }
-
-  // Ignore user selection when measuring mapping capability; report it independently.
-  const resolver = new Resolver(model, { ...site, scope: 'all' });
-  for (const source of model.inlineSources) {
+}
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function applyInlineSources(state, site) {
+  for (const source of state.model.inlineSources) {
     const file = source.file;
     const field = source.fieldPath
       ? [...source.fieldPath, ...(source.jsonPath ?? [])].join('.')
       : (source.field ?? null);
     // The enhanced mapper also offers absent/empty optional fields for future edits.
     // They are capabilities, not additional code occurrences found on disk.
-    if (field && !entries.has(`${relative(file)}#${field}`)) continue;
-    const item = add(file, field, { kind: source.kind });
-    const supported = isSourceFile(root, file) && (!source.kind.startsWith('page-') || source.pageUrl != null);
+    if (field && !state.entries.has(`${state.relative(file)}#${field}`)) continue;
+    const item = addAuditEntry(state, file, field, { kind: source.kind });
+    const supported = isSourceFile(state.root, file) && (!source.kind.startsWith('page-') || source.pageUrl != null);
     const settings = source.mode === 'block' ? site.inline : site.markup;
+    let reason = 'Source is missing, unsafe, or its page URL cannot be resolved.';
+    if (supported && source.mode === 'block')
+      reason = 'Inline block handler; rendered-page matching still requires verification.';
+    else if (supported) reason = 'Literal baseline patch handler; Liquid execution and runtime matching remain online.';
     Object.assign(item, {
       status: supported ? 'mapped' : 'blocked',
-      reason: supported
-        ? source.mode === 'block'
-          ? 'Inline block handler; rendered-page matching still requires verification.'
-          : 'Literal baseline patch handler; Liquid execution and runtime matching remain online.'
-        : 'Source is missing, unsafe, or its page URL cannot be resolved.',
+      reason,
       strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch',
       enabled: Boolean(settings?.enabled && settings.kinds.includes(source.kind)),
       pageUrl: source.pageUrl ?? null,
     });
   }
-  for (const resource of model.webFiles) {
+}
+function applyWebFiles(state, resolver) {
+  for (const resource of state.model.webFiles) {
     const file = resource.file ?? resource.yml;
-    const item = add(file, resource.file ? null : '$attachment', { kind: 'web-file', url: resource.url });
-    const supported = Boolean(resource.file && resource.url && !resource.problem && isSourceFile(root, resource.file));
+    const item = addAuditEntry(state, file, resource.file ? null : '$attachment', {
+      kind: 'web-file',
+      url: resource.url,
+    });
+    const supported = Boolean(
+      resource.file && resource.url && !resource.problem && isSourceFile(state.root, resource.file),
+    );
     const reason =
       resource.problem ??
       (supported
         ? 'Local web-file response handler; request coverage still requires verification.'
         : 'Missing or unsafe content file or unresolved URL.');
-    (item.mappings ??= []).push({ metadataPath: relative(resource.yml), url: resource.url, supported, reason });
+    item.mappings ??= [];
+    item.mappings.push({ metadataPath: state.relative(resource.yml), url: resource.url, supported, reason });
     const blocked = item.mappings.some((mapping) => !mapping.supported);
     Object.assign(item, {
       status: blocked ? 'blocked' : 'mapped',
@@ -330,24 +373,27 @@ export function auditResources(model, site) {
       enabled: Boolean(resource.file && resource.url && resolver.resolve(resource.url)?.file === resource.file),
     });
   }
-
-  // Explicit routes may intentionally map a payload that has no export metadata. Resolve
-  // the derived URL through normal precedence/exclusion rules before counting it.
-  for (const item of entries.values()) {
+}
+function explicitRouteUrl(rule, root, file) {
+  if (rule.passthrough) return null;
+  let url = null;
+  if (rule.file && path.resolve(root, rule.file) === file && !/[?*]/.test(rule.url)) url = rule.url;
+  if (rule.dir) {
+    const routeRoot = path.resolve(root, rule.dir);
+    const rel = path.relative(routeRoot, file);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    const wildcard = rule.url.search(/[?*]/);
+    const prefix = rule.url.slice(0, rule.url.lastIndexOf('/', wildcard < 0 ? rule.url.length : wildcard) + 1);
+    url = prefix + normalize(rel).split('/').map(encodeURIComponent).join('/');
+  }
+  return url;
+}
+function applyExplicitRoutes(state, site, resolver) {
+  for (const item of state.entries.values()) {
     if (item.status !== 'gap' || item.field) continue;
-    const file = path.resolve(root, item.relativePath);
+    const file = path.resolve(state.root, item.relativePath);
     for (const rule of site.routes ?? []) {
-      if (rule.passthrough) continue;
-      let url = null;
-      if (rule.file && path.resolve(root, rule.file) === file && !/[?*]/.test(rule.url)) url = rule.url;
-      if (rule.dir) {
-        const routeRoot = path.resolve(root, rule.dir);
-        const rel = path.relative(routeRoot, file);
-        if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
-        const wildcard = rule.url.search(/[?*]/);
-        const prefix = rule.url.slice(0, rule.url.lastIndexOf('/', wildcard < 0 ? rule.url.length : wildcard) + 1);
-        url = prefix + normalize(rel).split('/').map(encodeURIComponent).join('/');
-      }
+      const url = explicitRouteUrl(rule, state.root, file);
       if (url && resolver.resolve(url)?.file === file) {
         Object.assign(item, {
           status: 'mapped',
@@ -374,10 +420,10 @@ export function auditResources(model, site) {
           'Server logic runs on the Power Pages server; changes require deployment. Mirage provides separately configured local operation models.',
       });
   }
-
-  const resources = [...entries.values()].sort((a, b) => compare(a.id, b.id));
+}
+function auditTotals(resources) {
   const count = (status) => resources.filter((item) => item.status === status).length;
-  const totals = {
+  return {
     resources: resources.length,
     mapped: count('mapped'),
     blocked: count('blocked'),
@@ -386,31 +432,66 @@ export function auditResources(model, site) {
     gaps: count('gap'),
     disabled: resources.filter((item) => item.status === 'mapped' && !item.enabled).length,
   };
+}
+
+/** Inventory every code file, web-file record and code-bearing YAML/component field. */
+export function auditResources(model, site) {
+  const root = model.sourceDir;
+  const state = {
+    model,
+    root,
+    relative: (file) => normalize(path.relative(root, file)),
+    entries: new Map(),
+    errors: [],
+    diagnostics: [],
+    excluded: [],
+    files: [],
+    metadata: new Map(),
+  };
+  walkAuditDirectory(root, state);
+
+  for (const file of state.files) scanAuditFile(file, state);
+
+  // Content can be inactive because its language root is inactive, even if the content
+  // record itself is active. The mapper exposes this explicit metadata relationship.
+  applyInactiveEntries(state);
+
+  // Ignore user selection when measuring mapping capability; report it independently.
+  const resolver = new Resolver(model, { ...site, scope: 'all' });
+  applyInlineSources(state, site);
+  applyWebFiles(state, resolver);
+
+  // Explicit routes may intentionally map a payload that has no export metadata. Resolve
+  // the derived URL through normal precedence/exclusion rules before counting it.
+  applyExplicitRoutes(state, site, resolver);
+
+  const resources = [...state.entries.values()].sort((a, b) => compare(a.id, b.id));
+  const totals = auditTotals(resources);
   const active = totals.mapped + totals.blocked + totals.gaps;
+  let accountedPercent = 100;
+  if (resources.length) accountedPercent = ((resources.length - totals.gaps) / resources.length) * 100;
+  const mappedPercent = active ? (totals.mapped / active) * 100 : 100;
   return {
     schemaVersion: 1,
     offline: true,
     writesFiles: [],
     format: model.format,
     sourceDir: root,
-    scannedFiles: files.length,
+    scannedFiles: state.files.length,
     totals,
     coverage: {
-      inventoryComplete: errors.length === 0,
-      accountedPercent: errors.length
-        ? null
-        : resources.length
-          ? ((resources.length - totals.gaps) / resources.length) * 100
-          : 100,
-      mappedPercent: errors.length ? null : active ? (totals.mapped / active) * 100 : 100,
-      complete: errors.length === 0 && diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0,
+      inventoryComplete: state.errors.length === 0,
+      accountedPercent: state.errors.length ? null : accountedPercent,
+      mappedPercent: state.errors.length ? null : mappedPercent,
+      complete:
+        state.errors.length === 0 && state.diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0,
       runtimeVerified: false,
     },
     scope:
       'All regular files under the extract, JavaScript/CSS/HTML file extensions, code-bearing YAML/component JSON fields, and all indexed web-file payloads. Inline script/style elements remain part of their containing HTML source. Mapping is independent of configured kind filters, exclusions and changed scope; enabled reports configuration only.',
-    excluded,
-    errors,
-    diagnostics,
+    excluded: state.excluded,
+    errors: state.errors,
+    diagnostics: state.diagnostics,
     warnings: [...model.warnings].sort(compare),
     resources,
   };

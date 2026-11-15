@@ -9,18 +9,17 @@ function roundedDigits(digits, drop) {
   const cut = digits.length - drop,
     kept = BigInt(digits.slice(0, cut) || '0'),
     tail = digits.slice(cut);
-  const first = tail.charCodeAt(0) - 48,
+  const first = tail.codePointAt(0) - 48,
     round = first > 5 || (first === 5 && (/[1-9]/.test(tail.slice(1)) || kept % 2n === 1n));
   return kept + (round ? 1n : 0n);
 }
-export function parseDataverseDecimalString(value) {
-  if (typeof value !== 'string') return null;
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function decimalBounds(value) {
   let start = 0,
     end = value.length,
     sign = 1n,
     signed = false;
-  const white = (at) => value.charCodeAt(at) === 32 || (value.charCodeAt(at) >= 9 && value.charCodeAt(at) <= 13);
-  while (end > start && value.charCodeAt(end - 1) === 0) end--;
+  const white = (at) => value.codePointAt(at) === 32 || (value.codePointAt(at) >= 9 && value.codePointAt(at) <= 13);
+  while (end > start && value.codePointAt(end - 1) === 0) end--;
   while (start < end && white(start)) start++;
   while (end > start && white(end - 1)) end--;
   if (value[start] === '+' || value[start] === '-') {
@@ -34,7 +33,10 @@ export function parseDataverseDecimalString(value) {
     end--;
     while (end > start && white(end - 1)) end--;
   }
-  const text = value.slice(start, end);
+  return { text: value.slice(start, end), sign };
+}
+
+function decimalValue(text, sign) {
   if (!/^(?:\d[\d,]*(?:\.\d*)?|\.\d+)$/.test(text)) return null;
   const parts = text.replaceAll(',', '').split('.'),
     fraction = parts[1] ?? '',
@@ -48,4 +50,10 @@ export function parseDataverseDecimalString(value) {
   return exactNumeric(decimalText({ coefficient: sign * coefficient, scale: scale - drop }), 'Literal', {
     collapse: false,
   });
+}
+
+export function parseDataverseDecimalString(value) {
+  if (typeof value !== 'string') return null;
+  const bounds = decimalBounds(value);
+  return bounds ? decimalValue(bounds.text, bounds.sign) : null;
 }

@@ -131,6 +131,7 @@ export const PACK_EXPORTS = {
 // Provider exports whose modules register their real rows when they load.
 const PENDING = {
   connectors: 'connector-runtime.mjs',
+  connectorDefinitions: 'connector-runtime.mjs',
   httpFixtures: 'connector-runtime.mjs',
   connectionPrincipals: 'connector-runtime.mjs',
   storageProviders: 'storage-provider.mjs',
@@ -170,6 +171,7 @@ export const CORE = Object.freeze([
   'personaCatalog',
   'dataFiles',
   'webApiErrorTemplates',
+  'dataverseErrorTemplates',
   'dataset',
   'profiles',
   'parity',
@@ -190,7 +192,7 @@ export function registerPackExport(name, spec) {
   const existing = PACK_EXPORTS[name];
   if (existing && !existing.pending && existing.check !== spec.check)
     throw new Error(`Pack export ${name} is already registered`);
-  PACK_EXPORTS[name] = row({ ...(existing ?? {}), ...spec, pending: null });
+  PACK_EXPORTS[name] = row({ ...existing, ...spec, pending: null });
   return PACK_EXPORTS[name];
 }
 

@@ -1,84 +1,31 @@
+// @test-kind contract: Paqvilo admin mock collection override validation (optional SDK result metadata) for the original RetrieveMultiple caller
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
-import { createSimulator } from '../server.mjs';
+import { disableSteps, originalStepSimulator, pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
 
 import { validateOperationOverrides } from '../lib/operation-catalogue.mjs';
 
 test(
   'Admin preserves optional SDK result metadata through an actual original RetrieveMultiple caller',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const fixture = await pluginFixture(t),
       initial = fixture.app.store.snapshot();
     await fixture.app.close();
-    for (let n = 4; n <= 11; n++) {
-      const file = path.join(fixture.solution, 'SdkMessageProcessingSteps', pluginId(n) + '.xml');
-      await fs.writeFile(
-        file,
-        (await fs.readFile(file, 'utf8')).replace('<StateCode>0</StateCode>', '<StateCode>1</StateCode>'),
-      );
-    }
+    await disableSteps(fixture.solution, 4, 11);
     await fs.writeFile(
       path.join(fixture.solution, 'SdkMessageProcessingSteps', pluginId(12) + '.xml'),
       stepXml(12, { message: 'RetrieveMultiple', stage: 40 }),
     );
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
-      source = path.join(fixture.dir, 'Metadata.cs'),
-      assembly = path.join(fixture.dir, 'Invented.WidgetRules.dll');
-    await fs.writeFile(
-      source,
-      'using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var result=service.RetrieveMultiple(new QueryExpression("fx_widget"){ColumnSet=new ColumnSet("fx_title")});if(result.EntityName!="fx_widget"||result.MinActiveRowVersion!="12345678901234567890"||!result.TotalRecordCountLimitExceeded||result.Entities.Count!=1||result.Entities[0].GetAttributeValue<string>("fx_title")!="Configured read")throw new InvalidPluginExecutionException("Configured SDK metadata differs");((Entity)c.InputParameters["Target"])["fx_note"]="Original typed SDK metadata passed";}}}',
-    );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
-    const user = '10000000-0000-0000-0000-000000000001',
-      descriptor = {
-        trust: 'execute-local-assembly',
-        root: fixture.dir,
-        assembly: path.basename(assembly),
-        typeName: 'Invented.WidgetRules.Validate',
-        sdkRoot: path.dirname(sdk),
-        sdkAssembly: path.basename(sdk),
-        cacheRoot: path.join(fixture.dir, 'cache'),
-        context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-        serviceProfile: {
-          userId: user,
-          evidence: 'Invented actual admin configured SDK metadata',
-          grants: [{ entity: 'fx_widget', operations: ['read'] }],
-        },
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
-      },
-      pack = path.join(fixture.dir, 'metadata-pack.mjs');
-    await fs.writeFile(
-      pack,
-      'export default {id:"invented-plugin-metadata",name:"Invented metadata",description:"Owned SDK metadata admin fixture",matches:()=>true,presets:()=>({}),pluginRuntimes:' +
-        JSON.stringify({ [pluginId(3)]: descriptor }) +
-        '};',
-    );
-    const app = await createSimulator({
-      sourceDir: fixture.portal,
-      solutionRoots: [fixture.solution],
-      initial,
-      watch: false,
-      dataPacks: [{ id: 'invented-plugin-metadata', module: pack }],
+    const app = await originalStepSimulator(t, fixture, initial, {
+      source:
+        'using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var result=service.RetrieveMultiple(new QueryExpression("fx_widget"){ColumnSet=new ColumnSet("fx_title")});if(result.EntityName!="fx_widget"||result.MinActiveRowVersion!="12345678901234567890"||!result.TotalRecordCountLimitExceeded||result.Entities.Count!=1||result.Entities[0].GetAttributeValue<string>("fx_title")!="Configured read")throw new InvalidPluginExecutionException("Configured SDK metadata differs");((Entity)c.InputParameters["Target"])["fx_note"]="Original typed SDK metadata passed";}}}',
+      evidence: 'Invented actual admin configured SDK metadata',
+      grants: [{ entity: 'fx_widget', operations: ['read'] }],
     });
-    t.after(() => app.close());
     const admin = (number, body) =>
       fetch(app.url + '/__sim/api/operations/' + encodeURIComponent('plugin-step:' + pluginId(number)), {
         method: 'PATCH',
@@ -135,10 +82,12 @@ test(
     );
     assert.equal(app.store.snapshot().tables.fx_widget.length, 1);
     assert.equal(app.store.snapshot().tables.fx_widget[0].fx_note, 'Original typed SDK metadata passed');
+    // The shared CLR host is persistent (one per prepared runtime): it stops when the runtime closes.
+    await app.close();
     const starts = app.state().diagnostics.filter((n) => n.code === 'PLUGIN_CLR_HOST_STARTED'),
       stops = app.state().diagnostics.filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(starts.length, 1);
     assert.equal(stops.length, 1);
-    assert.ok(stops.every((n) => n.absenceVerified));
+    assert.equal(stops[0].absenceVerified, true);
   },
 );

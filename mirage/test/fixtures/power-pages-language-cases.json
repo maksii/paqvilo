@@ -1,0 +1,142 @@
+[
+  {
+    "id": "language-0",
+    "source": "a  {%- assign x = 1 -%}\n  b",
+    "expected": "a  b",
+    "test": "DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it",
+    "assertion": 0
+  },
+  {
+    "id": "language-1",
+    "source": "x\n{%- if true -%}\ny\n{%- endif -%}\nz",
+    "expected": "x\ny\nz",
+    "test": "DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it",
+    "assertion": 1
+  },
+  {
+    "id": "language-2",
+    "source": "[ {{- 'a' -}} ]",
+    "expected": "[a]",
+    "test": "DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it",
+    "assertion": 2
+  },
+  {
+    "id": "language-3",
+    "source": "a\t {%- if true %}b{% endif -%}  \n c",
+    "expected": "ab\n c",
+    "test": "DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it",
+    "assertion": 3
+  },
+  {
+    "id": "language-4",
+    "source": "{% for i in (1..5) limit: 2 offset: 1 %}{{ i }}{% endfor %}|{% for i in (1..3) reversed %}{{ i }}{% endfor %}|{% for i in missing %}x{% else %}none{% endfor %}",
+    "expected": "23|321|none",
+    "test": "for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue",
+    "assertion": 0
+  },
+  {
+    "id": "language-5",
+    "source": "{% assign n = 3 %}{% for i in (1..n) %}{{ i }}{% endfor %}",
+    "expected": "123",
+    "test": "for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue",
+    "assertion": 1
+  },
+  {
+    "id": "language-6",
+    "source": "{% for i in (1..3) %}{{ forloop.index }}{{ forloop.index0 }}{{ forloop.rindex }}{{ forloop.rindex0 }}{{ forloop.first }}{{ forloop.last }}{{ forloop.length }},{% endfor %}",
+    "expected": "1032truefalse3,2121falsefalse3,3210falsetrue3,",
+    "test": "for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue",
+    "assertion": 2
+  },
+  {
+    "id": "language-7",
+    "source": "{% for i in (1..5) %}{% if i == 2 %}{% continue %}{% endif %}{% if i == 4 %}{% break %}{% endif %}{{ i }}{% endfor %}",
+    "expected": "13",
+    "test": "for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue",
+    "assertion": 3
+  },
+  {
+    "id": "language-8",
+    "source": "{% for i in (1..2) %}{% else whatever %}{% endfor %}{% for i in none %}{% else whatever %}e{% endfor %}",
+    "expected": "e",
+    "test": "for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue",
+    "assertion": 4
+  },
+  {
+    "id": "language-9",
+    "source": "{% for i in (1..4) %}{% cycle 'a', 'b', 'c' %}{% endfor %}|{% cycle 'g': 'x', 'y' %}{% cycle 'g': 'x', 'y' %}",
+    "expected": "abca|xy",
+    "test": "cycle, tablerow, increment and decrement keep DotLiquid output",
+    "assertion": 0
+  },
+  {
+    "id": "language-10",
+    "source": "{% tablerow i in (1..3) cols: 2 %}{{ i }}{{ tablerowloop.col }}{{ tablerowloop.col_last }}{% endtablerow %}",
+    "expected": "<tr class=\"row1\">\r\n<td class=\"col1\">11false</td><td class=\"col2\">22true</td></tr>\r\n<tr class=\"row2\"><td class=\"col1\">31false</td></tr>\r\n",
+    "test": "cycle, tablerow, increment and decrement keep DotLiquid output",
+    "assertion": 1
+  },
+  {
+    "id": "language-11",
+    "source": "{% increment c %}{% increment c %}{% decrement d %}{% decrement d %}|{{ c }}",
+    "expected": "01-1-2|2",
+    "test": "cycle, tablerow, increment and decrement keep DotLiquid output",
+    "assertion": 2
+  },
+  {
+    "id": "language-12",
+    "source": "{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}",
+    "expected": "11.1|8.9|22",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 0
+  },
+  {
+    "id": "language-13",
+    "source": "{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}",
+    "expected": "3|3.3333333333333333333333333333|1|2.5",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 1
+  },
+  {
+    "id": "language-14",
+    "source": "{{ 1 | divided_by: 0 }}",
+    "expected": "Liquid error: Attempted to divide by zero.",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 2
+  },
+  {
+    "id": "language-15",
+    "source": "{{ 4.5612 | round: 2 }}|{{ 2.5 | round }}|{{ 3.5 | round }}|{{ 2.675 | round: 2 }}|{{ nil | round }}",
+    "expected": "4.56|2|4|2.68|0",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 3
+  },
+  {
+    "id": "language-16",
+    "source": "{{ 1.2 | ceil }}|{{ 1.8 | floor }}|{{ '3.7' | floor }}|{{ nil | ceil }}",
+    "expected": "2|1|3|0",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 4
+  },
+  {
+    "id": "language-17",
+    "source": "{{ 1.50 }}|{{ 12.5 | times: 10 }}|{{ 0.1 | plus: 0.2 }}",
+    "expected": "1.5|125|0.3",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 5
+  },
+  {
+    "id": "language-18",
+    "source": "{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}",
+    "expected": "11|Liquid error: The binary operator Add is not defined for the types 'System.Int32' and 'System.String'.",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 6
+  },
+  {
+    "id": "language-19",
+    "source": "{{ -5 | abs }}|{{ 5 | at_least: 7 }}|{{ 5 | at_most: 3 }}",
+    "expected": "5|7|3",
+    "test": "math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros",
+    "assertion": 7
+  }
+]

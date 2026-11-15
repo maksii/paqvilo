@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ import {
 } from '../lense/script-source-evidence.mjs';
 
 test('script proof is tied to the exact response snapshot, preserving original-byte mode and BOM mapping', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-script-evidence-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-script-evidence-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'owned.js');
   const bytes = Buffer.from('\uFEFFconst label="🟢";\r\ndocument.createElement("button");\r\n');
@@ -56,7 +57,7 @@ test('script proof is tied to the exact response snapshot, preserving original-b
 });
 
 test('mapped scripts retain actual body hash while source maps and unmappable lines remain separate', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-script-bounds-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-script-bounds-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   for (const [name, code, sourceMaps] of [
     ['mapped.js', 'window.x=1;\n', true],

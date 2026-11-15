@@ -1,0 +1,970 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-08",
+  "scope": "Only the68 enumerated HTTP400/code/reader cause/entity-set-position guarantees; CLR suffixes remain in private raw native evidence. Local diagnostic stack omission is a separate contract assertion.",
+  "helperSha256": "8d30332b553e45f62de42e317e853d0753f98864c062ab688398415e9a378b3a",
+  "captures": [
+    {
+      "runSha256": "7b3d5494a8a47806554b040998542d8d15efd4eaf4d6af7ebd6512638787af8c",
+      "collectorSha256": "ee59587db573d14d38f52532f4bda35fdf400075ac1358b2e5d73cb5811eed53"
+    },
+    {
+      "runSha256": "6d07826a57c21d9e362decaff2ee677ecbe2692a779fc76331600a3a39685a5c",
+      "collectorSha256": "ee59587db573d14d38f52532f4bda35fdf400075ac1358b2e5d73cb5811eed53"
+    }
+  ],
+  "cases": [
+    {
+      "id": "reader.0.plain.POST",
+      "field": "name",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "17d1eff5f61fa511504531e347a0250684650254ee06fb5ae05e5c6362b562ce",
+        "17d1eff5f61fa511504531e347a0250684650254ee06fb5ae05e5c6362b562ce"
+      ]
+    },
+    {
+      "id": "reader.0.plain.PATCH",
+      "field": "name",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "dd67730de53194e0fb743ba697df6017d08685b5798682b5ceb9aa6357b54e86",
+        "dd67730de53194e0fb743ba697df6017d08685b5798682b5ceb9aa6357b54e86"
+      ]
+    },
+    {
+      "id": "reader.0.bom.POST",
+      "field": "name",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "17d1eff5f61fa511504531e347a0250684650254ee06fb5ae05e5c6362b562ce",
+        "17d1eff5f61fa511504531e347a0250684650254ee06fb5ae05e5c6362b562ce"
+      ]
+    },
+    {
+      "id": "reader.0.bom.PATCH",
+      "field": "name",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "dd67730de53194e0fb743ba697df6017d08685b5798682b5ceb9aa6357b54e86",
+        "dd67730de53194e0fb743ba697df6017d08685b5798682b5ceb9aa6357b54e86"
+      ]
+    },
+    {
+      "id": "reader.1.plain.POST",
+      "field": "name",
+      "token": "1.0",
+      "cause": "Cannot convert the literal '1.0' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "01832342c5558aca9b7234d63bd5874839a99951726c0586ee27b190e2bed36d",
+        "01832342c5558aca9b7234d63bd5874839a99951726c0586ee27b190e2bed36d"
+      ]
+    },
+    {
+      "id": "reader.1.plain.PATCH",
+      "field": "name",
+      "token": "1.0",
+      "cause": "Cannot convert the literal '1.0' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "2356b47a6a3873484fd092e7f68dadd853494602655880b8aafc3d8e9bb54587",
+        "2356b47a6a3873484fd092e7f68dadd853494602655880b8aafc3d8e9bb54587"
+      ]
+    },
+    {
+      "id": "reader.1.bom.POST",
+      "field": "name",
+      "token": "1.0",
+      "cause": "Cannot convert the literal '1.0' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "01832342c5558aca9b7234d63bd5874839a99951726c0586ee27b190e2bed36d",
+        "01832342c5558aca9b7234d63bd5874839a99951726c0586ee27b190e2bed36d"
+      ]
+    },
+    {
+      "id": "reader.1.bom.PATCH",
+      "field": "name",
+      "token": "1.0",
+      "cause": "Cannot convert the literal '1.0' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "2356b47a6a3873484fd092e7f68dadd853494602655880b8aafc3d8e9bb54587",
+        "2356b47a6a3873484fd092e7f68dadd853494602655880b8aafc3d8e9bb54587"
+      ]
+    },
+    {
+      "id": "reader.2.plain.POST",
+      "field": "name",
+      "token": "9007199254740993",
+      "cause": "Cannot convert the literal '9007199254740993' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "fdc98390eff92ae3c0818a7c74d44e0450999f7898e52a1ef3e70c95c30cf874",
+        "fdc98390eff92ae3c0818a7c74d44e0450999f7898e52a1ef3e70c95c30cf874"
+      ]
+    },
+    {
+      "id": "reader.2.plain.PATCH",
+      "field": "name",
+      "token": "9007199254740993",
+      "cause": "Cannot convert the literal '9007199254740993' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "7f62d623bb6cbae2bfd9e94fe8181c3e79865d3a2e86fafa4a5d4bc9a4f6cbfe",
+        "7f62d623bb6cbae2bfd9e94fe8181c3e79865d3a2e86fafa4a5d4bc9a4f6cbfe"
+      ]
+    },
+    {
+      "id": "reader.2.bom.POST",
+      "field": "name",
+      "token": "9007199254740993",
+      "cause": "Cannot convert the literal '9007199254740993' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "fdc98390eff92ae3c0818a7c74d44e0450999f7898e52a1ef3e70c95c30cf874",
+        "fdc98390eff92ae3c0818a7c74d44e0450999f7898e52a1ef3e70c95c30cf874"
+      ]
+    },
+    {
+      "id": "reader.2.bom.PATCH",
+      "field": "name",
+      "token": "9007199254740993",
+      "cause": "Cannot convert the literal '9007199254740993' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "7f62d623bb6cbae2bfd9e94fe8181c3e79865d3a2e86fafa4a5d4bc9a4f6cbfe",
+        "7f62d623bb6cbae2bfd9e94fe8181c3e79865d3a2e86fafa4a5d4bc9a4f6cbfe"
+      ]
+    },
+    {
+      "id": "reader.3.plain.POST",
+      "field": "name",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "85bb60334a7de4a087eb4fe2f1d8bd85c51f59dc65a7fb3c01e950c3819386ca",
+        "85bb60334a7de4a087eb4fe2f1d8bd85c51f59dc65a7fb3c01e950c3819386ca"
+      ]
+    },
+    {
+      "id": "reader.3.plain.PATCH",
+      "field": "name",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "fa76654f08bb4e730434f2229a9cde5b8e413e9dba53b64e1d0be1968a9739a0",
+        "fa76654f08bb4e730434f2229a9cde5b8e413e9dba53b64e1d0be1968a9739a0"
+      ]
+    },
+    {
+      "id": "reader.3.bom.POST",
+      "field": "name",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "85bb60334a7de4a087eb4fe2f1d8bd85c51f59dc65a7fb3c01e950c3819386ca",
+        "85bb60334a7de4a087eb4fe2f1d8bd85c51f59dc65a7fb3c01e950c3819386ca"
+      ]
+    },
+    {
+      "id": "reader.3.bom.PATCH",
+      "field": "name",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "fa76654f08bb4e730434f2229a9cde5b8e413e9dba53b64e1d0be1968a9739a0",
+        "fa76654f08bb4e730434f2229a9cde5b8e413e9dba53b64e1d0be1968a9739a0"
+      ]
+    },
+    {
+      "id": "reader.4.plain.POST",
+      "field": "quantity",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec",
+        "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec"
+      ]
+    },
+    {
+      "id": "reader.4.plain.PATCH",
+      "field": "quantity",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "a2f8b0e3a6fda4c13bad3c4469fd95b47d51162e7903370e25171bc93eb68a34",
+        "a2f8b0e3a6fda4c13bad3c4469fd95b47d51162e7903370e25171bc93eb68a34"
+      ]
+    },
+    {
+      "id": "reader.4.bom.POST",
+      "field": "quantity",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec",
+        "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec"
+      ]
+    },
+    {
+      "id": "reader.4.bom.PATCH",
+      "field": "quantity",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "a2f8b0e3a6fda4c13bad3c4469fd95b47d51162e7903370e25171bc93eb68a34",
+        "a2f8b0e3a6fda4c13bad3c4469fd95b47d51162e7903370e25171bc93eb68a34"
+      ]
+    },
+    {
+      "id": "reader.5.plain.POST",
+      "field": "quantity",
+      "token": "1.25",
+      "cause": "Cannot convert the literal '1.25' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "64dd5ec5a3d5858b01c508d3e4f7afbd472f102b363d4bbfbef2af56715b3de3",
+        "64dd5ec5a3d5858b01c508d3e4f7afbd472f102b363d4bbfbef2af56715b3de3"
+      ]
+    },
+    {
+      "id": "reader.5.plain.PATCH",
+      "field": "quantity",
+      "token": "1.25",
+      "cause": "Cannot convert the literal '1.25' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "268997c200defbc3193982806df078c1183b92ede425a6ff0dc63fdc6f2f7732",
+        "268997c200defbc3193982806df078c1183b92ede425a6ff0dc63fdc6f2f7732"
+      ]
+    },
+    {
+      "id": "reader.5.bom.POST",
+      "field": "quantity",
+      "token": "1.25",
+      "cause": "Cannot convert the literal '1.25' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "64dd5ec5a3d5858b01c508d3e4f7afbd472f102b363d4bbfbef2af56715b3de3",
+        "64dd5ec5a3d5858b01c508d3e4f7afbd472f102b363d4bbfbef2af56715b3de3"
+      ]
+    },
+    {
+      "id": "reader.5.bom.PATCH",
+      "field": "quantity",
+      "token": "1.25",
+      "cause": "Cannot convert the literal '1.25' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "268997c200defbc3193982806df078c1183b92ede425a6ff0dc63fdc6f2f7732",
+        "268997c200defbc3193982806df078c1183b92ede425a6ff0dc63fdc6f2f7732"
+      ]
+    },
+    {
+      "id": "reader.6.plain.POST",
+      "field": "quantity",
+      "token": "\"not-a-number\"",
+      "cause": "Cannot convert the literal 'not-a-number' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "8dc52f71b825b292ad5691ad909b49f2af6864a6dfb50ff508875e9549405a98",
+        "8dc52f71b825b292ad5691ad909b49f2af6864a6dfb50ff508875e9549405a98"
+      ]
+    },
+    {
+      "id": "reader.6.plain.PATCH",
+      "field": "quantity",
+      "token": "\"not-a-number\"",
+      "cause": "Cannot convert the literal 'not-a-number' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "efa9ba87d1ecb573e9888367e4c792277013530519ede5489ebf9e9e7eda6a14",
+        "efa9ba87d1ecb573e9888367e4c792277013530519ede5489ebf9e9e7eda6a14"
+      ]
+    },
+    {
+      "id": "reader.6.bom.POST",
+      "field": "quantity",
+      "token": "\"not-a-number\"",
+      "cause": "Cannot convert the literal 'not-a-number' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "8dc52f71b825b292ad5691ad909b49f2af6864a6dfb50ff508875e9549405a98",
+        "8dc52f71b825b292ad5691ad909b49f2af6864a6dfb50ff508875e9549405a98"
+      ]
+    },
+    {
+      "id": "reader.6.bom.PATCH",
+      "field": "quantity",
+      "token": "\"not-a-number\"",
+      "cause": "Cannot convert the literal 'not-a-number' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "efa9ba87d1ecb573e9888367e4c792277013530519ede5489ebf9e9e7eda6a14",
+        "efa9ba87d1ecb573e9888367e4c792277013530519ede5489ebf9e9e7eda6a14"
+      ]
+    },
+    {
+      "id": "reader.7.plain.POST",
+      "field": "enabled",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "ea79f39c5df381cde3060d777a148f3181df8a0785eafe36120bc0b5094a154c",
+        "ea79f39c5df381cde3060d777a148f3181df8a0785eafe36120bc0b5094a154c"
+      ]
+    },
+    {
+      "id": "reader.7.plain.PATCH",
+      "field": "enabled",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "4c7ea33d3bab36274793472e07843b60ca11e41f4c1ec633c226ce5924d5afd7",
+        "4c7ea33d3bab36274793472e07843b60ca11e41f4c1ec633c226ce5924d5afd7"
+      ]
+    },
+    {
+      "id": "reader.7.bom.POST",
+      "field": "enabled",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "ea79f39c5df381cde3060d777a148f3181df8a0785eafe36120bc0b5094a154c",
+        "ea79f39c5df381cde3060d777a148f3181df8a0785eafe36120bc0b5094a154c"
+      ]
+    },
+    {
+      "id": "reader.7.bom.PATCH",
+      "field": "enabled",
+      "token": "1",
+      "cause": "Cannot convert the literal '1' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "4c7ea33d3bab36274793472e07843b60ca11e41f4c1ec633c226ce5924d5afd7",
+        "4c7ea33d3bab36274793472e07843b60ca11e41f4c1ec633c226ce5924d5afd7"
+      ]
+    },
+    {
+      "id": "reader.8.plain.POST",
+      "field": "enabled",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "0d6fb08dae7c5aae51eebaf069d46dd7beccea298bf769103493bd42c6e0f01b",
+        "0d6fb08dae7c5aae51eebaf069d46dd7beccea298bf769103493bd42c6e0f01b"
+      ]
+    },
+    {
+      "id": "reader.8.plain.PATCH",
+      "field": "enabled",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "bc993a04e3c3d6bb7b553ae28b8895d861f2ef5e040d8d54cd3bf5910231e0c7",
+        "bc993a04e3c3d6bb7b553ae28b8895d861f2ef5e040d8d54cd3bf5910231e0c7"
+      ]
+    },
+    {
+      "id": "reader.8.bom.POST",
+      "field": "enabled",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "0d6fb08dae7c5aae51eebaf069d46dd7beccea298bf769103493bd42c6e0f01b",
+        "0d6fb08dae7c5aae51eebaf069d46dd7beccea298bf769103493bd42c6e0f01b"
+      ]
+    },
+    {
+      "id": "reader.8.bom.PATCH",
+      "field": "enabled",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.Boolean'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.Boolean'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "bc993a04e3c3d6bb7b553ae28b8895d861f2ef5e040d8d54cd3bf5910231e0c7",
+        "bc993a04e3c3d6bb7b553ae28b8895d861f2ef5e040d8d54cd3bf5910231e0c7"
+      ]
+    },
+    {
+      "id": "reader.9.plain.POST",
+      "field": "enabled",
+      "token": "\"\"",
+      "cause": "Cannot convert the literal '' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d55d7469f0dfe5b50918bdbbb82760a5346e0bec6f8c704ca00a1dcc05f4f1f4",
+        "d55d7469f0dfe5b50918bdbbb82760a5346e0bec6f8c704ca00a1dcc05f4f1f4"
+      ]
+    },
+    {
+      "id": "reader.9.plain.PATCH",
+      "field": "enabled",
+      "token": "\"\"",
+      "cause": "Cannot convert the literal '' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "bfb9a9bd57daac20348d4ee06a19d3652301bd5113b22255609d092b87d5cf6d",
+        "bfb9a9bd57daac20348d4ee06a19d3652301bd5113b22255609d092b87d5cf6d"
+      ]
+    },
+    {
+      "id": "reader.9.bom.POST",
+      "field": "enabled",
+      "token": "\"\"",
+      "cause": "Cannot convert the literal '' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d55d7469f0dfe5b50918bdbbb82760a5346e0bec6f8c704ca00a1dcc05f4f1f4",
+        "d55d7469f0dfe5b50918bdbbb82760a5346e0bec6f8c704ca00a1dcc05f4f1f4"
+      ]
+    },
+    {
+      "id": "reader.9.bom.PATCH",
+      "field": "enabled",
+      "token": "\"\"",
+      "cause": "Cannot convert the literal '' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "bfb9a9bd57daac20348d4ee06a19d3652301bd5113b22255609d092b87d5cf6d",
+        "bfb9a9bd57daac20348d4ee06a19d3652301bd5113b22255609d092b87d5cf6d"
+      ]
+    },
+    {
+      "id": "reader.10.plain.POST",
+      "field": "price",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d",
+        "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d"
+      ]
+    },
+    {
+      "id": "reader.10.plain.PATCH",
+      "field": "price",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "0778472d800bb381651bbc1638ee77104f3796edfc73320b50e93e14948fd05f",
+        "0778472d800bb381651bbc1638ee77104f3796edfc73320b50e93e14948fd05f"
+      ]
+    },
+    {
+      "id": "reader.10.bom.POST",
+      "field": "price",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d",
+        "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d"
+      ]
+    },
+    {
+      "id": "reader.10.bom.PATCH",
+      "field": "price",
+      "token": "true",
+      "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "0778472d800bb381651bbc1638ee77104f3796edfc73320b50e93e14948fd05f",
+        "0778472d800bb381651bbc1638ee77104f3796edfc73320b50e93e14948fd05f"
+      ]
+    },
+    {
+      "id": "reader.11.plain.POST",
+      "field": "ratio",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "4745b017aa6dbc03870047bdc4bc48232ab06811fc131bedb9132cb07fd0b1b9",
+        "4745b017aa6dbc03870047bdc4bc48232ab06811fc131bedb9132cb07fd0b1b9"
+      ]
+    },
+    {
+      "id": "reader.11.plain.PATCH",
+      "field": "ratio",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "b6f603ee16974ff70f8fd71d9443cc41afe3eb8b95ef054b8d19d8dcfe9e3818",
+        "b6f603ee16974ff70f8fd71d9443cc41afe3eb8b95ef054b8d19d8dcfe9e3818"
+      ]
+    },
+    {
+      "id": "reader.11.bom.POST",
+      "field": "ratio",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "4745b017aa6dbc03870047bdc4bc48232ab06811fc131bedb9132cb07fd0b1b9",
+        "4745b017aa6dbc03870047bdc4bc48232ab06811fc131bedb9132cb07fd0b1b9"
+      ]
+    },
+    {
+      "id": "reader.11.bom.PATCH",
+      "field": "ratio",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "b6f603ee16974ff70f8fd71d9443cc41afe3eb8b95ef054b8d19d8dcfe9e3818",
+        "b6f603ee16974ff70f8fd71d9443cc41afe3eb8b95ef054b8d19d8dcfe9e3818"
+      ]
+    },
+    {
+      "id": "reader.12.plain.POST",
+      "field": "stamp",
+      "token": "\"2020-02-31T12:00:00Z\"",
+      "cause": "Cannot convert the literal '2020-02-31T12:00:00Z' to the expected type 'Edm.DateTimeOffset'. ---> System.FormatException: The string '2020-02-31T12:00:00Z' is not a valid AllXsd value.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d6d7792aa9e544651fee2b94198f297415b127cf95a0dd36185339e83e1b48b0",
+        "d6d7792aa9e544651fee2b94198f297415b127cf95a0dd36185339e83e1b48b0"
+      ]
+    },
+    {
+      "id": "reader.12.plain.PATCH",
+      "field": "stamp",
+      "token": "\"2020-02-31T12:00:00Z\"",
+      "cause": "Cannot convert the literal '2020-02-31T12:00:00Z' to the expected type 'Edm.DateTimeOffset'. ---> System.FormatException: The string '2020-02-31T12:00:00Z' is not a valid AllXsd value.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "2ef2aaad982e31995692e27e886210563e58f6c69f887b27ca19bbb3d347c590",
+        "2ef2aaad982e31995692e27e886210563e58f6c69f887b27ca19bbb3d347c590"
+      ]
+    },
+    {
+      "id": "reader.12.bom.POST",
+      "field": "stamp",
+      "token": "\"2020-02-31T12:00:00Z\"",
+      "cause": "Cannot convert the literal '2020-02-31T12:00:00Z' to the expected type 'Edm.DateTimeOffset'. ---> System.FormatException: The string '2020-02-31T12:00:00Z' is not a valid AllXsd value.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d6d7792aa9e544651fee2b94198f297415b127cf95a0dd36185339e83e1b48b0",
+        "d6d7792aa9e544651fee2b94198f297415b127cf95a0dd36185339e83e1b48b0"
+      ]
+    },
+    {
+      "id": "reader.12.bom.PATCH",
+      "field": "stamp",
+      "token": "\"2020-02-31T12:00:00Z\"",
+      "cause": "Cannot convert the literal '2020-02-31T12:00:00Z' to the expected type 'Edm.DateTimeOffset'. ---> System.FormatException: The string '2020-02-31T12:00:00Z' is not a valid AllXsd value.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "2ef2aaad982e31995692e27e886210563e58f6c69f887b27ca19bbb3d347c590",
+        "2ef2aaad982e31995692e27e886210563e58f6c69f887b27ca19bbb3d347c590"
+      ]
+    },
+    {
+      "id": "reader.13.plain.POST",
+      "field": "stamp",
+      "token": "0",
+      "cause": "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.DateTimeOffset'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "eec9603c27a256cc67ce1512072981a2acf32447164d978c11553140bb966b03",
+        "eec9603c27a256cc67ce1512072981a2acf32447164d978c11553140bb966b03"
+      ]
+    },
+    {
+      "id": "reader.13.plain.PATCH",
+      "field": "stamp",
+      "token": "0",
+      "cause": "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.DateTimeOffset'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "8d9b9f4ce17f841343ef3d33e0ef42780d8f680b91f26ed3f609719a6a6a114f",
+        "8d9b9f4ce17f841343ef3d33e0ef42780d8f680b91f26ed3f609719a6a6a114f"
+      ]
+    },
+    {
+      "id": "reader.13.bom.POST",
+      "field": "stamp",
+      "token": "0",
+      "cause": "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.DateTimeOffset'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "eec9603c27a256cc67ce1512072981a2acf32447164d978c11553140bb966b03",
+        "eec9603c27a256cc67ce1512072981a2acf32447164d978c11553140bb966b03"
+      ]
+    },
+    {
+      "id": "reader.13.bom.PATCH",
+      "field": "stamp",
+      "token": "0",
+      "cause": "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.DateTimeOffset'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "8d9b9f4ce17f841343ef3d33e0ef42780d8f680b91f26ed3f609719a6a6a114f",
+        "8d9b9f4ce17f841343ef3d33e0ef42780d8f680b91f26ed3f609719a6a6a114f"
+      ]
+    },
+    {
+      "id": "reader.14.plain.POST",
+      "field": "day",
+      "token": "\"bad-date\"",
+      "cause": "Cannot convert the literal 'bad-date' to the expected type 'Edm.Date'. ---> System.FormatException: String 'bad-date' was not recognized as a valid Edm.Date.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d9a27d9c84ebafe546e8bd0cbb15ad10b1d181aba13276fbb5f6626068a0c518",
+        "d9a27d9c84ebafe546e8bd0cbb15ad10b1d181aba13276fbb5f6626068a0c518"
+      ]
+    },
+    {
+      "id": "reader.14.plain.PATCH",
+      "field": "day",
+      "token": "\"bad-date\"",
+      "cause": "Cannot convert the literal 'bad-date' to the expected type 'Edm.Date'. ---> System.FormatException: String 'bad-date' was not recognized as a valid Edm.Date.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "f2050cc54120509457f9b5e835d2c34f1e029dfe9ac6eac0c5d40e4819737805",
+        "f2050cc54120509457f9b5e835d2c34f1e029dfe9ac6eac0c5d40e4819737805"
+      ]
+    },
+    {
+      "id": "reader.14.bom.POST",
+      "field": "day",
+      "token": "\"bad-date\"",
+      "cause": "Cannot convert the literal 'bad-date' to the expected type 'Edm.Date'. ---> System.FormatException: String 'bad-date' was not recognized as a valid Edm.Date.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "d9a27d9c84ebafe546e8bd0cbb15ad10b1d181aba13276fbb5f6626068a0c518",
+        "d9a27d9c84ebafe546e8bd0cbb15ad10b1d181aba13276fbb5f6626068a0c518"
+      ]
+    },
+    {
+      "id": "reader.14.bom.PATCH",
+      "field": "day",
+      "token": "\"bad-date\"",
+      "cause": "Cannot convert the literal 'bad-date' to the expected type 'Edm.Date'. ---> System.FormatException: String 'bad-date' was not recognized as a valid Edm.Date.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "f2050cc54120509457f9b5e835d2c34f1e029dfe9ac6eac0c5d40e4819737805",
+        "f2050cc54120509457f9b5e835d2c34f1e029dfe9ac6eac0c5d40e4819737805"
+      ]
+    },
+    {
+      "id": "reader.15.plain.POST",
+      "field": "choice",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "afedbaf748119df22f8e90a89ac936e03e6a9f76ca7d4fe32156f5472b47d391",
+        "afedbaf748119df22f8e90a89ac936e03e6a9f76ca7d4fe32156f5472b47d391"
+      ]
+    },
+    {
+      "id": "reader.15.plain.PATCH",
+      "field": "choice",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "05d1ffbc9b5751229bbb49a0a0b6c476879e321c2302faebe4408cf719e72a38",
+        "05d1ffbc9b5751229bbb49a0a0b6c476879e321c2302faebe4408cf719e72a38"
+      ]
+    },
+    {
+      "id": "reader.15.bom.POST",
+      "field": "choice",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "afedbaf748119df22f8e90a89ac936e03e6a9f76ca7d4fe32156f5472b47d391",
+        "afedbaf748119df22f8e90a89ac936e03e6a9f76ca7d4fe32156f5472b47d391"
+      ]
+    },
+    {
+      "id": "reader.15.bom.PATCH",
+      "field": "choice",
+      "token": "false",
+      "cause": "Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "05d1ffbc9b5751229bbb49a0a0b6c476879e321c2302faebe4408cf719e72a38",
+        "05d1ffbc9b5751229bbb49a0a0b6c476879e321c2302faebe4408cf719e72a38"
+      ]
+    },
+    {
+      "id": "reader.16.plain.POST",
+      "field": "tags",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "7aa0d773c97e9e1d2c4c8aac0a6c1cf2f50cd818ffa7524297964acbe7a8de72",
+        "7aa0d773c97e9e1d2c4c8aac0a6c1cf2f50cd818ffa7524297964acbe7a8de72"
+      ]
+    },
+    {
+      "id": "reader.16.plain.PATCH",
+      "field": "tags",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "plain",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "e74c8bfeb89f0f55a590d61b97755b55ba095275dcccc85040a4bafb5eca2205",
+        "e74c8bfeb89f0f55a590d61b97755b55ba095275dcccc85040a4bafb5eca2205"
+      ]
+    },
+    {
+      "id": "reader.16.bom.POST",
+      "field": "tags",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "POST",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "7aa0d773c97e9e1d2c4c8aac0a6c1cf2f50cd818ffa7524297964acbe7a8de72",
+        "7aa0d773c97e9e1d2c4c8aac0a6c1cf2f50cd818ffa7524297964acbe7a8de72"
+      ]
+    },
+    {
+      "id": "reader.16.bom.PATCH",
+      "field": "tags",
+      "token": "2",
+      "cause": "Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'.",
+      "encoding": "bom",
+      "method": "PATCH",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "e74c8bfeb89f0f55a590d61b97755b55ba095275dcccc85040a4bafb5eca2205",
+        "e74c8bfeb89f0f55a590d61b97755b55ba095275dcccc85040a4bafb5eca2205"
+      ]
+    }
+  ]
+}

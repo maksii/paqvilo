@@ -1,0 +1,1499 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Unchanged source-isolated original Liquid programs only. Authenticated native actor and source freeze verified privately; no tenant identity, token, native route or actual componentID is retained here.",
+  "context": {
+    "native": "Owned source template included by an isolated fresh HTTP request; source readback before both rounds and after round2.",
+    "local": "Actual unchanged original tests replayed through the real renderer with a pass-through recording hook. Actual modes/context hashes and call AST bindings remain private. No numeric/HTML/error normalization."
+  },
+  "captures": [
+    {
+      "runSha256": "1e0644e2ee73835c57578b6faa26fe8973301395c6ca55c9c79f9733c7ce0d80",
+      "producerSha256": "4c4c7e997e430f0c4301e89971528c96c3d34dd23d051498fe290766551a6040",
+      "cases": [
+        {
+          "id": "original-liquid-001",
+          "facts": {
+            "source": "{% capture value %}a\nb{% endcapture %}{% assign value = value | | strip_newlines %}{{value}}",
+            "sourceSha256": "00c1e4a5c9d99dc1cb58a8d63cf6605a5a245c77736ed70522ebccdca4c9743e",
+            "outcome": "rendered-child",
+            "output": "ab"
+          }
+        },
+        {
+          "id": "original-liquid-002",
+          "facts": {
+            "source": "{% assign value = \"a\nb\" %}{{value}}",
+            "sourceSha256": "5277180601b14826024e37adb1ef406f7154ca6efa4426ac967951bcc06b064c",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Tag '{%' was not properly terminated with regexp: (?-mix:\\%\\})"
+          }
+        },
+        {
+          "id": "original-liquid-003",
+          "facts": {
+            "source": "{% assign literal = \"| | date:%Y, (value) | thing=abc\" %}{{ literal }}",
+            "sourceSha256": "9b585c3ebfa40ab88fbac27ac12f2116179f59b8ec7bf1cf1829f29d9a2cbb6e",
+            "outcome": "rendered-child",
+            "output": "| | date:%Y, (value) | thing=abc"
+          }
+        },
+        {
+          "id": "original-liquid-004",
+          "facts": {
+            "source": "{{ \"itemselection/#step\" | add_query: \"id\", \"record\" | add_query: \"orderId\", 1 }}",
+            "sourceSha256": "d7c1141b482357427ede972f2c91f4d01d2aa4a112490bc141132b15c749c0f0",
+            "outcome": "rendered-child",
+            "output": "/itemselection/?id=record&orderId=1"
+          }
+        },
+        {
+          "id": "original-liquid-005",
+          "facts": {
+            "source": "{{ \"../details/?id=record&keep=x#section\" | remove_query: \"id\" }}",
+            "sourceSha256": "93959cc0292e3cff273e02a53ab96f3fec2a073bf0b6df69a2c6f82d8c1ebfc9",
+            "outcome": "rendered-child",
+            "output": "/details/?keep=x"
+          }
+        },
+        {
+          "id": "original-liquid-006",
+          "facts": {
+            "source": "{{ \"https://example.com/path/?id=old\" | add_query: \"id\", \"new\" }}",
+            "sourceSha256": "e530a1930e50a3a9d7712dd0aec3c6112e625109b84c360d8a8aa0d8952a07ad",
+            "outcome": "rendered-child",
+            "output": "https://example.com/path/?id=new"
+          }
+        },
+        {
+          "id": "original-liquid-007",
+          "facts": {
+            "source": "{{ \"\" | split:\",\" | size }} {{ \"a,,b,\" | split:\",\" | join:\"|\" }}",
+            "sourceSha256": "df2c0ce353d888b1023f072a3114752d3e5b110b37d59b2d1418e09f0b7acffc",
+            "outcome": "rendered-child",
+            "output": "1 a|b"
+          }
+        },
+        {
+          "id": "original-liquid-008",
+          "facts": {
+            "source": "{{ \"%3Csvg+width%3D%2715%27%3E%2B%3C%2Fsvg%3E\" | url_decode }}",
+            "sourceSha256": "bb7415ba729558bb2aaf32b29dec3993026ae75ff5012f75130d887b284e6c57",
+            "outcome": "rendered-child",
+            "output": "<svg width='15'>+</svg>"
+          }
+        },
+        {
+          "id": "original-liquid-009",
+          "facts": {
+            "source": "{{ 'not-a-number' | times: 1.0 }}",
+            "sourceSha256": "277d9c6c6417e647e4c8cd6c14eff7488347cad82e6013fb124b934d31d7e96b",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Input string was not in a correct format."
+          }
+        },
+        {
+          "id": "original-liquid-010",
+          "facts": {
+            "source": "{{ nil | times: 1.0 }}|{{ 10 | times: 2.2 }}|{{ 10.0 | divided_by: 3 }}",
+            "sourceSha256": "e54e30d6957a6930568fa770573f32681ece9d5e570ef4288f50900a098681cc",
+            "outcome": "rendered-child",
+            "output": "|22|3.3333333333333333333333333333"
+          }
+        },
+        {
+          "id": "original-liquid-011",
+          "facts": {
+            "source": "{% assign repeated = '2' | times: 2 %}{{ repeated | size }}:{{ repeated | join: ',' }}",
+            "sourceSha256": "53a3188dd0e1dcbc15ad4fc80dd0cb28b377de7e1c3d0ed2d5319dbb4b0820f7",
+            "outcome": "rendered-child",
+            "output": "2:2,2"
+          }
+        },
+        {
+          "id": "original-liquid-012",
+          "facts": {
+            "source": "{{ '2' | minus: 1.0 }}",
+            "sourceSha256": "e832d679f0e30f16af187c344b2519a2001dc2203b5bf743ad5c79e97588fc77",
+            "outcome": "rendered-child",
+            "output": "1"
+          }
+        },
+        {
+          "id": "original-liquid-013",
+          "facts": {
+            "source": "{{ 2 | times: '2' }}",
+            "sourceSha256": "717402cd9665607c063d9f68b11754625a5ef6012920fd5c1859d0f568e61716",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-014",
+          "facts": {
+            "source": "{{ 2 | times: '2' }}|{{ 2 | times: 'bad' }}",
+            "sourceSha256": "17cf705d9be19566233ce2141a8bcc663263344079ae874881104c77ac9b9ac4",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-015",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' %}{{ values | times: 2 }}",
+            "sourceSha256": "4555a5c2c0d21946d65c6c9aba562dd0b1e7246c79e457e95a88890a335568b0",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-016",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' %}{{ values | times: 2.0 }}",
+            "sourceSha256": "be6da48a44fd5c5ecb4bb58a363b74de25f5c66716a825b2a8ce42fbfa2559d2",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Unable to cast object of type 'System.String[]' to type 'System.IConvertible'."
+          }
+        },
+        {
+          "id": "original-liquid-017",
+          "facts": {
+            "source": "{% assign values = 'abc' | times: 2 %}{{ values }}|{{ values | size }}|{{ values | join: ',' }}",
+            "sourceSha256": "4f5eaecffb361423abb711ecce5cdf0766a4e5505cc2ca133a48df1103c72069",
+            "outcome": "rendered-child",
+            "output": "abcabc|2|abc,abc"
+          }
+        },
+        {
+          "id": "original-liquid-018",
+          "facts": {
+            "source": "{{ 2.0 | times: '2' }}",
+            "sourceSha256": "be70ff75c658ae747d2fbc151d1d752221e0de6d94bbefab3670bd97544c9da4",
+            "outcome": "rendered-child",
+            "output": "4"
+          }
+        },
+        {
+          "id": "original-liquid-019",
+          "facts": {
+            "source": "a{{ 1 | divided_by: 0 }}b",
+            "sourceSha256": "4f87e824ef602d6436cece0b7f4f720eb98465e62c366511c6d90d1832f59698",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Exception has been thrown by the target of an invocation.b"
+          }
+        },
+        {
+          "id": "original-liquid-020",
+          "facts": {
+            "source": "a{{ 'invalid-number' | minus: 1 }}b",
+            "sourceSha256": "15e18b9d62b6c88ab9d2a289f220487f3930e65917163214e4572a903ddadab0",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Parameter count mismatch.b"
+          }
+        },
+        {
+          "id": "original-liquid-021",
+          "facts": {
+            "source": "{% assign values = 'c,a,b,a' | split: ',' %}a{{ values | batch: 0 | size }}b",
+            "sourceSha256": "6242a003ab2cb09ea66c5eb26f37cd77b2522ee592ec1f5b4cd9abaeddc47a0a",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Value must be positive and non-zero.\r\nParameter name: sizeb"
+          }
+        },
+        {
+          "id": "original-liquid-022",
+          "facts": {
+            "source": "{% assign values = 'c,a,b,a' | split: ',' %}a{{ values | then_by: 'size' | size }}b",
+            "sourceSha256": "d846824aea43c1fab89e6c0ae9dce116792268d060cc00d42dffc8d5e46eb53b",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Object of type 'System.String[]' cannot be converted to type 'System.Linq.IOrderedEnumerable`1[System.Object]'.b"
+          }
+        },
+        {
+          "id": "original-liquid-023",
+          "facts": {
+            "source": "{{ 1.0 | divided_by: 0 }}",
+            "sourceSha256": "1d92a345c62108493aa4731567bbb8615dcc54394737478e6eb7f9d102a8f3f9",
+            "outcome": "rendered-child",
+            "output": "∞"
+          }
+        },
+        {
+          "id": "original-liquid-024",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' | order_by: 'size' %}{{ values | then_by: 'size' | join: ',' }}",
+            "sourceSha256": "f1b2f8e8d546eb838bd13a692c03823b22aebbc56d13e800afa70ae18dd560f6",
+            "outcome": "rendered-child",
+            "output": "a,b"
+          }
+        },
+        {
+          "id": "original-liquid-025",
+          "facts": {
+            "source": "{{ '2' | minus: 1 }}|{{ 'bad' | minus: 1.0 }}|{{ 1 | divided_by: '0' }}",
+            "sourceSha256": "b1cbb69fb0be51b935843b1f2ce438279a15f95628e965e013a31e13c8c84dc8",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Input string was not in a correct format.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-026",
+          "facts": {
+            "source": "{% assign v = 1 | divided_by: 0.0 %}{{ v }}|{{ v | size }}|{{ v | plus: 1 }}|{{ v | times: 2 }}",
+            "sourceSha256": "2ec550619d4ce8b2198f175a4a8ed0f6074d47c2d44c3cec4748ce989de74582",
+            "outcome": "rendered-child",
+            "output": "∞|0|∞|∞"
+          }
+        },
+        {
+          "id": "original-liquid-027",
+          "facts": {
+            "source": "{{ 1 | divided_by: 0.0 }}",
+            "sourceSha256": "00acd81ae42e4e4b69240fc4301ccfe4dbc1e98808cdc75ed0341dddd38771bf",
+            "outcome": "rendered-child",
+            "output": "∞"
+          }
+        },
+        {
+          "id": "original-liquid-028",
+          "facts": {
+            "source": "{{ 10.0 | divided_by: 3 }}",
+            "sourceSha256": "57f9a69e6f10f479aa830baf907b3e8a66973a8f0243cde93a0469a4ba8d35a7",
+            "outcome": "rendered-child",
+            "output": "3.3333333333333333333333333333"
+          }
+        },
+        {
+          "id": "original-liquid-029",
+          "facts": {
+            "source": "{{ '<b>x</b>' | json }}|{% assign v = 'c,a,b,a' | split: ',' %}{{ v | json | join: ',' }}|{{ v | sort_natural | join: ',' }}",
+            "sourceSha256": "011012fc74cc4622a095dc7f1a65f6359c051cecc4fdeac130f5e411b876b74f",
+            "outcome": "rendered-child",
+            "output": "<b>x</b>|c,a,b,a|c,a,b,a"
+          }
+        },
+        {
+          "id": "original-liquid-030",
+          "facts": {
+            "source": "{{ 1234.5 | currency }}|{{ 1234.5 | currency: 'amount' }}",
+            "sourceSha256": "084cc887d64c734b7e8b8f093b07ce7ded3941767de8475b0c0f4494853593cb",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'currency' does not have a default value for 'record' and no value was supplied|Liquid syntax error: Error - Filter 'currency' does not have a default value for 'attribute' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-031",
+          "facts": {
+            "source": "{{ '<b>x</b>' | json }}|{{ 1234.5 | currency: 'en-US' }}",
+            "sourceSha256": "495ef4f26b90c4b67fe50249b1c65c09f43a73d009e7ef68641b7e425747f076",
+            "outcome": "rendered-child",
+            "output": "<b>x</b>|Liquid syntax error: Error - Filter 'currency' does not have a default value for 'attribute' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-032",
+          "facts": {
+            "source": "{{ '<img src=x>' | html_safe_escape }}",
+            "sourceSha256": "dce5a402961c3bb94e7d6a435fa0eebd5b2ed75b9445bc26c66f85243419611b",
+            "outcome": "rendered-child",
+            "output": "<img src=\"x\">"
+          }
+        },
+        {
+          "id": "original-liquid-033",
+          "facts": {
+            "source": "{{ '<img src=x alt=\"value/>suffix\"><br><hr>' | html_safe_escape }}",
+            "sourceSha256": "c428667abbe2f1e87fba71c24e7cdea7f291b02716d14953c1428223a7126a09",
+            "outcome": "rendered-child",
+            "output": "<img src=\"x\" alt=\"value/&gt;suffix\"><br><hr>"
+          }
+        },
+        {
+          "id": "original-liquid-034",
+          "facts": {
+            "source": "{{ '<b onclick=alert(1)>label</b><img src=javascript:alert(1) onerror=alert(1)><script>alert(1)</script>' | html_safe_escape }}",
+            "sourceSha256": "2edf9b0bfcfe17071e89c3b493b29bbfe73fb58e3df07636117e93ee6f575802",
+            "outcome": "rendered-child",
+            "output": "<b>label</b><img>"
+          }
+        },
+        {
+          "id": "original-liquid-035",
+          "facts": {
+            "source": "{{ '<input type=text value=probe disabled>' | html_safe_escape }}",
+            "sourceSha256": "3d6b5a352b0a4f38d346f259f9d781ccb4c8192e45135b109d176b0136481916",
+            "outcome": "rendered-child",
+            "output": "<input type=\"text\" value=\"probe\" disabled=\"\">"
+          }
+        },
+        {
+          "id": "original-liquid-036",
+          "facts": {
+            "source": "{{ '<input type=text value=probe disabled onclick=alert(1) formaction=javascript:alert(1)>' | html_safe_escape }}",
+            "sourceSha256": "5219cfa09c68a5e6906b1f6dcd73d4bc2312571f42e9f15fdd44ead5d15220f6",
+            "outcome": "rendered-child",
+            "output": "<input type=\"text\" value=\"probe\" disabled=\"\">"
+          }
+        },
+        {
+          "id": "original-liquid-037",
+          "facts": {
+            "source": "{% capture v %}first\nsecond{% endcapture %}{{ v | newline_to_br }}|{{ v | text_to_html }}",
+            "sourceSha256": "e534663148e80aee71bdb2344bf87e26ed8cbf046841ffdd7d9c8385393f69d3",
+            "outcome": "rendered-child",
+            "output": "first<br>\nsecond|<p>first<br>second</p>"
+          }
+        },
+        {
+          "id": "original-liquid-038",
+          "facts": {
+            "source": "{{ '/path?existing=one#fragment#two' | path_and_query }}",
+            "sourceSha256": "f4d1ef2a7ae619d2a27fbe53c993310a046f93a96cd7221fbdf9c3f7e30f8463",
+            "outcome": "rendered-child",
+            "output": "/path?existing=one%23fragment%23two"
+          }
+        },
+        {
+          "id": "original-liquid-039",
+          "facts": {
+            "source": "{{ 'https://example.test/path?existing=one%23fragment' | path_and_query }}",
+            "sourceSha256": "dfc05e99f9bfc2b6f40d25fbea7192308898b0fb08f03060d8ac75f829e8e2c6",
+            "outcome": "rendered-child",
+            "output": "/path?existing=one%23fragment"
+          }
+        },
+        {
+          "id": "original-liquid-040",
+          "facts": {
+            "source": "{{ 'https://example.test/path#fragment' | path_and_query }}|{{ '#fragment' | path_and_query }}|{{ 'https://example.test/path?x=1#fragment' | path }}",
+            "sourceSha256": "ece9f4a82fe38192fd17b83ebc524edd46dea17372336693c99c0d312fdf13ea",
+            "outcome": "rendered-child",
+            "output": "/path||/path"
+          }
+        },
+        {
+          "id": "original-liquid-041",
+          "facts": {
+            "source": "{% if '' == blank %}T{% endif %}|{% if ' ' == blank %}T{% endif %}|{% if nil == blank %}T{% endif %}|{% if false == blank %}T{% endif %}",
+            "sourceSha256": "a82982ee3916361925b6db02eec601beeaaf3e49c0f1deac127028fdb0915eeb",
+            "outcome": "rendered-child",
+            "output": "T|||"
+          }
+        },
+        {
+          "id": "original-liquid-042",
+          "facts": {
+            "source": "{% assign a = 'zero,one' | split: ',' %}[{{ a[0] }}]|[{{ a[-1] }}]|[{{ a[99] }}]|[{{ a['1'] }}]|[{{ a[1.5] }}]",
+            "sourceSha256": "c90b6367bb54f04e1e8ea265ea6d1d8bc3c7484239832628b01c371b9deb46f1",
+            "outcome": "rendered-child",
+            "output": "[zero]|[Liquid error: Index was outside the bounds of the array.]|[Liquid error: Index was outside the bounds of the array.]|[]|[]"
+          }
+        },
+        {
+          "id": "original-liquid-043",
+          "facts": {
+            "source": "{% assign a = 'zero,one' | split: ',' %}[{{ a[-1] }}]|[{{ a[99] }}]|{% if nil == blank %}T{% endif %}",
+            "sourceSha256": "0a57b65073173422f5800cf0c4f29c9f69f4052f06d867865f484c95a16a3423",
+            "outcome": "rendered-child",
+            "output": "[Liquid error: Index was outside the bounds of the array.]|[Liquid error: Index was outside the bounds of the array.]|"
+          }
+        },
+        {
+          "id": "original-liquid-044",
+          "facts": {
+            "source": "{% for i in (3..1) %}{{ i }}{% else %}empty{% endfor %}",
+            "sourceSha256": "ba3fcc5b84bdc64e3a7ac7a58a0707fb3128b395297f8bb3d1143a1f41a770f1",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: for tag does not expect else tag"
+          }
+        },
+        {
+          "id": "original-liquid-045",
+          "facts": {
+            "source": "{% if (true or false) %}marker{% endif %}",
+            "sourceSha256": "dbb623612427a18eb51e9f87e26c610d27491eb97001b0d4e7ccb92af12d4e6b",
+            "outcome": "rendered-child",
+            "output": ""
+          }
+        },
+        {
+          "id": "original-liquid-046",
+          "facts": {
+            "source": "{% increment probe %}",
+            "sourceSha256": "4976caca83969115fb991ed82565f55230bc8244e1fa7f154ddf36b0116bf149",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Unknown tag 'increment'"
+          }
+        },
+        {
+          "id": "original-liquid-047",
+          "facts": {
+            "source": "{% decrement probe %}",
+            "sourceSha256": "ea8e84a60fccf553e95651d0615d102630276dce094f23af84c601765eee292f",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Unknown tag 'decrement'"
+          }
+        },
+        {
+          "id": "original-liquid-048",
+          "facts": {
+            "source": "{{ 'first\nsecond' }}",
+            "sourceSha256": "4f2d5dbc9f833b8440bb0c3c6d6ec1e7f8d451b9fd5b67beeee69333dd784401",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Variable '{{' was not properly terminated with regexp: (?-mix:\\}\\})"
+          }
+        },
+        {
+          "id": "original-liquid-049",
+          "facts": {
+            "source": "{% assign flag = false %}{% for item in (1..1) %}RANGE;{% assign flag = true %}{% endfor %}|{{ flag }}|{% assign items = 'synthetic' | split: ',' %}{% for item in items %}{% if item == 'synthetic' %}BARE;{% endif %}{% endfor %}",
+            "sourceSha256": "006acaefd212a8334930907fc99198f6dfa722186b25b9075240d586f265e840",
+            "outcome": "rendered-child",
+            "output": "RANGE;|true|BARE;"
+          }
+        },
+        {
+          "id": "original-liquid-050",
+          "facts": {
+            "source": "{% assign v = \"a\nb\" %}{{ v }}",
+            "sourceSha256": "32457b7cd7c635288ab266b278a90bbdffc9160f104cfb177eb4b9122001343e",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Tag '{%' was not properly terminated with regexp: (?-mix:\\%\\})"
+          }
+        },
+        {
+          "id": "original-liquid-051",
+          "facts": {
+            "source": "{% if !true %}y{% else %}n{% endif %}{% if !false %}y{% else %}n{% endif %}",
+            "sourceSha256": "65b493970c13f0ef70a80cb49e2acec15df8a7cc7f7124a7d2acc35540af65f9",
+            "outcome": "rendered-child",
+            "output": "nn"
+          }
+        },
+        {
+          "id": "original-liquid-052",
+          "facts": {
+            "source": "{% if true or false and false %}y{% else %}n{% endif %}",
+            "sourceSha256": "247a607b71814f9117ff46d564634839c886e7aa7f68d4b0162336bb400c0840",
+            "outcome": "rendered-child",
+            "output": "y"
+          }
+        },
+        {
+          "id": "original-liquid-053",
+          "facts": {
+            "source": "{% if false and false or true %}y{% else %}n{% endif %}",
+            "sourceSha256": "276c6338fd0bd2cc81d1a70fbedefd79277053deaf1a230061c3c2894eab164d",
+            "outcome": "rendered-child",
+            "output": "n"
+          }
+        },
+        {
+          "id": "original-liquid-054",
+          "facts": {
+            "source": "{% if '10' > 9 %}y{% else %}n{% endif %}{% if 10 > '9' %}y{% else %}n{% endif %}{% if 1 == '1' %}y{% else %}n{% endif %}{% if '1' == 1 %}y{% else %}n{% endif %}{% if 1 == 1.0 %}y{% else %}n{% endif %}",
+            "sourceSha256": "ab14f62b5ab16118a748f6745dbc126845bf5b3f8db823267715b44825f9789c",
+            "outcome": "rendered-child",
+            "output": "nyyyy"
+          }
+        },
+        {
+          "id": "original-liquid-055",
+          "facts": {
+            "source": "{% if 'abc' contains 1 %}y{% endif %}",
+            "sourceSha256": "ecd72724d7137e2a8a0e57aeaaa231c3b1b13adc322df1ba3c74d65f88088492",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Unable to cast object of type 'System.Int32' to type 'System.String'."
+          }
+        },
+        {
+          "id": "original-liquid-056",
+          "facts": {
+            "source": "{{ empty }}|{% assign a = blank %}{{ a }}",
+            "sourceSha256": "3f0a1a7c2225a109e9e3496d5998d5e3b39d297c0a75b9bd40963ef961d74510",
+            "outcome": "rendered-child",
+            "output": "DotLiquid.Util.Symbol|Liquid syntax error: Object 'DotLiquid.Util.Symbol' is invalid because it is neither a built-in type nor implements ILiquidizable"
+          }
+        },
+        {
+          "id": "original-liquid-057",
+          "facts": {
+            "source": "{% if false %}a{% elsif true %}b{% endif %}{% if false %}a{% elseif true %}c{% endif %}",
+            "sourceSha256": "95a1e5204d410ac1740e5130047fa19bbf298fe976840bf6f259a39e22a544bf",
+            "outcome": "rendered-child",
+            "output": "bc"
+          }
+        },
+        {
+          "id": "original-liquid-058",
+          "facts": {
+            "source": "{% if false %}a{% else if false %}b{% endif %}",
+            "sourceSha256": "4465d03ea130444fc3b11f8ca3d47f7f97868afd585a1be7022ccf1ceca42337",
+            "outcome": "rendered-child",
+            "output": "b"
+          }
+        },
+        {
+          "id": "original-liquid-059",
+          "facts": {
+            "source": "{% case 2 %}{% when 1 or 2 %}x{% endcase %}{% case 2 %}{% when 3, 2 %}y{% endcase %}{% case 5 %}{% when 1 %}a{% else %}z{% endcase %}",
+            "sourceSha256": "4821167db8c65f6f2cbf08202eeae10eda53eb034aa73e9e4ec46c6f07c490be",
+            "outcome": "rendered-child",
+            "output": "xyz"
+          }
+        },
+        {
+          "id": "original-liquid-060",
+          "facts": {
+            "source": "{% unless false %}u{% else %}v{% endunless %}",
+            "sourceSha256": "ff3ab89b24b3f7487ff0029d0c1f4bb396bb621b71d0bc4a7267144d96b4ebe9",
+            "outcome": "rendered-child",
+            "output": "u"
+          }
+        },
+        {
+          "id": "original-liquid-061",
+          "facts": {
+            "source": "{% capture x %}a{{ 1 }}{% endcapture %}{{ x }}|{% raw %}{{ x }}{% endraw %}|{% comment %}hidden{% endcomment %}",
+            "sourceSha256": "d49a84858de9009ffddd36b5d9a2cfbd3868daa085e09eddc4621d12bd12f951",
+            "outcome": "rendered-child",
+            "output": "a1|{{ x }}|"
+          }
+        },
+        {
+          "id": "original-liquid-062",
+          "facts": {
+            "source": "{{ 'a b' | url_encode }}|{{ 'a+b%20c' | url_decode }}",
+            "sourceSha256": "ee356974fbb31259da5fc0e8598a2fba4012239abbe5cea8aa58b682e22facc5",
+            "outcome": "rendered-child",
+            "output": "a+b|a b c"
+          }
+        },
+        {
+          "id": "original-liquid-063",
+          "facts": {
+            "source": "{{ 'capitalize me' | capitalize }}|{{ 'élan' | upcase }}",
+            "sourceSha256": "c3c82b4a0c4b31db1fcf5f8126e97253e73e5bf458eb80513277ee5412687001",
+            "outcome": "rendered-child",
+            "output": "Capitalize Me|ÉLAN"
+          }
+        },
+        {
+          "id": "original-liquid-064",
+          "facts": {
+            "source": "{{ 'a.b' | replace: '.', '-' }}|{{ 'a.b' | replace_first: '.', '-' }}|{{ 'aXbX' | remove: 'X' }}|{{ 'aXbX' | remove_first: 'X' }}",
+            "sourceSha256": "d318244781ba65107338932f9033b9232421861b0e733ff4c1f8987a24d40a6a",
+            "outcome": "rendered-child",
+            "output": "---|-.b|ab|abX"
+          }
+        },
+        {
+          "id": "original-liquid-065",
+          "facts": {
+            "source": "{{ 'a(b' | replace: '(', '[' }}",
+            "sourceSha256": "09056148395503c058ac6ac0ecc3117e5933b65d33a238036efee340ced5b247",
+            "outcome": "rendered-child",
+            "output": "Liquid error: parsing \"(\" - Not enough )'s."
+          }
+        },
+        {
+          "id": "original-liquid-066",
+          "facts": {
+            "source": "{{ 'x' | slice: 0 }}|{{ 'abc' | slice: 1, 2 }}|{{ 'a' | append: 'b' }}|{{ 'a' | prepend: 'b' }}",
+            "sourceSha256": "d40b90ba7488e19b166d7e06e7e27c22e7ec9a41f4b1799b5dfaa641c9f5716e",
+            "outcome": "rendered-child",
+            "output": "x|bc|ab|ba"
+          }
+        },
+        {
+          "id": "original-liquid-067",
+          "facts": {
+            "source": "{{ 'on' | boolean }}|{{ 'no' | boolean }}|{{ 'x' | boolean }}|{{ 'enabled' | boolean }}|{{ 'disabled' | boolean }}",
+            "sourceSha256": "98db3e29b3a542f667e86fe614416c162c0e6e87d01e11f0a62e2327eb63faab",
+            "outcome": "rendered-child",
+            "output": "true|false||true|false"
+          }
+        },
+        {
+          "id": "original-liquid-068",
+          "facts": {
+            "source": "{{ '10.1' | integer }}|{{ '10' | integer }}|{{ '1.50' | decimal }}|{{ 5 | string }}",
+            "sourceSha256": "9b1318abdb83c200c8532fdb3f09bd16ad7c9d45d1b089449fa2761f464294c7",
+            "outcome": "rendered-child",
+            "output": "|10|1.5|5"
+          }
+        },
+        {
+          "id": "original-liquid-069",
+          "facts": {
+            "source": "[{{ '' | default: 'x' }}]|[{{ nil | default: 'x' }}]|[{{ false | default: 'x' }}]",
+            "sourceSha256": "3f2dc8971efad4de02d02bfccd60a035732b8a478ad2b65bfa67a0f0b11a0eba",
+            "outcome": "rendered-child",
+            "output": "[]|[x]|[false]"
+          }
+        },
+        {
+          "id": "original-liquid-070",
+          "facts": {
+            "source": "{{ 1234.5678 | decimals: 2 }}|{{ 1234.5 | max_decimals: 2 }}|{{ 1234.5678 | invariant_culture_decimal_value: 2 }}|{{ 1234.5 | format: 'N2' }}",
+            "sourceSha256": "d934ed70431100da203b473cc160af04f21c931f9117371dbbb6e8f3acff846a",
+            "outcome": "rendered-child",
+            "output": "1,234.57|1,234.5|1234.57|1,234.50"
+          }
+        },
+        {
+          "id": "original-liquid-071",
+          "facts": {
+            "source": "{{ 'https://example.com/path?page=1' | add_query: 'foo', 'bar' }}|{{ '/path?page=1' | add_query: 'page', 2 }}|{{ 'https://example.com/path?foo=bar&page=2' | remove_query: 'page' }}",
+            "sourceSha256": "f29ed52764a0d63f98e2f9c9ec881f919ea45f10101b4cda872a1030b7ec92a7",
+            "outcome": "rendered-child",
+            "output": "https://example.com/path?page=1&foo=bar|/path?page=2|https://example.com/path?foo=bar"
+          }
+        },
+        {
+          "id": "original-liquid-072",
+          "facts": {
+            "source": "{{ 'path?a=1#f' | add_query: 'b', 2 }}|{{ '../next/?id=1' | add_query: 'tab', 'x' }}",
+            "sourceSha256": "db1f2a07ebdc1354411445f23dc6e5f149f5be354cbd86437491cadbff5ecb6e",
+            "outcome": "rendered-child",
+            "output": "/path?a=1&b=2|/next/?id=1&tab=x"
+          }
+        },
+        {
+          "id": "original-liquid-073",
+          "facts": {
+            "source": "{{ '' | split: ',' | size }}|{{ nil | split: ',' | size }}|{{ ' ' | split: ',' | size }}",
+            "sourceSha256": "60c80e0dd26e56fb4ef98a64d5359b8aa2becdb96ef0a0130464d705eca961a1",
+            "outcome": "rendered-child",
+            "output": "1|1|1"
+          }
+        },
+        {
+          "id": "original-liquid-074",
+          "facts": {
+            "source": "{{ 'abc' | split: ',' | size }}|{{ 'abc' | split: ',' | first }}|{{ 'a,,b,' | split: ',' | join: '|' }}",
+            "sourceSha256": "bb54a21ba8347b6093afaa51ce5de34bf01ffe102200e77e33466edf2c575762",
+            "outcome": "rendered-child",
+            "output": "1|abc|a|b"
+          }
+        },
+        {
+          "id": "original-liquid-075",
+          "facts": {
+            "source": "{{ 'a' | append }}",
+            "sourceSha256": "1b59879fe46f03f8b8bf4d96aba6cee0746ecd7a746cd8ef7168bd44dbdcd09c",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'append' does not have a default value for 'string' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-076",
+          "facts": {
+            "source": "{{ 'a' | append: 'b', 'c' }}|{{ -3 | abs: 1 }}",
+            "sourceSha256": "55f6a3673fbe1c7890bee67b6351336cbc034011e80e5969802455ace38c339c",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-077",
+          "facts": {
+            "source": "{{ false | default: 'bar', allow_false: true }}",
+            "sourceSha256": "29f8fdb15c1bcb581193f2ab23e847e16ce68148d8effd70be0c756badc39ab7",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-078",
+          "facts": {
+            "source": "{{ 5 | currency }}",
+            "sourceSha256": "a5cce3e64a5d469cd649d54b268009439c3bcbbd24970a23ace6194eefb5fdb6",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'currency' does not have a default value for 'record' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-079",
+          "facts": {
+            "source": "{{ 'hello world' | truncate }}|{{ 5.6 | round }}|{{ 'a' | json: 1 }}|{{ 'a' | missing_filter: 1, 2 }}",
+            "sourceSha256": "d81edd83118435b5af95e53510e87449405d84590e6245a40b0599431d881be4",
+            "outcome": "rendered-child",
+            "output": "hello world|6|a|a"
+          }
+        },
+        {
+          "id": "original-liquid-080",
+          "facts": {
+            "source": "{{ nil | append: 'b' }}|{{ nil | prepend: 'a' }}",
+            "sourceSha256": "a484dcb77b1674f15a50aa3a6ebdbb72aaab8d19fbd2d461f0483e35f9b23827",
+            "outcome": "rendered-child",
+            "output": "|"
+          }
+        },
+        {
+          "id": "original-liquid-081",
+          "facts": {
+            "source": "{{ 5.666 | round: 2 }}|{{ 5.666 | round: 28 }}",
+            "sourceSha256": "fc98f4708d0b15debf43ca9b1f961e7ec886bea6aac7fd44cb64de1dfd9300a8",
+            "outcome": "rendered-child",
+            "output": "5.67|5.666"
+          }
+        },
+        {
+          "id": "original-liquid-082",
+          "facts": {
+            "source": "{{ 5.666 | round: -1 }}",
+            "sourceSha256": "35482bb4942c0b36e4d54a4a124a342fc6417b0d33b905f2bc1bddaab003949e",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Decimal can only round to between 0 and 28 digits of precision.\r\nParameter name: decimals"
+          }
+        }
+      ]
+    },
+    {
+      "runSha256": "ea8c2a82cf17bf81a9d79dfb5e38fb18ae88274b64f7ca65800f0c6ef0bc49ed",
+      "producerSha256": "4c4c7e997e430f0c4301e89971528c96c3d34dd23d051498fe290766551a6040",
+      "cases": [
+        {
+          "id": "original-liquid-001",
+          "facts": {
+            "source": "{% capture value %}a\nb{% endcapture %}{% assign value = value | | strip_newlines %}{{value}}",
+            "sourceSha256": "00c1e4a5c9d99dc1cb58a8d63cf6605a5a245c77736ed70522ebccdca4c9743e",
+            "outcome": "rendered-child",
+            "output": "ab"
+          }
+        },
+        {
+          "id": "original-liquid-002",
+          "facts": {
+            "source": "{% assign value = \"a\nb\" %}{{value}}",
+            "sourceSha256": "5277180601b14826024e37adb1ef406f7154ca6efa4426ac967951bcc06b064c",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Tag '{%' was not properly terminated with regexp: (?-mix:\\%\\})"
+          }
+        },
+        {
+          "id": "original-liquid-003",
+          "facts": {
+            "source": "{% assign literal = \"| | date:%Y, (value) | thing=abc\" %}{{ literal }}",
+            "sourceSha256": "9b585c3ebfa40ab88fbac27ac12f2116179f59b8ec7bf1cf1829f29d9a2cbb6e",
+            "outcome": "rendered-child",
+            "output": "| | date:%Y, (value) | thing=abc"
+          }
+        },
+        {
+          "id": "original-liquid-004",
+          "facts": {
+            "source": "{{ \"itemselection/#step\" | add_query: \"id\", \"record\" | add_query: \"orderId\", 1 }}",
+            "sourceSha256": "d7c1141b482357427ede972f2c91f4d01d2aa4a112490bc141132b15c749c0f0",
+            "outcome": "rendered-child",
+            "output": "/itemselection/?id=record&orderId=1"
+          }
+        },
+        {
+          "id": "original-liquid-005",
+          "facts": {
+            "source": "{{ \"../details/?id=record&keep=x#section\" | remove_query: \"id\" }}",
+            "sourceSha256": "93959cc0292e3cff273e02a53ab96f3fec2a073bf0b6df69a2c6f82d8c1ebfc9",
+            "outcome": "rendered-child",
+            "output": "/details/?keep=x"
+          }
+        },
+        {
+          "id": "original-liquid-006",
+          "facts": {
+            "source": "{{ \"https://example.com/path/?id=old\" | add_query: \"id\", \"new\" }}",
+            "sourceSha256": "e530a1930e50a3a9d7712dd0aec3c6112e625109b84c360d8a8aa0d8952a07ad",
+            "outcome": "rendered-child",
+            "output": "https://example.com/path/?id=new"
+          }
+        },
+        {
+          "id": "original-liquid-007",
+          "facts": {
+            "source": "{{ \"\" | split:\",\" | size }} {{ \"a,,b,\" | split:\",\" | join:\"|\" }}",
+            "sourceSha256": "df2c0ce353d888b1023f072a3114752d3e5b110b37d59b2d1418e09f0b7acffc",
+            "outcome": "rendered-child",
+            "output": "1 a|b"
+          }
+        },
+        {
+          "id": "original-liquid-008",
+          "facts": {
+            "source": "{{ \"%3Csvg+width%3D%2715%27%3E%2B%3C%2Fsvg%3E\" | url_decode }}",
+            "sourceSha256": "bb7415ba729558bb2aaf32b29dec3993026ae75ff5012f75130d887b284e6c57",
+            "outcome": "rendered-child",
+            "output": "<svg width='15'>+</svg>"
+          }
+        },
+        {
+          "id": "original-liquid-009",
+          "facts": {
+            "source": "{{ 'not-a-number' | times: 1.0 }}",
+            "sourceSha256": "277d9c6c6417e647e4c8cd6c14eff7488347cad82e6013fb124b934d31d7e96b",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Input string was not in a correct format."
+          }
+        },
+        {
+          "id": "original-liquid-010",
+          "facts": {
+            "source": "{{ nil | times: 1.0 }}|{{ 10 | times: 2.2 }}|{{ 10.0 | divided_by: 3 }}",
+            "sourceSha256": "e54e30d6957a6930568fa770573f32681ece9d5e570ef4288f50900a098681cc",
+            "outcome": "rendered-child",
+            "output": "|22|3.3333333333333333333333333333"
+          }
+        },
+        {
+          "id": "original-liquid-011",
+          "facts": {
+            "source": "{% assign repeated = '2' | times: 2 %}{{ repeated | size }}:{{ repeated | join: ',' }}",
+            "sourceSha256": "53a3188dd0e1dcbc15ad4fc80dd0cb28b377de7e1c3d0ed2d5319dbb4b0820f7",
+            "outcome": "rendered-child",
+            "output": "2:2,2"
+          }
+        },
+        {
+          "id": "original-liquid-012",
+          "facts": {
+            "source": "{{ '2' | minus: 1.0 }}",
+            "sourceSha256": "e832d679f0e30f16af187c344b2519a2001dc2203b5bf743ad5c79e97588fc77",
+            "outcome": "rendered-child",
+            "output": "1"
+          }
+        },
+        {
+          "id": "original-liquid-013",
+          "facts": {
+            "source": "{{ 2 | times: '2' }}",
+            "sourceSha256": "717402cd9665607c063d9f68b11754625a5ef6012920fd5c1859d0f568e61716",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-014",
+          "facts": {
+            "source": "{{ 2 | times: '2' }}|{{ 2 | times: 'bad' }}",
+            "sourceSha256": "17cf705d9be19566233ce2141a8bcc663263344079ae874881104c77ac9b9ac4",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-015",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' %}{{ values | times: 2 }}",
+            "sourceSha256": "4555a5c2c0d21946d65c6c9aba562dd0b1e7246c79e457e95a88890a335568b0",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-016",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' %}{{ values | times: 2.0 }}",
+            "sourceSha256": "be6da48a44fd5c5ecb4bb58a363b74de25f5c66716a825b2a8ce42fbfa2559d2",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Unable to cast object of type 'System.String[]' to type 'System.IConvertible'."
+          }
+        },
+        {
+          "id": "original-liquid-017",
+          "facts": {
+            "source": "{% assign values = 'abc' | times: 2 %}{{ values }}|{{ values | size }}|{{ values | join: ',' }}",
+            "sourceSha256": "4f5eaecffb361423abb711ecce5cdf0766a4e5505cc2ca133a48df1103c72069",
+            "outcome": "rendered-child",
+            "output": "abcabc|2|abc,abc"
+          }
+        },
+        {
+          "id": "original-liquid-018",
+          "facts": {
+            "source": "{{ 2.0 | times: '2' }}",
+            "sourceSha256": "be70ff75c658ae747d2fbc151d1d752221e0de6d94bbefab3670bd97544c9da4",
+            "outcome": "rendered-child",
+            "output": "4"
+          }
+        },
+        {
+          "id": "original-liquid-019",
+          "facts": {
+            "source": "a{{ 1 | divided_by: 0 }}b",
+            "sourceSha256": "4f87e824ef602d6436cece0b7f4f720eb98465e62c366511c6d90d1832f59698",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Exception has been thrown by the target of an invocation.b"
+          }
+        },
+        {
+          "id": "original-liquid-020",
+          "facts": {
+            "source": "a{{ 'invalid-number' | minus: 1 }}b",
+            "sourceSha256": "15e18b9d62b6c88ab9d2a289f220487f3930e65917163214e4572a903ddadab0",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Parameter count mismatch.b"
+          }
+        },
+        {
+          "id": "original-liquid-021",
+          "facts": {
+            "source": "{% assign values = 'c,a,b,a' | split: ',' %}a{{ values | batch: 0 | size }}b",
+            "sourceSha256": "6242a003ab2cb09ea66c5eb26f37cd77b2522ee592ec1f5b4cd9abaeddc47a0a",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Value must be positive and non-zero.\r\nParameter name: sizeb"
+          }
+        },
+        {
+          "id": "original-liquid-022",
+          "facts": {
+            "source": "{% assign values = 'c,a,b,a' | split: ',' %}a{{ values | then_by: 'size' | size }}b",
+            "sourceSha256": "d846824aea43c1fab89e6c0ae9dce116792268d060cc00d42dffc8d5e46eb53b",
+            "outcome": "rendered-child",
+            "output": "aLiquid error: Object of type 'System.String[]' cannot be converted to type 'System.Linq.IOrderedEnumerable`1[System.Object]'.b"
+          }
+        },
+        {
+          "id": "original-liquid-023",
+          "facts": {
+            "source": "{{ 1.0 | divided_by: 0 }}",
+            "sourceSha256": "1d92a345c62108493aa4731567bbb8615dcc54394737478e6eb7f9d102a8f3f9",
+            "outcome": "rendered-child",
+            "output": "∞"
+          }
+        },
+        {
+          "id": "original-liquid-024",
+          "facts": {
+            "source": "{% assign values = 'a,b' | split: ',' | order_by: 'size' %}{{ values | then_by: 'size' | join: ',' }}",
+            "sourceSha256": "f1b2f8e8d546eb838bd13a692c03823b22aebbc56d13e800afa70ae18dd560f6",
+            "outcome": "rendered-child",
+            "output": "a,b"
+          }
+        },
+        {
+          "id": "original-liquid-025",
+          "facts": {
+            "source": "{{ '2' | minus: 1 }}|{{ 'bad' | minus: 1.0 }}|{{ 1 | divided_by: '0' }}",
+            "sourceSha256": "b1cbb69fb0be51b935843b1f2ce438279a15f95628e965e013a31e13c8c84dc8",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Input string was not in a correct format.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-026",
+          "facts": {
+            "source": "{% assign v = 1 | divided_by: 0.0 %}{{ v }}|{{ v | size }}|{{ v | plus: 1 }}|{{ v | times: 2 }}",
+            "sourceSha256": "2ec550619d4ce8b2198f175a4a8ed0f6074d47c2d44c3cec4748ce989de74582",
+            "outcome": "rendered-child",
+            "output": "∞|0|∞|∞"
+          }
+        },
+        {
+          "id": "original-liquid-027",
+          "facts": {
+            "source": "{{ 1 | divided_by: 0.0 }}",
+            "sourceSha256": "00acd81ae42e4e4b69240fc4301ccfe4dbc1e98808cdc75ed0341dddd38771bf",
+            "outcome": "rendered-child",
+            "output": "∞"
+          }
+        },
+        {
+          "id": "original-liquid-028",
+          "facts": {
+            "source": "{{ 10.0 | divided_by: 3 }}",
+            "sourceSha256": "57f9a69e6f10f479aa830baf907b3e8a66973a8f0243cde93a0469a4ba8d35a7",
+            "outcome": "rendered-child",
+            "output": "3.3333333333333333333333333333"
+          }
+        },
+        {
+          "id": "original-liquid-029",
+          "facts": {
+            "source": "{{ '<b>x</b>' | json }}|{% assign v = 'c,a,b,a' | split: ',' %}{{ v | json | join: ',' }}|{{ v | sort_natural | join: ',' }}",
+            "sourceSha256": "011012fc74cc4622a095dc7f1a65f6359c051cecc4fdeac130f5e411b876b74f",
+            "outcome": "rendered-child",
+            "output": "<b>x</b>|c,a,b,a|c,a,b,a"
+          }
+        },
+        {
+          "id": "original-liquid-030",
+          "facts": {
+            "source": "{{ 1234.5 | currency }}|{{ 1234.5 | currency: 'amount' }}",
+            "sourceSha256": "084cc887d64c734b7e8b8f093b07ce7ded3941767de8475b0c0f4494853593cb",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'currency' does not have a default value for 'record' and no value was supplied|Liquid syntax error: Error - Filter 'currency' does not have a default value for 'attribute' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-031",
+          "facts": {
+            "source": "{{ '<b>x</b>' | json }}|{{ 1234.5 | currency: 'en-US' }}",
+            "sourceSha256": "495ef4f26b90c4b67fe50249b1c65c09f43a73d009e7ef68641b7e425747f076",
+            "outcome": "rendered-child",
+            "output": "<b>x</b>|Liquid syntax error: Error - Filter 'currency' does not have a default value for 'attribute' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-032",
+          "facts": {
+            "source": "{{ '<img src=x>' | html_safe_escape }}",
+            "sourceSha256": "dce5a402961c3bb94e7d6a435fa0eebd5b2ed75b9445bc26c66f85243419611b",
+            "outcome": "rendered-child",
+            "output": "<img src=\"x\">"
+          }
+        },
+        {
+          "id": "original-liquid-033",
+          "facts": {
+            "source": "{{ '<img src=x alt=\"value/>suffix\"><br><hr>' | html_safe_escape }}",
+            "sourceSha256": "c428667abbe2f1e87fba71c24e7cdea7f291b02716d14953c1428223a7126a09",
+            "outcome": "rendered-child",
+            "output": "<img src=\"x\" alt=\"value/&gt;suffix\"><br><hr>"
+          }
+        },
+        {
+          "id": "original-liquid-034",
+          "facts": {
+            "source": "{{ '<b onclick=alert(1)>label</b><img src=javascript:alert(1) onerror=alert(1)><script>alert(1)</script>' | html_safe_escape }}",
+            "sourceSha256": "2edf9b0bfcfe17071e89c3b493b29bbfe73fb58e3df07636117e93ee6f575802",
+            "outcome": "rendered-child",
+            "output": "<b>label</b><img>"
+          }
+        },
+        {
+          "id": "original-liquid-035",
+          "facts": {
+            "source": "{{ '<input type=text value=probe disabled>' | html_safe_escape }}",
+            "sourceSha256": "3d6b5a352b0a4f38d346f259f9d781ccb4c8192e45135b109d176b0136481916",
+            "outcome": "rendered-child",
+            "output": "<input type=\"text\" value=\"probe\" disabled=\"\">"
+          }
+        },
+        {
+          "id": "original-liquid-036",
+          "facts": {
+            "source": "{{ '<input type=text value=probe disabled onclick=alert(1) formaction=javascript:alert(1)>' | html_safe_escape }}",
+            "sourceSha256": "5219cfa09c68a5e6906b1f6dcd73d4bc2312571f42e9f15fdd44ead5d15220f6",
+            "outcome": "rendered-child",
+            "output": "<input type=\"text\" value=\"probe\" disabled=\"\">"
+          }
+        },
+        {
+          "id": "original-liquid-037",
+          "facts": {
+            "source": "{% capture v %}first\nsecond{% endcapture %}{{ v | newline_to_br }}|{{ v | text_to_html }}",
+            "sourceSha256": "e534663148e80aee71bdb2344bf87e26ed8cbf046841ffdd7d9c8385393f69d3",
+            "outcome": "rendered-child",
+            "output": "first<br>\nsecond|<p>first<br>second</p>"
+          }
+        },
+        {
+          "id": "original-liquid-038",
+          "facts": {
+            "source": "{{ '/path?existing=one#fragment#two' | path_and_query }}",
+            "sourceSha256": "f4d1ef2a7ae619d2a27fbe53c993310a046f93a96cd7221fbdf9c3f7e30f8463",
+            "outcome": "rendered-child",
+            "output": "/path?existing=one%23fragment%23two"
+          }
+        },
+        {
+          "id": "original-liquid-039",
+          "facts": {
+            "source": "{{ 'https://example.test/path?existing=one%23fragment' | path_and_query }}",
+            "sourceSha256": "dfc05e99f9bfc2b6f40d25fbea7192308898b0fb08f03060d8ac75f829e8e2c6",
+            "outcome": "rendered-child",
+            "output": "/path?existing=one%23fragment"
+          }
+        },
+        {
+          "id": "original-liquid-040",
+          "facts": {
+            "source": "{{ 'https://example.test/path#fragment' | path_and_query }}|{{ '#fragment' | path_and_query }}|{{ 'https://example.test/path?x=1#fragment' | path }}",
+            "sourceSha256": "ece9f4a82fe38192fd17b83ebc524edd46dea17372336693c99c0d312fdf13ea",
+            "outcome": "rendered-child",
+            "output": "/path||/path"
+          }
+        },
+        {
+          "id": "original-liquid-041",
+          "facts": {
+            "source": "{% if '' == blank %}T{% endif %}|{% if ' ' == blank %}T{% endif %}|{% if nil == blank %}T{% endif %}|{% if false == blank %}T{% endif %}",
+            "sourceSha256": "a82982ee3916361925b6db02eec601beeaaf3e49c0f1deac127028fdb0915eeb",
+            "outcome": "rendered-child",
+            "output": "T|||"
+          }
+        },
+        {
+          "id": "original-liquid-042",
+          "facts": {
+            "source": "{% assign a = 'zero,one' | split: ',' %}[{{ a[0] }}]|[{{ a[-1] }}]|[{{ a[99] }}]|[{{ a['1'] }}]|[{{ a[1.5] }}]",
+            "sourceSha256": "c90b6367bb54f04e1e8ea265ea6d1d8bc3c7484239832628b01c371b9deb46f1",
+            "outcome": "rendered-child",
+            "output": "[zero]|[Liquid error: Index was outside the bounds of the array.]|[Liquid error: Index was outside the bounds of the array.]|[]|[]"
+          }
+        },
+        {
+          "id": "original-liquid-043",
+          "facts": {
+            "source": "{% assign a = 'zero,one' | split: ',' %}[{{ a[-1] }}]|[{{ a[99] }}]|{% if nil == blank %}T{% endif %}",
+            "sourceSha256": "0a57b65073173422f5800cf0c4f29c9f69f4052f06d867865f484c95a16a3423",
+            "outcome": "rendered-child",
+            "output": "[Liquid error: Index was outside the bounds of the array.]|[Liquid error: Index was outside the bounds of the array.]|"
+          }
+        },
+        {
+          "id": "original-liquid-044",
+          "facts": {
+            "source": "{% for i in (3..1) %}{{ i }}{% else %}empty{% endfor %}",
+            "sourceSha256": "ba3fcc5b84bdc64e3a7ac7a58a0707fb3128b395297f8bb3d1143a1f41a770f1",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: for tag does not expect else tag"
+          }
+        },
+        {
+          "id": "original-liquid-045",
+          "facts": {
+            "source": "{% if (true or false) %}marker{% endif %}",
+            "sourceSha256": "dbb623612427a18eb51e9f87e26c610d27491eb97001b0d4e7ccb92af12d4e6b",
+            "outcome": "rendered-child",
+            "output": ""
+          }
+        },
+        {
+          "id": "original-liquid-046",
+          "facts": {
+            "source": "{% increment probe %}",
+            "sourceSha256": "4976caca83969115fb991ed82565f55230bc8244e1fa7f154ddf36b0116bf149",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Unknown tag 'increment'"
+          }
+        },
+        {
+          "id": "original-liquid-047",
+          "facts": {
+            "source": "{% decrement probe %}",
+            "sourceSha256": "ea8e84a60fccf553e95651d0615d102630276dce094f23af84c601765eee292f",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Unknown tag 'decrement'"
+          }
+        },
+        {
+          "id": "original-liquid-048",
+          "facts": {
+            "source": "{{ 'first\nsecond' }}",
+            "sourceSha256": "4f2d5dbc9f833b8440bb0c3c6d6ec1e7f8d451b9fd5b67beeee69333dd784401",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Variable '{{' was not properly terminated with regexp: (?-mix:\\}\\})"
+          }
+        },
+        {
+          "id": "original-liquid-049",
+          "facts": {
+            "source": "{% assign flag = false %}{% for item in (1..1) %}RANGE;{% assign flag = true %}{% endfor %}|{{ flag }}|{% assign items = 'synthetic' | split: ',' %}{% for item in items %}{% if item == 'synthetic' %}BARE;{% endif %}{% endfor %}",
+            "sourceSha256": "006acaefd212a8334930907fc99198f6dfa722186b25b9075240d586f265e840",
+            "outcome": "rendered-child",
+            "output": "RANGE;|true|BARE;"
+          }
+        },
+        {
+          "id": "original-liquid-050",
+          "facts": {
+            "source": "{% assign v = \"a\nb\" %}{{ v }}",
+            "sourceSha256": "32457b7cd7c635288ab266b278a90bbdffc9160f104cfb177eb4b9122001343e",
+            "outcome": "compiled-child-parser-error",
+            "output": "Liquid syntax error: Tag '{%' was not properly terminated with regexp: (?-mix:\\%\\})"
+          }
+        },
+        {
+          "id": "original-liquid-051",
+          "facts": {
+            "source": "{% if !true %}y{% else %}n{% endif %}{% if !false %}y{% else %}n{% endif %}",
+            "sourceSha256": "65b493970c13f0ef70a80cb49e2acec15df8a7cc7f7124a7d2acc35540af65f9",
+            "outcome": "rendered-child",
+            "output": "nn"
+          }
+        },
+        {
+          "id": "original-liquid-052",
+          "facts": {
+            "source": "{% if true or false and false %}y{% else %}n{% endif %}",
+            "sourceSha256": "247a607b71814f9117ff46d564634839c886e7aa7f68d4b0162336bb400c0840",
+            "outcome": "rendered-child",
+            "output": "y"
+          }
+        },
+        {
+          "id": "original-liquid-053",
+          "facts": {
+            "source": "{% if false and false or true %}y{% else %}n{% endif %}",
+            "sourceSha256": "276c6338fd0bd2cc81d1a70fbedefd79277053deaf1a230061c3c2894eab164d",
+            "outcome": "rendered-child",
+            "output": "n"
+          }
+        },
+        {
+          "id": "original-liquid-054",
+          "facts": {
+            "source": "{% if '10' > 9 %}y{% else %}n{% endif %}{% if 10 > '9' %}y{% else %}n{% endif %}{% if 1 == '1' %}y{% else %}n{% endif %}{% if '1' == 1 %}y{% else %}n{% endif %}{% if 1 == 1.0 %}y{% else %}n{% endif %}",
+            "sourceSha256": "ab14f62b5ab16118a748f6745dbc126845bf5b3f8db823267715b44825f9789c",
+            "outcome": "rendered-child",
+            "output": "nyyyy"
+          }
+        },
+        {
+          "id": "original-liquid-055",
+          "facts": {
+            "source": "{% if 'abc' contains 1 %}y{% endif %}",
+            "sourceSha256": "ecd72724d7137e2a8a0e57aeaaa231c3b1b13adc322df1ba3c74d65f88088492",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Unable to cast object of type 'System.Int32' to type 'System.String'."
+          }
+        },
+        {
+          "id": "original-liquid-056",
+          "facts": {
+            "source": "{{ empty }}|{% assign a = blank %}{{ a }}",
+            "sourceSha256": "3f0a1a7c2225a109e9e3496d5998d5e3b39d297c0a75b9bd40963ef961d74510",
+            "outcome": "rendered-child",
+            "output": "DotLiquid.Util.Symbol|Liquid syntax error: Object 'DotLiquid.Util.Symbol' is invalid because it is neither a built-in type nor implements ILiquidizable"
+          }
+        },
+        {
+          "id": "original-liquid-057",
+          "facts": {
+            "source": "{% if false %}a{% elsif true %}b{% endif %}{% if false %}a{% elseif true %}c{% endif %}",
+            "sourceSha256": "95a1e5204d410ac1740e5130047fa19bbf298fe976840bf6f259a39e22a544bf",
+            "outcome": "rendered-child",
+            "output": "bc"
+          }
+        },
+        {
+          "id": "original-liquid-058",
+          "facts": {
+            "source": "{% if false %}a{% else if false %}b{% endif %}",
+            "sourceSha256": "4465d03ea130444fc3b11f8ca3d47f7f97868afd585a1be7022ccf1ceca42337",
+            "outcome": "rendered-child",
+            "output": "b"
+          }
+        },
+        {
+          "id": "original-liquid-059",
+          "facts": {
+            "source": "{% case 2 %}{% when 1 or 2 %}x{% endcase %}{% case 2 %}{% when 3, 2 %}y{% endcase %}{% case 5 %}{% when 1 %}a{% else %}z{% endcase %}",
+            "sourceSha256": "4821167db8c65f6f2cbf08202eeae10eda53eb034aa73e9e4ec46c6f07c490be",
+            "outcome": "rendered-child",
+            "output": "xyz"
+          }
+        },
+        {
+          "id": "original-liquid-060",
+          "facts": {
+            "source": "{% unless false %}u{% else %}v{% endunless %}",
+            "sourceSha256": "ff3ab89b24b3f7487ff0029d0c1f4bb396bb621b71d0bc4a7267144d96b4ebe9",
+            "outcome": "rendered-child",
+            "output": "u"
+          }
+        },
+        {
+          "id": "original-liquid-061",
+          "facts": {
+            "source": "{% capture x %}a{{ 1 }}{% endcapture %}{{ x }}|{% raw %}{{ x }}{% endraw %}|{% comment %}hidden{% endcomment %}",
+            "sourceSha256": "d49a84858de9009ffddd36b5d9a2cfbd3868daa085e09eddc4621d12bd12f951",
+            "outcome": "rendered-child",
+            "output": "a1|{{ x }}|"
+          }
+        },
+        {
+          "id": "original-liquid-062",
+          "facts": {
+            "source": "{{ 'a b' | url_encode }}|{{ 'a+b%20c' | url_decode }}",
+            "sourceSha256": "ee356974fbb31259da5fc0e8598a2fba4012239abbe5cea8aa58b682e22facc5",
+            "outcome": "rendered-child",
+            "output": "a+b|a b c"
+          }
+        },
+        {
+          "id": "original-liquid-063",
+          "facts": {
+            "source": "{{ 'capitalize me' | capitalize }}|{{ 'élan' | upcase }}",
+            "sourceSha256": "c3c82b4a0c4b31db1fcf5f8126e97253e73e5bf458eb80513277ee5412687001",
+            "outcome": "rendered-child",
+            "output": "Capitalize Me|ÉLAN"
+          }
+        },
+        {
+          "id": "original-liquid-064",
+          "facts": {
+            "source": "{{ 'a.b' | replace: '.', '-' }}|{{ 'a.b' | replace_first: '.', '-' }}|{{ 'aXbX' | remove: 'X' }}|{{ 'aXbX' | remove_first: 'X' }}",
+            "sourceSha256": "d318244781ba65107338932f9033b9232421861b0e733ff4c1f8987a24d40a6a",
+            "outcome": "rendered-child",
+            "output": "---|-.b|ab|abX"
+          }
+        },
+        {
+          "id": "original-liquid-065",
+          "facts": {
+            "source": "{{ 'a(b' | replace: '(', '[' }}",
+            "sourceSha256": "09056148395503c058ac6ac0ecc3117e5933b65d33a238036efee340ced5b247",
+            "outcome": "rendered-child",
+            "output": "Liquid error: parsing \"(\" - Not enough )'s."
+          }
+        },
+        {
+          "id": "original-liquid-066",
+          "facts": {
+            "source": "{{ 'x' | slice: 0 }}|{{ 'abc' | slice: 1, 2 }}|{{ 'a' | append: 'b' }}|{{ 'a' | prepend: 'b' }}",
+            "sourceSha256": "d40b90ba7488e19b166d7e06e7e27c22e7ec9a41f4b1799b5dfaa641c9f5716e",
+            "outcome": "rendered-child",
+            "output": "x|bc|ab|ba"
+          }
+        },
+        {
+          "id": "original-liquid-067",
+          "facts": {
+            "source": "{{ 'on' | boolean }}|{{ 'no' | boolean }}|{{ 'x' | boolean }}|{{ 'enabled' | boolean }}|{{ 'disabled' | boolean }}",
+            "sourceSha256": "98db3e29b3a542f667e86fe614416c162c0e6e87d01e11f0a62e2327eb63faab",
+            "outcome": "rendered-child",
+            "output": "true|false||true|false"
+          }
+        },
+        {
+          "id": "original-liquid-068",
+          "facts": {
+            "source": "{{ '10.1' | integer }}|{{ '10' | integer }}|{{ '1.50' | decimal }}|{{ 5 | string }}",
+            "sourceSha256": "9b1318abdb83c200c8532fdb3f09bd16ad7c9d45d1b089449fa2761f464294c7",
+            "outcome": "rendered-child",
+            "output": "|10|1.5|5"
+          }
+        },
+        {
+          "id": "original-liquid-069",
+          "facts": {
+            "source": "[{{ '' | default: 'x' }}]|[{{ nil | default: 'x' }}]|[{{ false | default: 'x' }}]",
+            "sourceSha256": "3f2dc8971efad4de02d02bfccd60a035732b8a478ad2b65bfa67a0f0b11a0eba",
+            "outcome": "rendered-child",
+            "output": "[]|[x]|[false]"
+          }
+        },
+        {
+          "id": "original-liquid-070",
+          "facts": {
+            "source": "{{ 1234.5678 | decimals: 2 }}|{{ 1234.5 | max_decimals: 2 }}|{{ 1234.5678 | invariant_culture_decimal_value: 2 }}|{{ 1234.5 | format: 'N2' }}",
+            "sourceSha256": "d934ed70431100da203b473cc160af04f21c931f9117371dbbb6e8f3acff846a",
+            "outcome": "rendered-child",
+            "output": "1,234.57|1,234.5|1234.57|1,234.50"
+          }
+        },
+        {
+          "id": "original-liquid-071",
+          "facts": {
+            "source": "{{ 'https://example.com/path?page=1' | add_query: 'foo', 'bar' }}|{{ '/path?page=1' | add_query: 'page', 2 }}|{{ 'https://example.com/path?foo=bar&page=2' | remove_query: 'page' }}",
+            "sourceSha256": "f29ed52764a0d63f98e2f9c9ec881f919ea45f10101b4cda872a1030b7ec92a7",
+            "outcome": "rendered-child",
+            "output": "https://example.com/path?page=1&foo=bar|/path?page=2|https://example.com/path?foo=bar"
+          }
+        },
+        {
+          "id": "original-liquid-072",
+          "facts": {
+            "source": "{{ 'path?a=1#f' | add_query: 'b', 2 }}|{{ '../next/?id=1' | add_query: 'tab', 'x' }}",
+            "sourceSha256": "db1f2a07ebdc1354411445f23dc6e5f149f5be354cbd86437491cadbff5ecb6e",
+            "outcome": "rendered-child",
+            "output": "/path?a=1&b=2|/next/?id=1&tab=x"
+          }
+        },
+        {
+          "id": "original-liquid-073",
+          "facts": {
+            "source": "{{ '' | split: ',' | size }}|{{ nil | split: ',' | size }}|{{ ' ' | split: ',' | size }}",
+            "sourceSha256": "60c80e0dd26e56fb4ef98a64d5359b8aa2becdb96ef0a0130464d705eca961a1",
+            "outcome": "rendered-child",
+            "output": "1|1|1"
+          }
+        },
+        {
+          "id": "original-liquid-074",
+          "facts": {
+            "source": "{{ 'abc' | split: ',' | size }}|{{ 'abc' | split: ',' | first }}|{{ 'a,,b,' | split: ',' | join: '|' }}",
+            "sourceSha256": "bb54a21ba8347b6093afaa51ce5de34bf01ffe102200e77e33466edf2c575762",
+            "outcome": "rendered-child",
+            "output": "1|abc|a|b"
+          }
+        },
+        {
+          "id": "original-liquid-075",
+          "facts": {
+            "source": "{{ 'a' | append }}",
+            "sourceSha256": "1b59879fe46f03f8b8bf4d96aba6cee0746ecd7a746cd8ef7168bd44dbdcd09c",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'append' does not have a default value for 'string' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-076",
+          "facts": {
+            "source": "{{ 'a' | append: 'b', 'c' }}|{{ -3 | abs: 1 }}",
+            "sourceSha256": "55f6a3673fbe1c7890bee67b6351336cbc034011e80e5969802455ace38c339c",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch.|Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-077",
+          "facts": {
+            "source": "{{ false | default: 'bar', allow_false: true }}",
+            "sourceSha256": "29f8fdb15c1bcb581193f2ab23e847e16ce68148d8effd70be0c756badc39ab7",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Parameter count mismatch."
+          }
+        },
+        {
+          "id": "original-liquid-078",
+          "facts": {
+            "source": "{{ 5 | currency }}",
+            "sourceSha256": "a5cce3e64a5d469cd649d54b268009439c3bcbbd24970a23ace6194eefb5fdb6",
+            "outcome": "rendered-child",
+            "output": "Liquid syntax error: Error - Filter 'currency' does not have a default value for 'record' and no value was supplied"
+          }
+        },
+        {
+          "id": "original-liquid-079",
+          "facts": {
+            "source": "{{ 'hello world' | truncate }}|{{ 5.6 | round }}|{{ 'a' | json: 1 }}|{{ 'a' | missing_filter: 1, 2 }}",
+            "sourceSha256": "d81edd83118435b5af95e53510e87449405d84590e6245a40b0599431d881be4",
+            "outcome": "rendered-child",
+            "output": "hello world|6|a|a"
+          }
+        },
+        {
+          "id": "original-liquid-080",
+          "facts": {
+            "source": "{{ nil | append: 'b' }}|{{ nil | prepend: 'a' }}",
+            "sourceSha256": "a484dcb77b1674f15a50aa3a6ebdbb72aaab8d19fbd2d461f0483e35f9b23827",
+            "outcome": "rendered-child",
+            "output": "|"
+          }
+        },
+        {
+          "id": "original-liquid-081",
+          "facts": {
+            "source": "{{ 5.666 | round: 2 }}|{{ 5.666 | round: 28 }}",
+            "sourceSha256": "fc98f4708d0b15debf43ca9b1f961e7ec886bea6aac7fd44cb64de1dfd9300a8",
+            "outcome": "rendered-child",
+            "output": "5.67|5.666"
+          }
+        },
+        {
+          "id": "original-liquid-082",
+          "facts": {
+            "source": "{{ 5.666 | round: -1 }}",
+            "sourceSha256": "35482bb4942c0b36e4d54a4a124a342fc6417b0d33b905f2bc1bddaab003949e",
+            "outcome": "rendered-child",
+            "output": "Liquid error: Decimal can only round to between 0 and 28 digits of precision.\r\nParameter name: decimals"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,17 +1,19 @@
+// @test-kind contract: Mirage Solution layer order is Paqvilo's designed runtime behaviour, checked with local fixtures
 // Solution layer order: catalogue roots are a set layered in their dependency order (the order
 // Solution discovery, bootstrap and the data scaffold use) unless a site sets
 // mirage.solutionOrder: explicit.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
 import { mirageSettings } from '../lense/config-schema.mjs';
 import { derivedSolutionOrder, initProject, mirageReadiness } from '../lense/commands/mirage.mjs';
 import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 const attribute = (name, type) =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><Name>${name}</Name><LogicalName>${name.toLowerCase()}</LogicalName></attribute>`;
@@ -43,8 +45,9 @@ function solutionRoots(work) {
 
 function workspace(t, mirage) {
   const portal = createFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-order-')));
-  t.after(() => {
+  const work = tempDirSync('paqvilo-solution-order-');
+  // Removed after the runtimes the test started have been ended.
+  ownedFixture(t).remove(() => {
     portal.cleanup();
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
@@ -71,12 +74,15 @@ function workspace(t, mirage) {
 }
 
 test('Solution roots are layered in their dependency order, whatever the order they are listed in', async (t) => {
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-derive-')));
+  const work = tempDirSync('paqvilo-solution-derive-');
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const { extension, core } = solutionRoots(work);
-  assert.deepEqual(await derivedSolutionOrder([extension, core]), [core, extension]);
-  assert.deepEqual(await derivedSolutionOrder([core, extension]), [core, extension]);
-  assert.deepEqual(await derivedSolutionOrder([extension]), [extension]);
+  // The default cache is the current directory's .paqvilo: keep this test's parse cache inside its own folder.
+  const options = { cacheFile: path.join(work, 'cache/solution-discovery.json') };
+  assert.deepEqual(await derivedSolutionOrder([extension, core], options), [core, extension]);
+  assert.deepEqual(await derivedSolutionOrder([core, extension], options), [core, extension]);
+  assert.deepEqual(await derivedSolutionOrder([extension], options), [extension]);
+  assert.ok(fs.existsSync(options.cacheFile), 'the ordering cache is written where the caller asked');
   assert.throws(
     () => mirageSettings({ solutionOrder: 'alphabetical' }, 'sites.site.mirage'),
     /solutionOrder must be derived .* or explicit/,
@@ -200,57 +206,61 @@ test('doctor reports the order a runtime uses and warns when an explicit order d
   );
 });
 
-test(
-  'mirage start hands the Mirage its catalogue Solution roots in dependency order unless the site keeps an explicit order',
-  { timeout: 300_000 },
-  async (t) => {
-    // The two sites are independent workspaces, so their runtimes start concurrently.
-    await Promise.all(
-      [
-        [{}, ['Z_Core', 'A_Extension']],
-        [{ solutionOrder: 'explicit' }, ['A_Extension', 'Z_Core']],
-      ].map(async ([mirage, expected]) => {
-        const site = workspace(t, () => ({ port: 0, ...mirage }));
-        const started = await run('mirage', 'start', '--config', site.config, '--startup-timeout', '120000', '--json');
-        try {
-          assert.equal(started.status, 0, started.stdout + started.stderr);
-          const session = JSON.parse(started.stdout);
-          assert.deepEqual(
-            session.launch.solutionRoots.map((root) => path.basename(root)),
-            expected,
+test('mirage start hands the Mirage its catalogue Solution roots in dependency order unless the site keeps an explicit order', async (t) => {
+  // The two sites are independent workspaces, so their runtimes start concurrently.
+  await Promise.all(
+    [
+      [{}, ['Z_Core', 'A_Extension']],
+      [{ solutionOrder: 'explicit' }, ['A_Extension', 'Z_Core']],
+    ].map(async ([mirage, expected]) => {
+      const site = workspace(t, () => ({ port: 0, ...mirage }));
+      const started = await run('mirage', 'start', '--config', site.config, '--startup-timeout', '120000', '--json');
+      ownStartedRuntimes(t, started.stdout);
+      try {
+        assert.equal(started.status, 0, started.stdout + started.stderr);
+        const session = JSON.parse(started.stdout);
+        assert.deepEqual(
+          session.launch.solutionRoots.map((root) => path.basename(root)),
+          expected,
+        );
+        const state = await (await fetch(new URL('/_sim/api/state?summary=1', session.url))).json();
+        assert.deepEqual(
+          state.status.bootstrap.solutionRoots.map((root) => path.basename(root)),
+          expected,
+          'the runtime layers them in that order',
+        );
+        if (mirage.solutionOrder === 'explicit') {
+          const repeated = await run('mirage', 'start', '--config', site.config, '--json');
+          ownStartedRuntimes(t, repeated.stdout);
+          assert.equal(repeated.status, 0, repeated.stdout + repeated.stderr);
+          assert.equal(JSON.parse(repeated.stdout).pid, session.pid, 'the same explicit order reuses its runtime');
+          const catalogue = JSON.parse(fs.readFileSync(site.config, 'utf8'));
+          catalogue.sites.site.mirage.solutionRoots.reverse();
+          fs.writeFileSync(site.config, JSON.stringify(catalogue));
+          // The original runtime is still live on the site's default state file, so the reordered one keeps its own.
+          const reordered = await run(
+            'mirage',
+            'start',
+            '--config',
+            site.config,
+            '--state',
+            path.join(path.dirname(site.config), 'reordered state.json'),
+            '--json',
           );
-          const state = await (await fetch(new URL('/_sim/api/state?summary=1', session.url))).json();
+          ownStartedRuntimes(t, reordered.stdout);
+          assert.equal(reordered.status, 0, reordered.stdout + reordered.stderr);
+          const newSession = JSON.parse(reordered.stdout);
+          assert.notEqual(newSession.pid, session.pid, 'changing explicit layer order must not reuse the old runtime');
+          const newState = await (await fetch(new URL('/_sim/api/state?summary=1', newSession.url))).json();
           assert.deepEqual(
-            state.status.bootstrap.solutionRoots.map((root) => path.basename(root)),
-            expected,
-            'the runtime layers them in that order',
+            newState.status.bootstrap.solutionRoots.map((root) => path.basename(root)),
+            [...expected].reverse(),
           );
-          if (mirage.solutionOrder === 'explicit') {
-            const repeated = await run('mirage', 'start', '--config', site.config, '--json');
-            assert.equal(repeated.status, 0, repeated.stdout + repeated.stderr);
-            assert.equal(JSON.parse(repeated.stdout).pid, session.pid, 'the same explicit order reuses its runtime');
-            const catalogue = JSON.parse(fs.readFileSync(site.config, 'utf8'));
-            catalogue.sites.site.mirage.solutionRoots.reverse();
-            fs.writeFileSync(site.config, JSON.stringify(catalogue));
-            const reordered = await run('mirage', 'start', '--config', site.config, '--json');
-            assert.equal(reordered.status, 0, reordered.stdout + reordered.stderr);
-            const newSession = JSON.parse(reordered.stdout);
-            assert.notEqual(
-              newSession.pid,
-              session.pid,
-              'changing explicit layer order must not reuse the old runtime',
-            );
-            const newState = await (await fetch(new URL('/_sim/api/state?summary=1', newSession.url))).json();
-            assert.deepEqual(
-              newState.status.bootstrap.solutionRoots.map((root) => path.basename(root)),
-              [...expected].reverse(),
-            );
-          }
-        } finally {
-          const stopped = await run('mirage', 'stop', '--config', site.config, '--json');
-          assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
         }
-      }),
-    );
-  },
-);
+      } finally {
+        const stopped = await run('mirage', 'stop', '--config', site.config, '--json');
+        assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+      }
+    }),
+  );
+});

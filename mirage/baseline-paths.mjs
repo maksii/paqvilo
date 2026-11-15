@@ -13,18 +13,18 @@ const invalidSegment = (value) =>
 
 export function validateScenarioId(id) {
   if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9/._-]{0,160}$/i.test(id) || id.split('/').some(invalidSegment))
-    throw Error('A scenario id must contain safe nonempty relative directory segments.');
+    throw new Error('A scenario id must contain safe nonempty relative directory segments.');
   return id;
 }
 export function validateCaptureLabel(label) {
   if (typeof label !== 'string' || label.length > 160 || invalidSegment(label))
-    throw Error('A capture label must be one portable directory name.');
+    throw new Error('A capture label must be one portable directory name.');
   return label;
 }
 function relativeWithin(root, target) {
   const relative = path.relative(root, target);
   if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
-    throw Error('Capture destination is outside its explicit output root.');
+    throw new Error('Capture destination is outside its explicit output root.');
   return relative;
 }
 export function boundedScenarioDirectory(outDir, scenario, label) {
@@ -32,7 +32,7 @@ export function boundedScenarioDirectory(outDir, scenario, label) {
   validateCaptureLabel(label);
   const target = path.join(outDir, ...scenario.id.split('/'), label);
   if (!relativeWithin(path.resolve(outDir), path.resolve(target)))
-    throw Error('Capture destination must be below its explicit output root.');
+    throw new Error('Capture destination must be below its explicit output root.');
   return target;
 }
 async function statIfPresent(file) {
@@ -59,13 +59,18 @@ export async function ensureCaptureDestination(outDir, outputRoot = outDir, { cr
     await fs.lstat(root);
   }
   const realRoot = await fs.realpath(root);
-  if (!(await fs.stat(root)).isDirectory()) throw Error('Capture output root must be a directory.');
+  if (!(await fs.stat(root)).isDirectory()) throw new Error('Capture output root must be a directory.');
+  if (!(await ensureCaptureChildren(root, realRoot, relative, create))) return;
+  await validateCaptureFiles(target, files);
+}
+
+async function ensureCaptureChildren(root, realRoot, relative, create) {
   let cursor = root;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     cursor = path.join(cursor, segment);
     let observed = await statIfPresent(cursor);
     if (!observed) {
-      if (!create) return;
+      if (!create) return false;
       try {
         await fs.mkdir(cursor);
       } catch (error) {
@@ -74,14 +79,18 @@ export async function ensureCaptureDestination(outDir, outputRoot = outDir, { cr
       observed = await fs.lstat(cursor);
     }
     if (observed.isSymbolicLink() || !observed.isDirectory())
-      throw Error('Capture destination contains a linked or non-directory child.');
+      throw new Error('Capture destination contains a linked or non-directory child.');
     relativeWithin(realRoot, await fs.realpath(cursor));
   }
+  return true;
+}
+
+async function validateCaptureFiles(target, files) {
   for (const file of files) {
     if (typeof file !== 'string' || invalidSegment(file))
-      throw Error('Capture artifact must have one portable file name.');
+      throw new Error('Capture artifact must have one portable file name.');
     const observed = await statIfPresent(path.join(target, file));
     if (observed && (observed.isSymbolicLink() || !observed.isFile() || observed.nlink > 1))
-      throw Error('Capture artifact is a linked or non-file child.');
+      throw new Error('Capture artifact is a linked or non-file child.');
   }
 }

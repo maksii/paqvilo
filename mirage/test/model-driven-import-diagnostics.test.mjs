@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { importModelDrivenResources, clientExtensionCatalogue } from '../lib/model-driven-resources.mjs';
 import { modelDrivenSettings } from '../lib/model-driven-settings.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 
 // An unpacked Solution with a PCF control whose manifest cannot be parsed, and a declared WebResource that is missing.
 async function brokenSolution(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-diagnostics-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'InventedSolution');
   const files = {
@@ -43,9 +44,11 @@ test('broken PCF manifest diagnostics name Solution-relative files and reach the
   );
   assert.deepEqual(delivered, imported.diagnostics);
 
-  // No absolute local path (drive letter, root or the temporary directory) survives in any diagnostic.
+  // No absolute local path (drive letter, root or the temporary directory) survives in any diagnostic. The import
+  // resolves real paths, which differ from the temporary path when it uses a Windows 8.3 short name or a symlink.
   const text = JSON.stringify(imported.diagnostics);
-  for (const local of [root, solution]) assert.equal(text.includes(JSON.stringify(local).slice(1, -1)), false, text);
+  for (const local of [root, solution, await fs.realpath(root), await fs.realpath(solution)])
+    assert.equal(text.includes(JSON.stringify(local).slice(1, -1)), false, text);
   for (const entry of imported.diagnostics)
     for (const key of ['file', 'source'])
       if (entry[key] !== undefined) assert.doesNotMatch(entry[key], /^(?:[a-z]:|[\\/])/i);
@@ -58,7 +61,7 @@ test('diagnostic callback is optional and a clean Solution delivers nothing', as
   const { solution } = await brokenSolution(t);
   const result = await importModelDrivenResources([{ type: 'directory', dir: solution }]);
   assert.equal(result.diagnostics.length, 2);
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-clean-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-diagnostics-clean-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const delivered = [];
   const clean = await importModelDrivenResources([{ type: 'directory', dir: root }], {

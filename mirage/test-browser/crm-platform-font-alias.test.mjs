@@ -8,10 +8,10 @@ import { createSimulator } from '../server.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { inventedCrmFont } from '../test/fixtures/crm-font.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('a platform WOFF2 URL explicitly aliased to verified WOFF loads and paints its invented glyph', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crm-alias-browser-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'crm-alias-browser-'));
   const owner = ownedFixture(t);
   let app, browser;
   owner.add(() => browser?.close());

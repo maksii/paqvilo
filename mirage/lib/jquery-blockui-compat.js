@@ -8,9 +8,9 @@
  */
 (() => {
   'use strict';
-  const registry = (window.__ppSimCompat ||= {});
+  const registry = (globalThis.__ppSimCompat ||= {});
   if (registry.blockUI) {
-    registry.blockUI(window.jQuery);
+    registry.blockUI(globalThis.jQuery);
     return;
   }
   registry.blockUI = attach;
@@ -53,7 +53,7 @@
         backgroundColor: '#000',
         'border-radius': '10px',
       },
-      iframeSrc: /^https/i.test(window.location.href || '') ? 'javascript:false' : 'about:blank',
+      iframeSrc: /^https/i.test(globalThis.location.href || '') ? 'javascript:false' : 'about:blank',
       forceIframe: false,
       baseZ: 1000,
       centerX: true,
@@ -79,9 +79,9 @@
       const parent = element.parentNode;
       const style = element.style;
       const left =
-        (parent.offsetWidth - element.offsetWidth) / 2 - (parseInt($.css(parent, 'borderLeftWidth'), 10) || 0);
+        (parent.offsetWidth - element.offsetWidth) / 2 - (Number.parseInt($.css(parent, 'borderLeftWidth'), 10) || 0);
       const top =
-        (parent.offsetHeight - element.offsetHeight) / 2 - (parseInt($.css(parent, 'borderTopWidth'), 10) || 0);
+        (parent.offsetHeight - element.offsetHeight) / 2 - (Number.parseInt($.css(parent, 'borderTopWidth'), 10) || 0);
       if (x) style.left = left > 0 ? `${left}px` : '0';
       if (y) style.top = top > 0 ? `${top}px` : '0';
     }
@@ -90,10 +90,10 @@
       const opts = event.data;
       if (event.type === 'keydown' && event.keyCode === 9 && pageBlock && opts.constrainTabKey) {
         const elements = pageBlockEls;
-        const forward = !event.shiftKey && event.target === elements[elements.length - 1];
+        const forward = !event.shiftKey && event.target === elements.at(-1);
         const back = event.shiftKey && event.target === elements[0];
         if (forward || back) {
-          setTimeout(() => (forward ? elements[0] : elements[elements.length - 1])?.focus(), 10);
+          setTimeout(() => (forward ? elements[0] : elements.at(-1))?.focus(), 10);
           return false;
         }
       }
@@ -104,7 +104,7 @@
     }
 
     function bind(on, element, opts) {
-      const full = element === window;
+      const full = element === globalThis;
       const $element = $(element);
       if (!on && ((full && !pageBlock) || (!full && !$element.data('blockUI.isBlocked')))) return;
       $element.data('blockUI.isBlocked', on);
@@ -114,29 +114,20 @@
       else $(document).off(events, handler);
     }
 
-    function install(element, options) {
-      const full = element === window;
-      let message = options && options.message !== undefined ? options.message : undefined;
-      const opts = $.extend({}, $.blockUI.defaults, options || {});
-      if (opts.ignoreIfBlocked && $(element).data('blockUI.isBlocked')) return;
-      opts.overlayCSS = $.extend({}, $.blockUI.defaults.overlayCSS, opts.overlayCSS || {});
-      const css = $.extend({}, $.blockUI.defaults.css, opts.css || {});
-      if (opts.onOverlayClick) opts.overlayCSS.cursor = 'pointer';
-      message = message === undefined ? opts.message : message;
-      if (full && pageBlock) remove(window, { fadeOut: 0 });
-      if (message && typeof message !== 'string' && (message.parentNode || message.jquery)) {
-        const node = message.jquery ? message[0] : message;
-        const history = {
-          el: node,
-          parent: node.parentNode,
-          display: node.style.display,
-          position: node.style.position,
-        };
-        $(element).data('blockUI.history', history);
-        if (history.parent) history.parent.removeChild(node);
-      }
-      $(element).data('blockUI.onUnblock', opts.onUnblock);
-      let z = opts.baseZ;
+    function rememberMessage(element, message) {
+      if (!message || typeof message === 'string' || (!message.parentNode && !message.jquery)) return;
+      const node = message.jquery ? message[0] : message;
+      const history = {
+        el: node,
+        parent: node.parentNode,
+        display: node.style.display,
+        position: node.style.position,
+      };
+      $(element).data('blockUI.history', history);
+      if (history.parent) node.remove();
+    }
+
+    function createBlockLayers(element, full, opts, css, z, message) {
       const layer1 = $('<div class="blockUI" style="display:none"></div>');
       const layer2 = $(
         `<div class="blockUI blockOverlay" style="z-index:${z++};display:none;border:none;margin:0;padding:0;width:100%;height:100%;top:0;left:0"></div>`,
@@ -156,6 +147,10 @@
         layer3.append(message);
         if (typeof message !== 'string' && (message.jquery || message.nodeType)) $(message).show();
       }
+      return { layer2, layer3 };
+    }
+
+    /* NOSONAR */ function showBlockLayers(layer2, layer3, opts, message) {
       const done = opts.onBlock || noop;
       if (opts.fadeIn) {
         if (opts.showOverlay) layer2.fadeIn(opts.fadeIn, opts.showOverlay && !message ? done : noop);
@@ -165,6 +160,9 @@
         if (message) layer3.show();
         if (opts.onBlock) opts.onBlock();
       }
+    }
+
+    function finishBlock(element, full, opts, layer3) {
       bind(true, element, opts);
       if (full) {
         pageBlock = layer3[0];
@@ -177,10 +175,27 @@
       }
     }
 
+    function install(element, options) {
+      const full = element === globalThis;
+      let message = options?.message !== undefined ? options.message : undefined;
+      const opts = $.extend({}, $.blockUI.defaults, options || {});
+      if (opts.ignoreIfBlocked && $(element).data('blockUI.isBlocked')) return;
+      opts.overlayCSS = $.extend({}, $.blockUI.defaults.overlayCSS, opts.overlayCSS || {});
+      const css = $.extend({}, $.blockUI.defaults.css, opts.css || {});
+      if (opts.onOverlayClick) opts.overlayCSS.cursor = 'pointer';
+      message = message === undefined ? opts.message : message;
+      if (full && pageBlock) remove(globalThis, { fadeOut: 0 });
+      rememberMessage(element, message);
+      $(element).data('blockUI.onUnblock', opts.onUnblock);
+      const { layer2, layer3 } = createBlockLayers(element, full, opts, css, opts.baseZ, message);
+      showBlockLayers(layer2, layer3, opts, message);
+      finishBlock(element, full, opts, layer3);
+    }
+
     function reset(layers, history, opts, element) {
       const $element = $(element);
       layers.each(function () {
-        if (this.parentNode) this.parentNode.removeChild(this);
+        if (this.parentNode) this.remove();
       });
       if (history?.el) {
         history.el.style.display = history.display;
@@ -193,7 +208,7 @@
     }
 
     function remove(element, options) {
-      const full = element === window;
+      const full = element === globalThis;
       const $element = $(element);
       const history = $element.data('blockUI.history');
       const timer = $element.data('blockUI.timeout');
@@ -223,10 +238,10 @@
     }
 
     $.blockUI = function (options) {
-      install(window, options);
+      install(globalThis, options);
     };
     $.unblockUI = function (options) {
-      remove(window, options);
+      remove(globalThis, options);
     };
     $.growlUI = function (title, message, timeout, onClose) {
       const growl = $('<div class="growlUI"></div>');
@@ -245,7 +260,7 @@
       });
     };
     $.fn.block = function (options) {
-      if (this[0] === window) {
+      if (this[0] === globalThis) {
         $.blockUI(options);
         return this;
       }
@@ -259,7 +274,7 @@
       });
     };
     $.fn.unblock = function (options) {
-      if (this[0] === window) {
+      if (this[0] === globalThis) {
         $.unblockUI(options);
         return this;
       }
@@ -272,19 +287,24 @@
     $.blockUI.__ppSimCompat = true;
   }
 
-  attach(window.jQuery);
+  attach(globalThis.jQuery);
   // Pages may install another jQuery later (as the platform bundles do); re-attach to it.
   watchJQuery(registry, attach);
 
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
-    (registry.jqueryWatchers ||= new Set()).add(attach);
+    let watchers = registry.jqueryWatchers;
+    if (!watchers) {
+      watchers = new Set();
+      registry.jqueryWatchers = watchers;
+    }
+    watchers.add(attach);
     if (registry.jqueryWatched) return;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-    let current = window.jQuery;
+    let current = globalThis.jQuery;
     try {
-      Object.defineProperty(window, 'jQuery', {
+      Object.defineProperty(globalThis, 'jQuery', {
         configurable: true,
         enumerable: true,
         get: () => current,

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DataError, DataStore } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const state = () => ({
   mappings: { item: { idColumn: 'itemid', entitySet: 'items' } },
@@ -13,7 +14,7 @@ const state = () => ({
 const conflict = (error) => error instanceof DataError && error.status === 409 && error.code === 'StateConflict';
 
 test('two DataStores on one file preserve the first write and roll back a stale writer', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-state-cas-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-state-cas-'));
   const file = join(root, 'state.json');
   try {
     await fs.writeFile(file, JSON.stringify(state()));
@@ -35,7 +36,7 @@ test('two DataStores on one file preserve the first write and roll back a stale 
 });
 
 test('a held sibling lock blocks writes and a later retry succeeds cleanly', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-state-lock-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-state-lock-'));
   const file = join(root, 'state.json'),
     lock = `${file}.lock`;
   try {
@@ -56,7 +57,7 @@ test('a held sibling lock blocks writes and a later retry succeeds cleanly', asy
 });
 
 test('external state edits are detected and never overwritten', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-state-external-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-state-external-'));
   const file = join(root, 'state.json');
   try {
     await fs.writeFile(file, JSON.stringify(state()));

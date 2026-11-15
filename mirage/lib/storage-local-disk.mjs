@@ -39,6 +39,8 @@ export function createLocalDiskStorage({
   let sequence = 0;
   let closed = false;
   const writingTemps = new Set();
+  // Writes in flight (put, commit, delete), settled or not: close waits for them.
+  const running = new Set();
   let ready;
   const load = () =>
     (ready ??= (async () => {
@@ -173,8 +175,8 @@ export function createLocalDiskStorage({
           size,
           etag: `"${digest.slice(0, 16)}-${sequence}"`,
           version: sequence,
-          contentType: options.contentType ?? current?.contentType ?? 'application/octet-stream',
-          metadata: { ...(options.metadata ?? {}) },
+          contentType: options.contentType ?? 'application/octet-stream',
+          metadata: { ...options.metadata },
           lastModified: new Date(clock()).toISOString(),
         };
         index.set(key, entry);
@@ -319,7 +321,9 @@ export function createLocalDiskStorage({
           throw error('InvalidKey', 'Continuation token is invalid.');
         }
       }
-      const keys = [...index.keys()].filter((key) => key.startsWith(prefix) && (after === null || key > after)).sort();
+      const keys = [...index.keys()]
+        .filter((key) => key.startsWith(prefix) && (after === null || key > after))
+        .sort(/* NOSONAR: preserve default string coercion */);
       const page = keys.slice(0, pageSize);
       const items = page.map((key) => {
         const e = index.get(key);
@@ -331,7 +335,7 @@ export function createLocalDiskStorage({
     async sas(key, { permission = 'r', expiresOn } = {}) {
       key = validateKey(key, id);
       if (!['r', 'w', 'rw'].includes(permission)) throw error('InvalidKey', "SAS permission must be 'r', 'w' or 'rw'.");
-      const expiry = new Date(expiresOn ?? clock() + 3600_000).toISOString();
+      const expiry = new Date(expiresOn ?? clock() + 3_600_000).toISOString();
       const query = new URLSearchParams({ se: expiry, sp: permission, sig: signature(key, expiry, permission) });
       return `${sasBase}${key.split('/').map(encodeURIComponent).join('/')}?${query}`;
     },
@@ -405,8 +409,23 @@ export function createLocalDiskStorage({
 
     async close() {
       closed = true;
+      while (running.size) await Promise.all(running);
       await queue;
     },
   };
+  // Nothing writes under the root after close() has resolved: each write is tracked until it settles.
+  for (const name of ['put', 'commit', 'delete']) {
+    const write = provider[name];
+    provider[name] = (...args) => {
+      const work = write.apply(provider, args);
+      const settled = work.then(
+        () => {},
+        () => {},
+      );
+      running.add(settled);
+      settled.finally(() => running.delete(settled));
+      return work;
+    };
+  }
   return provider;
 }

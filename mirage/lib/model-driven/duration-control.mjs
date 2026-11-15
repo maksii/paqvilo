@@ -11,17 +11,28 @@ let nextId = 0;
 function parseDuration(text) {
   const input = String(text ?? '').trim();
   if (!input) return null;
-  const match = /^(\d+(?:\.\d+)?|\.\d+)\s*(minutes?|hours?|days?)?$/i.exec(input);
+  const match = /^(\d+(?:\.\d+)?|\.\d+)\s*(minutes?|hours?|days?)?$/i.exec(input); // NOSONAR: regex kept: a rewrite would change matches or captures
   if (!match) return undefined;
   const unit = (match[2] ?? 'minutes').toLowerCase(),
     amount = Number(match[1]);
-  const value = Math.round(amount * (unit.startsWith('day') ? 1440 : unit.startsWith('hour') ? 60 : 1));
+  let factor = 1;
+  if (unit.startsWith('day')) factor = 1440;
+  else if (unit.startsWith('hour')) factor = 60;
+  const value = Math.round(amount * factor);
   return Number.isSafeInteger(value) ? value : undefined;
 }
 function formatDuration(value) {
   if (value == null || value === '') return '';
-  const unit = value >= 1440 ? 'day' : value >= 60 ? 'hour' : 'minute',
-    amount = Number((value / (unit === 'day' ? 1440 : unit === 'hour' ? 60 : 1)).toFixed(2));
+  let unit = 'minute',
+    size = 1;
+  if (value >= 1440) {
+    unit = 'day';
+    size = 1440;
+  } else if (value >= 60) {
+    unit = 'hour';
+    size = 60;
+  }
+  const amount = Number((value / size).toFixed(2));
   return `${amount} ${unit}${amount === 1 ? '' : 's'}`;
 }
 export function renderDuration(field, initialValue, _context = {}) {
@@ -71,14 +82,14 @@ export function renderDuration(field, initialValue, _context = {}) {
     externalError = String(message);
     nativeValidity(externalError || validationError);
   };
-  const reason = (next) =>
-    next === undefined || (next != null && (!Number.isSafeInteger(next) || next < 0))
-      ? invalidDuration
-      : next != null && field.minValue !== undefined && next < field.minValue
-        ? `Enter a duration of at least ${formatDuration(field.minValue)}.`
-        : next != null && field.maxValue !== undefined && next > field.maxValue
-          ? `Enter a duration no greater than ${formatDuration(field.maxValue)}.`
-          : '';
+  const reason = (next) => {
+    if (next === undefined || (next != null && (!Number.isSafeInteger(next) || next < 0))) return invalidDuration;
+    if (next != null && field.minValue !== undefined && next < field.minValue)
+      return `Enter a duration of at least ${formatDuration(field.minValue)}.`;
+    if (next != null && field.maxValue !== undefined && next > field.maxValue)
+      return `Enter a duration no greater than ${formatDuration(field.maxValue)}.`;
+    return '';
+  };
   const validate = (show = false) => {
     const next = edited ? parseDuration(primary.value) : value,
       message = reason(next);
@@ -216,6 +227,19 @@ export function renderDuration(field, initialValue, _context = {}) {
   primary.addEventListener('click', open);
   primary.addEventListener('blur', () => commit());
   primary.addEventListener('invalid', () => validate(true));
+  const handleArrowKey = (event, wasClosed) => {
+    const enabled = choices.flatMap((value, index) => (reason(value) ? [] : [index])),
+      position = enabled.indexOf(active);
+    if (event.key === 'Home') active = enabled[0];
+    else if (event.key === 'End') active = enabled.at(-1);
+    else {
+      let step = 0;
+      if (!wasClosed) step = event.key === 'ArrowDown' ? 1 : -1;
+      active = enabled[Math.max(0, Math.min(enabled.length - 1, position + step))];
+    }
+    markActive();
+    revealActive();
+  };
   primary.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !list.hidden) {
       event.preventDefault();
@@ -231,21 +255,7 @@ export function renderDuration(field, initialValue, _context = {}) {
       event.preventDefault();
       const wasClosed = list.hidden;
       open();
-      const enabled = choices.flatMap((value, index) => (reason(value) ? [] : [index])),
-        position = enabled.indexOf(active);
-      active =
-        event.key === 'Home'
-          ? enabled[0]
-          : event.key === 'End'
-            ? enabled.at(-1)
-            : enabled[
-                Math.max(
-                  0,
-                  Math.min(enabled.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)),
-                )
-              ];
-      markActive();
-      revealActive();
+      handleArrowKey(event, wasClosed);
     } else if (event.key === 'Enter') {
       if (!list.hidden) {
         event.preventDefault();

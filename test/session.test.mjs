@@ -1,24 +1,58 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind unproven: the checks in this file exercise session with local fixtures; no native capture establishes the behaviour they assert.
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { OverlaySession } from '../lense/session.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { createFixture, SITE, ONLINE_HOME, HOME_ID } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
 import { watchSources } from '../lense/commands/dev.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 const ORIGIN = 'https://portal.example.com';
 const fx = createFixture();
 after(() => fx.cleanup());
 
-const tick = () => new Promise((r) => setTimeout(r, 20));
+// Interception answers each paused request with one Fetch.* command for its request ID. Tests wait for
+// that answer, or for another DevTools command they depend on, instead of a fixed delay.
+const waiters = new WeakMap();
+const sent = (tab, matches) => {
+  let pending = waiters.get(tab.cdp);
+  if (!pending) {
+    waiters.set(tab.cdp, (pending = new Set()));
+    const send = tab.cdp.send;
+    tab.cdp.send = async (method, params) => {
+      const result = await send(method, params);
+      for (const waiter of pending) waiter(method, params);
+      return result;
+    };
+  }
+  return new Promise((resolve) => {
+    const waiter = (method, params) => {
+      if (!matches(method, params)) return;
+      pending.delete(waiter);
+      resolve();
+    };
+    pending.add(waiter);
+  });
+};
+/** Pauses a request in `tab` and resolves once interception has answered it. */
+const pause = (tab, requestId, url, options) => {
+  const answered = sent(tab, (method, params) => method.startsWith('Fetch.') && params?.requestId === requestId);
+  tab.pause(requestId, url, options);
+  return answered;
+};
 
 const session = () => new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: false });
 
+// @test-kind contract: document rewrite waits for its current source index and sends provenance only with that fulfilled response
 test('document rewrite waits for its current source index and sends provenance only with that fulfilled response', async (t) => {
   const original = '<!doctype html><p>Invented online response</p>';
   const fake = fakeBrowser({ [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: original } });
@@ -27,13 +61,22 @@ test('document rewrite waits for its current source index and sends provenance o
     index = { revision: 'invented-source' },
     published = [];
   let releaseIndex,
+    indexRequested,
+    provenancePublished,
     rewritten = 0;
   const indexed = new Promise((resolve) => {
     releaseIndex = resolve;
   });
+  const requested = new Promise((resolve) => {
+    indexRequested = resolve;
+  });
+  const publication = new Promise((resolve) => {
+    provenancePublished = resolve;
+  });
   current.sourceInspector = {
     async sourceIndexFor(route) {
       assert.equal(route, '/document');
+      indexRequested();
       await indexed;
       return index;
     },
@@ -46,15 +89,21 @@ test('document rewrite waits for its current source index and sends provenance o
     return { html: '<p>Changed local response</p>', applied: [], notes: [], matched: [], provenance: proof };
   };
   const detach = await interceptOrigin(fake.context, ORIGIN, current.route, {
-    onAttach: () => ({ publishProvenance: (_event, value) => published.push(value) }),
+    onAttach: () => ({
+      publishProvenance: (_event, value) => {
+        published.push(value);
+        provenancePublished();
+      },
+    }),
   });
   t.after(detach);
-  tab.pause('indexed-document', ORIGIN + '/document', { type: 'Document' });
-  await tick();
+  const answered = pause(tab, 'indexed-document', ORIGIN + '/document', { type: 'Document' });
+  await requested;
   assert.equal(rewritten, 0);
   assert.deepEqual(fake.answers('indexed-document'), []);
   releaseIndex();
-  await tick();
+  // Provenance is published only after the browser acknowledged the fulfilled response.
+  await Promise.all([answered, publication]);
   assert.equal(rewritten, 1);
   assert.deepEqual(published, [proof]);
   assert.equal(
@@ -63,6 +112,7 @@ test('document rewrite waits for its current source index and sends provenance o
   );
 });
 
+// @test-kind contract: unavailable inspection metadata does not disable ordinary local overlays or invent response proof
 test('unavailable inspection metadata does not disable ordinary local overlays or invent response proof', async (t) => {
   const fake = fakeBrowser({
     [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: '<p>Online</p>' },
@@ -81,12 +131,17 @@ test('unavailable inspection metadata does not disable ordinary local overlays o
     assert.equal(options.sourceIndex, undefined);
     return { html: '<p>Local overlay</p>', applied: [], notes: [], matched: [] };
   };
-  const detach = await interceptOrigin(fake.context, ORIGIN, current.route, {
+  let routed;
+  const handled = new Promise((resolve) => {
+    routed = resolve;
+  });
+  // The route settles after any provenance of its fulfilled response was published.
+  const detach = await interceptOrigin(fake.context, ORIGIN, (route) => current.route(route).finally(routed), {
     onAttach: () => ({ publishProvenance: (_event, value) => published.push(value) }),
   });
   t.after(detach);
   tab.pause('unindexed-document', ORIGIN + '/document', { type: 'Document' });
-  await tick();
+  await handled;
   assert.equal(Buffer.from(fake.answers('unindexed-document')[0].body, 'base64').toString(), '<p>Local overlay</p>');
   assert.deepEqual(published, []);
   assert.deepEqual(faults, ['Invented missing metadata']);
@@ -109,14 +164,16 @@ test('snippet changes patch fetched HTML fragments while preserving JSON payload
   const tab = b.openTab();
   const detach = await interceptOrigin(b.context, ORIGIN, s.route);
   t.after(detach);
-  tab.pause('polling', `${ORIGIN}/data`, { type: 'XHR' });
-  tab.pause('fragment', `${ORIGIN}/fragment`, { type: 'XHR' });
-  await tick();
+  await Promise.all([
+    pause(tab, 'polling', `${ORIGIN}/data`, { type: 'XHR' }),
+    pause(tab, 'fragment', `${ORIGIN}/fragment`, { type: 'XHR' }),
+  ]);
   assert.equal(b.fetched.length, 2);
   assert.equal(Buffer.from(b.answers('polling')[0].body, 'base64').toString(), json);
   assert.match(Buffer.from(b.answers('fragment')[0].body, 'base64').toString(), /Changed footer text/);
 });
 
+// @test-kind contract: asynchronous startup preserves the synchronous model and rewrite result
 test('asynchronous startup preserves the synchronous model and rewrite result', async () => {
   const cfg = { origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: false };
   const sync = new OverlaySession(cfg);
@@ -126,6 +183,7 @@ test('asynchronous startup preserves the synchronous model and rewrite result', 
   assert.deepEqual(prepared.rewriter.rewrite(ONLINE_HOME, '/'), sync.rewriter.rewrite(ONLINE_HOME, '/'));
 });
 
+// @test-kind contract: Mirage-rendered pages pass through unchanged while the toolkit panel API remains local
 test('Mirage-rendered pages pass through unchanged while the toolkit panel API remains local', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -233,36 +291,54 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
   assert.equal(fallbacks, 1);
 });
 
-test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work', async () => {
+// @test-kind contract: HEAD reads no asset bytes and repeated mapped GETs reuse source-map work
+test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work', async (t) => {
+  // The served-body cache never trusts a stamp taken within the file's time tick; the fixture was written moments ago.
+  settleFileTimes(t);
   const s = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: true });
   const b = fakeBrowser();
   const tab = b.openTab();
   const detach = await interceptOrigin(b.context, ORIGIN, s.route);
-  const read = fs.readFileSync;
+  // The body cache reads through a descriptor it opened for the file, so count reads of that descriptor too.
+  const app = path.join(fx.dir, 'web-files/app.js'),
+    open = fs.openSync,
+    close = fs.closeSync,
+    read = fs.readFileSync,
+    appDescriptors = new Set();
   let reads = 0;
+  fs.openSync = function (file, ...args) {
+    const fd = open.call(this, file, ...args);
+    if (typeof file === 'string' && path.resolve(file) === app) appDescriptors.add(fd);
+    return fd;
+  };
+  // Descriptor numbers are reused after close.
+  fs.closeSync = function (fd) {
+    appDescriptors.delete(fd);
+    return close.call(this, fd);
+  };
   fs.readFileSync = function (file, ...args) {
-    if (path.resolve(String(file)) === path.join(fx.dir, 'web-files/app.js')) reads++;
+    if (appDescriptors.has(file) || (typeof file === 'string' && path.resolve(file) === app)) reads++;
     return read.call(this, file, ...args);
   };
   try {
-    tab.pause('head', `${ORIGIN}/scripts/app.js`, { type: 'Script', method: 'HEAD' });
-    await tick();
+    await pause(tab, 'head', `${ORIGIN}/scripts/app.js`, { type: 'Script', method: 'HEAD' });
     assert.equal(reads, 0);
     assert.equal(b.answers('head')[0].responseCode, 200);
-    tab.pause('get1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-    await tick();
-    tab.pause('get2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-    await tick();
+    await pause(tab, 'get1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
+    await pause(tab, 'get2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
     assert.equal(reads, 1);
     assert.equal(b.answers('get1')[0].body, b.answers('get2')[0].body);
   } finally {
+    fs.openSync = open;
+    fs.closeSync = close;
     fs.readFileSync = read;
     await detach();
   }
 });
 
+// @test-kind contract: an external route save does not rebuild the unrelated portal index
 test('an external route save does not rebuild the unrelated portal index', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-route-refresh-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-route-refresh-'));
   try {
     const file = path.join(dir, 'external.js');
     fs.writeFileSync(file, 'original');
@@ -286,6 +362,7 @@ test('an external route save does not rebuild the unrelated portal index', () =>
   }
 });
 
+// @test-kind contract: background HTML history deduplicates polling and bounds retained inline bodies
 test('background HTML history deduplicates polling and bounds retained inline bodies', async () => {
   const s = session();
   const page = {};
@@ -320,18 +397,22 @@ test('background HTML history deduplicates polling and bounds retained inline bo
   await s.route(route('same'));
   assert.equal(s.pageHits.get(page).length, 1);
   assert.equal(s.pageHits.get(page)[0].count, 2);
+  // 12 distinct 1 MiB responses exceed the retained inline budget (MAX_PAGE_SOURCE_BYTES in lense/session.mjs).
+  const retainedBudget = 8 * 1024 * 1024;
   for (let i = 0; i < 12; i++) await s.route(route(i));
-  assert.ok(s.pageHitBytes.get(page) <= 8 * 1024 * 1024);
+  assert.ok(s.pageHitBytes.get(page) <= retainedBudget);
   assert.equal(s.pageHits.get(page).at(-1).url, '/fragment/11');
 });
 
+// @test-kind security+contract: only the portal origin is intercepted, in every tab, also in tabs opened later
 test('only the portal origin is intercepted, in every tab, also in tabs opened later', async () => {
   const b = fakeBrowser();
   b.openTab();
   await interceptOrigin(b.context, ORIGIN, async () => {});
   const later = b.openTab();
+  const attached = sent(later, (method) => method === 'Fetch.enable');
   b.context.emit('page', later.page);
-  await tick();
+  await attached;
   const enabled = b.sent.filter((s) => s.method === 'Fetch.enable');
   assert.equal(enabled.length, 2);
   assert.deepEqual(enabled[0].patterns, [{ urlPattern: `${ORIGIN}/*` }]);
@@ -339,6 +420,7 @@ test('only the portal origin is intercepted, in every tab, also in tabs opened l
   assert.equal(b.sent.filter((s) => s.method === 'Network.setCacheDisabled' && s.cacheDisabled === true).length, 2);
 });
 
+// @test-kind contract: every paused request is answered: also when the handler ignores it or throws
 test('every paused request is answered: also when the handler ignores it or throws', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -346,9 +428,7 @@ test('every paused request is answered: also when the handler ignores it or thro
   await interceptOrigin(b.context, ORIGIN, async () => {
     if (++calls === 2) throw new Error('boom');
   });
-  tab.pause('r1', `${ORIGIN}/_api/things`);
-  tab.pause('r2', `${ORIGIN}/_api/things`);
-  await tick();
+  await Promise.all([pause(tab, 'r1', `${ORIGIN}/_api/things`), pause(tab, 'r2', `${ORIGIN}/_api/things`)]);
   assert.deepEqual(
     b.answers('r1').map((a) => a.method),
     ['Fetch.continueRequest'],
@@ -359,12 +439,12 @@ test('every paused request is answered: also when the handler ignores it or thro
   );
 });
 
+// @test-kind contract: a web file is answered from disk and the portal is not asked
 test('a web file is answered from disk and the portal is not asked', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  await tick();
+  await pause(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   const [answer] = b.answers('r1');
   assert.equal(answer.method, 'Fetch.fulfillRequest');
   assert.equal(answer.responseCode, 200);
@@ -373,6 +453,7 @@ test('a web file is answered from disk and the portal is not asked', async () =>
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind contract: a page is fetched online with the request as the browser made it, rewritten, and answered once
 test('a page is fetched online with the request as the browser made it, rewritten, and answered once', async (t) => {
   const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css',
     original = fx.read(css);
@@ -394,11 +475,10 @@ test('a page is fetched online with the request as the browser made it, rewritte
   const hits = [];
   s.on('hit', (h) => hits.push(h));
   await interceptOrigin(b.context, ORIGIN, s.route);
-  tab.pause('r1', `${ORIGIN}/`, {
+  await pause(tab, 'r1', `${ORIGIN}/`, {
     type: 'Document',
     headers: { Cookie: 'session=x', Accept: 'text/html', Host: 'portal.example.com' },
   });
-  await tick();
   // cookies come from the browser's own jar, not from the copied header
   assert.deepEqual(b.fetched[0].headers, { accept: 'text/html' });
   assert.equal(b.fetched[0].maxRedirects, 0);
@@ -417,44 +497,46 @@ test('a page is fetched online with the request as the browser made it, rewritte
   assert.equal(hits[0].page, tab.page);
 });
 
+// @test-kind contract: a form post carries its body to the portal
 test('a form post carries its body to the portal', async () => {
   const b = fakeBrowser({
     [`${ORIGIN}/about-us/`]: { headers: { 'content-type': 'text/html' }, body: '<html><body>saved</body></html>' },
   });
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/about-us/`, {
+  await pause(tab, 'r1', `${ORIGIN}/about-us/`, {
     type: 'Document',
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     postData: 'a=1&b=2',
   });
-  await tick();
   assert.equal(b.fetched[0].method, 'POST');
   assert.equal(b.fetched[0].timeout, 120_000, 'stalled API work must have a bounded lifetime');
   assert.equal(b.fetched[0].data, 'a=1&b=2');
   assert.equal(b.answers('r1')[0].method, 'Fetch.fulfillRequest');
 });
 
+// @test-kind contract: a redirect is handed to the browser as it is
 test('a redirect is handed to the browser as it is', async () => {
   const b = fakeBrowser({ [`${ORIGIN}/about-us`]: { status: 301, headers: { location: '/about-us/' } } });
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/about-us`, { type: 'Document' });
-  await tick();
+  await pause(tab, 'r1', `${ORIGIN}/about-us`, { type: 'Document' });
   const [answer] = b.answers('r1');
   assert.equal(answer.responseCode, 301);
   assert.ok(answer.responseHeaders.some((h) => h.name === 'location' && h.value === '/about-us/'));
 });
 
+// @test-kind security+contract: data requests, posts of data and sign-in pages go to the portal untouched
 test('data requests, posts of data and sign-in pages go to the portal untouched', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/_api/things`);
-  tab.pause('r2', `${ORIGIN}/_api/things`, { method: 'POST', postData: '{}' });
-  tab.pause('r3', `${ORIGIN}/en-US/SignIn`, { type: 'Document' });
-  await tick();
+  await Promise.all([
+    pause(tab, 'r1', `${ORIGIN}/_api/things`),
+    pause(tab, 'r2', `${ORIGIN}/_api/things`, { method: 'POST', postData: '{}' }),
+    pause(tab, 'r3', `${ORIGIN}/en-US/SignIn`, { type: 'Document' }),
+  ]);
   for (const id of ['r1', 'r2', 'r3'])
     assert.deepEqual(
       b.answers(id).map((a) => a.method),
@@ -463,18 +545,19 @@ test('data requests, posts of data and sign-in pages go to the portal untouched'
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind contract: when the portal cannot be reached a page request goes back to the browser
 test('when the portal cannot be reached a page request goes back to the browser', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/gone/`, { type: 'Document' });
-  await tick();
+  await pause(tab, 'r1', `${ORIGIN}/gone/`, { type: 'Document' });
   assert.deepEqual(
     b.answers('r1').map((a) => a.method),
     ['Fetch.continueRequest'],
   );
 });
 
+// @test-kind contract: the first custom JavaScript file of a page is picked up when it is created
 test('the first custom JavaScript file of a page is picked up when it is created', (t) => {
   const s = session();
   const rel = 'web-pages/scripts/content-pages/Scripts.en-US.webpage.custom_javascript.js';
@@ -494,6 +577,7 @@ test('the first custom JavaScript file of a page is picked up when it is created
   assert.equal(s.rewriter.rewrite(page, '/scripts/').applied.length, 0);
 });
 
+// @test-kind contract: a tab that loaded its page before interception was on is loaded once more
 test('a tab that loaded its page before interception was on is loaded once more', async () => {
   const b = fakeBrowser();
   const early = b.openTab(`${ORIGIN}/about-us/`);
@@ -501,21 +585,28 @@ test('a tab that loaded its page before interception was on is loaded once more'
   assert.equal(early.page.reloads, 1);
   // a tab whose page did go through interception is left alone
   const normal = b.openTab(`${ORIGIN}/`);
+  const repaired = sent(normal, (method) => method === 'Runtime.callFunctionOn');
   b.context.emit('page', normal.page);
-  await tick();
-  normal.pause('r1', `${ORIGIN}/`, { type: 'Document' });
-  await tick();
+  await repaired;
+  await pause(normal, 'r1', `${ORIGIN}/`, { type: 'Document' });
+  // A repair starts by reading the frame tree in the same turn as the DOMContentLoaded event.
+  const inspections = () => b.sent.filter((s) => s.method === 'Page.getFrameTree').length;
+  let before = inspections();
   normal.page.emit('domcontentloaded');
+  assert.equal(inspections(), before, 'a document seen by interception starts no repair');
   assert.equal(normal.page.reloads, 1, 'it had the portal address before interception was on');
   const fresh = b.openTab('about:blank');
+  const attached = sent(fresh, (method) => method === 'Fetch.enable');
   b.context.emit('page', fresh.page);
-  await tick();
-  fresh.pause('r2', `${ORIGIN}/`, { type: 'Document' });
-  await tick();
+  await attached;
+  await pause(fresh, 'r2', `${ORIGIN}/`, { type: 'Document' });
+  before = inspections();
   fresh.page.emit('domcontentloaded');
+  assert.equal(inspections(), before);
   assert.equal(fresh.page.reloads, 0);
 });
 
+// @test-kind security+contract: a failed rewrite preserves a completed form POST response without resubmitting
 test('a failed rewrite preserves a completed form POST response without resubmitting', async () => {
   const original = '<html><body>saved exactly once</body></html>';
   const b = fakeBrowser({ [`${ORIGIN}/save/`]: { headers: { 'content-type': 'text/html' }, body: original } });
@@ -527,13 +618,12 @@ test('a failed rewrite preserves a completed form POST response without resubmit
   const faults = [];
   s.on('fault', (err) => faults.push(err.message));
   await interceptOrigin(b.context, ORIGIN, s.route);
-  tab.pause('save', `${ORIGIN}/save/`, {
+  await pause(tab, 'save', `${ORIGIN}/save/`, {
     type: 'Document',
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     postData: 'save=1',
   });
-  await tick();
   assert.equal(b.fetched.length, 1);
   assert.deepEqual(
     b.answers('save').map((a) => a.method),
@@ -543,17 +633,17 @@ test('a failed rewrite preserves a completed form POST response without resubmit
   assert.deepEqual(faults, ['invalid local markup']);
 });
 
+// @test-kind security+contract: a form request that fails or times out is aborted without browser resubmission
 test('a form request that fails or times out is aborted without browser resubmission', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('timeout', `${ORIGIN}/save/`, {
+  await pause(tab, 'timeout', `${ORIGIN}/save/`, {
     type: 'Document',
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     postData: 'save=1',
   });
-  await tick();
   assert.equal(b.fetched.length, 1);
   assert.equal(b.fetched[0].timeout, 120_000);
   assert.deepEqual(
@@ -562,6 +652,7 @@ test('a form request that fails or times out is aborted without browser resubmis
   );
 });
 
+// @test-kind security+contract: an internal API fault is aborted and never forwarded to the portal
 test('an internal API fault is aborted and never forwarded to the portal', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -570,8 +661,7 @@ test('an internal API fault is aborted and never forwarded to the portal', async
     throw new Error('panel failed');
   };
   await interceptOrigin(b.context, ORIGIN, s.route);
-  tab.pause('api-fault', `${ORIGIN}/__paqvilo/api/open`, { type: 'Fetch', method: 'POST', postData: '{}' });
-  await tick();
+  await pause(tab, 'api-fault', `${ORIGIN}/__paqvilo/api/open`, { type: 'Fetch', method: 'POST', postData: '{}' });
   assert.deepEqual(
     b.answers('api-fault').map((a) => a.method),
     ['Fetch.failRequest'],
@@ -579,6 +669,7 @@ test('an internal API fault is aborted and never forwarded to the portal', async
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind security+contract: authentication endpoints stay online even if an explicit local route matches them
 test('authentication endpoints stay online even if an explicit local route matches them', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -588,14 +679,13 @@ test('authentication endpoints stay online even if an explicit local route match
     site: { ...SITE, routes: [{ url: '/**', file: 'web-files/app.js' }] },
   });
   await interceptOrigin(b.context, ORIGIN, s.route);
-  for (const [id, url] of [
-    ['signin', '/en-US/signin'],
-    ['account', '/account'],
-    ['auth', '/.auth/login'],
-  ]) {
-    tab.pause(id, `${ORIGIN}${url}`, { type: 'Document' });
-  }
-  await tick();
+  await Promise.all(
+    [
+      ['signin', '/en-US/signin'],
+      ['account', '/account'],
+      ['auth', '/.auth/login'],
+    ].map(([id, url]) => pause(tab, id, `${ORIGIN}${url}`, { type: 'Document' })),
+  );
   for (const id of ['signin', 'account', 'auth'])
     assert.deepEqual(
       b.answers(id).map((a) => a.method),
@@ -603,6 +693,7 @@ test('authentication endpoints stay online even if an explicit local route match
     );
 });
 
+// @test-kind contract: a web file payload created after its metadata is picked up on save
 test('a web file payload created after its metadata is picked up on save', () => {
   const metadata = 'web-files/late.css.webfile.yml';
   const payload = 'web-files/late.css';
@@ -619,48 +710,58 @@ test('a web file payload created after its metadata is picked up on save', () =>
   }
 });
 
+// @test-kind contract: repeated file requests retain a count without growing per-tab history
 test('repeated file requests retain a count without growing per-tab history', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   const s = session();
   await interceptOrigin(b.context, ORIGIN, s.route);
-  for (let n = 0; n < 50; n++) tab.pause(`repeat-${n}`, `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  await tick();
+  const answered = [];
+  for (let n = 0; n < 50; n++) answered.push(pause(tab, `repeat-${n}`, `${ORIGIN}/scripts/app.js`, { type: 'Script' }));
+  await Promise.all(answered);
   const hits = s.pageHits.get(tab.page);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].count, 50);
 });
 
-test('committing a local edit removes its changed-scope override without another source save', async () => {
+// @test-kind contract: committing a local edit removes its changed-scope override without another source save
+test('committing a local edit removes its changed-scope override without another source save', async (t) => {
+  // The watchers keep the process alive, so a missed refresh must fail instead of hanging the
+  // unit lane, which has no --test-timeout. A refresh normally lands within one Git poll and flush.
+  const REFRESH_DEADLINE_MS = 120_000;
   const local = createFixture();
+  t.after(() => local.cleanup());
   const site = structuredClone(SITE);
   site.scope = 'changed';
   local.write('web-files/app.js', 'console.log("committed edit");\n');
   const s = new OverlaySession({ origin: ORIGIN, sourceDir: local.dir, site });
-  assert.ok(s.resolver.resolve('/scripts/app.js'));
+  assert.equal(s.resolver.resolve('/scripts/app.js')?.file, local.file('web-files/app.js'));
   const b = fakeBrowser();
   const tab = b.openTab(`${ORIGIN}/`);
   const watcher = watchSources(s, b.context, { baselinePollMs: 50, log: () => {} });
   let timer;
   try {
-    await new Promise((resolve) => watcher.once('ready', resolve));
+    await watcher.ready;
     const changed = new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('committed baseline was not refreshed')), 10000);
+      timer = setTimeout(() => reject(new Error('committed baseline was not refreshed')), REFRESH_DEADLINE_MS);
       s.on('refreshed', (event) => {
         if (event.baselineChanged) resolve(event);
       });
     });
     local.commit();
-    await changed;
+    const event = await changed;
     assert.equal(s.resolver.resolve('/scripts/app.js'), null);
-    assert.equal(tab.page.reloads, 1);
+    // The baseline refresh itself reloaded the open tab. A file-system event from the real watchers can start a
+    // separate refresh with its own reload, so the tab's total reload count is not this refresh's result.
+    assert.equal(event.pageResults.get(tab.page)?.how, 'reload');
+    assert.ok(tab.page.reloads >= 1);
   } finally {
     clearTimeout(timer);
     await watcher.close();
-    local.cleanup();
   }
 });
 
+// @test-kind contract: startup reconciles markup and URL metadata saved during async source prefetch
 test('startup reconciles markup and URL metadata saved during async source prefetch', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -694,6 +795,29 @@ test('startup reconciles markup and URL metadata saved during async source prefe
   assert.equal(s.resolver.resolve('/updated-scripts/app.js')?.file, local.file('web-files/app.js'));
 });
 
+// @test-kind contract: a session whose HEAD Git does not answer starts with HEAD unknown and its baseline intact
+test('a session starts with HEAD unknown when Git does not answer the HEAD read', async (t) => {
+  const local = createFixture();
+  t.after(() => local.cleanup());
+  const original = childProcess.execFile;
+  // Only the HEAD read (rev-parse HEAD --abbrev-ref HEAD) gets no answer; the baseline reads run the real Git.
+  const replaced = t.mock.method(childProcess, 'execFile', function (file, args, options, callback) {
+    if (!args.includes('--abbrev-ref')) return original.call(this, file, args, options, callback);
+    queueMicrotask(() => callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM', code: null })));
+    return {};
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const s = await OverlaySession.create({ origin: ORIGIN, sourceDir: local.dir, site: SITE });
+  assert.equal(s.head, null);
+  assert.equal(s.baseline.available, true, 'the baseline was answered and stays usable');
+  assert.equal(replaced.mock.calls.filter((call) => call.arguments[1].includes('--abbrev-ref')).length, 1);
+});
+
+// @test-kind contract: a baseline discovered during an unrelated save rebuilds every markup patch
 test('a baseline discovered during an unrelated save rebuilds every markup patch', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -717,6 +841,7 @@ test('a baseline discovered during an unrelated save rebuilds every markup patch
   assert.equal(s.rewriter.patches.length, 0);
 });
 
+// @test-kind contract: web-only saves prepare bytes without synchronous Git and publish tracking asynchronously
 test('web-only saves prepare bytes without synchronous Git and publish tracking asynchronously', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -738,6 +863,7 @@ test('web-only saves prepare bytes without synchronous Git and publish tracking 
   assert.equal(tracked.has(file), true);
 });
 
+// @test-kind contract: watch readiness reconciles edits made after session creation before first navigation
 test('watch readiness reconciles edits made after session creation before first navigation', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());

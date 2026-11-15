@@ -17,7 +17,7 @@ const identityFields = [
 ];
 const sameIdentity = (a, b) => identityFields.every((field) => a[field] === b[field]);
 
-export function planLateQueryProfile(registry, queryTypeId) {
+function queryObserverSourceSteps(registry, queryTypeId) {
   const messageIds = new Set(
     registry.messages.filter((message) => message.name === 'RetrieveMultiple').map((message) => message.sdkmessageid),
   );
@@ -26,7 +26,10 @@ export function planLateQueryProfile(registry, queryTypeId) {
   );
   if (sourceSteps.some((step) => !step._sdkmessagefilterid_value && step.statecode === 0))
     throw new Error('Active global query observer requires a separately qualified profile.');
-  const steps = sourceSteps.filter((step) => step._sdkmessagefilterid_value);
+  return sourceSteps.filter((step) => step._sdkmessagefilterid_value);
+}
+
+function groupedQuerySteps(steps) {
   const groups = new Map();
   for (const step of steps) {
     const key = step._sdkmessagefilterid_value;
@@ -36,6 +39,10 @@ export function planLateQueryProfile(registry, queryTypeId) {
     groups.set(key, group);
   }
   if (!groups.size) throw new Error('No registered query observer source.');
+  return groups;
+}
+
+function changesForQueryGroups(groups) {
   const changes = [];
   for (const group of groups.values()) {
     const retained = group.filter((step) => step.stage === 20 && step.rank === 9900 && step.statecode === 0);
@@ -56,6 +63,13 @@ export function planLateQueryProfile(registry, queryTypeId) {
         changes.push({ id: step.sdkmessageprocessingstepid, before: step, desired: { statecode: 1, statuscode: 2 } });
       }
   }
+  return changes;
+}
+
+export function planLateQueryProfile(registry, queryTypeId) {
+  const steps = queryObserverSourceSteps(registry, queryTypeId),
+    groups = groupedQuerySteps(steps),
+    changes = changesForQueryGroups(groups);
   return {
     schemaVersion: 1,
     profile: 'FinalQuery.PreOperation20.Order9900',

@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Two default-selection unsaved draft form runs with one source main form and one selector item. Exactly one original first lookup followed by fourteen read cases; diagnostic navigate was omitted. Literal input arguments and source-derived roles remain distinct.",
+  "limitations": [
+    "All fourteen additional getter/collection reads occurred before the original test navigate assertion; no original post-navigate control flow is proved.",
+    "Native source form GUID and label are not published or replaced with invented output values; source-ID and source-label relationships are projected as verified booleans.",
+    "Authored literal Invented form and authored/unknown GUID inputs remain exact literal arguments, separate from native source-derived ID and label.",
+    "The approved exact-empty startup POST response was not observed in one round; no claim the action is inherently read-only.",
+    "No persisted record identity, other app/actor/form, native visual behavior, or local dispose behavior is established."
+  ],
+  "producer": {
+    "runnerSha256": "69846779183631596bf1c6c83834dbafdd6b3743baa76952984be91a77dcc464",
+    "inputSha256": "1b524f4346faa532b2bed574d70c3759ae7c2f0422cce428f7a262371f0df607",
+    "bridge": "normal signed-in Edge Profile 5 Playwright MCP extension; actor and organization verified"
+  },
+  "captures": [
+    {
+      "runSha256": "9d80c62657f35145f0aa81e6ddaba2fa1345fd804ddeb440b6f296fdfb422192",
+      "producerSha256": "69846779183631596bf1c6c83834dbafdd6b3743baa76952984be91a77dcc464",
+      "inputSha256": "1b524f4346faa532b2bed574d70c3759ae7c2f0422cce428f7a262371f0df607",
+      "source": {
+        "sourceFormXmlSha256": "ab9d9cec336119e784cdaf6c8b511fdac2d51f6adb4820b601c821852581c374",
+        "sourceMainFormCount": 1,
+        "actualItemCount": 1,
+        "defaultSelection": true,
+        "intendedActorMatches": true,
+        "actualAppMatches": true,
+        "entityIdEmpty": true,
+        "formType": 1,
+        "visibleSourceControlReady": true,
+        "sourceIdAndItemMatch": true,
+        "currentLabelEqualsSourceName": true
+      },
+      "cases": [
+        {
+          "id": "original-first-expression",
+          "facts": {
+            "operation": "items.get(current.getId())",
+            "sameCurrent": true,
+            "currentIdEqualsSource": true
+          }
+        },
+        {
+          "id": "current-id",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "string",
+              "equalsSourceFormId": true,
+              "shape": "lowercase-bare-guid"
+            }
+          }
+        },
+        {
+          "id": "current-label",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "string",
+              "equalsCurrentSourceLabel": true,
+              "equalsAuthoredLiteral": false
+            }
+          }
+        },
+        {
+          "id": "source-id",
+          "facts": {
+            "argumentRole": "source-current-form-id",
+            "result": {
+              "type": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            }
+          }
+        },
+        {
+          "id": "authored-form-id",
+          "facts": {
+            "argumentRole": "literal-aabbccdd-1234-4abc-8def-123456abcdef",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "source-id-upper-braced",
+          "facts": {
+            "argumentRole": "braced-uppercase-source-id",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "authored-form-id-upper-braced",
+          "facts": {
+            "argumentRole": "literal-braced-uppercase-authored-id",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "authored-label",
+          "facts": {
+            "argumentRole": "literal-Invented-form",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "source-label",
+          "facts": {
+            "argumentRole": "exact-current-source-form-label",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "unknown-guid",
+          "facts": {
+            "argumentRole": "literal-ffffffff-ffff-4fff-8fff-ffffffffffff",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "index-zero",
+          "facts": {
+            "argumentRole": "number-zero",
+            "result": {
+              "type": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            }
+          }
+        },
+        {
+          "id": "all",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "item",
+                  "sameCurrent": true,
+                  "returnedIdEqualsSource": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "length",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "number",
+              "value": 1
+            }
+          }
+        },
+        {
+          "id": "predicate-index-current",
+          "facts": {
+            "argumentRole": "predicate-index-zero-and-current-id",
+            "result": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "item",
+                  "sameCurrent": true,
+                  "returnedIdEqualsSource": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "predicate-false",
+          "facts": {
+            "argumentRole": "predicate-always-false",
+            "result": {
+              "type": "array",
+              "items": []
+            }
+          }
+        }
+      ],
+      "startup": {
+        "authorizedExactEmptyBodyActionCount": 1,
+        "responseStatusObserved": false,
+        "unreviewedOrganizationNonGet": 0,
+        "ownedTabClosed": true
+      }
+    },
+    {
+      "runSha256": "a1d7e36fde479212a64beba38f6e4d522cbc63cee4fe56b313d221de3be9382e",
+      "producerSha256": "69846779183631596bf1c6c83834dbafdd6b3743baa76952984be91a77dcc464",
+      "inputSha256": "1b524f4346faa532b2bed574d70c3759ae7c2f0422cce428f7a262371f0df607",
+      "source": {
+        "sourceFormXmlSha256": "ab9d9cec336119e784cdaf6c8b511fdac2d51f6adb4820b601c821852581c374",
+        "sourceMainFormCount": 1,
+        "actualItemCount": 1,
+        "defaultSelection": true,
+        "intendedActorMatches": true,
+        "actualAppMatches": true,
+        "entityIdEmpty": true,
+        "formType": 1,
+        "visibleSourceControlReady": true,
+        "sourceIdAndItemMatch": true,
+        "currentLabelEqualsSourceName": true
+      },
+      "cases": [
+        {
+          "id": "original-first-expression",
+          "facts": {
+            "operation": "items.get(current.getId())",
+            "sameCurrent": true,
+            "currentIdEqualsSource": true
+          }
+        },
+        {
+          "id": "current-id",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "string",
+              "equalsSourceFormId": true,
+              "shape": "lowercase-bare-guid"
+            }
+          }
+        },
+        {
+          "id": "current-label",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "string",
+              "equalsCurrentSourceLabel": true,
+              "equalsAuthoredLiteral": false
+            }
+          }
+        },
+        {
+          "id": "source-id",
+          "facts": {
+            "argumentRole": "source-current-form-id",
+            "result": {
+              "type": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            }
+          }
+        },
+        {
+          "id": "authored-form-id",
+          "facts": {
+            "argumentRole": "literal-aabbccdd-1234-4abc-8def-123456abcdef",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "source-id-upper-braced",
+          "facts": {
+            "argumentRole": "braced-uppercase-source-id",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "authored-form-id-upper-braced",
+          "facts": {
+            "argumentRole": "literal-braced-uppercase-authored-id",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "authored-label",
+          "facts": {
+            "argumentRole": "literal-Invented-form",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "source-label",
+          "facts": {
+            "argumentRole": "exact-current-source-form-label",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "unknown-guid",
+          "facts": {
+            "argumentRole": "literal-ffffffff-ffff-4fff-8fff-ffffffffffff",
+            "result": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "id": "index-zero",
+          "facts": {
+            "argumentRole": "number-zero",
+            "result": {
+              "type": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            }
+          }
+        },
+        {
+          "id": "all",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "item",
+                  "sameCurrent": true,
+                  "returnedIdEqualsSource": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "length",
+          "facts": {
+            "argumentRole": "no-argument",
+            "result": {
+              "type": "number",
+              "value": 1
+            }
+          }
+        },
+        {
+          "id": "predicate-index-current",
+          "facts": {
+            "argumentRole": "predicate-index-zero-and-current-id",
+            "result": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "item",
+                  "sameCurrent": true,
+                  "returnedIdEqualsSource": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "predicate-false",
+          "facts": {
+            "argumentRole": "predicate-always-false",
+            "result": {
+              "type": "array",
+              "items": []
+            }
+          }
+        }
+      ],
+      "startup": {
+        "authorizedExactEmptyBodyActionCount": 1,
+        "responseStatusObserved": true,
+        "unreviewedOrganizationNonGet": 0,
+        "ownedTabClosed": true
+      }
+    }
+  ]
+}

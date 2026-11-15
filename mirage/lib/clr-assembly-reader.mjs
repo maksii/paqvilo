@@ -12,6 +12,8 @@ const PE_SIGNATURE = 0x00004550;
 const METADATA_SIGNATURE = 0x424a5342; // "BSJB"
 const CLI_DIRECTORY = 14;
 const STRONG_NAME_SIGNED = 0x8; // COMIMAGE_FLAGS_STRONGNAMESIGNED
+// Local safeguard for the simulator process, not a platform limit.
+const MAX_PACKAGE_INFLATED_BYTES = 256 * 1024 * 1024;
 const TYPE_REF = 1,
   TYPE_DEF = 2,
   INTERFACE_IMPL = 9,
@@ -102,6 +104,23 @@ const COLUMNS = [
   'i:42 c:TypeDefOrRef', // 44 GenericParamConstraint
 ];
 
+function readTableRows(stream, widths, count, offset) {
+  const rows = [];
+  for (let row = 0; row < count; row++) {
+    const values = [];
+    for (const width of widths) {
+      let value;
+      if (width === 1) value = stream.readUInt8(offset);
+      else if (width === 2) value = stream.readUInt16LE(offset);
+      else value = stream.readUInt32LE(offset);
+      offset += width;
+      values.push(value);
+    }
+    rows.push(values);
+  }
+  return { rows, offset };
+}
+
 // The #~ stream (§24.2.6): heap index sizes, the row count of each present table, then the rows.
 function readTables(stream) {
   const heapSizes = u8(stream, 6, '#~ stream');
@@ -131,22 +150,9 @@ function readTables(stream) {
     const widths = COLUMNS[id].split(' ').map(widthOf);
     const size = widths.reduce((sum, width) => sum + width, 0);
     if (offset + size * counts[id] > stream.length) throw invalid('truncated metadata table');
-    const rows = [];
-    for (let row = 0; row < counts[id]; row++) {
-      rows.push(
-        widths.map((width) => {
-          const value =
-            width === 1
-              ? stream.readUInt8(offset)
-              : width === 2
-                ? stream.readUInt16LE(offset)
-                : stream.readUInt32LE(offset);
-          offset += width;
-          return value;
-        }),
-      );
-    }
-    tables[id] = rows;
+    const parsed = readTableRows(stream, widths, counts[id], offset);
+    tables[id] = parsed.rows;
+    offset = parsed.offset;
   }
   return tables;
 }
@@ -208,11 +214,103 @@ function blobAt(blobs, index) {
   return blobs.subarray(start, start + length);
 }
 
+function assemblyRow(table, index, name) {
+  if (!table[index - 1]) throw invalid(`${name} row ${index} is outside the table`);
+  return table[index - 1];
+}
+
+function assemblyTypeRefName(typeRefs, strings, index) {
+  const [, name, namespace] = assemblyRow(typeRefs, index, 'TypeRef');
+  return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
+}
+
+// `names` caches full names by TypeDef row for one inspectAssembly call. The walk up the enclosing chain is iterative,
+// so a deep nesting cannot exhaust the stack.
+function assemblyTypeDefName(typeDefs, nested, strings, index, names) {
+  const walked = [],
+    seen = new Set();
+  let current = index;
+  while (!names.has(current)) {
+    if (seen.has(current)) throw invalid('nested type cycle');
+    seen.add(current);
+    walked.push(current);
+    if (!nested.has(current)) break;
+    current = nested.get(current);
+  }
+  // The enclosing type is always named before the type it encloses.
+  for (const row of walked.toReversed()) {
+    const [, name, namespace] = assemblyRow(typeDefs, row, 'TypeDef');
+    const simple = stringAt(strings, name);
+    names.set(
+      row,
+      nested.has(row)
+        ? `${names.get(nested.get(row))}+${simple}`
+        : [stringAt(strings, namespace), simple].filter(Boolean).join('.'),
+    );
+  }
+  return names.get(index);
+}
+
+function assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, memo) {
+  if (ref?.table === TYPE_DEF) return assemblyTypeDefName(typeDefs, nested, strings, ref.row, memo.names);
+  if (ref?.table === TYPE_REF) return assemblyTypeRefName(typeRefs, strings, ref.row);
+  return null;
+}
+
+function assemblyBase(typeDefs, index) {
+  return decodeCoded('TypeDefOrRef', assemblyRow(typeDefs, index, 'TypeDef')[3]);
+}
+
+// Walks the base classes declared in this assembly from `index` and returns true at the first type that `matches`.
+// A base outside the assembly, or a TypeDef already visited on this walk, ends the walk as not matching. `results` maps
+// TypeDef rows to the result already settled for them in this inspectAssembly call: the walk stops at the first one it
+// reaches and takes that result, then settles every TypeDef it passed with the same result.
+function assemblyBaseWalkMatches(index, typeDefs, matches, results) {
+  const walked = new Set();
+  let current = index;
+  let result = false;
+  while (!walked.has(current) && !results.has(current)) {
+    walked.add(current);
+    if (matches(current)) {
+      result = true;
+      break;
+    }
+    const base = assemblyBase(typeDefs, current);
+    if (base?.table !== TYPE_DEF) break;
+    current = base.row;
+  }
+  if (results.has(current)) result = results.get(current);
+  for (const row of walked) results.set(row, result);
+  return result;
+}
+
+function assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, memo) {
+  return assemblyBaseWalkMatches(
+    index,
+    typeDefs,
+    (current) =>
+      (interfaces.get(current) ?? []).some(
+        (ref) => assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, memo) === PLUGIN_INTERFACE,
+      ),
+    memo.plugins,
+  );
+}
+
+function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, memo) {
+  return assemblyBaseWalkMatches(
+    index,
+    typeDefs,
+    (current) =>
+      assemblyTypeName(assemblyBase(typeDefs, current), typeRefs, typeDefs, nested, strings, memo) === ACTIVITY_BASE,
+    memo.activities,
+  );
+}
+
 /**
  * The identity and the plug-in facts of an assembly image. Throws InvalidAssembly for anything that is not a managed
  * assembly with an Assembly row, including truncated images.
  */
-export function inspectAssembly(input) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function inspectAssembly(input) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   if (buffer.length < 0x40 || buffer.toString('latin1', 0, 2) !== 'MZ') throw invalid('missing MZ header');
   const pe = u32(buffer, 0x3c, 'DOS header');
@@ -257,10 +355,6 @@ export function inspectAssembly(input) {
 
   const typeRefs = tables[TYPE_REF] ?? [],
     typeDefs = tables[TYPE_DEF] ?? [];
-  const row = (table, index, name) => {
-    if (!table[index - 1]) throw invalid(`${name} row ${index} is outside the table`);
-    return table[index - 1];
-  };
   const nested = new Map(); // inner TypeDef row -> enclosing TypeDef row
   for (const entry of tables[NESTED_CLASS] ?? []) nested.set(entry[0], entry[1]);
   const interfaces = new Map(); // TypeDef row -> the interfaces it names directly
@@ -269,45 +363,24 @@ export function inspectAssembly(input) {
     list.push(decodeCoded('TypeDefOrRef', entry[1]));
     interfaces.set(entry[0], list);
   }
-  const typeRefName = (index) => {
-    const [, name, namespace] = row(typeRefs, index, 'TypeRef');
-    return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
-  };
-  const typeDefName = (index, seen = new Set()) => {
-    if (seen.has(index)) throw invalid('nested type cycle');
-    seen.add(index);
-    const [, name, namespace] = row(typeDefs, index, 'TypeDef');
-    if (nested.has(index)) return `${typeDefName(nested.get(index), seen)}+${stringAt(strings, name)}`;
-    return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
-  };
-  const nameOf = (ref) =>
-    ref?.table === TYPE_DEF ? typeDefName(ref.row) : ref?.table === TYPE_REF ? typeRefName(ref.row) : null;
-  const baseOf = (index) => decodeCoded('TypeDefOrRef', row(typeDefs, index, 'TypeDef')[3]);
-  // Direct interfaces and direct base only; a base defined in this assembly is followed, an external base is not (ceiling).
-  const isPlugin = (index, seen = new Set()) => {
-    if (seen.has(index)) return false;
-    seen.add(index);
-    if ((interfaces.get(index) ?? []).some((ref) => nameOf(ref) === PLUGIN_INTERFACE)) return true;
-    const base = baseOf(index);
-    return base?.table === TYPE_DEF && isPlugin(base.row, seen);
-  };
-  const isActivity = (index, seen = new Set()) => {
-    if (seen.has(index)) return false;
-    seen.add(index);
-    const base = baseOf(index);
-    if (nameOf(base) === ACTIVITY_BASE) return true; // a local CodeActivity is a TypeDef, an external one a TypeRef
-    return base?.table === TYPE_DEF && isActivity(base.row, seen);
-  };
-
   const assembly = tables[ASSEMBLY]?.[0];
   if (!assembly) throw invalid('no Assembly row');
   const [, major, minor, build, revision, , publicKeyIndex, nameIndex, cultureIndex] = assembly;
   const publicKey = blobAt(blobs, publicKeyIndex);
   const types = [];
+  const memo = {
+    names: new Map(), // TypeDef row -> full name, shared by every lookup in this call
+    plugins: new Map(), // TypeDef row -> plug-in result, shared by every walk in this call
+    activities: new Map(), // TypeDef row -> workflow activity result, shared by every walk in this call
+  };
   for (let index = 1; index <= typeDefs.length; index++) {
-    const fullName = typeDefName(index);
+    const fullName = assemblyTypeDefName(typeDefs, nested, strings, index, memo.names);
     if (fullName !== '<Module>')
-      types.push({ fullName, isPlugin: isPlugin(index), isWorkflowActivity: isActivity(index) });
+      types.push({
+        fullName,
+        isPlugin: assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, memo),
+        isWorkflowActivity: assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, memo),
+      });
   }
   return {
     name: stringAt(strings, nameIndex),
@@ -317,7 +390,7 @@ export function inspectAssembly(input) {
     culture: stringAt(strings, cultureIndex) || 'neutral',
     // The token is the last 8 bytes of SHA-1 over the public key, in reverse order (ECMA-335 §6.2.1.3 strong-name signing).
     publicKeyToken: publicKey.length
-      ? createHash('sha1').update(publicKey).digest().subarray(12).reverse().toString('hex')
+      ? createHash('sha1').update(publicKey).digest().subarray(12).reverse().toString('hex') // NOSONAR: non-security hash used for identity or checksums
       : null,
     strongNamed: publicKey.length > 0 && (cliFlags & STRONG_NAME_SIGNED) !== 0,
     types,
@@ -360,6 +433,43 @@ function derReader(buffer) {
   return { node, children, raw, content };
 }
 
+function signerCertificate(der, certificates, signerSerial, signerIssuer) {
+  const serial = (value) =>
+    der
+      .content(value)
+      .toString('hex')
+      .replace(/^(?:00)+/, '')
+      .toLowerCase();
+  for (const candidate of der.children(certificates)) {
+    if (candidate.tag !== 0x30) continue;
+    const [tbs] = der.children(candidate);
+    if (tbs?.tag !== 0x30) continue;
+    const parts = der.children(tbs);
+    const index = parts[0]?.tag === 0xa0 ? 1 : 0;
+    const certificateSerial = parts[index];
+    const issuer = parts[index + 2];
+    const subject = parts[index + 4];
+    if (certificateSerial?.tag !== 2 || !issuer || !subject) continue;
+    if (serial(certificateSerial) !== serial(signerSerial) || !der.raw(issuer).equals(der.raw(signerIssuer))) continue;
+    let cert;
+    try {
+      cert = new X509Certificate(der.raw(candidate));
+    } catch {
+      throw invalid('invalid signer X.509 certificate');
+    }
+    return {
+      subject: cert.subject,
+      issuer: cert.issuer,
+      hash: cert.fingerprint.replaceAll(':', ''),
+      selfSigned: cert.subject === cert.issuer && cert.verify(cert.publicKey),
+      certificate: cert.raw.toString('base64'),
+      encodedSubject: der.raw(subject).toString('base64'),
+      encodedIssuer: der.raw(issuer).toString('base64'),
+    };
+  }
+  throw invalid('CMS signer certificate is missing');
+}
+
 /** Extract the first CMS signer's certificate by issuer and serial number, never an unrelated certificate from its chain. */
 function cmsCertificate(buffer) {
   if (!buffer.length || buffer.length > CERTIFICATE_LIMIT)
@@ -386,44 +496,13 @@ function cmsCertificate(buffer) {
   if (sid?.tag !== 0x30) throw invalid('unsupported CMS signer identifier');
   const [signerIssuer, signerSerial] = der.children(sid);
   if (!signerIssuer || signerSerial?.tag !== 2) throw invalid('invalid CMS signer identity');
-  const serial = (value) =>
-    der
-      .content(value)
-      .toString('hex')
-      .replace(/^(?:00)+/, '')
-      .toLowerCase();
-  for (const candidate of der.children(certificates)) {
-    if (candidate.tag !== 0x30) continue;
-    const [tbs] = der.children(candidate);
-    if (tbs?.tag !== 0x30) continue;
-    const parts = der.children(tbs),
-      index = parts[0]?.tag === 0xa0 ? 1 : 0;
-    const certificateSerial = parts[index],
-      issuer = parts[index + 2],
-      subject = parts[index + 4];
-    if (certificateSerial?.tag !== 2 || !issuer || !subject) continue;
-    if (serial(certificateSerial) !== serial(signerSerial) || !der.raw(issuer).equals(der.raw(signerIssuer))) continue;
-    let cert;
-    try {
-      cert = new X509Certificate(der.raw(candidate));
-    } catch {
-      throw invalid('invalid signer X.509 certificate');
-    }
-    return {
-      subject: cert.subject,
-      issuer: cert.issuer,
-      hash: cert.fingerprint.replaceAll(':', ''),
-      selfSigned: cert.subject === cert.issuer && cert.verify(cert.publicKey),
-      certificate: cert.raw.toString('base64'),
-      encodedSubject: der.raw(subject).toString('base64'),
-      encodedIssuer: der.raw(issuer).toString('base64'),
-    };
-  }
-  throw invalid('CMS signer certificate is missing');
+  return signerCertificate(der, certificates, signerSerial, signerIssuer);
 }
 
-function packageSignature(buffer) {
-  // The ZIP central directory supplies sizes even when local headers use data descriptors. ZIP64/encryption are refused.
+// The entries of a NuGet package ZIP, read from its central directory (which supplies sizes even when local headers use data
+// descriptors). ZIP64, multi-disk archives and encryption are refused. Each entry's bytes are read on demand, inflated to at
+// most limit bytes.
+function* packageEntries(buffer) {
   let end = -1;
   for (let offset = buffer.length - 22; offset >= Math.max(0, buffer.length - 65557); offset--) {
     if (
@@ -439,6 +518,7 @@ function packageSignature(buffer) {
   if (count === 0xffff || u16(buffer, end + 4, 'ZIP disk') || u16(buffer, end + 6, 'ZIP disk'))
     throw invalid('unsupported NuGet package ZIP');
   let offset = u32(buffer, end + 16, 'ZIP central directory');
+  const localOffsets = new Set();
   for (let index = 0; index < count; index++) {
     if (u32(buffer, offset, 'ZIP central entry') !== 0x02014b50) throw invalid('invalid ZIP central entry');
     const flags = u16(buffer, offset + 8, 'ZIP flags'),
@@ -450,36 +530,82 @@ function packageSignature(buffer) {
       commentLength = u16(buffer, offset + 32, 'ZIP comment');
     at(buffer, offset + 46, nameLength + extraLength + commentLength, 'ZIP entry');
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
-    if (name === '.signature.p7s') {
-      if (flags & 1 || ![0, 8].includes(method) || expanded > CERTIFICATE_LIMIT || compressed > CERTIFICATE_LIMIT)
-        throw invalid('unsupported package signature ZIP entry');
-      const local = u32(buffer, offset + 42, 'ZIP local offset');
-      if (u32(buffer, local, 'ZIP local entry') !== 0x04034b50) throw invalid('invalid ZIP local signature entry');
-      const start = local + 30 + u16(buffer, local + 26, 'ZIP local name') + u16(buffer, local + 28, 'ZIP local extra');
-      const bytes = buffer.subarray(at(buffer, start, compressed, 'ZIP signature bytes'), start + compressed);
-      let signature;
-      try {
-        signature = method === 8 ? inflateRawSync(bytes, { maxOutputLength: CERTIFICATE_LIMIT }) : bytes;
-      } catch {
-        throw invalid('invalid compressed package signature');
-      }
-      if (signature.length !== expanded) throw invalid('package signature size mismatch');
-      return signature;
-    }
+    const local = u32(buffer, offset + 42, 'ZIP local offset');
+    // Each local entry is named by one central entry, so no bytes are inflated once per name.
+    if (localOffsets.has(local)) throw invalid('overlapping ZIP entries');
+    localOffsets.add(local);
+    yield {
+      name,
+      size: expanded,
+      bytes(limit) {
+        if (flags & 1 || ![0, 8].includes(method) || expanded > limit || compressed > limit)
+          throw invalid(`unsupported ZIP entry ${name}`);
+        if (u32(buffer, local, 'ZIP local entry') !== 0x04034b50) throw invalid(`invalid ZIP local entry ${name}`);
+        const start =
+          local + 30 + u16(buffer, local + 26, 'ZIP local name') + u16(buffer, local + 28, 'ZIP local extra');
+        const packed = buffer.subarray(at(buffer, start, compressed, 'ZIP entry bytes'), start + compressed);
+        let bytes;
+        try {
+          bytes = method === 8 ? inflateRawSync(packed, { maxOutputLength: limit }) : packed;
+        } catch (error) {
+          if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw invalid('package inflates beyond the local limit');
+          throw invalid(`invalid compressed ZIP entry ${name}`);
+        }
+        if (bytes.length !== expanded) throw invalid(`ZIP entry size mismatch ${name}`);
+        return bytes;
+      },
+    };
     offset += 46 + nameLength + extraLength + commentLength;
   }
+}
+
+function packageSignature(buffer) {
+  for (const entry of packageEntries(buffer))
+    if (entry.name === '.signature.p7s') return entry.bytes(CERTIFICATE_LIMIT);
   return null;
 }
 
-/** Signing certificate facts of a PE assembly or NuGet package. Null means no embedded signature; malformed data fails. */
-export function inspectSigningCertificate(input, { package: isPackage = false } = {}) {
+const xmlText = (xml, tag) => {
+  const value = new RegExp(String.raw`<(?:\w+:)?${tag}>([^<]*)</(?:\w+:)?${tag}>`).exec(xml)?.[1];
+  return value === undefined ? null : value.trim();
+};
+/**
+ * A NuGet plug-in package (dependent assemblies): its nuspec id and version and every assembly under lib/, each inspected
+ * like inspectAssembly (identity and types; never loaded). Content that is not a NuGet package ZIP throws InvalidAssembly;
+ * a lib/ entry that is not a .NET assembly is a resource (not returned).
+ */
+export function inspectPackage(
+  input,
+  { limit = 16 * 1024 * 1024, maxInflatedBytes = MAX_PACKAGE_INFLATED_BYTES } = {},
+) {
   const buffer = Buffer.from(input);
-  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT)
-    throw invalid('certificate source exceeds the inspection limit');
-  if (isPackage) {
-    const signature = packageSignature(buffer);
-    return signature ? cmsCertificate(signature) : null;
+  let nuspec = null,
+    inflated = 0;
+  const assemblies = [];
+  // Every inflated entry draws on one budget for the whole package.
+  const inflate = (entry, entryLimit) => {
+    const remaining = maxInflatedBytes - inflated;
+    if (entry.size > remaining) throw invalid('package inflates beyond the local limit');
+    const bytes = entry.bytes(Math.min(entryLimit, remaining));
+    inflated += bytes.length;
+    return bytes;
+  };
+  for (const entry of packageEntries(buffer)) {
+    if (/^[^/]+\.nuspec$/i.test(entry.name)) nuspec = inflate(entry, 1024 * 1024).toString('utf8');
+    else if (/^lib\/[^/]+\/[^/]+\.dll$/i.test(entry.name)) {
+      const bytes = inflate(entry, limit);
+      try {
+        assemblies.push({ path: entry.name, bytes, ...inspectAssembly(bytes) });
+      } catch (error) {
+        if (!(error instanceof InvalidAssembly)) throw error;
+      }
+    }
   }
+  if (!nuspec) throw invalid('NuGet package has no .nuspec');
+  return { id: xmlText(nuspec, 'id'), version: xmlText(nuspec, 'version'), assemblies };
+}
+
+function assemblySigningCertificate(buffer) {
   if (buffer.length < 64 || u16(buffer, 0, 'DOS header') !== 0x5a4d) throw invalid('missing MZ header');
   const pe = u32(buffer, 0x3c, 'DOS header');
   if (u32(buffer, pe, 'PE header') !== PE_SIGNATURE) throw invalid('missing PE signature');
@@ -504,4 +630,16 @@ export function inspectSigningCertificate(input, { package: isPackage = false } 
     cursor += Math.ceil(count / 8) * 8;
   }
   throw invalid('no supported PKCS7 certificate entry');
+}
+
+/** Signing certificate facts of a PE assembly or NuGet package. Null means no embedded signature; malformed data fails. */
+export function inspectSigningCertificate(input, { package: isPackage = false } = {}) {
+  const buffer = Buffer.from(input);
+  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT)
+    throw invalid('certificate source exceeds the inspection limit');
+  if (isPackage) {
+    const signature = packageSignature(buffer);
+    return signature ? cmsCertificate(signature) : null;
+  }
+  return assemblySigningCertificate(buffer);
 }

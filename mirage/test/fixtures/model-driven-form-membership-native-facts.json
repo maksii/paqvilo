@@ -1,0 +1,715 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Raw typed Xrm getter and accessor results in two source-bound unsaved draft forms. Source role labels redact native logical names; null, undefined, error names and messages are unchanged.",
+  "limitations": [
+    "A field labeled existing-id-field is known to exist in current targeted metadata and be omitted from current FormXml; current primary-key status was not captured.",
+    "Current metadata IsPrimaryId was undefined; complete metadata returned zero attributes. Do not infer current PrimaryIdAttribute from name or type.",
+    "TypeError messages are raw, including actual native call syntax; no local-error-text equivalence.",
+    "No persisted record identity or all-forms claim."
+  ],
+  "captures": [
+    {
+      "runSha256": "5167cf65c6d0240fd451b7f9f66df5bf6ae620cd0e90b883f128be15fd64ca45",
+      "producerSha256": "a8f43c7d2bb007dc5ae2b00ed0156308f28fb5ef7b7e8c5570381d8c2e386022",
+      "inputSha256": "ef15c81e6519a848c6b5b6fc7ab484cd65bce7f95e94ca821519bb52e9c4e2ae",
+      "cases": [
+        {
+          "id": "existing-id-field-attribute",
+          "facts": {
+            "role": "existing-id-field",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-id-field",
+              "sourceNameSha256": "48ae0914b9a75953f3bf8b5cd131195aa7d291a4b7a08199db6d658fb4562872",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 15
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-id-field-control",
+          "facts": {
+            "role": "existing-id-field",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-id-field",
+              "sourceNameSha256": "48ae0914b9a75953f3bf8b5cd131195aa7d291a4b7a08199db6d658fb4562872",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 15
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-createdon-attribute",
+          "facts": {
+            "role": "existing-createdon",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-createdon",
+              "sourceNameSha256": "599ad0358aeb4c794a501136ce229687a6cae22029523576ffe5cbe3b7f4ebed",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 2
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-createdon-control",
+          "facts": {
+            "role": "existing-createdon",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-createdon",
+              "sourceNameSha256": "599ad0358aeb4c794a501136ce229687a6cae22029523576ffe5cbe3b7f4ebed",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 2
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "nonexistent-name-attribute",
+          "facts": {
+            "role": "nonexistent-name",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": null
+          }
+        },
+        {
+          "id": "nonexistent-name-control",
+          "facts": {
+            "role": "nonexistent-name",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": null
+          }
+        },
+        {
+          "id": "accessor-shape-text",
+          "facts": {
+            "role": "text",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-memo",
+          "facts": {
+            "role": "memo",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-decimal",
+          "facts": {
+            "role": "decimal",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-integer",
+          "facts": {
+            "role": "integer",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "unsupported.text.getMin",
+          "facts": {
+            "callSyntax": "form.getAttribute(textField).getMin()",
+            "nativeError": {
+              "name": "TypeError",
+              "message": "form.getAttribute(...).getMin is not a function"
+            },
+            "rawTypedReturn": null
+          }
+        },
+        {
+          "id": "unsupported.decimal.getMaxLength",
+          "facts": {
+            "callSyntax": "form.getAttribute(decimalField).getMaxLength()",
+            "nativeError": {
+              "name": "TypeError",
+              "message": "form.getAttribute(...).getMaxLength is not a function"
+            },
+            "rawTypedReturn": null
+          }
+        }
+      ]
+    },
+    {
+      "runSha256": "e91c62203ad7ba6b4b5218edf13c539e87904cc4a7eafb65305d692693399bc5",
+      "producerSha256": "a8f43c7d2bb007dc5ae2b00ed0156308f28fb5ef7b7e8c5570381d8c2e386022",
+      "inputSha256": "ef15c81e6519a848c6b5b6fc7ab484cd65bce7f95e94ca821519bb52e9c4e2ae",
+      "cases": [
+        {
+          "id": "existing-id-field-attribute",
+          "facts": {
+            "role": "existing-id-field",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-id-field",
+              "sourceNameSha256": "48ae0914b9a75953f3bf8b5cd131195aa7d291a4b7a08199db6d658fb4562872",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 15
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-id-field-control",
+          "facts": {
+            "role": "existing-id-field",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-id-field",
+              "sourceNameSha256": "48ae0914b9a75953f3bf8b5cd131195aa7d291a4b7a08199db6d658fb4562872",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 15
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-createdon-attribute",
+          "facts": {
+            "role": "existing-createdon",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-createdon",
+              "sourceNameSha256": "599ad0358aeb4c794a501136ce229687a6cae22029523576ffe5cbe3b7f4ebed",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 2
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "existing-createdon-control",
+          "facts": {
+            "role": "existing-createdon",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": {
+              "role": "existing-createdon",
+              "sourceNameSha256": "599ad0358aeb4c794a501136ce229687a6cae22029523576ffe5cbe3b7f4ebed",
+              "positiveMetadata": true,
+              "sourceFormXmlDoesNotContainName": true,
+              "metadataAttributeType": {
+                "type": "number",
+                "value": 2
+              },
+              "metadataIsPrimaryId": {
+                "type": "undefined"
+              },
+              "derivation": "Targeted metadata LogicalName equals privately selected field name; raw source FormXml searched for exact name; neither field name nor form identity is substituted."
+            }
+          }
+        },
+        {
+          "id": "nonexistent-name-attribute",
+          "facts": {
+            "role": "nonexistent-name",
+            "member": "attribute",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": null
+          }
+        },
+        {
+          "id": "nonexistent-name-control",
+          "facts": {
+            "role": "nonexistent-name",
+            "member": "control",
+            "rawTypedResult": {
+              "type": "null"
+            },
+            "sourceBinding": null
+          }
+        },
+        {
+          "id": "accessor-shape-text",
+          "facts": {
+            "role": "text",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-memo",
+          "facts": {
+            "role": "memo",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-decimal",
+          "facts": {
+            "role": "decimal",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accessor-shape-integer",
+          "facts": {
+            "role": "integer",
+            "rawTypedShape": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "getMin",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMax",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getPrecision",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "function"
+                  }
+                },
+                {
+                  "key": "getMaxLength",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "string",
+                    "value": "undefined"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "unsupported.text.getMin",
+          "facts": {
+            "callSyntax": "form.getAttribute(textField).getMin()",
+            "nativeError": {
+              "name": "TypeError",
+              "message": "form.getAttribute(...).getMin is not a function"
+            },
+            "rawTypedReturn": null
+          }
+        },
+        {
+          "id": "unsupported.decimal.getMaxLength",
+          "facts": {
+            "callSyntax": "form.getAttribute(decimalField).getMaxLength()",
+            "nativeError": {
+              "name": "TypeError",
+              "message": "form.getAttribute(...).getMaxLength is not a function"
+            },
+            "rawTypedReturn": null
+          }
+        }
+      ]
+    }
+  ]
+}

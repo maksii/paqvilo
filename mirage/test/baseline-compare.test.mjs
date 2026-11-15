@@ -1,3 +1,4 @@
+// @test-kind contract: baseline compare and capture behaviour designed for Paqvilo's runtime and CLI
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,6 +17,7 @@ import {
   normalizeGeneratedIds,
 } from '../baseline-compare.mjs';
 import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const req = (seq, url, extra = {}) => ({
   seq,
@@ -212,7 +214,7 @@ test('grid data Attributes arrays are compared by name, other arrays by position
 });
 
 test('compareScenario verdicts, allowlist classification, second-live variance and summaries', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-baseline-compare-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-compare-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const scenario = { id: 'area/page' };
   const dir = (name) => path.join(root, name);
@@ -381,6 +383,7 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   });
   assert.equal(notWitnessed.verdict, 'FAIL');
   assert.deepEqual(notWitnessed.variance.entries, []);
+  assert.ok(notWitnessed.deltas.length > 0, 'the unwitnessed token deltas are reported');
   assert.ok(notWitnessed.deltas.every((d) => d.unprovenVariance));
   const tokenReport = { generatedAt: '2026-01-01', scenarios: [witnessed, notWitnessed] };
   assert.deepEqual(summarize(tokenReport).variance, {
@@ -576,6 +579,35 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   assert.match(md, /\| dom \| text \|/);
 });
 
+test('JSON that differs below the nesting limit yields one delta for the subtree, identical subtrees none', () => {
+  const nest = (leaf, depth) => (depth === 0 ? leaf : { a: nest(leaf, depth - 1) });
+  const exchange = (leaf) => [
+    req(1, 'https://p.invalid/deep', {
+      response: { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(nest(leaf, 14)) },
+    }),
+  ];
+  const out = compareRequests(exchange('live'), exchange('mirage'));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, 'body' + '.a'.repeat(13));
+  assert.equal(out[0].truncated, true);
+  assert.equal(out[0].live, JSON.stringify(nest('live', 1)));
+  assert.deepEqual(compareRequests(exchange('same'), exchange('same')), []);
+});
+
+test('elements that share a selector are compared pairwise in document order', () => {
+  const el = (value) => ({ selector: 'input#dup', tag: 'input', classes: [], attributes: {}, visible: true, value });
+  const changed = compareElements([el('LIVE-FIRST'), el('same')], [el('MIRAGE-FIRST'), el('same')]);
+  assert.deepEqual(
+    changed.map((d) => `${d.location}:${d.field}`),
+    ['input#dup:value'],
+  );
+  const extra = compareElements([el('a'), el('b')], [el('a')]);
+  assert.deepEqual(
+    extra.map((d) => `${d.location}:${d.field}`),
+    ['input#dup #2:presence'],
+  );
+});
+
 test('validateMatrix accepts a good matrix and rejects invalid ones', () => {
   const good = () => ({
     version: 1,
@@ -604,7 +636,7 @@ test('validateMatrix accepts a good matrix and rejects invalid ones', () => {
 });
 
 test('captureMatrix switches personas only on change, honours reset:false and records side errors', async (t) => {
-  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-capture-matrix-'));
+  const outDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-capture-matrix-'));
   t.after(() => fs.rm(outDir, { recursive: true, force: true }));
   const calls = [];
   const side = {
@@ -629,14 +661,8 @@ test('captureMatrix switches personas only on change, honours reset:false and re
       { id: 'skip', steps: [{}] },
     ],
   };
-  const log = console.log;
-  console.log = () => {};
-  let results;
-  try {
-    results = await captureMatrix({ matrix, side, outDir, label: 'mirage', only: ['one', 'two', 'bad'] });
-  } finally {
-    console.log = log;
-  }
+  t.mock.method(console, 'log', () => {});
+  const results = await captureMatrix({ matrix, side, outDir, label: 'mirage', only: ['one', 'two', 'bad'] });
   assert.deepEqual(calls, [
     'persona:anonymous',
     'reset',
@@ -682,7 +708,7 @@ test('request-side x-sim-* headers are instrumentation and generated ids are nor
 
 test('--only lists take the first token per line and refuse an empty selection', async (t) => {
   const { list } = await import('../baseline-suite.mjs');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-only-list-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-only-list-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'ids.txt');
   await fs.writeFile(
@@ -698,7 +724,7 @@ test('--only lists take the first token per line and refuse an empty selection',
 
 test('evidence age: deltas a recorded live change explains are stale until its proof scenario fails', async (t) => {
   const { loadEvidenceChanges, finalizeEvidenceChanges } = await import('../baseline-compare.mjs');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-evidence-age-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-evidence-age-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const folder = async (name, capturedAt, title) => {
     const dir = path.join(root, name);
@@ -789,7 +815,7 @@ test('the evidence receiver ties each post to its run; a late post of an abandon
   const { startSaver } = await import('../baseline-suite.mjs');
   const { writeCapture } = await import('../baseline-capture.mjs');
   const saver = await startSaver();
-  t.after(() => saver.close());
+  ownedFixture(t).add(() => saver.close());
   const post = (run, body) =>
     fetch(saver.url, {
       method: 'POST',
@@ -810,7 +836,7 @@ test('the evidence receiver ties each post to its run; a late post of an abandon
     saver.late.map((late) => late.run),
     [first.run, null],
   );
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-write-capture-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-write-capture-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await assert.rejects(
     writeCapture(
@@ -865,6 +891,7 @@ test('multipart postbacks compare their parts, not the random boundary', () => {
   );
 });
 
+// @test-kind security: state and token fields in multipart capture bodies are redacted
 test('the capture redacts server state fields in multipart bodies as in urlencoded ones', async () => {
   const { redactTokens } = await import('../baseline-capture.mjs');
   const body = [

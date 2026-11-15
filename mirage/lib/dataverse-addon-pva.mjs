@@ -7,7 +7,14 @@
 // Bot publishing and the chat service require trusted pack handlers.
 import { createHash, randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
-import { argsOf, featureNotEnabled, idOf, registerAddon, registerInternalMessage } from './dataverse-addon-common.mjs';
+import {
+  argsOf,
+  callerColumns,
+  featureNotEnabled,
+  idOf,
+  registerAddon,
+  registerInternalMessage,
+} from './dataverse-addon-common.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { ACCESS_RIGHTS, grantAccess, revokeAccess } from './dataverse-security.mjs';
 
@@ -18,7 +25,15 @@ const invalid = (message) => new DataError(message, 400, 'InvalidRequest', { inn
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
 const SHARING_OWNER = ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Write | ACCESS_RIGHTS.Share; // SharingRoleType 1
-const plain = (entry) => Object.fromEntries(Object.entries(entry ?? {}).filter(([name]) => !name.startsWith('@')));
+
+// The caller's component as the table stores it: its declared columns, without the stamped ones. A property the table does not
+// declare is a 400.
+function componentColumns(store, entry) {
+  return callerColumns(store, 'botcomponent', entry, {
+    operation: 'PvaCreateBotComponents',
+    reason: 'the bot is the bound row and the component is parented to it',
+  });
+}
 
 // bound(...) and unbound(...) build a registerAddon spec.
 const unbound = (name, kind, params, out = {}) => ({ name, kind, binding: 'unbound', signature: { params, ...out } });
@@ -116,6 +131,14 @@ function operations(api) {
 
   // The bot's components: the rows whose parent is the bot.
   const componentsOf = (botId) => tableOf('botcomponent').filter((row) => sameId(row.parentbotid, botId));
+  // The components a collection holds.
+  const membersOf = (collection) =>
+    tableOf('botcomponent').filter((row) =>
+      sameId(row.parentbotcomponentcollectionid, collection.botcomponentcollectionid),
+    );
+  // The privilege and row check of the CRUD path for one operation, made before any read or write.
+  const requireAccess = (c, logical, operation, row = undefined) =>
+    api.principals.authorize({ user: c.user, entity: logical, operation, row, mapping: store.resolveMapping(logical) });
 
   // Share (ShareOrUnshare true) or unshare the target with each systemuser in Users. Every user is checked before any write.
   async function authorize(c, logical) {
@@ -154,9 +177,12 @@ function operations(api) {
       const bot = boundRow(c, 'bot');
       const entries = argsOf(c).BotComponents ?? [];
       if (!Array.isArray(entries)) throw invalid('BotComponents must be a collection.');
-      await write(() => {
-        for (const entry of entries)
-          tableOf('botcomponent').push({ ...plain(entry), botcomponentid: randomUUID(), parentbotid: bot.botid });
+      requireAccess(c, 'botcomponent', 'create');
+      requireAccess(c, 'bot', 'append', bot);
+      const columns = entries.map((entry) => componentColumns(store, entry));
+      await write(async () => {
+        for (const row of columns)
+          await api.records.createInternal(c, 'botcomponent', { ...row, parentbotid: bot.botid }, { authorized: true });
       });
       return undefined;
     },
@@ -164,7 +190,7 @@ function operations(api) {
     PvaCreateContentSnapshot: async (c) => {
       const bot = boundRow(c, 'bot');
       // The snapshot id is the sha1 of the bot's component rows.
-      const SnapshotId = createHash('sha1')
+      const SnapshotId = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
         .update(JSON.stringify(componentsOf(bot.botid)))
         .digest('hex');
       return { SnapshotId };
@@ -172,8 +198,11 @@ function operations(api) {
 
     PvaDeleteBot: async (c) => {
       const bot = boundRow(c, 'bot');
+      const components = componentsOf(bot.botid);
+      requireAccess(c, 'bot', 'delete', bot);
+      for (const component of components) requireAccess(c, 'botcomponent', 'delete', component);
       await write(() => {
-        for (const component of componentsOf(bot.botid)) removeRow('botcomponent', component);
+        for (const component of components) removeRow('botcomponent', component);
         removeRow('bot', bot);
       });
       return undefined;
@@ -181,12 +210,11 @@ function operations(api) {
 
     PvaDeleteBotComponentCollection: async (c) => {
       const collection = boundRow(c, 'botcomponentcollection');
+      const members = membersOf(collection);
+      requireAccess(c, 'botcomponentcollection', 'delete', collection);
+      for (const component of members) requireAccess(c, 'botcomponent', 'delete', component);
       await write(() => {
-        for (const component of tableOf('botcomponent').filter((row) =>
-          sameId(row.parentbotcomponentcollectionid, collection.botcomponentcollectionid),
-        )) {
-          removeRow('botcomponent', component);
-        }
+        for (const component of members) removeRow('botcomponent', component);
         removeRow('botcomponentcollection', collection);
       });
       return undefined;
@@ -202,13 +230,16 @@ function operations(api) {
     },
 
     // Find the workspace by its name, or create it. The matching rule and the new row's columns are guesses.
+    // The caller needs create when the row is made, and read on the row it returns.
     GetOrCreateSharedWorkspace: async (c) => {
       const name = argsOf(c).target?.name;
       let row = tableOf('sharedworkspace').find((item) => key(item.name) === key(name));
       if (!row) {
+        requireAccess(c, 'sharedworkspace', 'create');
         row = { sharedworkspaceid: randomUUID(), name, statecode: 0, statuscode: 1 };
         await write(() => tableOf('sharedworkspace').push(row));
       }
+      requireAccess(c, 'sharedworkspace', 'read', row);
       return { '@odata.context': contextUrl(c.origin, c.version, 'sharedworkspaces/$entity'), ...row };
     },
   };

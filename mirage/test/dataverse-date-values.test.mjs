@@ -1,6 +1,48 @@
+// @test-kind compatibility: Dataverse date columns keep their exported Format and behaviour semantics, so a column exported as date is a Date Only column as the Web API metadata states.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDateValue, isoUtc, isDateOnlyField, formattedValue } from '../lib/dataverse-values.mjs';
+import { renderDate } from '../lib/model-driven/date-control.mjs';
+
+function stubNode() {
+  return {
+    children: [],
+    className: '',
+    dataset: {},
+    style: {},
+    classList: { add() {}, remove() {}, toggle() {} },
+    append(...nodes) {
+      this.children.push(...nodes);
+    },
+    addEventListener() {},
+    dispatchEvent: () => true,
+    focus() {},
+    remove() {},
+    removeAttribute() {},
+    replaceChildren() {},
+    setAttribute() {},
+    setCustomValidity() {},
+  };
+}
+
+test('a column exported as format date is a Date Only column with a date-only control', () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement: stubNode };
+  try {
+    assert.equal(isDateOnlyField({ type: 'datetime', format: 'date' }), true);
+    const control = renderDate({ name: 'x_review', label: 'Review date', format: 'date' }, null);
+    assert.equal(control.element.className, 'date-control');
+    assert.equal(
+      control.element.children.some((child) => child.className === 'date-time-host'),
+      false,
+    );
+    control.primary.value = '11/1/2026';
+    assert.equal(control.read(), '2026-11-01');
+  } finally {
+    if (previous === undefined) delete globalThis.document;
+    else globalThis.document = previous;
+  }
+});
 
 test('date literals preserve years below 100 before platform range validation', () => {
   for (const value of ['0000-01-01', '0001-01-01', '0026-01-01', '0099-12-31']) {

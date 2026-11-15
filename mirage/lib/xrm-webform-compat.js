@@ -8,9 +8,9 @@
  */
 (() => {
   'use strict';
-  if (window.__ppXrmWebForm) return;
-  window.__ppXrmWebForm = true;
-  const w = window;
+  if (globalThis.__ppXrmWebForm) return;
+  globalThis.__ppXrmWebForm = true;
+  const w = globalThis;
   const define = (name, fn) => {
     if (typeof w[name] !== 'function') w[name] = fn;
   };
@@ -24,7 +24,7 @@
   });
   define('isDirty', () => document.getElementsByClassName('dirty').length > 0);
   define('clearIsDirty', () => {
-    for (const element of [...document.getElementsByClassName('dirty')]) element.classList.remove('dirty');
+    for (const element of [...document.getElementsByClassName('dirty')]) element.classList.remove('dirty'); // NOSONAR: snapshot copy guards against mutation while iterating
   });
   define('confirmExit', () => {
     if (document.getElementById('confirmOnExit')?.value !== 'true' || !w.isDirty()) return undefined;
@@ -35,11 +35,11 @@
   });
   w.onbeforeunload = w.confirmExit;
   // The platform script replaces these built-ins on form pages (array result, word-boundary match).
-  String.prototype.trim = function () {
-    return this.replace(/^\s+|\s+$/g, '');
+  /* NOSONAR: intentional compatibility override */ String.prototype.trim = function () {
+    return this.replace(/^\s+|(?<!\s)\s+$/g, '');
   };
   document.getElementsByClassName = function (name) {
-    const pattern = new RegExp(`(\\b(?!-))${name}(\\b(?!-))`);
+    const pattern = new RegExp(String.raw`(\b(?!-))${name}(\b(?!-))`);
     return [...this.getElementsByTagName('*')].filter((element) => pattern.test(element.className));
   };
   const ready = () => {
@@ -59,7 +59,7 @@
         button.click();
       });
     const progress = document.getElementById('WebFormControl_ProgressIndicator');
-    if (progress && progress.getClientRects().length) {
+    if (progress?.getClientRects().length) {
       const heading = [...document.querySelectorAll('.page-header')]
         .filter((header) => header.getClientRects().length)
         .map((header) => [...header.querySelectorAll('h1')].map((h1) => h1.textContent).join(''))

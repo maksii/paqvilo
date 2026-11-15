@@ -1,0 +1,438 @@
+{
+  "scope": "Repeated SQL Server 2022 engine controls; no Dataverse TDS transport claim",
+  "results": [
+    {
+      "outcome": "sql-error",
+      "id": "predicate-eq",
+      "query": "SELECT 1 = 1 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-ne",
+      "query": "SELECT 1 <> 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '<'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-lt",
+      "query": "SELECT 1 < 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '<'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-gt",
+      "query": "SELECT 1 > 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '>'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-le",
+      "query": "SELECT 1 <= 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '<'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-ge",
+      "query": "SELECT 1 >= 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '>'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-bang-ne",
+      "query": "SELECT 1 != 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '!'.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-isnull",
+      "query": "SELECT NULL IS NULL AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'IS'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-in",
+      "query": "SELECT 1 IN (1, 2) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'IN'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-between",
+      "query": "SELECT 1 BETWEEN 0 AND 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'BETWEEN'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-like",
+      "query": "SELECT N'abc' LIKE N'a%' AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'LIKE'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-not",
+      "query": "SELECT NOT (1 = 1) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'NOT'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-parenthesized",
+      "query": "SELECT (1 = 1) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-and",
+      "query": "SELECT 1 = 1 AND 2 = 2 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "predicate-exists",
+      "query": "SELECT EXISTS (SELECT 1) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'EXISTS'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        },
+        {
+          "message": "Incorrect syntax near the keyword 'AS'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "result",
+      "id": "scalar-case",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "d",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT CASE WHEN 1 = 1 THEN 1 ELSE 0 END AS d"
+    },
+    {
+      "outcome": "result",
+      "id": "scalar-iif",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "d",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT IIF(1 = 1, 1, 0) AS d"
+    },
+    {
+      "outcome": "sql-error",
+      "id": "nested-coalesce",
+      "query": "SELECT COALESCE(1 = 1, 0) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "nested-cast",
+      "query": "SELECT CAST(1 = 1 AS bit) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near the keyword 'AS'.",
+          "state": 1,
+          "severity": 15,
+          "number": 156,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "nested-arith-left",
+      "query": "SELECT (1 = 1) + 1 AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "nested-arith-right",
+      "query": "SELECT 1 + (1 = 1) AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "sql-error",
+      "id": "nested-case-result",
+      "query": "SELECT CASE WHEN 1 = 1 THEN (2 = 2) ELSE 0 END AS d",
+      "errors": [
+        {
+          "message": "Incorrect syntax near '='.",
+          "state": 1,
+          "severity": 15,
+          "number": 102,
+          "line": 1
+        }
+      ]
+    },
+    {
+      "outcome": "result",
+      "id": "scalar-where",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "a",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT 1 AS a WHERE 1 = 1"
+    },
+    {
+      "outcome": "result",
+      "id": "scalar-having",
+      "resultSets": [
+        {
+          "columns": [
+            {
+              "name": "a",
+              "sqlType": "int",
+              "clrType": "System.Int32",
+              "precision": 10,
+              "scale": 255
+            }
+          ],
+          "rows": [
+            [
+              {
+                "exact": "1",
+                "kind": "System.Int32"
+              }
+            ]
+          ]
+        }
+      ],
+      "query": "SELECT 1 AS a HAVING 1 = 1"
+    },
+    {
+      "query": "SELECT CASE WHEN 1 < 2 THEN 1 END = 1 AS d",
+      "errors": [
+        {
+          "line": 1,
+          "number": 102,
+          "message": "Incorrect syntax near '='.",
+          "severity": 15,
+          "state": 1
+        }
+      ],
+      "id": "case-before-comparison",
+      "outcome": "sql-error"
+    },
+    {
+      "query": "SELECT x = 1 = 1",
+      "errors": [
+        {
+          "line": 1,
+          "number": 102,
+          "message": "Incorrect syntax near '='.",
+          "severity": 15,
+          "state": 1
+        }
+      ],
+      "id": "legacy-alias-predicate",
+      "outcome": "sql-error"
+    },
+    {
+      "query": "SELECT x = 1 IN (1, 2)",
+      "errors": [
+        {
+          "line": 1,
+          "number": 156,
+          "message": "Incorrect syntax near the keyword 'IN'.",
+          "severity": 15,
+          "state": 1
+        }
+      ],
+      "id": "legacy-alias-in",
+      "outcome": "sql-error"
+    }
+  ]
+}

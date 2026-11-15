@@ -8,6 +8,10 @@ import { globMatcher } from './capability-registry.mjs';
 
 const PREFLIGHT_STATUSES = Object.freeze(['satisfied', 'missing', 'placeholder', 'unsupported', 'disabled', 'secret']);
 const LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 
 /** Validates a scenario `{ id, requires: [pattern] }` (glob `*`). */
 export function scenarioSettings(value, label = 'scenario') {
@@ -31,6 +35,156 @@ function operationStatus(item) {
   if (item.unsupported) return 'unsupported';
   if (item.mode === 'placeholder' || item.mode === 'mock') return 'placeholder';
   return 'satisfied';
+}
+
+function addGraphRequirements(graph, push) {
+  for (const row of graph?.requirements?.() ?? [])
+    push({
+      id: row.id,
+      kind: row.kind,
+      source: { file: row.source ?? null, ...(row.layer != null ? { layer: row.layer } : {}) },
+      status: row.status,
+      reason: row.reason ?? null,
+      resolution: chooseLazily(
+        () => row.status === 'satisfied',
+        () => ({ by: 'source' }),
+        () =>
+          chooseLazily(
+            () => row.provider,
+            () => ({ by: row.provider }),
+            () => (row.level ? { level: row.level } : null),
+          ),
+      ),
+      message: row.dependent ? `Required by ${row.dependent}.` : (row.message ?? null),
+      surface: row.surface,
+      details: row.details,
+    });
+}
+
+function addOperationRequirements(operations, push) {
+  for (const item of operations) {
+    const status = operationStatus(item);
+    push({
+      id: item.key,
+      kind: item.kind,
+      source: { file: item.sourceFile ?? null },
+      status,
+      resolution: {
+        by: chooseLazily(
+          () => item.registered,
+          () => 'pack',
+          () => (item.mode === 'exported' ? 'source' : null),
+        ),
+        mode: item.mode,
+      },
+      message: chooseLazily(
+        () => item.unsupported,
+        () => String(item.unsupported),
+        () => (status === 'placeholder' ? `The ${item.kind} answers through its ${item.mode}; it does not run.` : null),
+      ),
+    });
+  }
+}
+
+function addProbeRequirements(localServices, providers, push) {
+  for (const service of localServices)
+    push({
+      id: `local-service:${service.id}`,
+      kind: 'local-service',
+      status: service.reachable ? 'satisfied' : 'missing',
+      resolution: service.reachable ? { by: 'probe' } : null,
+      message: service.message ?? null,
+    });
+  for (const provider of providers)
+    push({
+      id: provider.id,
+      kind: 'provider',
+      status: provider.status ?? (provider.reachable ? 'satisfied' : 'missing'),
+      resolution: provider.resolution ?? (provider.reachable ? { by: 'probe' } : null),
+      message: provider.message ?? null,
+      reason: provider.reason ?? null,
+    });
+}
+
+function addScenarioRequirements(matchers, rows, graph, capabilities, push) {
+  const scoped = new Set();
+  for (const { pattern, match } of matchers ?? [])
+    addScenarioPattern(pattern, match, rows, graph, capabilities, scoped, push);
+  return scoped;
+}
+
+function addScenarioPattern(pattern, match, rows, graph, capabilities, scoped, push) {
+  if (rows.some((row) => match(row.id))) return;
+  const surfaces = capabilities.filter(
+    (record) =>
+      record.kind === 'host-surface' &&
+      (match(record.name) || rows.some((row) => row.surface === record.name && match(`${record.name}/${row.id}`))),
+  );
+  addSurfaceRequirements(surfaces, rows, scoped, push);
+  if (surfaces.length) return;
+  const nodes = [...(graph?.nodes?.values?.() ?? [])]
+    .filter((node) => match(node.id))
+    .map((node) => ({ id: node.id, kind: node.kind, level: node.level, file: node.source }));
+  const found = nodes.length ? nodes : matchingCapabilities(capabilities, match);
+  if (!found.length)
+    push({
+      id: pattern,
+      kind: 'scenario',
+      status: 'missing',
+      message: 'No source component or registered capability matches this scenario requirement.',
+    });
+  for (const item of found) addScenarioItem(item, push);
+}
+
+function addSurfaceRequirements(surfaces, rows, scoped, push) {
+  for (const record of surfaces.filter((item) => !scoped.has(item.name))) {
+    scoped.add(record.name);
+    const gaps = rows.filter((row) => row.surface === record.name && row.status !== 'satisfied').map((row) => row.id);
+    const ok = !gaps.length && LEVELS.indexOf(record.level) >= LEVELS.indexOf('behaviour');
+    push({
+      id: record.name,
+      kind: 'host-surface',
+      surface: record.name,
+      status: ok ? 'satisfied' : 'unsupported',
+      resolution: { level: record.level },
+      message: chooseLazily(
+        () => ok,
+        () => null,
+        () =>
+          gaps.length ? `Detected but not run by this surface: ${gaps.join(', ')}.` : `Registered at ${record.level}.`,
+      ),
+    });
+  }
+}
+
+function matchingCapabilities(capabilities, match) {
+  return capabilities
+    .flatMap((record) => [
+      { id: record.name, kind: 'capability', level: record.level, reason: record.reason },
+      ...record.operations.map((operation) => ({
+        id: `${record.name}/${operation.name}`,
+        kind: 'capability',
+        level: operation.level,
+        reason: operation.reason,
+      })),
+    ])
+    .filter((item) => match(item.id));
+}
+
+function addScenarioItem(item, push) {
+  const ok = LEVELS.indexOf(item.level) >= LEVELS.indexOf('behaviour');
+  push({
+    id: item.id,
+    kind: item.kind,
+    source: item.file ? { file: item.file } : null,
+    status: ok ? 'satisfied' : 'unsupported',
+    resolution: { level: item.level },
+    message: chooseLazily(
+      () => ok,
+      () => null,
+      () => 'Registered at ' + item.level + (item.reason ? ': ' + item.reason : '') + '.',
+    ),
+  });
 }
 
 /**
@@ -78,122 +232,15 @@ export function buildPreflightReport({
       ...(surface ? { surface } : {}),
       ...(details ? { details } : {}),
     });
-  for (const row of graph?.requirements?.() ?? [])
-    push({
-      id: row.id,
-      kind: row.kind,
-      source: { file: row.source ?? null, ...(row.layer != null ? { layer: row.layer } : {}) },
-      status: row.status,
-      reason: row.reason ?? null,
-      resolution:
-        row.status === 'satisfied'
-          ? { by: 'source' }
-          : row.provider
-            ? { by: row.provider }
-            : row.level
-              ? { level: row.level }
-              : null,
-      message: row.dependent ? `Required by ${row.dependent}.` : (row.message ?? null),
-      surface: row.surface,
-      details: row.details,
-    });
-  for (const item of operations) {
-    const status = operationStatus(item);
-    push({
-      id: item.key,
-      kind: item.kind,
-      source: { file: item.sourceFile ?? null },
-      status,
-      resolution: { by: item.registered ? 'pack' : item.mode === 'exported' ? 'source' : null, mode: item.mode },
-      message: item.unsupported
-        ? String(item.unsupported)
-        : status === 'placeholder'
-          ? `The ${item.kind} answers through its ${item.mode}; it does not run.`
-          : null,
-    });
-  }
-  for (const service of localServices)
-    push({
-      id: `local-service:${service.id}`,
-      kind: 'local-service',
-      status: service.reachable ? 'satisfied' : 'missing',
-      resolution: service.reachable ? { by: 'probe' } : null,
-      message: service.message ?? null,
-    });
-  for (const provider of providers)
-    push({
-      id: provider.id,
-      kind: 'provider',
-      status: provider.status ?? (provider.reachable ? 'satisfied' : 'missing'),
-      resolution: provider.resolution ?? (provider.reachable ? { by: 'probe' } : null),
-      message: provider.message ?? null,
-    });
+  addGraphRequirements(graph, push);
+  addOperationRequirements(operations, push);
+  addProbeRequirements(localServices, providers, push);
   // Scenario patterns that match no source requirement are answered by the source graph's components, then by the
   // capability registry, else reported missing.
   const capabilities = registry?.list() ?? [];
   // A pattern naming a host surface (`portalRendering`, or `portalRendering/<row id>`) brings that surface's gap rows into
   // scope; the surface is satisfied only when none of them is unsatisfied.
-  const scoped = new Set();
-  for (const { pattern, match } of matchers ?? []) {
-    if (rows.some((row) => match(row.id))) continue;
-    const surfaces = capabilities.filter(
-      (record) =>
-        record.kind === 'host-surface' &&
-        (match(record.name) || rows.some((row) => row.surface === record.name && match(`${record.name}/${row.id}`))),
-    );
-    for (const record of surfaces.filter((record) => !scoped.has(record.name))) {
-      scoped.add(record.name);
-      const gaps = rows.filter((row) => row.surface === record.name && row.status !== 'satisfied').map((row) => row.id);
-      const ok = !gaps.length && LEVELS.indexOf(record.level) >= LEVELS.indexOf('behaviour');
-      push({
-        id: record.name,
-        kind: 'host-surface',
-        surface: record.name,
-        status: ok ? 'satisfied' : 'unsupported',
-        resolution: { level: record.level },
-        message: ok
-          ? null
-          : gaps.length
-            ? `Detected but not run by this surface: ${gaps.join(', ')}.`
-            : `Registered at ${record.level}.`,
-      });
-    }
-    if (surfaces.length) continue;
-    const nodes = [...(graph?.nodes?.values?.() ?? [])]
-      .filter((node) => match(node.id))
-      .map((node) => ({ id: node.id, kind: node.kind, level: node.level, file: node.source }));
-    const found = nodes.length
-      ? nodes
-      : capabilities
-          .flatMap((record) => [
-            { id: record.name, kind: 'capability', level: record.level, reason: record.reason },
-            ...record.operations.map((operation) => ({
-              id: `${record.name}/${operation.name}`,
-              kind: 'capability',
-              level: operation.level,
-              reason: operation.reason,
-            })),
-          ])
-          .filter((item) => match(item.id));
-    if (!found.length)
-      push({
-        id: pattern,
-        kind: 'scenario',
-        status: 'missing',
-        message: 'No source component or registered capability matches this scenario requirement.',
-      });
-    for (const item of found) {
-      const ok = LEVELS.indexOf(item.level) >= LEVELS.indexOf('behaviour');
-      push({
-        id: item.id,
-        kind: item.kind,
-        source: item.file ? { file: item.file } : null,
-        status: ok ? 'satisfied' : 'unsupported',
-        resolution: { level: item.level },
-        message: ok ? null : `Registered at ${item.level}${item.reason ? `: ${item.reason}` : ''}.`,
-      });
-    }
-  }
+  const scoped = addScenarioRequirements(matchers, rows, graph, capabilities, push);
   const requirements = rows.map((row) => {
     const inScope = matchers ? matchers.some(({ match }) => match(row.id)) || scoped.has(row.surface) : true;
     return { ...row, inScope, blocking: inScope && row.status !== 'satisfied' && Boolean(selected || strict) };

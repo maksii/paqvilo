@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -8,12 +9,15 @@ import { signInContext } from '../testing/session.mjs';
 test('backend operations exposes plugin source bindings and persists an editable local rejection', async (t) => {
   const { app } = await pluginFixture(t);
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await signInContext(page.context(), app, 'editor', { roles: ['Editor'] });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
+  const served = [app.url, app.adminOrigin];
+  await page.route('**/*', (route) =>
+    served.some((origin) => route.request().url().startsWith(origin)) ? route.continue() : route.abort(),
+  );
   await page.goto(app.adminUrl + '#operations');
   await page.getByRole('heading', { name: 'Backend operations' }).waitFor();
   // The operations view lists operations in a paginated table and renders the edit form of the selected one only;

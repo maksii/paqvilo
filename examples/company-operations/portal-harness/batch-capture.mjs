@@ -12,7 +12,7 @@ export function decodeBatchResponse(body, { operations, actor, roles, datasetVer
   const find = (node, name) =>
     node.name === name ? node : node.children.map((child) => find(child, name)).find(Boolean);
   const seen = new Set(),
-    expectedRoles = [...roles].sort();
+    expectedRoles = [...roles].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   return root.children.map((node) => {
     if (node.name !== 'co-test-response') throw new Error('Unexpected batch child envelope.');
     const id = node.attrs['operation-id'],
@@ -37,11 +37,14 @@ export function decodeBatchResponse(body, { operations, actor, roles, datasetVer
     );
     const paging = find(node, 'paging'),
       more = paging?.attrs.more?.toLowerCase();
+    let hasMore = null;
+    if (more === 'true') hasMore = true;
+    else if (more === 'false') hasMore = false;
     return {
       operationId: id,
       outcome: node.attrs.outcome,
       rows,
-      more: more === 'true' ? true : more === 'false' ? false : null,
+      more: hasMore,
       authoredFetchXml: find(node, 'authored-fetchxml')?.text,
       effectiveFetchXml: find(node, 'effective-fetchxml')?.text,
     };
@@ -137,44 +140,45 @@ export async function deployBatchEndpoint(client, config, manifest, journalFile)
   };
   const save = () => savePrivateJson(journalFile, structuredClone(journal));
   await savePrivateJson(journalFile, structuredClone(journal), { exclusive: true });
-  for (const component of components) {
-    const endpoint = `powerpagecomponents(${id(component.key)})`,
-      before = await client.optional(endpoint);
-    if (
-      before &&
-      (before._powerpagesiteid_value !== website ||
-        before.name !== component.name ||
-        before.powerpagecomponenttype !== component.type)
-    )
-      throw new Error('Batch component identity collision.');
-    const body = {
-      name: component.name,
-      powerpagecomponenttype: component.type,
-      content: JSON.stringify(component.content),
-    };
-    if (component.language)
-      body['powerpagesitelanguageid@odata.bind'] = `/powerpagesitelanguages(${component.language})`;
-    const entry = { id: id(component.key), key: component.key, before, planned: body, status: 'pending' };
-    journal.entries.push(entry);
-    await save();
-    if (!before)
-      await client.request('powerpagecomponents', {
-        method: 'POST',
-        body: { ...body, powerpagecomponentid: entry.id, 'powerpagesiteid@odata.bind': `/powerpagesites(${website})` },
-      });
-    else if (before.content !== body.content) {
-      if (!before['@odata.etag']) throw new Error('Batch update requires an ETag.');
-      await client.request(endpoint, { method: 'PATCH', body, ifMatch: before['@odata.etag'] });
-    }
-    const actual = await client.get(endpoint);
-    if (actual.content !== body.content || actual.statecode !== 0 || actual._powerpagesiteid_value !== website)
-      throw new Error('Batch component readback failed.');
-    entry.status = 'verified';
-    await save();
-  }
+  for (const component of components) await deployBatchComponent(client, component, website, id, journal, save);
   journal.finishedAt = new Date().toISOString();
   await save();
   return { pageId: id('page'), path: `/permission-lab/${partialUrl}/`, components: components.length, journalFile };
+}
+
+async function deployBatchComponent(client, component, website, id, journal, save) {
+  const endpoint = `powerpagecomponents(${id(component.key)})`,
+    before = await client.optional(endpoint);
+  if (
+    before &&
+    (before._powerpagesiteid_value !== website ||
+      before.name !== component.name ||
+      before.powerpagecomponenttype !== component.type)
+  )
+    throw new Error('Batch component identity collision.');
+  const body = {
+    name: component.name,
+    powerpagecomponenttype: component.type,
+    content: JSON.stringify(component.content),
+  };
+  if (component.language) body['powerpagesitelanguageid@odata.bind'] = `/powerpagesitelanguages(${component.language})`;
+  const entry = { id: id(component.key), key: component.key, before, planned: body, status: 'pending' };
+  journal.entries.push(entry);
+  await save();
+  if (!before)
+    await client.request('powerpagecomponents', {
+      method: 'POST',
+      body: { ...body, powerpagecomponentid: entry.id, 'powerpagesiteid@odata.bind': `/powerpagesites(${website})` },
+    });
+  else if (before.content !== body.content) {
+    if (!before['@odata.etag']) throw new Error('Batch update requires an ETag.');
+    await client.request(endpoint, { method: 'PATCH', body, ifMatch: before['@odata.etag'] });
+  }
+  const actual = await client.get(endpoint);
+  if (actual.content !== body.content || actual.statecode !== 0 || actual._powerpagesiteid_value !== website)
+    throw new Error('Batch component readback failed.');
+  entry.status = 'verified';
+  await save();
 }
 
 /** Precreate recording intents using the configured application. The requests

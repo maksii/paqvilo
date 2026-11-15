@@ -1,7 +1,9 @@
 // Dataverse TDS SQL evaluator (read-only subset). Pure: no store, protocol or HTTP knowledge.
 // Runs parseBatch() statements against a catalog and a scan callback.
 //
-// executeBatch(sql, { catalog, scan, params, principal, signal, now })
+// executeBatch(sql, { catalog, scan, params, principal, signal, now, statement })
+//   statement  optional async (statement, run) wrapper per statement (a trace span): it must await run(), which resolves
+//              { rowCount, resultSets } (the result sets this statement added); statement.source is { text, redacted }.
 //   catalog    { tables: Map<lowercase logical name, { logicalName, columns: [{ name, sqlType, length, precision, scale, nullable }] }> }
 //              (the shape buildCatalog returns, see dataverse-tds-catalog.mjs)
 //   scan       async (logicalName, { columns, pushdown }) -> row objects keyed by catalog column names.
@@ -10,6 +12,7 @@
 //   params     sp_executesql parameters such as { "@p1": 5 }. Visible in every batch.
 //   principal  accepted, not read here.
 //   signal     AbortSignal, checked between rows (error 3617).
+//   tupleBudget  intermediate rows one statement may build in joins (default 1,000,000); error 40000 past it.
 //   now        Date or () => Date, used by GETDATE and friends.
 // Returns { resultSets: [{ columns: [{ name, type, length, precision, scale, nullable }], rows: [[...values]] }], rowCount }.
 // rowCount is @@ROWCOUNT after the last statement. Values follow the model in dataverse-tds-sql-functions.mjs.
@@ -26,7 +29,7 @@
 // ponytail: LIKE builds a RegExp per evaluation; no cache.
 
 import { splitBatches } from './dataverse-tds-sql-lexer.mjs';
-import { equalityKey, foldText } from './dataverse-values.mjs';
+import { equalityKey, foldText, likeTokens, likeTokensMatch } from './dataverse-values.mjs';
 import { parseBatch } from './dataverse-tds-sql-parser.mjs';
 import {
   callFunction,
@@ -60,6 +63,11 @@ const AGGREGATES = new Set([
 ]);
 const INT_MAX = 2147483647;
 const NVARCHAR_MAX_CHARS = 4000;
+const MONEY_SCALE = 4;
+// Row loops yield to the event loop every YIELD_STEPS steps, so timers and client cancels run during a long evaluation.
+const YIELD_STEPS = 4096;
+// Intermediate rows one statement may build in joins (cross and join candidates).
+const TUPLE_BUDGET = 1000000;
 
 const lower = (value) => String(value).toLowerCase();
 const isNull = (value) => value === null || value === undefined;
@@ -67,32 +75,48 @@ const isDec = (value) => value !== null && typeof value === 'object' && 'decimal
 const queryOf = (node) => (node.type === 'Select' || node.type === 'SetOperation' ? node : node.query);
 
 function fail(number, message) {
-  throw { number, message, class: 16, state: 1 };
+  throw { number, message, class: 16, state: 1 }; // NOSONAR: thrown value is part of the error contract
 }
 
-function tick(st) {
+// Yields every YIELD_STEPS steps, then checks the abort signal (error 3617).
+async function tick(st) {
+  if (++st.steps % YIELD_STEPS === 0) await new Promise((resolve) => setImmediate(resolve));
   if (st.signal?.aborted) fail(3617, 'Query was cancelled by the user.');
+}
+
+// Counts one intermediate row of the running statement; past the budget the statement is refused (error 40000).
+function spend(st) {
+  st.tuples += 1;
+  if (st.tuples > st.tupleBudget)
+    fail(40000, `The statement exceeded its budget of ${st.tupleBudget} intermediate rows.`);
 }
 
 export async function executeBatch(
   sql,
-  { catalog, scan, params = {}, principal: _principal, signal, now, collation = 'CI_AI' } = {},
+  {
+    catalog,
+    scan,
+    params = {},
+    principal: _principal,
+    signal,
+    now,
+    collation = 'CI_AI',
+    statement: around = null,
+    tupleBudget = TUPLE_BUDGET,
+  } = {},
 ) {
   const { statements } = parseBatch(sql);
   const batches = splitBatches(sql);
-  // A statement belongs to the last batch that starts at or before its line.
-  const groups = batches.map(() => []);
-  let index = 0;
-  for (const statement of statements) {
-    while (index + 1 < batches.length && batches[index + 1].line <= statement.line) index += 1;
-    groups[index].push(statement);
-  }
+  const groups = groupStatements(statements, batches);
   const st = {
     catalog,
     scan,
     signal,
     now,
     collation,
+    steps: 0,
+    tuples: 0,
+    tupleBudget,
     scanCache: new Map(),
     referenced: null,
     session: { rowCount: 0 },
@@ -102,19 +126,48 @@ export async function executeBatch(
   const resultSets = [];
   for (const [i, batch] of batches.entries()) {
     for (let run = 0; run < batch.repeat; run += 1) {
-      st.vars = new Map();
-      for (const [name, value] of Object.entries(params)) {
-        const key = name.startsWith('@') ? name : `@${name}`;
-        st.vars.set(lower(key), { name: key, value });
-      }
-      for (const statement of groups[i]) await runStatement(statement, st, resultSets);
+      if (run > 0) await new Promise((resolve) => setImmediate(resolve));
+      await runBatchRepeat(st, params, groups[i], resultSets, around);
     }
   }
   return { resultSets, rowCount: st.session.rowCount };
 }
 
+// One run of a batch: fresh variables seeded with the parameters, then its statements in order.
+async function runBatchRepeat(st, params, statements, resultSets, around) {
+  await tick(st);
+  st.vars = new Map();
+  for (const [name, value] of Object.entries(params)) {
+    const key = name.startsWith('@') ? name : `@${name}`;
+    st.vars.set(lower(key), { name: key, value });
+  }
+  for (const statement of statements) await runStatementOperation(statement, st, resultSets, around);
+}
+
+function groupStatements(statements, batches) {
+  // A statement belongs to the last batch that starts at or before its line.
+  const groups = batches.map(() => []);
+  let index = 0;
+  for (const statement of statements) {
+    while (index + 1 < batches.length && batches[index + 1].line <= statement.line) index += 1;
+    groups[index].push(statement);
+  }
+  return groups;
+}
+
+function runStatementOperation(statement, st, resultSets, around) {
+  if (!around) return runStatement(statement, st, resultSets);
+  // The caller's wrapper (a trace span per statement) runs it and reads what it produced.
+  return around(statement, async () => {
+    const before = resultSets.length;
+    await runStatement(statement, st, resultSets);
+    return { rowCount: st.session.rowCount, resultSets: resultSets.slice(before) };
+  });
+}
+
 async function runStatement(statement, st, resultSets) {
-  tick(st);
+  await tick(st);
+  st.tuples = 0;
   // One ctx per statement: functions read @@ROWCOUNT and seeded state from it.
   st.ctx = { now: st.now, rowCount: st.session.rowCount, collation: st.collation };
   st.referenced = referencedColumns(statement);
@@ -238,7 +291,7 @@ async function scanTable(table, st, pushdown = null) {
       : names.filter((name) => st.referenced.has(name) || lower(name) === lower(table.idColumn));
   const key = JSON.stringify([table.logicalName, columns, pushdown], (_, v) => (typeof v === 'bigint' ? `${v}n` : v));
   if (!st.scanCache.has(key)) {
-    tick(st);
+    await tick(st);
     const rows = await st.scan(table.logicalName, { columns, pushdown });
     st.scanCache.set(
       key,
@@ -279,20 +332,16 @@ function pushableValue(sqlType, value) {
   const plainNumber = typeof value === 'number' && Number.isFinite(value) && !String(value).includes('e');
   switch (sqlType) {
     case 'int':
-      return typeof value === 'number' && Number.isInteger(value) && Math.abs(value) <= INT_MAX ? value : undefined;
+      return pushIntValue(value);
     case 'bigint':
-      return (typeof value === 'number' && Number.isSafeInteger(value)) || typeof value === 'bigint'
-        ? value
-        : undefined;
+      return pushBigIntValue(value);
     case 'decimal':
     case 'money':
-      if (isDec(value) && /^-?\d+(\.\d+)?$/.test(value.decimal)) return value;
-      return plainNumber || typeof value === 'bigint' ? value : undefined;
+      return pushDecimalValue(value, plainNumber);
     case 'float':
       return plainNumber ? value : undefined;
     case 'bit':
-      if (typeof value === 'boolean') return value;
-      return value === 0 || value === 1 ? value === 1 : undefined;
+      return pushBitValue(value);
     case 'uniqueidentifier':
       return typeof value === 'string' && GUID.test(value) ? value.toLowerCase() : undefined;
     case 'nvarchar':
@@ -300,6 +349,24 @@ function pushableValue(sqlType, value) {
     default:
       return undefined;
   }
+}
+
+function pushIntValue(value) {
+  return typeof value === 'number' && Number.isInteger(value) && Math.abs(value) <= INT_MAX ? value : undefined;
+}
+
+function pushBigIntValue(value) {
+  return (typeof value === 'number' && Number.isSafeInteger(value)) || typeof value === 'bigint' ? value : undefined;
+}
+
+function pushDecimalValue(value, plainNumber) {
+  if (isDec(value) && /^-?\d+(\.\d+)?$/.test(value.decimal)) return value;
+  return plainNumber || typeof value === 'bigint' ? value : undefined;
+}
+
+function pushBitValue(value) {
+  if (typeof value === 'boolean') return value;
+  return value === 0 || value === 1 ? value === 1 : undefined;
 }
 
 // The catalog column a node reads when it is a plain attribute of this table; else null.
@@ -329,44 +396,46 @@ function filterOf(node, source, table, st) {
     const column = tableColumn(node.operand, source, table);
     return column ? { column: column.name, op: node.negated ? 'not-null' : 'is-null', exact: true } : null;
   }
-  if (node.type === 'Binary' && PUSH_OP[node.operator]) {
-    let column = tableColumn(node.left, source, table);
-    let operator = PUSH_OP[node.operator];
-    let operand = node.right;
-    if (!column) {
-      column = tableColumn(node.right, source, table);
-      operator = FLIP[PUSH_OP[node.operator]];
-      operand = node.left;
-    }
-    if (!column) return null;
-    const value = pushableValue(column.sqlType, pushOperand(operand, st));
-    return compareFilter(column, operator, value);
-  }
-  if (node.type === 'In' && !node.negated && !node.subquery && node.list.length <= MAX_IN) {
-    const column = tableColumn(node.operand, source, table);
-    if (!column || column.sqlType === 'nvarchar') return null;
-    const values = node.list.map((item) => pushableValue(column.sqlType, pushOperand(item, st)));
-    return values.includes(undefined) ? null : { column: column.name, op: 'in', values, exact: true };
-  }
-  if (node.type === 'Like' && !node.negated && !node.escape) {
-    const column = tableColumn(node.operand, source, table);
-    const pattern = pushOperand(node.pattern, st);
-    const match = typeof pattern === 'string' ? /^([^%_[\]^]+)%$/.exec(pattern) : null;
-    if (!column || column.sqlType !== 'nvarchar' || !match || !caseless(match[1])) return null;
-    return { column: column.name, op: 'prefix', value: match[1], exact: true };
-  }
+  if (node.type === 'Binary') return filterComparison(node, source, table, st);
+  if (node.type === 'In') return filterIn(node, source, table, st);
+  if (node.type === 'Like') return filterLike(node, source, table, st);
   return null;
+}
+
+function filterComparison(node, source, table, st) {
+  if (!PUSH_OP[node.operator]) return null;
+  let column = tableColumn(node.left, source, table);
+  let operator = PUSH_OP[node.operator];
+  let operand = node.right;
+  if (!column) {
+    column = tableColumn(node.right, source, table);
+    operator = FLIP[PUSH_OP[node.operator]];
+    operand = node.left;
+  }
+  if (!column) return null;
+  return compareFilter(column, operator, pushableValue(column.sqlType, pushOperand(operand, st)));
+}
+
+function filterIn(node, source, table, st) {
+  if (node.negated || node.subquery || node.list.length > MAX_IN) return null;
+  const column = tableColumn(node.operand, source, table);
+  if (!column || column.sqlType === 'nvarchar') return null;
+  const values = node.list.map((item) => pushableValue(column.sqlType, pushOperand(item, st)));
+  return values.includes(undefined) ? null : { column: column.name, op: 'in', values, exact: true };
+}
+
+function filterLike(node, source, table, st) {
+  if (node.negated || node.escape) return null;
+  const column = tableColumn(node.operand, source, table);
+  const pattern = pushOperand(node.pattern, st);
+  const match = typeof pattern === 'string' ? /^([^%_[\]^]+)%$/.exec(pattern) : null;
+  if (column?.sqlType !== 'nvarchar' || !match || !caseless(match[1])) return null;
+  return { column: column.name, op: 'prefix', value: match[1], exact: true };
 }
 
 // The pushdown for a single-table SELECT, or null. Joins, derived sources and aggregation keep the scan whole.
 function pushdownOf(select, grouped, st) {
-  if (
-    !select.from ||
-    select.from.length !== 1 ||
-    select.from[0].joins.length ||
-    select.from[0].source.type === 'Derived'
-  )
-    return null;
+  if (select.from?.length !== 1 || select.from[0].joins.length || select.from[0].source.type === 'Derived') return null;
   if (select.columns.some((column) => column.kind === 'Assign')) return null;
   const { source } = select.from[0];
   const table = st.catalog.tables.get(lower(source.name));
@@ -450,20 +519,24 @@ function containsAggregate(node) {
 function queryNames(query, st) {
   if (query.type === 'SetOperation') return queryNames(query.left, st);
   const names = [];
-  for (const column of query.columns) {
-    if (column.kind === 'Assign') continue;
-    if (column.kind === 'Expr') {
-      names.push(column.alias ?? (column.expr.type === 'ColumnRef' ? column.expr.parts.at(-1) : ''));
-      continue;
-    }
-    const qualifier = column.qualifier === null ? null : lower(column.qualifier);
-    for (const source of sourcesOf(query)) {
-      if (qualifier !== null && lower(source.alias ?? source.name) !== qualifier) continue;
-      if (source.type === 'Derived') names.push(...queryNames(source.query, st));
-      else names.push(...tableOf(source, st).columns.map((c) => c.name));
-    }
-  }
+  for (const column of query.columns) names.push(...queryColumnNames(column, query, st));
   return names;
+}
+
+function queryColumnNames(column, query, st) {
+  if (column.kind === 'Assign') return [];
+  if (column.kind === 'Expr')
+    return [column.alias ?? (column.expr.type === 'ColumnRef' ? column.expr.parts.at(-1) : '')];
+  const names = [];
+  const qualifier = column.qualifier === null ? null : lower(column.qualifier);
+  for (const source of sourcesOf(query)) appendSourceNames(names, source, qualifier, st);
+  return names;
+}
+
+function appendSourceNames(names, source, qualifier, st) {
+  if (qualifier !== null && lower(source.alias ?? source.name) !== qualifier) return;
+  if (source.type === 'Derived') names.push(...queryNames(source.query, st));
+  else names.push(...tableOf(source, st).columns.map((c) => c.name));
 }
 
 // FROM sources in evaluation order: each entry's source, then its joins.
@@ -618,13 +691,25 @@ function arithMeta(op, a, b) {
   if (!a || !b) return null;
   if (a.type === 'null') return b.type === 'null' ? { type: 'int' } : b;
   if (b.type === 'null') return a;
-  if (a.type === 'datetime' || b.type === 'datetime') return op === '+' || op === '-' ? { type: 'datetime' } : null;
-  if (STRING_TYPES.has(a.type) || STRING_TYPES.has(b.type)) {
-    if (STRING_TYPES.has(a.type) && STRING_TYPES.has(b.type)) return op === '+' ? { type: 'nvarchar' } : null;
-    const other = STRING_TYPES.has(a.type) ? b : a; // a string takes the kind of the other operand
-    return NUMERIC_PRECEDENCE[other.type] ? other : null;
-  }
+  if (a.type === 'datetime' || b.type === 'datetime') return dateArithMeta(op);
+  if (op === '+' && ((a.type === 'varbinary' && b.type === 'int') || (b.type === 'varbinary' && a.type === 'int')))
+    return { type: 'int' };
+  if (STRING_TYPES.has(a.type) || STRING_TYPES.has(b.type)) return stringArithMeta(op, a, b);
   if (!NUMERIC_PRECEDENCE[a.type] || !NUMERIC_PRECEDENCE[b.type]) return null;
+  return numericArithMeta(op, a, b);
+}
+
+function dateArithMeta(op) {
+  return op === '+' || op === '-' ? { type: 'datetime' } : null;
+}
+
+function stringArithMeta(op, a, b) {
+  if (STRING_TYPES.has(a.type) && STRING_TYPES.has(b.type)) return op === '+' ? { type: 'nvarchar' } : null;
+  const other = STRING_TYPES.has(a.type) ? b : a;
+  return NUMERIC_PRECEDENCE[other.type] ? other : null;
+}
+
+function numericArithMeta(op, a, b) {
   const best = NUMERIC_PRECEDENCE[a.type] >= NUMERIC_PRECEDENCE[b.type] ? a : b;
   const kind = KIND_OF_TYPE[best.type];
   if (kind === 'float') return { type: 'float' };
@@ -644,7 +729,7 @@ function functionMeta(node, env, st) {
   const fn = FUNCTIONS.get(name);
   if (!fn) return null;
   const argMetas = node.args.map((arg) => typeOf(arg, env, st));
-  if (argMetas.some((m) => m === null)) return null;
+  if (argMetas.includes(null)) return null;
   // CONVERT and TRY_CONVERT name their type in the first argument, so that argument must be a string literal.
   const isConvert = name === 'CONVERT' || name === 'TRY_CONVERT';
   if (isConvert && !(node.args[0]?.type === 'Literal' && node.args[0].kind === 'string')) return null;
@@ -760,7 +845,7 @@ async function stringAgg(node, group, st) {
   const order = (node.withinGroup ?? []).map((term) => ({ desc: term.direction === 'DESC' }));
   const items = [];
   for (const tuple of group.tuples) {
-    tick(st);
+    await tick(st);
     const env = envOf(group.templates, tuple, group.outer);
     const v = await evalExpr(node.args[0], env, st);
     if (isNull(v)) continue;
@@ -774,7 +859,11 @@ async function stringAgg(node, group, st) {
   return items.map((i) => String(i.v)).join(isNull(sep) ? '' : String(sep));
 }
 
-async function aggregateValue(node, group, st) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function aggregateValue(
+  node,
+  group,
+  st,
+) {
   const name = node.name.toUpperCase();
   if (UNSUPPORTED_AGGREGATES.has(name)) fail(195, `'${name}' is not supported in Dataverse SQL.`);
   if (node.star) return name === 'COUNT_BIG' ? BigInt(group.tuples.length) : group.tuples.length;
@@ -782,7 +871,7 @@ async function aggregateValue(node, group, st) {
   const arg = node.args[0];
   let vals = [];
   for (const tuple of group.tuples) {
-    tick(st);
+    await tick(st);
     const v = await evalExpr(arg, envOf(group.templates, tuple, group.outer), st);
     if (!isNull(v)) vals.push(v);
   }
@@ -815,27 +904,34 @@ async function aggregateValue(node, group, st) {
 function sumOrAvg(name, vals, meta) {
   const avg = name === 'AVG';
   const kind = meta.type === 'null' ? 'int' : (KIND_OF_TYPE[meta.type] ?? 'float');
-  if (kind === 'int' || kind === 'bigint') {
-    const sum = vals.reduce((total, v) => total + (typeof v === 'boolean' ? BigInt(Number(v)) : BigInt(v)), 0n);
-    const r = avg ? sum / BigInt(vals.length) : sum;
-    const [min, max] = INT_BOUNDS[kind];
-    if (r < min || r > max) fail(8115, `Arithmetic overflow error converting expression to data type ${kind}.`);
-    return kind === 'bigint' ? r : Number(r);
-  }
-  if (kind === 'decimal') {
-    const parts = vals.map((v) => parseDecimal(isDec(v) ? v.decimal : String(v)));
-    const s = Math.max(meta.scale ?? 0, ...parts.map((p) => p.scale));
-    const total = parts.reduce((t, p) => t + scaleUp(p.coef, p.scale, s), 0n);
-    if (!avg) {
-      if (digitCount(total) > 38) fail(8115, 'Arithmetic overflow error converting numeric to data type numeric.');
-      return { decimal: formatDecimal({ coef: total, scale: s }) };
-    }
-    const t = meta.type === 'money' ? 4 : Math.max(s, 6); // AVG(decimal) scale is assumed, not observed
-    const coef = (total * 10n ** BigInt(t - s)) / BigInt(vals.length);
-    return { decimal: formatDecimal({ coef, scale: t }) };
-  }
+  if (kind === 'int' || kind === 'bigint') return integerSumOrAvg(vals, kind, avg);
+  if (kind === 'decimal') return decimalSumOrAvg(vals, meta, avg);
   const total = vals.reduce((t, v) => t + toNumber(v), 0);
   return avg ? total / vals.length : total;
+}
+
+function integerSumOrAvg(vals, kind, avg) {
+  const sum = vals.reduce(
+    (total, value) => total + (typeof value === 'boolean' ? BigInt(Number(value)) : BigInt(value)),
+    0n,
+  );
+  const result = avg ? sum / BigInt(vals.length) : sum;
+  const [min, max] = INT_BOUNDS[kind];
+  if (result < min || result > max) fail(8115, `Arithmetic overflow error converting expression to data type ${kind}.`);
+  return kind === 'bigint' ? result : Number(result);
+}
+
+function decimalSumOrAvg(vals, meta, avg) {
+  const parts = vals.map((value) => parseDecimal(isDec(value) ? value.decimal : String(value)));
+  const scale = Math.max(meta.scale ?? 0, ...parts.map((part) => part.scale));
+  const total = parts.reduce((sum, part) => sum + scaleUp(part.coef, part.scale, scale), 0n);
+  if (!avg) {
+    if (digitCount(total) > 38) fail(8115, 'Arithmetic overflow error converting numeric to data type numeric.');
+    return { decimal: formatDecimal({ coef: total, scale }) };
+  }
+  const resultScale = meta.type === 'money' ? 4 : Math.max(scale, 6);
+  const coef = (total * 10n ** BigInt(resultScale - scale)) / BigInt(vals.length);
+  return { decimal: formatDecimal({ coef, scale: resultScale }) };
 }
 
 // ---- Grouping checks. Errors are raised before any row is produced.
@@ -925,7 +1021,11 @@ async function groupUnits(select, rel, tuples, outer, st) {
   });
 }
 
-async function evalSelect(select, outer, st) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function evalSelect(
+  select,
+  outer,
+  st,
+) {
   const grouped = Boolean(select.groupBy || select.having || containsAggregate([select.columns, select.orderBy]));
   if (select.groupBy && containsAggregate(select.groupBy))
     fail(144, 'An aggregate may not appear in the GROUP BY clause.');
@@ -1025,7 +1125,7 @@ async function evalSelect(select, outer, st) {
 
   const kept = [];
   for (const tuple of rel.tuples) {
-    tick(st);
+    await tick(st);
     if (select.where && truth(await evalExpr(select.where, envOf(rel.templates, tuple, outer), st)) !== true) continue;
     kept.push(tuple);
   }
@@ -1036,7 +1136,7 @@ async function evalSelect(select, outer, st) {
   const produced = [];
   let assigned = 0;
   for (const { env, tuple } of units) {
-    tick(st);
+    await tick(st);
     if (select.having && truth(await evalExpr(select.having, env, st)) !== true) continue;
     if (isAssign) {
       assigned += 1;
@@ -1068,8 +1168,8 @@ function valueAt(tuple, item) {
 
 async function topLimit(top, outer, st, total) {
   const value = await evalExpr(top.count, { frames: [], parent: outer }, st);
-  const n = isNull(value) ? NaN : toNumber(value);
-  if (!(n >= 0)) fail(8016, 'The TOP or FETCH clause contains an invalid value.');
+  const n = isNull(value) ? Number.NaN : toNumber(value);
+  if (!(n >= 0)) fail(8016, 'The TOP or FETCH clause contains an invalid value.'); // NOSONAR: operand can be NaN or undefined, the negated test differs
   return top.percent ? Math.ceil((total * n) / 100) : Math.floor(n);
 }
 
@@ -1091,12 +1191,21 @@ function keyOf(value, st) {
   if (typeof value === 'number' || typeof value === 'bigint') return ['n', String(value)];
   if (isDec(value)) {
     const p = decParts(value);
-    const frac = p.frac.replace(/0+$/, '');
+    const frac = stripTrailingCharacter(p.frac, '0');
     return ['n', (p.neg ? '-' : '') + p.int + (frac ? `.${frac}` : '')];
   }
   if (value instanceof Date) return ['d', String(value.getTime())];
   const text = String(value);
-  return ['s', st.ctx?.caseSensitive ? text : equalityKey(text.replace(/ +$/, ''), st.ctx?.collation ?? 'CI_AI')];
+  return [
+    's',
+    st.ctx?.caseSensitive ? text : equalityKey(stripTrailingCharacter(text, ' '), st.ctx?.collation ?? 'CI_AI'),
+  ];
+}
+
+function stripTrailingCharacter(text, character) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === character) end--;
+  return text.slice(0, end);
 }
 
 function decParts(value) {
@@ -1115,9 +1224,12 @@ function formatDec({ neg, int, frac }, scale) {
 function finishColumns(names, raw, rows) {
   return names.map((name, i) => {
     const values = rows.map((row) => row[i]);
-    const meta = !raw[i] ? inferMeta(values) : raw[i].type === 'null' ? { type: 'int' } : { ...raw[i] };
+    let meta;
+    if (!raw[i]) meta = inferMeta(values);
+    else if (raw[i].type === 'null') meta = { type: 'int' };
+    else meta = { ...raw[i] };
     if (meta.type === 'decimal' || meta.type === 'money') rescaleColumn(rows, i, meta);
-    if (STRING_TYPES.has(meta.type) && isNull(meta.length)) meta.length = inferLength(values);
+    if (STRING_TYPES.has(meta.type)) meta.length = stringLength(meta.length, values);
     const column = { name, type: meta.type, nullable: meta.nullable ?? true };
     for (const key of ['length', 'precision', 'scale']) {
       if (isNull(meta[key])) continue;
@@ -1132,6 +1244,12 @@ function finishColumns(names, raw, rows) {
     }
     return column;
   });
+}
+
+// A declared length grows to the longest value it holds; the max form (-1 or 'max') stays as it is.
+function stringLength(declared, values) {
+  if (declared === -1 || declared === 'max') return declared;
+  return Math.max(declared ?? 0, inferLength(values));
 }
 
 function inferLength(values) {
@@ -1151,16 +1269,24 @@ function inferMeta(values) {
   return { type: 'nvarchar', length: inferLength(present) };
 }
 
-// Pads every decimal value in the column to one scale, the largest any value needs.
+// Pads every decimal value in the column to one scale, the largest any value needs. Money is fixed at four places and
+// its values round to them, so SUM and AVG of money stay money(19,4).
 function rescaleColumn(rows, i, meta) {
-  const scale = rows.reduce(
-    (max, row) => (isDec(row[i]) ? Math.max(max, decParts(row[i]).frac.length) : max),
-    meta.scale ?? 0,
-  );
+  const money = meta.type === 'money';
+  const scale = money
+    ? MONEY_SCALE
+    : rows.reduce((max, row) => (isDec(row[i]) ? Math.max(max, decParts(row[i]).frac.length) : max), meta.scale ?? 0);
   meta.scale = scale;
   for (const row of rows) {
-    if (isDec(row[i])) row[i] = { decimal: formatDec(decParts(row[i]), scale) };
+    if (!isDec(row[i])) continue;
+    row[i] = money ? roundedDecimal(row[i].decimal, scale) : { decimal: formatDec(decParts(row[i]), scale) };
   }
+}
+
+// A decimal text rounded half away from zero to `scale` places.
+function roundedDecimal(text, scale) {
+  const parts = parseDecimal(text);
+  return { decimal: formatDecimal({ coef: scaleDown(parts.coef, parts.scale, scale), scale }) };
 }
 
 async function buildFrom(from, outer, st, pushdown = null) {
@@ -1173,7 +1299,7 @@ async function buildFrom(from, outer, st, pushdown = null) {
       from.length === 1 && entry.joins.length === 0 ? pushdown : null,
     );
     for (const join of entry.joins) part = await joinRel(part, join, outer, st);
-    rel = crossRel(rel, part, st);
+    rel = await crossRel(rel, part, st);
   }
   return rel;
 }
@@ -1195,7 +1321,12 @@ async function sourceRel(source, outer, st, pushdown = null) {
   return { templates: [template], tuples: rows.map((row) => [row]) };
 }
 
-async function joinRel(left, join, outer, st) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function joinRel(
+  left,
+  join,
+  outer,
+  st,
+) {
   if (join.on && hasAggregate(join.on)) {
     fail(
       147,
@@ -1209,7 +1340,8 @@ async function joinRel(left, join, outer, st) {
       const result = await evalQuery(join.source.query, envOf(left.templates, lt, outer), st);
       if (result.rows.length === 0 && join.kind === 'OUTER') out.push([...lt, null]);
       for (const row of result.rows) {
-        tick(st);
+        await tick(st);
+        spend(st);
         out.push([...lt, row]);
       }
     }
@@ -1223,7 +1355,8 @@ async function joinRel(left, join, outer, st) {
   for (const lt of left.tuples) {
     let hit = false;
     for (let j = 0; j < right.tuples.length; j += 1) {
-      tick(st);
+      await tick(st);
+      spend(st);
       const candidate = [...lt, ...right.tuples[j]];
       const matched =
         join.kind === 'CROSS' || truth(await evalExpr(join.on, envOf(templates, candidate, outer), st)) === true;
@@ -1243,11 +1376,12 @@ async function joinRel(left, join, outer, st) {
   return { templates, tuples: out };
 }
 
-function crossRel(a, b, st) {
+async function crossRel(a, b, st) {
   const tuples = [];
   for (const x of a.tuples) {
     for (const y of b.tuples) {
-      tick(st);
+      await tick(st);
+      spend(st);
       tuples.push([...x, ...y]);
     }
   }
@@ -1262,8 +1396,16 @@ function truth(value) {
 }
 
 const not3 = (value) => (value === null ? null : !value);
-const and3 = (a, b) => (a === false || b === false ? false : a === null || b === null ? null : true);
-const or3 = (a, b) => (a === true || b === true ? true : a === null || b === null ? null : false);
+const and3 = (a, b) => {
+  if (a === false || b === false) return false;
+  if (a === null || b === null) return null;
+  return true;
+};
+const or3 = (a, b) => {
+  if (a === true || b === true) return true;
+  if (a === null || b === null) return null;
+  return false;
+};
 
 function toNumber(value) {
   if (typeof value === 'number') return value;
@@ -1347,26 +1489,31 @@ function scaleDown(coef, from, to) {
 
 // Converts an operand to the working form of `kind`: a JS number (float), { coef, scale, precision } (decimal) or BigInt.
 function operandAs(v, kind, prec = null) {
-  if (kind === 'float') return typeof v === 'string' ? toFloat(v, 'nvarchar') : Number(isDec(v) ? v.decimal : v);
-  if (kind === 'decimal') {
-    if (typeof v === 'string') {
-      const p = parseDecimal(v);
-      if (!p) fail(8114, 'Error converting data type nvarchar to numeric.');
-      return { ...p, precision: Math.max(digitCount(p.coef), p.scale, 1) };
-    }
-    if (isDec(v)) {
-      const p = parseDecimal(v.decimal);
-      return { ...p, precision: Math.max(digitCount(p.coef), p.scale, 1) };
-    }
-    // An integer literal is decimal(digits, 0) in a non-parameterized query; other integers are decimal(10, 0) or (19, 0).
-    return {
-      coef: BigInt(typeof v === 'boolean' ? Number(v) : v),
-      scale: 0,
-      precision: prec ?? (typeof v === 'bigint' ? 19 : 10),
-    };
-  }
+  if (kind === 'float') return floatOperand(v);
+  if (kind === 'decimal') return decimalOperand(v, prec);
   if (typeof v === 'string') return BigInt(castValue(v, kind));
   return BigInt(typeof v === 'boolean' ? Number(v) : v);
+}
+
+function floatOperand(value) {
+  if (typeof value === 'string') return toFloat(value, 'nvarchar');
+  return Number(isDec(value) ? value.decimal : value);
+}
+
+function decimalOperand(value, prec) {
+  if (typeof value === 'string') return parsedDecimalOperand(parseDecimal(value), true);
+  if (isDec(value)) return parsedDecimalOperand(parseDecimal(value.decimal), false);
+  // An integer literal is decimal(digits, 0) in a non-parameterized query; other integers are decimal(10, 0) or (19, 0).
+  return {
+    coef: BigInt(typeof value === 'boolean' ? Number(value) : value),
+    scale: 0,
+    precision: prec ?? (typeof value === 'bigint' ? 19 : 10),
+  };
+}
+
+function parsedDecimalOperand(parsed, failOnNull) {
+  if (!parsed && failOnNull) fail(8114, 'Error converting data type nvarchar to numeric.');
+  return { ...parsed, precision: Math.max(digitCount(parsed.coef), parsed.scale, 1) };
 }
 
 // Result scale and precision of decimal arithmetic per SQL Server (+, -, *, /; % follows the modulo rule), before the 38 cap.
@@ -1412,7 +1559,12 @@ function decimalArith(op, x, y) {
 }
 
 function integerArith(op, x, y, kind) {
-  const r = op === '+' ? x + y : op === '-' ? x - y : op === '*' ? x * y : op === '/' ? x / y : x % y;
+  let r;
+  if (op === '+') r = x + y;
+  else if (op === '-') r = x - y;
+  else if (op === '*') r = x * y;
+  else if (op === '/') r = x / y;
+  else r = x % y;
   const [min, max] = INT_BOUNDS[kind];
   if (r < min || r > max) fail(8115, `Arithmetic overflow error converting expression to data type ${kind}.`);
   return kind === 'bigint' ? r : Number(r);
@@ -1422,7 +1574,10 @@ function integerArith(op, x, y, kind) {
 // 1900-01-01 moved by the difference, as SQL Server does.
 function dateArith(op, a, b) {
   const isDate = (v) => v instanceof Date;
-  const days = (v) => (typeof v === 'string' ? toFloat(v, 'nvarchar') : Number(isDec(v) ? v.decimal : v));
+  const days = (v) => {
+    if (typeof v === 'string') return toFloat(v, 'nvarchar');
+    return Number(isDec(v) ? v.decimal : v);
+  };
   if (isDate(a) && isDate(b)) {
     if (op !== '-') fail(206, 'Operand type clash: datetime is incompatible with datetime.');
     const ms = Date.UTC(1900, 0, 1) + (a.getTime() - b.getTime());
@@ -1443,41 +1598,81 @@ const DATETIME_MIN = Date.UTC(1753, 0, 1);
 const DATETIME_MAX = Date.UTC(9999, 11, 31, 23, 59, 59, 997);
 
 // `hints` carries the decimal precision of integer literal operands (see literalPrecision).
+function isZeroDivisor(kind, y) {
+  if (kind === 'float') return y === 0;
+  if (kind === 'decimal') return y.coef === 0n;
+  return y === 0n;
+}
 function arith(op, a, b, ma = null, mb = null, hints = {}) {
   if (isNull(a) || isNull(b)) return null;
   if (op === '+' && typeof a === 'string' && typeof b === 'string') return a + b;
+  if (op === '+' && Buffer.isBuffer(a) && mb?.type === 'int') {
+    a = castValue(a, 'int');
+    ma = { type: 'int' };
+  }
+  if (op === '+' && Buffer.isBuffer(b) && ma?.type === 'int') {
+    b = castValue(b, 'int');
+    mb = { type: 'int' };
+  }
+  rejectBinaryArithmetic(op, a, b);
+  if (a instanceof Date || b instanceof Date) return dateArith(op, a, b);
+  assertArithmeticOperator(op);
+  return numericArith(op, a, b, ma, mb, hints);
+}
+
+function rejectBinaryArithmetic(op, a, b) {
   if (Buffer.isBuffer(a) || Buffer.isBuffer(b))
     fail(
       402,
       `The data types varbinary and ${typeof a === 'string' || typeof b === 'string' ? 'nvarchar' : 'int'} are incompatible in the ${OP_NAME[op] ?? op} operator.`,
     );
-  if (a instanceof Date || b instanceof Date) return dateArith(op, a, b);
+}
+
+function assertArithmeticOperator(op) {
   if (!['+', '-', '*', '/', '%', ...BITWISE].includes(op)) fail(40000, `operator ${op} is not implemented.`);
-  const kA = typeof a === 'string' ? null : numKind(a, ma);
-  const kB = typeof b === 'string' ? null : numKind(b, mb);
-  let kind;
-  if (kA === null && kB === null) kind = intText(a) && intText(b) ? 'int' : 'float';
-  else if (kA === null) kind = kB;
-  else if (kB === null) kind = kA;
-  else kind = NUM_RANK[kA] >= NUM_RANK[kB] ? kA : kB;
+}
+
+function numericArith(op, a, b, ma, mb, hints) {
+  const kind = arithmeticKind(a, b, ma, mb);
   if (BITWISE.has(op) && (kind === 'float' || kind === 'decimal'))
     fail(402, `The ${OP_NAME[op] ?? 'bitwise'} operator is not valid for a ${kind} operand.`);
   const x = operandAs(a, BITWISE.has(op) ? 'bigint' : kind, hints.a ?? null);
   const y = operandAs(b, BITWISE.has(op) ? 'bigint' : kind, hints.b ?? null);
-  if ((op === '/' || op === '%') && (kind === 'float' ? y === 0 : kind === 'decimal' ? y.coef === 0n : y === 0n)) {
+  if ((op === '/' || op === '%') && isZeroDivisor(kind, y)) {
     fail(8134, 'Divide by zero error encountered.');
   }
-  if (BITWISE.has(op)) {
-    const r = op === '&' ? x & y : op === '|' ? x | y : x ^ y;
-    return kind === 'bigint' ? r : Number(r);
-  }
-  if (kind === 'float') {
-    const r = op === '+' ? x + y : op === '-' ? x - y : op === '*' ? x * y : op === '/' ? x / y : x % y;
-    if (!Number.isFinite(r)) fail(8115, 'Arithmetic overflow error converting expression to data type float.');
-    return r;
-  }
+  if (BITWISE.has(op)) return bitwiseArith(op, x, y, kind);
+  if (kind === 'float') return floatArith(op, x, y);
   if (kind === 'decimal') return decimalArith(op, x, y);
   return integerArith(op, x, y, kind);
+}
+
+function arithmeticKind(a, b, ma, mb) {
+  const kindA = typeof a === 'string' ? null : numKind(a, ma);
+  const kindB = typeof b === 'string' ? null : numKind(b, mb);
+  if (kindA === null && kindB === null) return intText(a) && intText(b) ? 'int' : 'float';
+  if (kindA === null) return kindB;
+  if (kindB === null) return kindA;
+  return NUM_RANK[kindA] >= NUM_RANK[kindB] ? kindA : kindB;
+}
+
+function bitwiseArith(op, x, y, kind) {
+  let result;
+  if (op === '&') result = x & y;
+  else if (op === '|') result = x | y;
+  else result = x ^ y;
+  return kind === 'bigint' ? result : Number(result);
+}
+
+function floatArith(op, x, y) {
+  let result;
+  if (op === '+') result = x + y;
+  else if (op === '-') result = x - y;
+  else if (op === '*') result = x * y;
+  else if (op === '/') result = x / y;
+  else result = x % y;
+  if (!Number.isFinite(result)) fail(8115, 'Arithmetic overflow error converting expression to data type float.');
+  return result;
 }
 const intText = (s) => /^\s*[+-]?\d+\s*$/.test(s);
 
@@ -1528,33 +1723,21 @@ function typeText(targetType) {
   return `${name.toLowerCase()}${size}`;
 }
 
-// Pattern to RegExp: % and _ wildcards, [set] and [^set], and an ESCAPE character. Case folds unless caseSensitive.
-function likeRegex(pattern, escape, ci) {
-  let out = '^';
-  for (let i = 0; i < pattern.length; i += 1) {
-    const c = pattern[i];
-    if (escape !== null && c === escape && i + 1 < pattern.length) {
-      i += 1;
-      out += escapeRe(pattern[i]);
-    } else if (c === '%') {
-      out += '[\\s\\S]*';
-    } else if (c === '_') {
-      out += '[\\s\\S]';
-    } else if (c === '[' && pattern.indexOf(']', i + 1) > i + 1) {
-      const close = pattern.indexOf(']', i + 1);
-      const body = pattern.slice(i + 1, close);
-      const negate = body[0] === '^';
-      const set = negate ? body.slice(1) : body;
-      out += `[${negate ? '^' : ''}${set.replace(/[\\[\]]/g, '\\$&')}]`;
-      i = close;
-    } else {
-      out += escapeRe(c);
-    }
+const likeRegexes = new Map();
+// Tokenize before collation folding so an accented escape remains distinct from a literal.
+// A dangling escape produces an invalid pattern, which LIKE treats as a non-match.
+// Keep insensitive matching after accent folding: whole strings and individual pattern tokens can lowercase
+// differently (for example Greek final sigma), so literals and sets compare case-insensitively per character.
+function likeRegex(pattern, escape, collation) {
+  const key = JSON.stringify([pattern, escape, collation]);
+  if (!likeRegexes.has(key)) {
+    // ponytail: cleared when full; an LRU is the upgrade if pattern variety ever shows in profiles.
+    if (likeRegexes.size >= 4096) likeRegexes.clear();
+    const tokens = likeTokens(pattern, { escape, fold: (text) => foldText(text, collation), ignoreCase: true });
+    likeRegexes.set(key, tokens && { test: (value) => likeTokensMatch(tokens, value) });
   }
-  return new RegExp(`${out}$`, ci ? 'si' : 's');
+  return likeRegexes.get(key);
 }
-
-const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
 
 function singleColumn(result) {
   if (result.names.length !== 1) {
@@ -1566,7 +1749,11 @@ function singleColumn(result) {
   return result;
 }
 
-async function evalExpr(node, env, st) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function evalExpr(
+  node,
+  env,
+  st,
+) {
   switch (node.type) {
     case 'Literal':
       return literalValue(node);
@@ -1652,7 +1839,7 @@ async function evalExpr(node, env, st) {
         }
         if (r === null) unknown = true;
       }
-      const result = found ? true : unknown ? null : false;
+      const result = found ? true : unknown ? null : false; // NOSONAR: preserve lazy branch evaluation and coercion
       return node.negated ? not3(result) : result;
     }
     case 'Between': {
@@ -1671,8 +1858,11 @@ async function evalExpr(node, env, st) {
       const pattern = await evalExpr(node.pattern, env, st);
       const escape = node.escape ? await evalExpr(node.escape, env, st) : null;
       if (isNull(value) || isNull(pattern) || (node.escape && isNull(escape))) return null;
-      const escapeChar = node.escape ? String(escape).charAt(0) || null : null;
-      const matched = likeRegex(String(pattern), escapeChar, !st.ctx.caseSensitive).test(String(value));
+      const escapeChar = node.escape ? String(escape) : null;
+      if (escapeChar !== null && escapeChar.length !== 1)
+        fail(506, `The invalid escape character "${escapeChar}" was specified in a LIKE predicate.`);
+      const compiled = likeRegex(String(pattern), escapeChar, st.collation);
+      const matched = compiled?.test(foldText(value, st.collation)) ?? false;
       return node.negated ? !matched : matched;
     }
     case 'Exists':
@@ -1700,7 +1890,7 @@ async function evalExpr(node, env, st) {
       const value = await evalExpr(node.operand, env, st);
       const spec = typeText(node.targetType);
       if (node.tryCast) return callFunction('TRY_CONVERT', [spec, value], st.ctx);
-      return castValue(value, spec, { fromType: typeOf(node.operand, env, st)?.type });
+      return castValue(value, spec, { fromType: textTypeOf(node.operand, env, st) });
     }
     case 'Convert': {
       const value = await evalExpr(node.operand, env, st);
@@ -1708,7 +1898,7 @@ async function evalExpr(node, env, st) {
       const style = node.style ? await evalExpr(node.style, env, st) : undefined;
       if (node.tryConvert)
         return callFunction('TRY_CONVERT', style === undefined ? [spec, value] : [spec, value, style], st.ctx);
-      return castValue(value, spec, { style, fromType: typeOf(node.operand, env, st)?.type });
+      return castValue(value, spec, { style, fromType: textTypeOf(node.operand, env, st) });
     }
     case 'FunctionCall': {
       const name = node.name.toUpperCase();

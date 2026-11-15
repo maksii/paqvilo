@@ -1,6 +1,7 @@
 // Generic local administration shared by portal and solution-only hosts.
 import fs from 'node:fs/promises';
 import { platformSettingEntries, validatePlatformOverrides } from './platform-settings.mjs';
+import { sameToken } from './admin-origin.mjs';
 /** The Content-Security-Policy of the /_sim/ administration page on both hosts: same-origin only, no inline script or style. */
 export const ADMIN_CSP =
   "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -13,12 +14,26 @@ export const diagnosticsByCode = (entries) => {
   return counts;
 };
 /**
+ * The diagnostics answer narrowed to one trace (`GET /diagnostics?traceId=`): its findings, their counts per code and, when
+ * the answer lists them, its requests. Without a trace id the answer is returned unchanged.
+ */
+export const diagnosticsOfTrace = (answer, traceId) => {
+  if (!traceId) return answer;
+  const diagnostics = answer.diagnostics.filter((item) => item.traceId === traceId);
+  return {
+    ...answer,
+    diagnostics,
+    byCode: diagnosticsByCode(diagnostics),
+    ...(Array.isArray(answer.requests) ? { requests: answer.requests.filter((item) => item.traceId === traceId) } : {}),
+  };
+};
+/**
  * The file URL of the /_sim/<name> asset, or null (answer 404): a shared lib module, else `<name>.mjs|css` matching
  * ^[a-z0-9-]+$ that exists in mirage/admin/. `name` is the raw path segment after /_sim/, so an encoded separator never matches.
  */
 export async function adminAssetFile(name) {
   if (SHARED_ADMIN_MODULES.has(name)) return new URL(`./${name}`, import.meta.url);
-  if (!/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return null;
+  if (!/^[a-z0-9-]+\.(?:mjs|css|js)$/.test(name)) return null;
   const file = new URL(`../admin/${name}`, import.meta.url);
   return fs.access(file).then(
     () => file,
@@ -26,13 +41,14 @@ export async function adminAssetFile(name) {
   );
 }
 /** Content type of an admin asset; modules are text/javascript. */
-export const adminAssetType = (name) =>
-  name.endsWith('.css')
-    ? 'text/css; charset=utf-8'
-    : name.endsWith('.mjs')
-      ? 'text/javascript; charset=utf-8'
-      : 'text/html; charset=utf-8';
+export const adminAssetType = (name) => {
+  if (name.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (name.endsWith('.mjs') || name.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  return 'text/html; charset=utf-8';
+};
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
+/** The refusal of an administration write without the simulator CSRF token; the router and the staff-session route both throw it. */
+export const missingCsrfToken = () => error('Missing simulator CSRF token.', 403);
 const decodeAdminIdentifier = (value) => {
   try {
     return decodeURIComponent(value);
@@ -47,15 +63,52 @@ export function createRuntimeAdminRouter({
   change,
   csrf,
   status,
+  statusChunks,
   state,
   configuration,
   configure,
   simulation,
   diagnostics,
+  activityExport,
   shutdown,
   dataverseAdmin,
   staffSession,
 }) {
+  const pagedRecords = (res, url, entity) => {
+    const identity = { admin: true };
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get('pageSize'), 10) || 25));
+    const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+    const rows = store
+      .rows(entity, identity)
+      .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
+    // sort=<column>&order=asc|desc: the admin's sortable record table sorts the whole table before paging.
+    const sortKey = url.searchParams.get('sort');
+    if (sortKey) {
+      const direction = url.searchParams.get('order') === 'desc' ? -1 : 1;
+      const empty = (value) => value === null || value === undefined || value === '';
+      rows.sort((a, b) => {
+        const x = a[sortKey],
+          y = b[sortKey];
+        if (empty(x) || empty(y)) {
+          if (empty(x) === empty(y)) return 0;
+          return empty(x) ? 1 : -1;
+        }
+        return (
+          (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * direction
+        );
+      });
+    }
+    const total = rows.length,
+      pageSizeCount = Math.max(1, Math.ceil(total / pageSize)),
+      page = Math.min(pageSizeCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));
+    return json(res, 200, {
+      items: rows.slice((page - 1) * pageSize, page * pageSize),
+      total,
+      page,
+      pageSize,
+      pageCount: pageSizeCount,
+    });
+  };
   const records = async (req, res, url, relative) => {
     const method = req.method;
     const record = /^\/records\/([^/]+)(?:\/([^/]+))?$/.exec(relative);
@@ -67,21 +120,7 @@ export function createRuntimeAdminRouter({
         !id &&
         (url.searchParams.has('page') || url.searchParams.has('pageSize') || url.searchParams.has('search'))
       ) {
-        const pageSize = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get('pageSize'), 10) || 25));
-        const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
-        const rows = store
-          .rows(entity, identity)
-          .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
-        const total = rows.length,
-          pageCount = Math.max(1, Math.ceil(total / pageSize)),
-          page = Math.min(pageCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));
-        return json(res, 200, {
-          items: rows.slice((page - 1) * pageSize, page * pageSize),
-          total,
-          page,
-          pageSize,
-          pageCount,
-        });
+        return pagedRecords(res, url, entity);
       }
       if (method === 'GET')
         return json(
@@ -105,7 +144,16 @@ export function createRuntimeAdminRouter({
   // One table of [prefix, handler]: the dispatcher iterates it and router.routes is read from it, so status `routes` lists
   // exactly the prefixes this router answers. A handler answers true when it served the request.
   const table = [
-    ['/status', status && ((c) => c.method === 'GET' && c.relative === '/status' && c.answer(status()))],
+    [
+      '/status',
+      status &&
+        (async (c) => {
+          if (c.method !== 'GET' || c.relative !== '/status') return false;
+          // An asynchronous status provider resolves before its chunks are encoded.
+          const value = await status();
+          return c.answer(value, statusChunks ? { chunks: statusChunks(value) } : undefined);
+        }),
+    ],
     ['/state', state && ((c) => c.method === 'GET' && c.relative === '/state' && c.answer(state(c.url)))],
     [
       '/config',
@@ -124,7 +172,20 @@ export function createRuntimeAdminRouter({
     ],
     [
       '/diagnostics',
-      diagnostics && ((c) => c.method === 'GET' && c.relative === '/diagnostics' && c.answer(diagnostics())),
+      diagnostics &&
+        ((c) =>
+          c.method === 'GET' &&
+          c.relative === '/diagnostics' &&
+          c.answer(diagnosticsOfTrace(diagnostics(), c.url.searchParams.get('traceId')?.trim()))),
+    ],
+    [
+      '/activity',
+      activityExport &&
+        (async (c) => {
+          if (c.method !== 'GET' || c.relative !== '/activity/export') return false;
+          await activityExport(c.url.searchParams, c.res);
+          return true;
+        }),
     ],
     [
       '/platform-settings',
@@ -149,7 +210,7 @@ export function createRuntimeAdminRouter({
               if (!platformSettingEntries(store.state).some((item) => item.key === key))
                 throw error('Unknown platform setting.', 404);
               await store.transact(() => {
-                delete (store.state.simulator.platformOverrides ?? {})[key];
+                delete store.state.simulator.platformOverrides?.[key];
                 delete store.state.simulator.activeExperiment;
               });
               return { reset: key };
@@ -184,7 +245,7 @@ export function createRuntimeAdminRouter({
               .then(shutdown)
               .catch(() => {});
           });
-          json(c.res, 200, { stopped: true });
+          json(c.res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
           return true;
         }),
     ],
@@ -194,18 +255,18 @@ export function createRuntimeAdminRouter({
     if (!prefix) return false;
     const relative = url.pathname.slice(prefix[0].length),
       method = req.method;
-    const token = csrf();
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && (!token || req.headers['x-sim-csrf'] !== token))
-      throw error('Missing simulator CSRF token.', 403);
     if (staffSession && (await staffSession(req, res, url))) return true;
+    const token = csrf();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && (!token || !sameToken(req.headers['x-sim-csrf'], token)))
+      throw missingCsrfToken();
     const context = {
       req,
       res,
       url,
       relative,
       method,
-      answer: async (value) => {
-        json(res, 200, await value);
+      answer: async (value, options) => {
+        await json(res, 200, await value, {}, options);
         return true;
       },
     };

@@ -8,7 +8,7 @@ import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 /** createMemoryStorage({ id, clock, ids }): clock is a function or { now() } in epoch milliseconds; ids is accepted for the
  * provider-factory shape (etags are a per-provider sequence). */
 export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = systemIds } = {}) {
-  void ids;
+  void ids; // NOSONAR: void is intentional here
   const now = clockFunction(clock);
   const objects = new Map(),
     staged = new Map(),
@@ -30,8 +30,9 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
     contentType: o.contentType,
     metadata: { ...o.metadata },
   });
+  // A Buffer, Uint8Array or string is one chunk; any other body is an AsyncIterable of chunks.
   const collect = async (body) => {
-    if (Buffer.isBuffer(body)) return Buffer.from(body);
+    if (typeof body === 'string' || body instanceof Uint8Array) return Buffer.from(body);
     const parts = [];
     for await (const chunk of body) parts.push(Buffer.from(chunk)); // copies: the caller may reuse its buffer
     return Buffer.concat(parts);
@@ -40,6 +41,16 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
     if (ifMatch !== undefined && (!current || (ifMatch !== '*' && ifMatch !== current.etag)))
       throw fail('PreconditionFailed', 'The If-Match condition does not hold.');
     if (ifNoneMatch === '*' && current) throw fail('Conflict', 'The object already exists.');
+    if (ifNoneMatch !== undefined && ifNoneMatch !== '*' && current?.etag === ifNoneMatch)
+      throw fail('PreconditionFailed', 'The If-None-Match condition does not hold.');
+  };
+  // The inclusive byte window of a range over an object of `size` bytes; anything unsatisfiable is InvalidRange.
+  const byteWindow = (size, range) => {
+    const start = range.start ?? 0,
+      end = Math.min(range.end ?? size - 1, size - 1);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || start >= size)
+      throw fail('InvalidRange', 'The range is not satisfiable.');
+    return { start, end };
   };
   const store = (key, bytes, options = {}) => {
     conditions(objects.get(key), options);
@@ -90,15 +101,9 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
       alive();
       const o = objects.get(key);
       if (!o) throw fail('NotFound', 'The object does not exist.');
-      if (ifNoneMatch !== undefined && ifNoneMatch === o.etag)
+      if (ifNoneMatch !== undefined && (ifNoneMatch === '*' || ifNoneMatch === o.etag))
         return { ...meta(key, o), notModified: true, body: null };
-      let start = 0,
-        end = o.bytes.length - 1;
-      if (range) {
-        start = range.start ?? 0;
-        end = Math.min(range.end ?? end, end);
-        if (start > end || start >= o.bytes.length) throw fail('InvalidRange', 'The range is not satisfiable.');
-      }
+      const { start, end } = range ? byteWindow(o.bytes.length, range) : { start: 0, end: o.bytes.length - 1 };
       const slice = o.bytes.subarray(start, end + 1);
       async function* body() {
         for (let i = 0; i < slice.length; i += 65536) yield slice.subarray(i, i + 65536);
@@ -122,9 +127,11 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
     },
     async list(prefix, { pageSize = 1000, continuation } = {}) {
       alive();
+      if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 5000)
+        throw fail('InvalidKey', 'pageSize must be an integer from 1 to 5000.');
       const keys = [...objects.keys()]
         .filter((k) => k.startsWith(prefix) && (!continuation || k > continuation))
-        .sort();
+        .sort(/* NOSONAR: preserve default string coercion */);
       const page = keys.slice(0, pageSize);
       return {
         items: page.map((k) => ({

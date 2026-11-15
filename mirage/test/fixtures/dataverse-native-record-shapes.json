@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "scope": "Repeated native Dataverse HTTP context membership, expanded one-to-many back-reference and metadata response epoch relation. Invented schema substitutions preserve relationship and explicit/implicit column roles. Native context order varies across the two original cohorts; no deterministic context byte ordering is qualified. Metadata epoch value itself is environment input; only the response epoch relationship is qualified.",
+  "captures": [
+    {
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "cases": [
+        {
+          "id": "fetchxml.basic",
+          "requestSha256": "226529081cded47f146eaf1abc66206276b00b5b635810b90cf81073af6c4a47",
+          "responseSha256": "a4dd0184004ee5c46ffffe60a815f6b45a2eb560332b05ee2a14078c719e64ef"
+        },
+        {
+          "id": "query.expand-children",
+          "requestSha256": "cf43795fb36cf2042220bb481005ceb7ed09e2bd57725348ffce2d38f452381d",
+          "responseSha256": "9ef41ff004a80175e27045dda5b10058caba88ad5c0c4aadb1c9780706bbcbca"
+        },
+        {
+          "id": "service.metadata",
+          "requestSha256": "386b499b196fa6c7261878bddb32f65fe14aa76071ab5cd81b5fb60957fa3257",
+          "responseSha256": "4f6f11dd21992bb5a1526465944399712f7da89c4f9b94b4abea038d60cce7fb"
+        },
+        {
+          "id": "query.annotations-all",
+          "requestSha256": "00350007ed9dcb262d37879474db90c7079f989884293f0b4e68b92d7c15fc5d",
+          "responseSha256": "371c9cce2786413c2ac5272b25a3c849fc903f57fbea34d71257fc7b67e4c9bc"
+        }
+      ]
+    },
+    {
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "cases": [
+        {
+          "id": "fetchxml.basic",
+          "requestSha256": "c81a7c5310ce7063700544d55ebcf2af1472c13a6c699b7168ddcedf809aad2d",
+          "responseSha256": "c20d78a04ea9a29e711b6069ac01af0a2e426ae748a5b10ef588994ffd938f66"
+        },
+        {
+          "id": "query.expand-children",
+          "requestSha256": "1708077a4618dc9fe81bed4e3d45badd59272e020e4903f1ecd8c126fa866606",
+          "responseSha256": "471c5776beef5c18cb4786d63719c3b1535a12d52ebcc266e608a22e93ab8cac"
+        },
+        {
+          "id": "service.metadata",
+          "requestSha256": "386b499b196fa6c7261878bddb32f65fe14aa76071ab5cd81b5fb60957fa3257",
+          "responseSha256": "4f6f11dd21992bb5a1526465944399712f7da89c4f9b94b4abea038d60cce7fb"
+        },
+        {
+          "id": "query.annotations-all",
+          "requestSha256": "65b6ac09c79b98799d980efb10c553beee39c28954903e3a8ed4c23d127d11f6",
+          "responseSha256": "7924fbe3aa1b2479884cb73e040770ab56a092cb7cf7933e270859be29fa6786"
+        }
+      ]
+    }
+  ],
+  "contextOrders": [
+    [
+      0,
+      1,
+      2
+    ],
+    [
+      0,
+      2,
+      1
+    ]
+  ],
+  "expected": {
+    "fetchContext": {
+      "explicitColumnsAndImplicitPrimaryId": true
+    },
+    "expandedChild": {
+      "unselectedBackReferenceEqualsParentPrimaryId": true
+    },
+    "metadataEpoch": {
+      "quotedEtagEqualsGlobalAnnotation": true
+    }
+  }
+}

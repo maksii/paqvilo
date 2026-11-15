@@ -1,14 +1,17 @@
+// @test-kind unproven: the checks in this file exercise mapping with local fixtures; no native capture establishes the behaviour they assert.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PortalModel, sourceText } from '../lense/portal-model.mjs';
 import { Resolver, globToRegExp } from '../lense/resolver.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { diffLines } from '../lense/line-diff.mjs';
-import { createFixture, SITE, HOME_ID, ABOUT_ID } from './fixture.mjs';
+import { createFixture, SITE, HOME_ID, ABOUT_ID, tempDirSync } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const fx = createFixture();
 after(() => fx.cleanup());
@@ -47,6 +50,7 @@ test('inline sources know the page they belong to', () => {
   assert.equal(model.inlineSources.find((s) => s.kind === 'basic-form-js').pageUrl, null);
 });
 
+// @test-kind contract: resolver: explicit routes win, passthrough keeps a URL online
 test('resolver: explicit routes win, passthrough keeps a URL online', () => {
   const model = new PortalModel(fx.dir);
   fx.write('build/out/chunk/a.js', 'built');
@@ -65,6 +69,7 @@ test('resolver: explicit routes win, passthrough keeps a URL online', () => {
   assert.equal(resolver.resolve('/Logo.svg').via, 'web-file');
 });
 
+// @test-kind security+contract: resolver: a dir route cannot be escaped with ..
 test('resolver: a dir route cannot be escaped with ..', () => {
   const model = new PortalModel(fx.dir);
   const resolver = new Resolver(model, { ...SITE, routes: [{ url: '/assets/**', dir: 'build/out' }] });
@@ -72,6 +77,7 @@ test('resolver: a dir route cannot be escaped with ..', () => {
   assert.equal(resolver.resolve('/assets/%2e%2e/%2e%2e/website.yml'), null);
 });
 
+// @test-kind contract: resolver: exclude globs and disabled web files fall back to online
 test('resolver: exclude globs and disabled web files fall back to online', () => {
   const model = new PortalModel(fx.dir);
   assert.equal(
@@ -81,6 +87,7 @@ test('resolver: exclude globs and disabled web files fall back to online', () =>
   assert.equal(new Resolver(model, { ...SITE, webFiles: { enabled: false, exclude: [] } }).resolve('/Logo.svg'), null);
 });
 
+// @test-kind contract: scope 'changed' overrides only files that differ from the baseline
 test("scope 'changed' overrides only files that differ from the baseline", () => {
   const model = new PortalModel(fx.dir);
   const baseline = new GitBaseline(fx.dir, 'HEAD');
@@ -100,6 +107,7 @@ test("scope 'changed' overrides only files that differ from the baseline", () =>
   fx.write('web-files/app.js', original);
 });
 
+// @test-kind contract: globToRegExp: * stays inside a segment, ** crosses them
 test('globToRegExp: * stays inside a segment, ** crosses them', () => {
   assert.ok(globToRegExp('/a/*.js').test('/a/b.js'));
   assert.ok(!globToRegExp('/a/*.js').test('/a/b/c.js'));
@@ -110,6 +118,7 @@ test('globToRegExp: * stays inside a segment, ** crosses them', () => {
   assert.ok(!globToRegExp('/a.js').test('/aXjs'));
 });
 
+// @test-kind contract: diffLines reports minimal hunks
 test('diffLines reports minimal hunks', () => {
   const a = ['one', 'two', 'three', 'four'];
   assert.deepEqual(diffLines(a, a), []);
@@ -221,6 +230,7 @@ test('ambiguous web-file URLs disable every duplicate instead of serving an arbi
   assert.equal(model.webFiles.filter((file) => file.problem?.includes('duplicate URL')).length, 3);
 });
 
+// @test-kind contract: resolver decodes paths once and honors changed scope on explicit routes
 test('resolver decodes paths once and honors changed scope on explicit routes', () => {
   const model = new PortalModel(fx.dir);
   assert.equal(new Resolver(model, SITE).resolve('/scripts/app%252Ejs'), null);
@@ -233,6 +243,7 @@ test('resolver decodes paths once and honors changed scope on explicit routes', 
   );
 });
 
+// @test-kind security+contract: directory routes preserve wildcard suffixes and cannot escape through junctions
 test('directory routes preserve wildcard suffixes and cannot escape through junctions', (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -258,9 +269,10 @@ test('directory routes preserve wildcard suffixes and cannot escape through junc
   assert.equal(resolver.resolve('/nested/%00'), null);
 });
 
+// @test-kind security+contract: replacing indexed source folders with junctions cannot expose files outside the extract
 test('replacing indexed source folders with junctions cannot expose files outside the extract', (t) => {
   const local = createFixture();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-outside-'));
+  const outside = tempDirSync('paqvilo-outside-');
   t.after(() => {
     local.cleanup();
     fs.rmSync(outside, { recursive: true, force: true });
@@ -284,6 +296,7 @@ test('replacing indexed source folders with junctions cannot expose files outsid
   assert.equal(explicit.resolve('/intentional.js').file, path.join(outside, 'app.js'));
 });
 
+// @test-kind contract: Git batch baseline reads handle unicode, missing blobs, nested extracts and HEAD changes
 test('Git batch baseline reads handle unicode, missing blobs, nested extracts and HEAD changes', (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -305,6 +318,7 @@ test('Git batch baseline reads handle unicode, missing blobs, nested extracts an
   assert.equal(baseline.show(file), 'updated\n');
 });
 
+// @test-kind security+contract: Git baseline ignores inherited repository routing and rejects option-like refs
 test('Git baseline ignores inherited repository routing and rejects option-like refs', () => {
   const previous = process.env.GIT_DIR;
   try {
@@ -320,6 +334,7 @@ test('Git baseline ignores inherited repository routing and rejects option-like 
   }
 });
 
+// @test-kind contract: baseline polling observes moving merge bases and reports unavailable refs until recovered
 test('baseline polling observes moving merge bases and reports unavailable refs until recovered', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -359,4 +374,31 @@ test('changed classic portal metadata reports deployment needs without flagging 
   assert.equal(changes.length, 1);
   assert.equal(changes[0].rel, 'web-pages/about/About.webpage.yml');
   assert.match(changes[0].reason, /require deployment/);
+});
+
+// @test-kind contract: map --check reports every failed online URL as a coded error that names the URL it could not inspect.
+test('map --check --json reports each unreachable URL as an error with its code and path', (t) => {
+  const dir = tempDirSync('paqvilo-map-check-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'paqvilo.config.json');
+  fs.writeFileSync(
+    config,
+    JSON.stringify({ sites: { sample: { source: fx.dir, environments: { local: 'http://127.0.0.1:9' } } } }),
+  );
+  const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
+  const result = spawnSync(process.execPath, [cli, 'map', '--check', '--no-write', '--json', '--config', config], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  const report = JSON.parse(result.stdout);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.length > 0, result.stdout);
+  for (const error of report.errors) {
+    assert.equal(typeof error.code, 'string');
+    assert.match(error.path, /^\//);
+  }
 });

@@ -1,5 +1,6 @@
 // Simulated Dataverse time zone, calendar, app and report messages: happy paths, the documented scheduling refusal, a privilege
 // denial, DST boundary conversion, a weekly series with an exception, and a Book conflict.
+// @test-kind contract: Paqvilo's own designed calendar, time zone and scheduling behaviour, with its rank trimming checked against a reference
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -11,7 +12,13 @@ import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { runAtomic } from '../lib/dataverse-api.mjs';
 import { install as installCalendar } from '../lib/dataverse-calendar-messages.mjs';
 import { install as installApps } from '../lib/dataverse-app-messages.mjs';
-import { offsetMinutes } from '../lib/dataverse-calendar-messages.mjs';
+import {
+  disjointSpans,
+  intersectSpans,
+  offsetMinutes,
+  subtractSpans,
+  trimByRank,
+} from '../lib/dataverse-calendar-messages.mjs';
 import { TIME_ZONE_DEFINITIONS, TIME_ZONE_IDS } from '../lib/platform-time-zones.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
@@ -361,6 +368,7 @@ test('ValidateRecurrenceRule accepts a valid rule and refuses a weekly rule with
   );
 });
 
+// @test-kind security: a user without privileges cannot book
 test('a user with no privileges is refused a booking', async () => {
   const t = await setup();
   await assert.rejects(
@@ -665,6 +673,50 @@ test('Search proposes the first free slot for two users and reports ResourceBusy
   );
 });
 
+// Two Available blocks of one calendar overlap (the working hours and a later rule of the same rank). Their free time is merged
+// before proposals are made: each start is proposed once, and the merged span allows every quarter hour that fits in it.
+test('Search proposes each start once when overlapping Available blocks cover the same free time', async () => {
+  const t = await setup();
+  await workingHours(t, [RESOURCE]);
+  await t.store.transact(() =>
+    t.store.state.tables.calendarrule.push({
+      calendarruleid: 'a1000000-0000-4000-8000-000000000003',
+      calendarid: INNER,
+      offset: 600,
+      duration: 480,
+      timecode: 0,
+      name: 'Late hours',
+    }),
+  );
+  await action(t.api, 'Book', {
+    user: t.admin,
+    body: {
+      subject: 'Booked',
+      scheduledstart: '2026-11-02T10:00:00Z',
+      scheduledend: '2026-11-02T11:00:00Z',
+      requiredattendees: [RESOURCE],
+    },
+  });
+  const found = await invoke(t.api, 'Search', {
+    user: t.admin,
+    params: {
+      AppointmentRequest: {
+        Duration: 60,
+        SearchWindowStart: '2026-11-02T08:00:00Z',
+        SearchWindowEnd: '2026-11-02T18:00:00Z',
+        NumberOfResults: 100,
+        RequiredResources: [{ ResourceId: RESOURCE }],
+      },
+    },
+  });
+  const starts = found.body.SearchResults.Proposals.map((proposal) => proposal.Start);
+  // 09:00 fits the free hour before the booking; 11:00 to 17:00 in quarter hours fit the free time after it (18:00 ends it).
+  assert.equal(starts.length, 26);
+  assert.equal(new Set(starts).size, starts.length, 'no start is proposed twice');
+  assert.deepEqual(starts.slice(0, 2), ['2026-11-02T09:00:00.000Z', '2026-11-02T11:00:00.000Z']);
+  assert.equal(starts.at(-1), '2026-11-02T17:00:00.000Z');
+});
+
 test("RetrieveExchangeAppointments returns the caller's appointments in range", async () => {
   const t = await setup();
   await action(t.api, 'Book', {
@@ -723,4 +775,267 @@ test('SetReportRelated stores categories and refuses code 9', async () => {
     refused,
   );
   assert.deepEqual(categoriesOf(), [2], 'a refused call writes nothing');
+});
+
+// ---- Rank trimming of calendar blocks: the reference is the pairwise cut, one cover and one span at a time.
+
+const MIN_MS = 60 * 1000;
+const DAY_MS = 24 * 60 * MIN_MS;
+const JAN_2026 = Date.UTC(2026, 0, 1);
+
+function referenceMinus(spans, cuts) {
+  return cuts.reduce(
+    (pieces, [cutStart, cutEnd]) =>
+      pieces.flatMap(([s, e]) =>
+        cutEnd <= s || cutStart >= e
+          ? [[s, e]]
+          : [
+              [s, cutStart],
+              [cutEnd, e],
+            ].filter(([a, b]) => b > a),
+      ),
+    spans,
+  );
+}
+
+// The pairwise trimming, layer by layer. With dropMalformedCovers, a block that ends before it starts is not one of the
+// covering spans: the documented normalisation of malformed spans in trimByRank.
+function referenceTrim(blocks, { dropMalformedCovers = false } = {}) {
+  const out = [];
+  let covered = [];
+  const ranks = [...new Set(blocks.map((block) => Number(block.rule.rank ?? 0)))].sort((a, b) => a - b);
+  for (const rank of ranks) {
+    const layer = blocks.filter((block) => Number(block.rule.rank ?? 0) === rank);
+    for (const block of layer) {
+      for (const [startMs, endMs] of referenceMinus([[block.startMs, block.endMs]], covered))
+        out.push({ ...block, startMs, endMs });
+    }
+    const kept = layer.filter((block) => !dropMalformedCovers || block.endMs >= block.startMs);
+    covered = covered.concat(kept.map((block) => [block.startMs, block.endMs]));
+  }
+  return out.sort((left, right) => left.startMs - right.startMs);
+}
+
+// The time the positive pieces cover, merged: equal for two outputs that cut the same time into differently many pieces.
+function coveredTime(pieces) {
+  const merged = [];
+  for (const [startMs, endMs] of pieces.filter(([s, e]) => e > s).toSorted((a, b) => a[0] - b[0])) {
+    const last = merged.at(-1);
+    if (last && startMs <= last[1]) last[1] = Math.max(last[1], endMs);
+    else merged.push([startMs, endMs]);
+  }
+  return merged;
+}
+
+// A seeded generator (mulberry32): the same rule sets on every run.
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), state | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Random blocks of ranks 0 to 2 starting in the window. Durations are zero (a point), short, long, or negative on
+// every tenth round, so touching, nested, zero-length and malformed spans all occur.
+function randomBlocks(random, from, to, malformed) {
+  const durations = malformed ? [0, 30, -30, 240] : [0, 0, 30, 60, 240, 480];
+  const span = Math.max(1, Math.floor((to - from) / MIN_MS));
+  const count = Math.floor(random() * 40);
+  return Array.from({ length: count }, () => {
+    const startMs = from + Math.floor(random() * span) * MIN_MS;
+    const duration = durations[Math.floor(random() * durations.length)];
+    return {
+      startMs,
+      endMs: startMs + duration * MIN_MS,
+      rule: { rank: Math.floor(random() * 3) },
+      calendarId: 'calendar',
+    };
+  });
+}
+
+// Daily rules as the expansion makes them: a rank 0 block of eight hours and a rank 1 block of one hour inside it.
+function dailyBlocks(years) {
+  const blocks = [];
+  for (let day = 0; day < years * 365; day += 1) {
+    const midnight = JAN_2026 + day * DAY_MS;
+    blocks.push({ startMs: midnight + 480 * MIN_MS, endMs: midnight + 960 * MIN_MS, rule: { rank: 0 } });
+    blocks.push({ startMs: midnight + 600 * MIN_MS, endMs: midnight + 660 * MIN_MS, rule: { rank: 1 } });
+  }
+  return blocks;
+}
+
+// Well-formed rounds give the pairwise reference output exactly. A round with a malformed block gives the reference output over
+// the covers that are well formed (the normalisation), and covers the same time as the reference output that keeps them.
+test('trimByRank asserts the documented normalisation of malformed spans against the pairwise reference', () => {
+  const random = seededRandom(20260501);
+  for (let round = 0; round < 300; round += 1) {
+    const from = JAN_2026 + Math.floor(random() * 400) * DAY_MS;
+    const to = from + (1 + Math.floor(random() * 20)) * DAY_MS;
+    const blocks = randomBlocks(random, from, to, round % 10 === 0).filter(
+      (block) => block.startMs < to && from < block.endMs,
+    );
+    const malformed = blocks.some((block) => block.endMs < block.startMs);
+    assert.deepEqual(trimByRank(blocks), referenceTrim(blocks, { dropMalformedCovers: malformed }), `round ${round}`);
+    if (malformed) {
+      const pairs = (output) => output.map((block) => [block.startMs, block.endMs]);
+      assert.deepEqual(
+        coveredTime(pairs(trimByRank(blocks))),
+        coveredTime(pairs(referenceTrim(blocks))),
+        `round ${round}`,
+      );
+    }
+  }
+});
+
+test('subtractSpans gives the pairwise reference on seeded random spans and cuts, malformed cuts included', () => {
+  const random = seededRandom(20260502);
+  for (let round = 0; round < 300; round += 1) {
+    const from = JAN_2026 + Math.floor(random() * 400) * DAY_MS;
+    const to = from + (1 + Math.floor(random() * 20)) * DAY_MS;
+    const malformed = round % 10 === 0;
+    const toPairs = (blocks) => blocks.map((block) => [block.startMs, block.endMs]);
+    const spans = toPairs(randomBlocks(random, from, to, malformed));
+    const cuts = toPairs(randomBlocks(random, from, to, malformed));
+    const wellFormed = cuts.filter(([startMs, endMs]) => endMs >= startMs);
+    assert.deepEqual(subtractSpans(spans, cuts), referenceMinus(spans, wellFormed), `round ${round}`);
+    if (wellFormed.length < cuts.length)
+      assert.deepEqual(
+        coveredTime(subtractSpans(spans, cuts)),
+        coveredTime(referenceMinus(spans, cuts)),
+        `round ${round} covers`,
+      );
+  }
+});
+
+test('trimByRank does work in step with the blocks: a 16-year window takes under 20 times the comparisons of a 1-year window', () => {
+  const comparisons = (years) => {
+    const work = { comparisons: 0 };
+    trimByRank(dailyBlocks(years), work);
+    return work.comparisons;
+  };
+  const oneYear = comparisons(1);
+  const sixteenYears = comparisons(16);
+  assert.ok(sixteenYears < 20 * oneYear, `${sixteenYears} comparisons for 16 years, ${oneYear} for one year`);
+});
+
+// The same minutes of each day, for years of days: a span of the window per day.
+function dailyPairs(years, startMinute, endMinute) {
+  const pairs = [];
+  for (let day = 0; day < years * 365; day += 1) {
+    const midnight = JAN_2026 + day * DAY_MS;
+    pairs.push([midnight + startMinute * MIN_MS, midnight + endMinute * MIN_MS]);
+  }
+  return pairs;
+}
+
+test('subtractSpans does work in step with the spans: 16 years of busy blocks cost under 20 times one year', () => {
+  const comparisons = (years) => {
+    const work = { comparisons: 0 };
+    subtractSpans(dailyPairs(years, 480, 960), dailyPairs(years, 600, 660), work);
+    return work.comparisons;
+  };
+  const oneYear = comparisons(1);
+  const sixteenYears = comparisons(16);
+  assert.ok(sixteenYears < 20 * oneYear, `${sixteenYears} comparisons for 16 years, ${oneYear} for one year`);
+});
+
+test('trimByRank stays linear when the window holds malformed spans: 16 years cost under 20 times one year', () => {
+  const comparisons = (years) => {
+    const work = { comparisons: 0 };
+    const malformed = dailyPairs(years, 900, 500).map(([startMs, endMs]) => ({ startMs, endMs, rule: { rank: 0 } }));
+    trimByRank([...dailyBlocks(years), ...malformed], work);
+    return work.comparisons;
+  };
+  const oneYear = comparisons(1);
+  const sixteenYears = comparisons(16);
+  assert.ok(sixteenYears < 20 * oneYear, `${sixteenYears} comparisons for 16 years, ${oneYear} for one year`);
+});
+
+// Sorted, disjoint spans from a base instant: gaps of none (touching spans) or more, and lengths of half an hour
+// or more.
+function sortedSpans(random, count, base) {
+  const spans = [];
+  let at = base;
+  for (let index = 0; index < count; index += 1) {
+    const startMs = at + Math.floor(random() * 4) * 30 * MIN_MS;
+    const endMs = startMs + (1 + Math.floor(random() * 8)) * 30 * MIN_MS;
+    spans.push([startMs, endMs]);
+    at = endMs;
+  }
+  return spans;
+}
+
+// The pairwise overlaps of two span lists, in the order of the left spans: the reference the sweep must reproduce.
+function pairwiseOverlaps(left, right) {
+  return left.flatMap(([s1, e1]) =>
+    right.map(([s2, e2]) => [Math.max(s1, s2), Math.min(e1, e2)]).filter(([s, e]) => e > s),
+  );
+}
+
+test('intersectSpans gives the pairwise overlaps on seeded sorted, disjoint span lists', () => {
+  const random = seededRandom(20260503);
+  for (let round = 0; round < 300; round += 1) {
+    const base = JAN_2026 + Math.floor(random() * 400) * DAY_MS;
+    const left = sortedSpans(random, Math.floor(random() * 30), base);
+    const right = sortedSpans(random, Math.floor(random() * 30), base + Math.floor(random() * 6) * 30 * MIN_MS);
+    assert.deepEqual(intersectSpans(left, right), pairwiseOverlaps(left, right), `round ${round}`);
+    assert.deepEqual(intersectSpans(right, left), pairwiseOverlaps(right, left), `round ${round} reversed`);
+  }
+});
+
+test('disjointSpans merges strictly overlapping spans, keeps touching spans apart, and covers the same time', () => {
+  assert.deepEqual(
+    disjointSpans([
+      [30, 40],
+      [0, 10],
+      [5, 12],
+      [50, 50],
+      [40, 45],
+    ]),
+    [
+      [0, 12],
+      [30, 40],
+      [40, 45],
+    ],
+    'the touching pair at 40 stays apart',
+  );
+  assert.deepEqual(
+    disjointSpans([
+      [10, 20],
+      [0, 10],
+    ]),
+    [
+      [0, 10],
+      [10, 20],
+    ],
+    'touching spans stay apart, so each keeps its own split',
+  );
+  const random = seededRandom(20260504);
+  for (let round = 0; round < 300; round += 1) {
+    const base = JAN_2026 + Math.floor(random() * 400) * DAY_MS;
+    const spans = Array.from({ length: Math.floor(random() * 30) }, () => {
+      const startMs = base + Math.floor(random() * 200) * 15 * MIN_MS;
+      return [startMs, startMs + Math.floor(random() * 12) * 15 * MIN_MS];
+    });
+    const out = disjointSpans(spans);
+    assert.ok(
+      out.every(([s, e], index) => e > s && (index === 0 || out[index - 1][1] <= s)),
+      `round ${round} sorted and disjoint`,
+    );
+    assert.deepEqual(coveredTime(out), coveredTime(spans), `round ${round} covers the same time`);
+  }
+});
+
+test('intersectSpans does work in step with the spans: 16 years of sorted spans cost under 20 times one year', () => {
+  const comparisons = (years) => {
+    const work = { comparisons: 0 };
+    intersectSpans(dailyPairs(years, 480, 960), dailyPairs(years, 420, 600), work);
+    return work.comparisons;
+  };
+  const oneYear = comparisons(1);
+  const sixteenYears = comparisons(16);
+  assert.ok(sixteenYears < 20 * oneYear, `${sixteenYears} comparisons for 16 years, ${oneYear} for one year`);
 });

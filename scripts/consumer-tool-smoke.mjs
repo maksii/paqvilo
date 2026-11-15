@@ -1,12 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
+
+/** Compare the actual state location without accepting a linked escape or rejecting an aliased project. */
+export function consumerStateIsOwned(project, file) {
+  const root = path.join(fs.realpathSync.native(project), '.paqvilo');
+  const relative = path.relative(root, fs.realpathSync.native(file));
+  return relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+}
 
 /** Exercise catalogue tools from the actual npm-installed package. */
 export function verifyConsumerToolOwnership(bin, project, site = 'example') {
   const packageRoot = path.resolve(path.dirname(bin), '..');
   const config = path.join(project, 'paqvilo.config.yml');
-  const stateRoot = path.join(project, '.paqvilo') + path.sep;
   const report = () => {
     const result = spawnSync(
       process.execPath,
@@ -15,7 +22,7 @@ export function verifyConsumerToolOwnership(bin, project, site = 'example') {
         cwd: path.dirname(project),
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 60000,
+        timeout: CHILD_HANG_GUARD_MS,
         maxBuffer: 8 * 1024 * 1024,
       },
     );
@@ -24,8 +31,12 @@ export function verifyConsumerToolOwnership(bin, project, site = 'example') {
   };
   const first = report();
   const second = report();
-  if (!first.summary.timings.cache.file.startsWith(stateRoot))
+  const coldFile = first.summary.timings.cache.file;
+  const warmFile = second.summary.timings.cache.file;
+  if (![coldFile, warmFile].every((file) => consumerStateIsOwned(project, file)))
     throw new Error('Installed report cache escaped the consumer project.');
+  if (path.relative(fs.realpathSync.native(coldFile), fs.realpathSync.native(warmFile)) !== '')
+    throw new Error('Installed report did not reuse the same consumer cache file.');
   if (second.summary.timings.cache.hits <= 0 || second.summary.timings.cache.misses !== 0)
     throw new Error('Installed report did not reuse unchanged solution parses.');
   if (fs.existsSync(path.join(packageRoot, '.paqvilo')))

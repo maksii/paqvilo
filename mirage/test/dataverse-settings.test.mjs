@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo simulator Dataverse settings: defaults, normalization and refusals
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GRANT_TYPES, dataverseSettings, dataverseStatus, grantAllowed } from '../lib/dataverse-settings.mjs';
@@ -127,6 +128,8 @@ test('absent and false disable the simulator; true enables defaults', () => {
     auditing: false,
     duplicateDetection: true,
     pluginTimeoutSeconds: 120,
+    // The native floor of the asynchronous start latency (dataverse-settings.mjs ASYNC_START_DELAY_MS).
+    asyncStartDelayMs: 1000,
     currencyCode: 'USD',
     currencySymbol: '$',
     localeId: 1033,
@@ -474,4 +477,45 @@ test('managed identity endpoint modes are validated and survive configuration no
     [{ unknown: true }, /dataverse\.managedIdentity\.unknown is not a supported setting$/],
   ])
     assert.throws(() => dataverseSettings({ managedIdentity }), message);
+});
+
+test('spaRedirectUris default to none and survive normalization for a public client', () => {
+  const app = { appId: APP, displayName: 'Invented single-page', publicClient: true };
+  assert.deepEqual(dataverseSettings({ applications: [app] }).applications[0].spaRedirectUris, []);
+  const settings = dataverseSettings({
+    applications: [{ ...app, spaRedirectUris: ['http://localhost:2/callback'] }],
+  });
+  assert.deepEqual(settings.applications[0].spaRedirectUris, ['http://localhost:2/callback']);
+  assert.deepEqual(dataverseSettings(JSON.parse(JSON.stringify(settings))), settings);
+});
+
+test('spaRedirectUris are http(s) URLs without a fragment or a wildcard, and need a public client', () => {
+  const app = (fields) => ({ applications: [{ appId: APP, displayName: 'x', publicClient: true, ...fields }] });
+  const cases = [
+    [
+      { spaRedirectUris: 'http://localhost:2/callback' },
+      /dataverse\.applications\[0\]\.spaRedirectUris must be an array/,
+    ],
+    [
+      { spaRedirectUris: ['ftp://localhost:2/callback'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must be an http\(s\) URL/,
+    ],
+    [
+      { spaRedirectUris: ['http://localhost:2/callback#token'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must not contain a fragment/,
+    ],
+    [
+      { spaRedirectUris: ['http://*.localhost:2/callback'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must not contain a wildcard/,
+    ],
+  ];
+  for (const [fields, pattern] of cases)
+    assert.throws(() => dataverseSettings(app(fields)), pattern, JSON.stringify(fields));
+  assert.throws(
+    () =>
+      dataverseSettings({
+        applications: [{ appId: APP, displayName: 'x', spaRedirectUris: ['http://localhost:2/callback'] }],
+      }),
+    /dataverse\.applications\[0\]\.spaRedirectUris requires publicClient: true/,
+  );
 });

@@ -30,7 +30,10 @@ const withoutSlash = (pathname) => (pathname.length > 2 && pathname.endsWith('/'
  * For example, /records/?id=one becomes %2Frecords%2F%3Fid%3Done.
  */
 export function escapeDataString(value) {
-  return encodeURIComponent(String(value)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return encodeURIComponent(String(value)).replace(
+    /[!'()*]/g,
+    (c) => '%' + c.codePointAt(0).toString(16).toUpperCase(),
+  );
 }
 
 /** Site setting value by name (names are case-insensitive). */
@@ -72,23 +75,26 @@ export function applyObserved(portal, observed) {
   portal.observed = { ...observed };
   if (!observed.loginPath) return portal;
   const configured = String(siteSetting(portal, LOGIN_PATH_SETTING) ?? '').trim();
-  const diagnostic = !sitePath(configured)
-    ? {
-        code: 'LOGIN_PATH_OBSERVED',
-        loginPath: observed.loginPath,
-        evidence: observed.evidence,
-        message: `The export sets no ${LOGIN_PATH_SETTING}; the observed sign-in path ${observed.loginPath} is used (evidence: ${observed.evidence}).`,
-      }
-    : configured !== observed.loginPath
-      ? {
-          code: 'LOGIN_PATH_OBSERVED_IGNORED',
-          loginPath: observed.loginPath,
-          configured,
-          evidence: observed.evidence,
-          message: `The export sets ${LOGIN_PATH_SETTING} to ${configured}; the observed sign-in path ${observed.loginPath} (evidence: ${observed.evidence}) is not used.`,
-        }
-      : null;
-  if (diagnostic) (portal.diagnostics ??= []).push(diagnostic);
+  let diagnostic = null;
+  if (!sitePath(configured))
+    diagnostic = {
+      code: 'LOGIN_PATH_OBSERVED',
+      loginPath: observed.loginPath,
+      evidence: observed.evidence,
+      message: `The export sets no ${LOGIN_PATH_SETTING}; the observed sign-in path ${observed.loginPath} is used (evidence: ${observed.evidence}).`,
+    };
+  else if (configured !== observed.loginPath)
+    diagnostic = {
+      code: 'LOGIN_PATH_OBSERVED_IGNORED',
+      loginPath: observed.loginPath,
+      configured,
+      evidence: observed.evidence,
+      message: `The export sets ${LOGIN_PATH_SETTING} to ${configured}; the observed sign-in path ${observed.loginPath} (evidence: ${observed.evidence}) is not used.`,
+    };
+  if (diagnostic) {
+    portal.diagnostics ??= [];
+    portal.diagnostics.push(diagnostic);
+  }
   return portal;
 }
 
@@ -165,48 +171,67 @@ const pageByUrl = (portal, url) => {
 function redirectMatch(portal, url) {
   const requested = lower(withoutSlash(appRelative(url.pathname)) + url.search);
   for (const redirect of portal.redirects ?? []) {
-    const inbound = String(redirect.inboundUrl ?? '').trim();
-    if (!inbound) continue;
-    const relative = inbound.startsWith('~') ? inbound : inbound.startsWith('/') ? '~' + inbound : '~/' + inbound;
-    const query = relative.indexOf('?');
-    const candidate = lower(
-      query < 0 ? withoutSlash(relative) : withoutSlash(relative.slice(0, query)) + relative.slice(query),
-    );
-    if (candidate !== requested) continue;
-    if (redirect.redirectUrl && redirect.redirectUrl === inbound) return null;
-    const configuredStatus = redirect.statusCode ?? 302;
-    const status = configuredStatus === 301 && portal.observed?.redirect301 === 'temporary' ? 302 : configuredStatus;
-    if (
-      redirect.siteMarkerId &&
-      !redirect.redirectUrl &&
-      !redirect.webPageId &&
-      portal.observed?.siteMarkerRedirect === 'null-reference'
-    )
-      return {
+    const match = resolveRedirect(portal, redirect, requested);
+    if (match.matched) return match.result;
+  }
+  return null;
+}
+
+function resolveRedirect(portal, redirect, requested) {
+  const pathMatch = redirectPathMatch(redirect, requested);
+  if (!pathMatch) return { matched: false };
+  const { inbound } = pathMatch;
+  if (redirect.redirectUrl && redirect.redirectUrl === inbound) return { matched: true, result: null };
+  const configuredStatus = redirect.statusCode ?? 302;
+  const status = configuredStatus === 301 && portal.observed?.redirect301 === 'temporary' ? 302 : configuredStatus;
+  if (
+    redirect.siteMarkerId &&
+    !redirect.redirectUrl &&
+    !redirect.webPageId &&
+    portal.observed?.siteMarkerRedirect === 'null-reference'
+  )
+    return {
+      matched: true,
+      result: {
         kind: 'error',
         status: 500,
         code: 'REDIRECT_SITE_MARKER_NULL_REFERENCE',
         message: 'Object reference not set to an instance of an object.',
         source: 'redirect',
         redirectId: redirect.id,
-      };
-    const page = redirect.webPageId ? (portal.pages ?? []).find((item) => item.id === redirect.webPageId) : null;
-    const marker = redirect.siteMarkerId
-      ? (portal.siteMarkers ?? []).find((item) => item.id === redirect.siteMarkerId)
-      : null;
-    const markerPage = marker ? (portal.pages ?? []).find((item) => item.id === marker.pageId) : null;
-    const location = redirect.redirectUrl || page?.url || markerPage?.url;
-    if (!location) continue;
-    return {
+      },
+    };
+  const page = redirect.webPageId ? (portal.pages ?? []).find((item) => item.id === redirect.webPageId) : null;
+  const marker = redirect.siteMarkerId
+    ? (portal.siteMarkers ?? []).find((item) => item.id === redirect.siteMarkerId)
+    : null;
+  const markerPage = marker ? (portal.pages ?? []).find((item) => item.id === marker.pageId) : null;
+  const location = redirect.redirectUrl || page?.url || markerPage?.url;
+  if (!location) return { matched: false };
+  return {
+    matched: true,
+    result: {
       kind: 'redirect',
       status,
       location,
       source: 'redirect',
       id: redirect.id,
       ...(redirect.active === false ? { inactive: true } : {}),
-    };
-  }
-  return null;
+    },
+  };
+}
+
+function redirectPathMatch(redirect, requested) {
+  const inbound = String(redirect.inboundUrl ?? '').trim();
+  if (!inbound) return null;
+  let relative = '~/' + inbound;
+  if (inbound.startsWith('~')) relative = inbound;
+  else if (inbound.startsWith('/')) relative = '~' + inbound;
+  const query = relative.indexOf('?');
+  const candidate = lower(
+    query < 0 ? withoutSlash(relative) : withoutSlash(relative.slice(0, query)) + relative.slice(query),
+  );
+  return candidate === requested ? { inbound } : null;
 }
 
 function canonicalMatch(portal, url, readable) {
@@ -246,11 +271,9 @@ function historyMatch(portal, url) {
     if (slash < 0) return null;
     const before = path.slice(0, slash),
       after = path.slice(slash + 1);
-    const parent = ['', '~', '/', '~/'].includes(before)
-      ? home
-        ? { page: home, history: false }
-        : null
-      : find(before, depth + 1);
+    let parent;
+    if (['', '~', '/', '~/'].includes(before)) parent = home ? { page: home, history: false } : null;
+    else parent = find(before, depth + 1);
     if (!parent) return null;
     const child = (portal.pages ?? []).find(
       (item) =>

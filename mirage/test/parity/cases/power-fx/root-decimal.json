@@ -1,0 +1,233 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-decimal",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "Exact inputs checked by the official Check and then evaluated by the official Eval, in two independent processes, with decimal parser context. Establishes these check outcomes, diagnostics and values only; unsupported bare-interpreter functions are not claimed."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "465faae4c79dc354078fb2013de201faba785d6e7de9520436f33c1cb57dc797",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "fa88b4235fdbcdcf31480eb9d8f34c6d6ed42c9ded7dd3314d2389262bcd65e5",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "row-01",
+      "input": {
+        "expression": "IfError(1e400, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e400, 2)",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-02",
+      "input": {
+        "expression": "IfError(1e29, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e29, 2)",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-03",
+      "input": {
+        "expression": "Text(79228162514264337593543950335)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(79228162514264337593543950335)",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "StringValue",
+        "kind": "value",
+        "value": "79228162514264337593543950335",
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-04",
+      "input": {
+        "expression": "IfError(79228162514264337593543950336, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(79228162514264337593543950336, 2)",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-05",
+      "input": {
+        "expression": "IfError(1e-400, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e-400, 2)",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "DecimalValue",
+        "kind": "value",
+        "value": 0,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-06",
+      "input": {
+        "expression": "IfError(0e400, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(0e400, 2)",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "DecimalValue",
+        "kind": "value",
+        "value": 0,
+        "errors": null
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

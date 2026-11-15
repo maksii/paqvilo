@@ -1,0 +1,2789 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-soap",
+  "suite": "sdk-interop",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.Xrm.Sdk",
+    "version": "9.0.0.0",
+    "scope": "Microsoft.Xrm.Sdk 9.0.0.0 DataContractSerializer decode and re-serialisation of 29 recorded SOAP values, each in direct and renamed prefix form, in two SDK processes. Establishes these value projections only; not native Dataverse dispatch, organization service behaviour, or the NuGet package signature (not verified). The serializer output is recorded as its XML infoset (namespace-resolved names, resolved xsi:type, no namespace declarations, insignificant whitespace dropped), not as bytes."
+  },
+  "captures": [
+    {
+      "id": "sdk-run-1",
+      "sha256": "f3dfd5eb78a9583d4b1edac9a1727039b60ba89bfc95a7a605636855d48df8e1",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "sdk-run-2",
+      "sha256": "6180a14d759a82cc8b14c528052515347d7fcbfb11e5c45aa7a0f9e03df736c2",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "value-00",
+      "input": {
+        "declaredType": "string",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:string\">a &amp; &lt;b&gt; &quot;c&quot;</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:string\">a &amp; &lt;b&gt; &quot;c&quot;</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.String",
+          "canonical": {
+            "type": "string",
+            "value": "a & <b> \"c\""
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+            },
+            "children": ["a & <b> \"c\""]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.String",
+          "canonical": {
+            "type": "string",
+            "value": "a & <b> \"c\""
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+            },
+            "children": ["a & <b> \"c\""]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-01",
+      "input": {
+        "declaredType": "int",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:int\">-7</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:int\">-7</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Int32",
+          "canonical": {
+            "type": "int",
+            "value": -7
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}int"
+            },
+            "children": ["-7"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Int32",
+          "canonical": {
+            "type": "int",
+            "value": -7
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}int"
+            },
+            "children": ["-7"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-02",
+      "input": {
+        "declaredType": "long",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:long\">9007199254740</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:long\">9007199254740</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Int64",
+          "canonical": {
+            "type": "long",
+            "value": 9007199254740
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}long"
+            },
+            "children": ["9007199254740"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Int64",
+          "canonical": {
+            "type": "long",
+            "value": 9007199254740
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}long"
+            },
+            "children": ["9007199254740"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-03",
+      "input": {
+        "declaredType": "decimal",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:decimal\">1234.5600</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:decimal\">1234.5600</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Decimal",
+          "canonical": {
+            "type": "decimal",
+            "value": "1234.5600"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}decimal"
+            },
+            "children": ["1234.5600"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Decimal",
+          "canonical": {
+            "type": "decimal",
+            "value": "1234.5600"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}decimal"
+            },
+            "children": ["1234.5600"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-04",
+      "input": {
+        "declaredType": "double",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:double\">2.5</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:double\">2.5</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Double",
+          "canonical": {
+            "type": "double",
+            "value": 2.5
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}double"
+            },
+            "children": ["2.5"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Double",
+          "canonical": {
+            "type": "double",
+            "value": 2.5
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}double"
+            },
+            "children": ["2.5"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-05",
+      "input": {
+        "declaredType": "double",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:double\">INF</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:double\">INF</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Double",
+          "canonical": {
+            "type": "double",
+            "value": {
+              "$number": "Infinity"
+            }
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}double"
+            },
+            "children": ["INF"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Double",
+          "canonical": {
+            "type": "double",
+            "value": {
+              "$number": "Infinity"
+            }
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}double"
+            },
+            "children": ["INF"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-06",
+      "input": {
+        "declaredType": "boolean",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:boolean\">false</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:boolean\">false</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Boolean",
+          "canonical": {
+            "type": "boolean",
+            "value": false
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}boolean"
+            },
+            "children": ["false"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Boolean",
+          "canonical": {
+            "type": "boolean",
+            "value": false
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}boolean"
+            },
+            "children": ["false"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-07",
+      "input": {
+        "declaredType": "dateTime",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:dateTime\">2026-10-19T08:30:00Z</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:dateTime\">2026-10-19T08:30:00Z</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.DateTime",
+          "canonical": {
+            "type": "dateTime",
+            "value": "2026-10-19T08:30:00Z"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}dateTime"
+            },
+            "children": ["2026-10-19T08:30:00Z"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.DateTime",
+          "canonical": {
+            "type": "dateTime",
+            "value": "2026-10-19T08:30:00Z"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}dateTime"
+            },
+            "children": ["2026-10-19T08:30:00Z"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-08",
+      "input": {
+        "declaredType": "guid",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"e:guid\">6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pe:guid\">6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Guid",
+          "canonical": {
+            "type": "guid",
+            "value": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/2003/10/Serialization/}guid"
+            },
+            "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Guid",
+          "canonical": {
+            "type": "guid",
+            "value": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/2003/10/Serialization/}guid"
+            },
+            "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-09",
+      "input": {
+        "declaredType": "base64",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:base64Binary\">AQID</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:base64Binary\">AQID</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Byte[]",
+          "canonical": {
+            "type": "base64",
+            "value": "AQID"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}base64Binary"
+            },
+            "children": ["AQID"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Byte[]",
+          "canonical": {
+            "type": "base64",
+            "value": "AQID"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}base64Binary"
+            },
+            "children": ["AQID"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-10",
+      "input": {
+        "declaredType": "duration",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"e:duration\">PT5S</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pe:duration\">PT5S</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.TimeSpan",
+          "canonical": {
+            "type": "duration",
+            "value": "PT5S"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/2003/10/Serialization/}duration"
+            },
+            "children": ["PT5S"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.TimeSpan",
+          "canonical": {
+            "type": "duration",
+            "value": "PT5S"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/2003/10/Serialization/}duration"
+            },
+            "children": ["PT5S"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-11",
+      "input": {
+        "declaredType": "EntityReference",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityReference\"><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes><o:KeyValuePairOfstringanyType><b:key>code</b:key><b:value i:type=\"c:string\">W-1</b:value></o:KeyValuePairOfstringanyType></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityReference\"><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes><po:KeyValuePairOfstringanyType><pb:key>code</pb:key><pb:value pi:type=\"pc:string\">W-1</pb:value></po:KeyValuePairOfstringanyType></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:Name>Blue</pa:Name></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": "Blue",
+            "keyAttributes": {
+              "$map": [
+                [
+                  "code",
+                  {
+                    "type": "string",
+                    "value": "W-1"
+                  }
+                ]
+              ]
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/7.1/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["code"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["W-1"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {},
+                "children": ["Blue"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": "Blue",
+            "keyAttributes": {
+              "$map": [
+                [
+                  "code",
+                  {
+                    "type": "string",
+                    "value": "W-1"
+                  }
+                ]
+              ]
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/7.1/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["code"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["W-1"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {},
+                "children": ["Blue"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-12",
+      "input": {
+        "declaredType": "EntityReference",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityReference\"><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name i:nil=\"true\"/></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityReference\"><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:Name pi:nil=\"true\"/></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-13",
+      "input": {
+        "declaredType": "EntityReference",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityReference\"><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name i:nil=\"true\"/><a:RowVersion i:nil=\"true\"/></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityReference\"><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:Name pi:nil=\"true\"/><pa:RowVersion pi:nil=\"true\"/></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-14",
+      "input": {
+        "declaredType": "EntityReference",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityReference\"><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name i:nil=\"true\"/><a:RowVersion>17</a:RowVersion></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityReference\"><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:Name pi:nil=\"true\"/><pa:RowVersion>17</pa:RowVersion></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": "17"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {},
+                "children": ["17"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReference",
+          "canonical": {
+            "type": "EntityReference",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "name": null,
+            "keyAttributes": {
+              "$map": []
+            },
+            "rowVersion": "17"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {},
+                "children": ["17"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-15",
+      "input": {
+        "declaredType": "OptionSetValue",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:OptionSetValue\"><a:Value>2</a:Value></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:OptionSetValue\"><pa:Value>2</pa:Value></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.OptionSetValue",
+          "canonical": {
+            "type": "OptionSetValue",
+            "value": 2
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}OptionSetValue"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {},
+                "children": ["2"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.OptionSetValue",
+          "canonical": {
+            "type": "OptionSetValue",
+            "value": 2
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}OptionSetValue"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {},
+                "children": ["2"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-16",
+      "input": {
+        "declaredType": "Money",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:Money\"><a:Value i:type=\"c:decimal\">99.9000</a:Value></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:Money\"><pa:Value pi:type=\"pc:decimal\">99.9000</pa:Value></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Money",
+          "canonical": {
+            "type": "Money",
+            "value": "99.9000"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Money"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {},
+                "children": ["99.9000"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Money",
+          "canonical": {
+            "type": "Money",
+            "value": "99.9000"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Money"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {},
+                "children": ["99.9000"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-17",
+      "input": {
+        "declaredType": "OptionSetValueCollection",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"x9:OptionSetValueCollection\"><x9:OptionSetValue><a:Value>1</a:Value></x9:OptionSetValue><x9:OptionSetValue><a:Value>3</a:Value></x9:OptionSetValue></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"px9:OptionSetValueCollection\"><px9:OptionSetValue><pa:Value>1</pa:Value></px9:OptionSetValue><px9:OptionSetValue><pa:Value>3</pa:Value></px9:OptionSetValue></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.OptionSetValueCollection",
+          "canonical": {
+            "type": "OptionSetValueCollection",
+            "values": [1, 3]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValueCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValue",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                    "attributes": {},
+                    "children": ["1"]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValue",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                    "attributes": {},
+                    "children": ["3"]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.OptionSetValueCollection",
+          "canonical": {
+            "type": "OptionSetValueCollection",
+            "values": [1, 3]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValueCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValue",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                    "attributes": {},
+                    "children": ["1"]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/9.0/Contracts}OptionSetValue",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                    "attributes": {},
+                    "children": ["3"]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-18",
+      "input": {
+        "declaredType": "AliasedValue",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:AliasedValue\"><a:AttributeLogicalName>name</a:AttributeLogicalName><a:EntityLogicalName>widget</a:EntityLogicalName><a:Value i:type=\"c:string\">Blue</a:Value></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:AliasedValue\"><pa:AttributeLogicalName>name</pa:AttributeLogicalName><pa:EntityLogicalName>widget</pa:EntityLogicalName><pa:Value pi:type=\"pc:string\">Blue</pa:Value></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.AliasedValue",
+          "canonical": {
+            "type": "AliasedValue",
+            "attribute": "name",
+            "entity": "widget",
+            "value": {
+              "type": "string",
+              "value": "Blue"
+            }
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}AliasedValue"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeLogicalName",
+                "attributes": {},
+                "children": ["name"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityLogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}NeedFormatting",
+                "attributes": {},
+                "children": ["false"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}ReturnType",
+                "attributes": {},
+                "children": ["0"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                },
+                "children": ["Blue"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.AliasedValue",
+          "canonical": {
+            "type": "AliasedValue",
+            "attribute": "name",
+            "entity": "widget",
+            "value": {
+              "type": "string",
+              "value": "Blue"
+            }
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}AliasedValue"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeLogicalName",
+                "attributes": {},
+                "children": ["name"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityLogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}NeedFormatting",
+                "attributes": {},
+                "children": ["false"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}ReturnType",
+                "attributes": {},
+                "children": ["0"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                },
+                "children": ["Blue"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-19",
+      "input": {
+        "declaredType": "Relationship",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:Relationship\"><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:Relationship\"><pa:PrimaryEntityRole>Referenced</pa:PrimaryEntityRole><pa:SchemaName>widget_gadgets</pa:SchemaName></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Relationship",
+          "canonical": {
+            "type": "Relationship",
+            "schemaName": "widget_gadgets",
+            "primaryEntityRole": "Referenced"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Relationship"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PrimaryEntityRole",
+                "attributes": {},
+                "children": ["Referenced"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}SchemaName",
+                "attributes": {},
+                "children": ["widget_gadgets"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Relationship",
+          "canonical": {
+            "type": "Relationship",
+            "schemaName": "widget_gadgets",
+            "primaryEntityRole": "Referenced"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Relationship"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PrimaryEntityRole",
+                "attributes": {},
+                "children": ["Referenced"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}SchemaName",
+                "attributes": {},
+                "children": ["widget_gadgets"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-20",
+      "input": {
+        "declaredType": "Entity",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:Entity\"><a:Attributes><a:KeyValuePairOfstringanyType><b:key>name</b:key><b:value i:type=\"c:string\">Blue</b:value></a:KeyValuePairOfstringanyType><a:KeyValuePairOfstringanyType><b:key>price</b:key><b:value i:type=\"a:Money\"><a:Value i:type=\"c:decimal\">5.0000</a:Value></b:value></a:KeyValuePairOfstringanyType></a:Attributes><a:FormattedValues><a:KeyValuePairOfstringstring><b:key>price</b:key><b:value>$5.00</b:value></a:KeyValuePairOfstringstring></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes><o:KeyValuePairOfstringanyType><b:key>code</b:key><b:value i:type=\"c:string\">W-1</b:value></o:KeyValuePairOfstringanyType></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:RowVersion>123</a:RowVersion></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:Entity\"><pa:Attributes><pa:KeyValuePairOfstringanyType><pb:key>name</pb:key><pb:value pi:type=\"pc:string\">Blue</pb:value></pa:KeyValuePairOfstringanyType><pa:KeyValuePairOfstringanyType><pb:key>price</pb:key><pb:value pi:type=\"pa:Money\"><pa:Value pi:type=\"pc:decimal\">5.0000</pa:Value></pb:value></pa:KeyValuePairOfstringanyType></pa:Attributes><pa:FormattedValues><pa:KeyValuePairOfstringstring><pb:key>price</pb:key><pb:value>$5.00</pb:value></pa:KeyValuePairOfstringstring></pa:FormattedValues><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes><po:KeyValuePairOfstringanyType><pb:key>code</pb:key><pb:value pi:type=\"pc:string\">W-1</pb:value></po:KeyValuePairOfstringanyType></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:RowVersion>123</pa:RowVersion></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Entity",
+          "canonical": {
+            "type": "Entity",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "attributes": {
+              "$map": [
+                [
+                  "name",
+                  {
+                    "type": "string",
+                    "value": "Blue"
+                  }
+                ],
+                [
+                  "price",
+                  {
+                    "type": "Money",
+                    "value": "5.0000"
+                  }
+                ]
+              ]
+            },
+            "formattedValues": {
+              "$map": [["price", "$5.00"]]
+            },
+            "keyAttributes": {
+              "$map": [
+                [
+                  "code",
+                  {
+                    "type": "string",
+                    "value": "W-1"
+                  }
+                ]
+              ]
+            },
+            "relatedEntities": [],
+            "rowVersion": "123",
+            "entityState": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["name"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["Blue"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["price"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Money"
+                        },
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                            "attributes": {},
+                            "children": ["5.0000"]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringstring",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["price"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {},
+                        "children": ["$5.00"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/7.1/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["code"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["W-1"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {},
+                "children": ["123"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Entity",
+          "canonical": {
+            "type": "Entity",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "attributes": {
+              "$map": [
+                [
+                  "name",
+                  {
+                    "type": "string",
+                    "value": "Blue"
+                  }
+                ],
+                [
+                  "price",
+                  {
+                    "type": "Money",
+                    "value": "5.0000"
+                  }
+                ]
+              ]
+            },
+            "formattedValues": {
+              "$map": [["price", "$5.00"]]
+            },
+            "keyAttributes": {
+              "$map": [
+                [
+                  "code",
+                  {
+                    "type": "string",
+                    "value": "W-1"
+                  }
+                ]
+              ]
+            },
+            "relatedEntities": [],
+            "rowVersion": "123",
+            "entityState": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["name"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["Blue"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["price"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Money"
+                        },
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Value",
+                            "attributes": {},
+                            "children": ["5.0000"]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringstring",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["price"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {},
+                        "children": ["$5.00"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/7.1/Contracts}KeyValuePairOfstringanyType",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": ["code"]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                        },
+                        "children": ["W-1"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {},
+                "children": ["123"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-21",
+      "input": {
+        "declaredType": "long",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:long\">9007199254740993</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:long\">9007199254740993</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.Int64",
+          "canonical": {
+            "type": "long",
+            "value": "9007199254740993"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}long"
+            },
+            "children": ["9007199254740993"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.Int64",
+          "canonical": {
+            "type": "long",
+            "value": "9007199254740993"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}long"
+            },
+            "children": ["9007199254740993"]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-22",
+      "input": {
+        "declaredType": "ColumnSet",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:ColumnSet\"><a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string><f:string>createdon</f:string></a:Columns></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:ColumnSet\"><pa:AllColumns>false</pa:AllColumns><pa:Columns><pf:string>name</pf:string><pf:string>createdon</pf:string></pa:Columns></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Query.ColumnSet",
+          "canonical": {
+            "type": "ColumnSet",
+            "allColumns": false,
+            "columns": ["name", "createdon"]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}ColumnSet"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AllColumns",
+                "attributes": {},
+                "children": ["false"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeExpressions",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Columns",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/2003/10/Serialization/Arrays}string",
+                    "attributes": {},
+                    "children": ["name"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/2003/10/Serialization/Arrays}string",
+                    "attributes": {},
+                    "children": ["createdon"]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Query.ColumnSet",
+          "canonical": {
+            "type": "ColumnSet",
+            "allColumns": false,
+            "columns": ["name", "createdon"]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}ColumnSet"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AllColumns",
+                "attributes": {},
+                "children": ["false"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeExpressions",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Columns",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/2003/10/Serialization/Arrays}string",
+                    "attributes": {},
+                    "children": ["name"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/2003/10/Serialization/Arrays}string",
+                    "attributes": {},
+                    "children": ["createdon"]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-23",
+      "input": {
+        "declaredType": "ColumnSet",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:ColumnSet\"><a:AllColumns>true</a:AllColumns><a:Columns></a:Columns></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:ColumnSet\"><pa:AllColumns>true</pa:AllColumns><pa:Columns></pa:Columns></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Query.ColumnSet",
+          "canonical": {
+            "type": "ColumnSet",
+            "allColumns": true,
+            "columns": []
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}ColumnSet"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AllColumns",
+                "attributes": {},
+                "children": ["true"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeExpressions",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Columns",
+                "attributes": {},
+                "children": []
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Query.ColumnSet",
+          "canonical": {
+            "type": "ColumnSet",
+            "allColumns": true,
+            "columns": []
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}ColumnSet"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AllColumns",
+                "attributes": {},
+                "children": ["true"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}AttributeExpressions",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Columns",
+                "attributes": {},
+                "children": []
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-24",
+      "input": {
+        "declaredType": "EntityReferenceCollection",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityReferenceCollection\"><a:EntityReference><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name></a:EntityReference></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityReferenceCollection\"><pa:EntityReference><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:Name>Blue</pa:Name></pa:EntityReference></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReferenceCollection",
+          "canonical": {
+            "type": "EntityReferenceCollection",
+            "values": [
+              {
+                "type": "EntityReference",
+                "logicalName": "widget",
+                "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+                "name": "Blue",
+                "keyAttributes": {
+                  "$map": []
+                },
+                "rowVersion": null
+              }
+            ]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReferenceCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                    "attributes": {},
+                    "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                    "attributes": {},
+                    "children": []
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                    "attributes": {},
+                    "children": ["widget"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                    "attributes": {},
+                    "children": ["Blue"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                    "attributes": {
+                      "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityReferenceCollection",
+          "canonical": {
+            "type": "EntityReferenceCollection",
+            "values": [
+              {
+                "type": "EntityReference",
+                "logicalName": "widget",
+                "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+                "name": "Blue",
+                "keyAttributes": {
+                  "$map": []
+                },
+                "rowVersion": null
+              }
+            ]
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReferenceCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityReference",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                    "attributes": {},
+                    "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                    "attributes": {},
+                    "children": []
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                    "attributes": {},
+                    "children": ["widget"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Name",
+                    "attributes": {},
+                    "children": ["Blue"]
+                  },
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                    "attributes": {
+                      "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-25",
+      "input": {
+        "declaredType": "Entity",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:Entity\"><a:Attributes></a:Attributes><a:FormattedValues></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key><b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN></a:RelatedEntities></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:Entity\"><pa:Attributes></pa:Attributes><pa:FormattedValues></pa:FormattedValues><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName><pa:RelatedEntities><pa:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><pb:key><pa:PrimaryEntityRole>Referenced</pa:PrimaryEntityRole><pa:SchemaName>widget_gadgets</pa:SchemaName></pb:key><pb:value><pa:Entities></pa:Entities><pa:EntityName>gadget</pa:EntityName><pa:MoreRecords>false</pa:MoreRecords><pa:TotalRecordCount>1</pa:TotalRecordCount><pa:TotalRecordCountLimitExceeded>false</pa:TotalRecordCountLimitExceeded></pb:value></pa:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN></pa:RelatedEntities></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Entity",
+          "canonical": {
+            "type": "Entity",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "attributes": {
+              "$map": []
+            },
+            "formattedValues": {
+              "$map": []
+            },
+            "keyAttributes": {
+              "$map": []
+            },
+            "relatedEntities": [
+              {
+                "relationship": {
+                  "schemaName": "widget_gadgets",
+                  "primaryEntityRole": "Referenced"
+                },
+                "entities": {
+                  "type": "EntityCollection",
+                  "entityName": "gadget",
+                  "entities": [],
+                  "moreRecords": false,
+                  "pagingCookie": null,
+                  "totalRecordCount": 1,
+                  "totalRecordCountLimitExceeded": false,
+                  "minActiveRowVersion": null
+                }
+              }
+            ],
+            "rowVersion": null,
+            "entityState": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PrimaryEntityRole",
+                            "attributes": {},
+                            "children": ["Referenced"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}SchemaName",
+                            "attributes": {},
+                            "children": ["widget_gadgets"]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entities",
+                            "attributes": {},
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityName",
+                            "attributes": {},
+                            "children": ["gadget"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MinActiveRowVersion",
+                            "attributes": {
+                              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                            },
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MoreRecords",
+                            "attributes": {},
+                            "children": ["false"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PagingCookie",
+                            "attributes": {
+                              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                            },
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RecordCountLessThanMarv",
+                            "attributes": {},
+                            "children": ["0"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCount",
+                            "attributes": {},
+                            "children": ["1"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCountLimitExceeded",
+                            "attributes": {},
+                            "children": ["false"]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.Entity",
+          "canonical": {
+            "type": "Entity",
+            "logicalName": "widget",
+            "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+            "attributes": {
+              "$map": []
+            },
+            "formattedValues": {
+              "$map": []
+            },
+            "keyAttributes": {
+              "$map": []
+            },
+            "relatedEntities": [
+              {
+                "relationship": {
+                  "schemaName": "widget_gadgets",
+                  "primaryEntityRole": "Referenced"
+                },
+                "entities": {
+                  "type": "EntityCollection",
+                  "entityName": "gadget",
+                  "entities": [],
+                  "moreRecords": false,
+                  "pagingCookie": null,
+                  "totalRecordCount": 1,
+                  "totalRecordCountLimitExceeded": false,
+                  "minActiveRowVersion": null
+                }
+              }
+            ],
+            "rowVersion": null,
+            "entityState": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                "attributes": {},
+                "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                "attributes": {},
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PrimaryEntityRole",
+                            "attributes": {},
+                            "children": ["Referenced"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}SchemaName",
+                            "attributes": {},
+                            "children": ["widget_gadgets"]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entities",
+                            "attributes": {},
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityName",
+                            "attributes": {},
+                            "children": ["gadget"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MinActiveRowVersion",
+                            "attributes": {
+                              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                            },
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MoreRecords",
+                            "attributes": {},
+                            "children": ["false"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PagingCookie",
+                            "attributes": {
+                              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                            },
+                            "children": []
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RecordCountLessThanMarv",
+                            "attributes": {},
+                            "children": ["0"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCount",
+                            "attributes": {},
+                            "children": ["1"]
+                          },
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCountLimitExceeded",
+                            "attributes": {},
+                            "children": ["false"]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-26",
+      "input": {
+        "declaredType": "EntityCollection",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"a:EntityCollection\"><a:Entities><a:Entity><a:Attributes><a:KeyValuePairOfstringanyType><b:key>name</b:key><b:value i:type=\"c:string\">Blue</b:value></a:KeyValuePairOfstringanyType></a:Attributes><a:FormattedValues></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName></a:Entity></a:Entities><a:EntityName>widget</a:EntityName><a:MoreRecords>true</a:MoreRecords><a:PagingCookie>&lt;cookie page=&quot;2&quot;/&gt;</a:PagingCookie><a:TotalRecordCount>12</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pa:EntityCollection\"><pa:Entities><pa:Entity><pa:Attributes><pa:KeyValuePairOfstringanyType><pb:key>name</pb:key><pb:value pi:type=\"pc:string\">Blue</pb:value></pa:KeyValuePairOfstringanyType></pa:Attributes><pa:FormattedValues></pa:FormattedValues><pa:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</pa:Id><pa:KeyAttributes></pa:KeyAttributes><pa:LogicalName>widget</pa:LogicalName></pa:Entity></pa:Entities><pa:EntityName>widget</pa:EntityName><pa:MoreRecords>true</pa:MoreRecords><pa:PagingCookie>&lt;cookie page=&quot;2&quot;/&gt;</pa:PagingCookie><pa:TotalRecordCount>12</pa:TotalRecordCount><pa:TotalRecordCountLimitExceeded>false</pa:TotalRecordCountLimitExceeded></v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityCollection",
+          "canonical": {
+            "type": "EntityCollection",
+            "entityName": "widget",
+            "entities": [
+              {
+                "type": "Entity",
+                "logicalName": "widget",
+                "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+                "attributes": {
+                  "$map": [
+                    [
+                      "name",
+                      {
+                        "type": "string",
+                        "value": "Blue"
+                      }
+                    ]
+                  ]
+                },
+                "formattedValues": {
+                  "$map": []
+                },
+                "keyAttributes": {
+                  "$map": []
+                },
+                "relatedEntities": [],
+                "rowVersion": null,
+                "entityState": null
+              }
+            ],
+            "moreRecords": true,
+            "pagingCookie": "<cookie page=\"2\"/>",
+            "totalRecordCount": 12,
+            "totalRecordCountLimitExceeded": false,
+            "minActiveRowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entities",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                            "attributes": {},
+                            "children": [
+                              {
+                                "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                                "attributes": {},
+                                "children": ["name"]
+                              },
+                              {
+                                "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                                "attributes": {
+                                  "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                                },
+                                "children": ["Blue"]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                        },
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                        "attributes": {},
+                        "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                        "attributes": {},
+                        "children": ["widget"]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MinActiveRowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MoreRecords",
+                "attributes": {},
+                "children": ["true"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PagingCookie",
+                "attributes": {},
+                "children": ["<cookie page=\"2\"/>"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RecordCountLessThanMarv",
+                "attributes": {},
+                "children": ["0"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCount",
+                "attributes": {},
+                "children": ["12"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCountLimitExceeded",
+                "attributes": {},
+                "children": ["false"]
+              }
+            ]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "Microsoft.Xrm.Sdk.EntityCollection",
+          "canonical": {
+            "type": "EntityCollection",
+            "entityName": "widget",
+            "entities": [
+              {
+                "type": "Entity",
+                "logicalName": "widget",
+                "id": "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+                "attributes": {
+                  "$map": [
+                    [
+                      "name",
+                      {
+                        "type": "string",
+                        "value": "Blue"
+                      }
+                    ]
+                  ]
+                },
+                "formattedValues": {
+                  "$map": []
+                },
+                "keyAttributes": {
+                  "$map": []
+                },
+                "relatedEntities": [],
+                "rowVersion": null,
+                "entityState": null
+              }
+            ],
+            "moreRecords": true,
+            "pagingCookie": "<cookie page=\"2\"/>",
+            "totalRecordCount": 12,
+            "totalRecordCountLimitExceeded": false,
+            "minActiveRowVersion": null
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityCollection"
+            },
+            "children": [
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entities",
+                "attributes": {},
+                "children": [
+                  {
+                    "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Entity",
+                    "attributes": {},
+                    "children": [
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Attributes",
+                        "attributes": {},
+                        "children": [
+                          {
+                            "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyValuePairOfstringanyType",
+                            "attributes": {},
+                            "children": [
+                              {
+                                "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}key",
+                                "attributes": {},
+                                "children": ["name"]
+                              },
+                              {
+                                "name": "{http://schemas.datacontract.org/2004/07/System.Collections.Generic}value",
+                                "attributes": {
+                                  "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+                                },
+                                "children": ["Blue"]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityState",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                        },
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}FormattedValues",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}Id",
+                        "attributes": {},
+                        "children": ["6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}KeyAttributes",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}LogicalName",
+                        "attributes": {},
+                        "children": ["widget"]
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RelatedEntities",
+                        "attributes": {},
+                        "children": []
+                      },
+                      {
+                        "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RowVersion",
+                        "attributes": {
+                          "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}EntityName",
+                "attributes": {},
+                "children": ["widget"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MinActiveRowVersion",
+                "attributes": {
+                  "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+                },
+                "children": []
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}MoreRecords",
+                "attributes": {},
+                "children": ["true"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}PagingCookie",
+                "attributes": {},
+                "children": ["<cookie page=\"2\"/>"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}RecordCountLessThanMarv",
+                "attributes": {},
+                "children": ["0"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCount",
+                "attributes": {},
+                "children": ["12"]
+              },
+              {
+                "name": "{http://schemas.microsoft.com/xrm/2011/Contracts}TotalRecordCountLimitExceeded",
+                "attributes": {},
+                "children": ["false"]
+              }
+            ]
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-null",
+      "input": {
+        "declaredType": "null",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:nil=\"true\"/></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:nil=\"true\"/></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": null,
+          "canonical": null,
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+            },
+            "children": []
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": null,
+          "canonical": null,
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}nil": "true"
+            },
+            "children": []
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "value-plain",
+      "input": {
+        "declaredType": "string",
+        "xmlDirect": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:a=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:svc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:g=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:l=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:o=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:x9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:x14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:b=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:c=\"http://www.w3.org/2001/XMLSchema\" xmlns:e=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:f=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\"><s:Body><v i:type=\"c:string\">plain</v></s:Body></s:Envelope>",
+        "xmlRenamed": "<ps:Envelope xmlns:ps=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:pa=\"http://schemas.microsoft.com/xrm/2011/Contracts\" xmlns:psvc=\"http://schemas.microsoft.com/xrm/2011/Contracts/Services\" xmlns:pg=\"http://schemas.microsoft.com/crm/2011/Contracts\" xmlns:pl=\"http://schemas.microsoft.com/xrm/2012/Contracts\" xmlns:po=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:px9=\"http://schemas.microsoft.com/xrm/9.0/Contracts\" xmlns:px14=\"http://schemas.microsoft.com/xrm/2014/Contracts\" xmlns:pb=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\" xmlns:pc=\"http://www.w3.org/2001/XMLSchema\" xmlns:pe=\"http://schemas.microsoft.com/2003/10/Serialization/\" xmlns:pf=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\" xmlns:pi=\"http://www.w3.org/2001/XMLSchema-instance\"><ps:Body><v pi:type=\"pc:string\">plain</v></ps:Body></ps:Envelope>"
+      },
+      "output": {
+        "direct": {
+          "phase": "value",
+          "sdkType": "System.String",
+          "canonical": {
+            "type": "string",
+            "value": "plain"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+            },
+            "children": ["plain"]
+          }
+        },
+        "renamed": {
+          "phase": "value",
+          "sdkType": "System.String",
+          "canonical": {
+            "type": "string",
+            "value": "plain"
+          },
+          "serializedXml": {
+            "name": "v",
+            "attributes": {
+              "{http://www.w3.org/2001/XMLSchema-instance}type": "{http://www.w3.org/2001/XMLSchema}string"
+            },
+            "children": ["plain"]
+          }
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

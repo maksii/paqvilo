@@ -27,13 +27,45 @@ export function inspectJsonText(text) {
 
 const XML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
 const xmlUnescape = (value) =>
-  value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_match, dec, hex, name) =>
-    dec
-      ? String.fromCodePoint(Number(dec))
-      : hex
-        ? String.fromCodePoint(parseInt(hex, 16))
-        : XML_ENTITIES[name.toLowerCase()],
-  );
+  value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_match, dec, hex, name) => {
+    if (dec) return String.fromCodePoint(Number(dec));
+    if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+    return XML_ENTITIES[name.toLowerCase()];
+  });
+
+function inspectComponentContent(xml, content) {
+  const raw = xml.slice(content.contentStart, content.contentEnd);
+  let decoded;
+  const diagnostics = [];
+  try {
+    const sections = /<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>/g;
+    decoded = '';
+    let from = 0,
+      section;
+    for (;;) {
+      section = sections.exec(raw);
+      if (!section) break;
+      decoded += xmlUnescape(raw.slice(from, section.index));
+      if (section[1] !== undefined) decoded += section[1];
+      from = sections.lastIndex;
+    }
+    decoded += xmlUnescape(raw.slice(from));
+  } catch {
+    diagnostics.push({
+      code: 'INVALID_XML_CONTENT',
+      reason: 'Component content contains an invalid XML character entity.',
+    });
+    return { value: null, diagnostics };
+  }
+  const inspected = inspectJsonText(decoded);
+  diagnostics.push(...inspected.diagnostics);
+  if (!inspected.value || typeof inspected.value !== 'object' || Array.isArray(inspected.value)) {
+    if (inspected.complete)
+      diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component JSON content is not an object.' });
+    return { value: null, diagnostics };
+  }
+  return { value: inspected.value, diagnostics };
+}
 
 /** Inspect the enhanced component's serialized content without losing duplicate keys. */
 export function inspectComponentJson(xml) {
@@ -59,32 +91,8 @@ export function inspectComponentJson(xml) {
   }
   let value = null;
   for (const content of contents) {
-    const raw = xml.slice(content.contentStart, content.contentEnd);
-    let decoded;
-    try {
-      const sections = /<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>/g;
-      decoded = '';
-      let from = 0;
-      for (let section; (section = sections.exec(raw));) {
-        decoded += xmlUnescape(raw.slice(from, section.index));
-        if (section[1] !== undefined) decoded += section[1];
-        from = sections.lastIndex;
-      }
-      decoded += xmlUnescape(raw.slice(from));
-    } catch {
-      diagnostics.push({
-        code: 'INVALID_XML_CONTENT',
-        reason: 'Component content contains an invalid XML character entity.',
-      });
-      continue;
-    }
-    const inspected = inspectJsonText(decoded);
+    const inspected = inspectComponentContent(xml, content);
     diagnostics.push(...inspected.diagnostics);
-    if (!inspected.value || typeof inspected.value !== 'object' || Array.isArray(inspected.value)) {
-      if (inspected.complete)
-        diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component JSON content is not an object.' });
-      continue;
-    }
     value ??= inspected.value;
   }
   return { value, complete: diagnostics.length === 0, diagnostics };

@@ -59,7 +59,8 @@ export function chooserReport(report, users) {
   }
   return remember({ ...report, personas: join(report.personas ?? []), other: join(report.other ?? []) });
 }
-export function chooserSelection(report, parameters = new URLSearchParams(), { limit = 50 } = {}) {
+/** work (optional, { compared, scanned }) counts the index sort and the entries the filters examine. */
+export function chooserSelection(report, parameters = new URLSearchParams(), { limit = 50, work = null } = {}) {
   let index = indexes.get(report);
   if (!index) {
     // Runtime revisions can rebuild a report after an unrelated row write. Keep
@@ -69,26 +70,36 @@ export function chooserSelection(report, parameters = new URLSearchParams(), { l
       .digest('hex');
     index = orderedCatalogues.get(digest);
     if (!index) {
-      index = indexPersonaCatalog(report);
+      index = indexPersonaCatalog(report, work);
       orderedCatalogues.set(digest, index);
       if (orderedCatalogues.size > 4) orderedCatalogues.delete(orderedCatalogues.keys().next().value);
     }
     indexes.set(report, index);
   }
   const filters = personaFilters(parameters),
-    matching = filterPersonaIndex(index, filters);
+    matching = filterPersonaIndex(index, filters, work);
   limit = Math.max(1, Math.min(200, limit));
   const offset = Math.min(bounded(parameters.get('offset')), Math.max(0, matching.length - 1));
   return { index, matching, rows: matching.slice(offset, offset + limit), filters, offset, limit, total: index.length };
 }
+const accountMarkup = (persona) => (persona.account?.name ? ' · ' + h(persona.account.name) : '');
+const descriptionMarkup = (persona) =>
+  persona.description ? '<p>' + h(persona.description.split(/\r?\n/, 1)[0]) + '</p>' : '';
+const tagsMarkup = (persona) => (persona.tags ?? []).map((tag) => '<span>' + h(tag) + '</span>').join('');
+const setupMarkup = (context) =>
+  context
+    ? '<dt>Available setup</dt><dd>' +
+      h(context.label) +
+      ' · Open the runtime’s full persona picker to launch its isolated configuration.</dd>'
+    : '';
 function chooserCard(persona, contexts = new Map()) {
   const key = personaRowKey(persona),
     label = persona.label ?? persona.name ?? persona.contactId,
     context = contexts.get(persona.context);
-  return `<li class="paqvilo-mirage-idp-user chooser-card" data-subject="${h(persona.subject)}" data-contact-id="${h(persona.contactId)}" data-chooser-key="${h(key)}"><div><strong>${h(label)}</strong>${persona.default ? '<span class="chooser-badge">Default</span>' : ''}<p class="chooser-contact">${h(persona.name ?? persona.contactId)}${persona.account?.name ? ` · ${h(persona.account.name)}` : ''}</p>${persona.description ? `<p>${h(persona.description.split(/\r?\n/, 1)[0])}</p>` : ''}<p class="chooser-meta">${h((persona.roles ?? []).join(', ') || 'No web roles')}</p>${persona.tags?.length ? `<p class="chooser-tags">${persona.tags.map((tag) => `<span>${h(tag)}</span>`).join('')}</p>` : ''}<details><summary>Details and effects</summary><p>${h(persona.description ?? '')}</p><dl><dt>Contact</dt><dd>${h(persona.contactId)}</dd><dt>Source</dt><dd>${h(persona.source ?? 'contact')}</dd><dt>Session effect</dt><dd>Sign in this browser as this contact. Runtime configuration stays unchanged.</dd>${context ? `<dt>Available setup</dt><dd>${h(context.label)} · Open the runtime’s full persona picker to launch its isolated configuration.</dd>` : ''}</dl></details></div><div class="chooser-actions"><button type="submit" form="idp-choose" formnovalidate name="subject" value="${h(persona.subject)}">Continue as ${h(label)}</button><button type="button" data-chooser-pin="${h(key)}" aria-label="Pin ${h(label)}" aria-pressed="false" hidden>☆</button></div></li>`;
+  return `<li class="paqvilo-mirage-idp-user chooser-card" data-subject="${h(persona.subject)}" data-contact-id="${h(persona.contactId)}" data-chooser-key="${h(key)}"><div><strong>${h(label)}</strong>${persona.default ? '<span class="chooser-badge">Default</span>' : ''}<p class="chooser-contact">${h(persona.name ?? persona.contactId)}${accountMarkup(persona)}</p>${descriptionMarkup(persona)}<p class="chooser-meta">${h((persona.roles ?? []).join(', ') || 'No web roles')}</p>${persona.tags?.length ? '<p class="chooser-tags">' + tagsMarkup(persona) + '</p>' : ''}<details><summary>Details and effects</summary><p>${h(persona.description ?? '')}</p><dl><dt>Contact</dt><dd>${h(persona.contactId)}</dd><dt>Source</dt><dd>${h(persona.source ?? 'contact')}</dd><dt>Session effect</dt><dd>Sign in this browser as this contact. Runtime configuration stays unchanged.</dd>${setupMarkup(context)}</dl></details></div><div class="chooser-actions"><button type="submit" form="idp-choose" formnovalidate name="subject" value="${h(persona.subject)}">Continue as ${h(label)}</button><button type="button" data-chooser-pin="${h(key)}" aria-label="Pin ${h(label)}" aria-pressed="false" hidden>☆</button></div></li>`;
 }
-export function chooserResults(report, params, action) {
-  const selection = chooserSelection(report, params),
+export function chooserResults(report, params, action, work = null) {
+  const selection = chooserSelection(report, params, { work }),
     { rows, matching, offset, limit, total } = selection,
     contexts = new Map((report.contexts ?? []).map((c) => [c.id, c]));
   const cards = (items) =>
@@ -133,7 +144,7 @@ export function chooserResults(report, params, action) {
       const groupParams = new URLSearchParams(params);
       for (const key of ['group', 'offset', 'view', 'pin', 'recent']) groupParams.delete(key);
       groupParams.set('group', group.id);
-      return `<details class="chooser-group" data-chooser-group="${h(group.id)}"${(counts.get(group.id) <= 25 || active) && pageRows.length ? ' open' : ''}><summary>${h(group.label)} <span>${counts.get(group.id)}</span>${!pageRows.length ? ` · <a data-chooser-group-link href="${h(action + '?' + groupParams)}">View ${h(group.label)} matches</a>` : ''}</summary>${cards(pageRows.filter((row) => !row.persona.subgroup))}${subgroupRows}</details>`;
+      return `<details class="chooser-group" data-chooser-group="${h(group.id)}"${(counts.get(group.id) <= 25 || active) && pageRows.length ? ' open' : ''}><summary>${h(group.label)} <span>${counts.get(group.id)}</span>${groupMatchesLink(pageRows.length, action, groupParams, group.label)}</summary>${cards(pageRows.filter((row) => !row.persona.subgroup))}${subgroupRows}</details>`;
     })
     .join('');
   const link = (start, label) => {
@@ -142,10 +153,16 @@ export function chooserResults(report, params, action) {
     next.set('offset', String(start));
     return `<a data-chooser-more href="${h(action + '?' + next)}">${label}</a>`;
   };
-  return `<div class="chooser-results" aria-label="Preset users" aria-live="polite"><p class="chooser-count" role="status">${matching.length ? offset + 1 : 0}–${Math.min(offset + limit, matching.length)} of ${matching.length} matching personas · ${total} available</p>${preferred ? `<section><h2>Default</h2>${cards([preferred])}</section>` : ''}${shortcuts}${sections}${matching.length ? '' : '<p>No personas match. Clear a filter or try fewer search terms.</p>'}<nav aria-label="Persona pages">${offset ? link(Math.max(0, offset - limit), 'Previous') : ''}${offset + limit < matching.length ? link(offset + limit, 'Show more') : ''}</nav></div>`;
+  return `<div class="chooser-results" aria-label="Preset users" aria-live="polite"><p class="chooser-count" role="status">${matching.length ? offset + 1 : 0}–${Math.min(offset + limit, matching.length)} of ${matching.length} matching personas · ${total} available</p>${preferredSection(preferred, cards)}${shortcuts}${sections}${matching.length ? '' : '<p>No personas match. Clear a filter or try fewer search terms.</p>'}<nav aria-label="Persona pages">${offset ? link(Math.max(0, offset - limit), 'Previous') : ''}${offset + limit < matching.length ? link(offset + limit, 'Show more') : ''}</nav></div>`;
 }
-export function chooserSearch(report, params, action, hidden) {
-  const { index } = chooserSelection(report),
+const groupMatchesLink = (length, action, params, label) =>
+  length
+    ? ''
+    : ' · <a data-chooser-group-link href="' + h(action + '?' + params) + '">View ' + h(label) + ' matches</a>';
+const preferredSection = (preferred, cards) =>
+  preferred ? '<section><h2>Default</h2>' + cards([preferred]) + '</section>' : '';
+export function chooserSearch(report, params, action, hidden, work = null) {
+  const { index } = chooserSelection(report, undefined, { work }),
     selected = personaFilters(params);
   const groups = [
     ...(report.groups ?? []).filter((group) => index.some((row) => row.persona.group === group.id)),
@@ -183,7 +200,7 @@ export function chooserSearch(report, params, action, hidden) {
         foldPersonaText(value) === foldPersonaText(item.id) ||
         (key === 'account' && foldPersonaText(value) === foldPersonaText(item.label)),
     );
-  return `<form method="get" action="${h(action)}" class="chooser-search">${hidden}<label for="chooser-q">Find a persona</label><div class="chooser-search-row"><input id="chooser-q" name="q" type="search" value="${h(selected.q)}" placeholder="Name, role, account, tag or description" autocomplete="off"><button>Search</button><a href="${h(action + '?' + new URLSearchParams([...params].filter(([key]) => !CHOOSER_PARAMETERS.includes(key))))}" data-chooser-clear>Clear</a></div><details class="chooser-filter-disclosure"${activeFilters ? ' open' : ''}><summary>Filters${activeFilters ? ` · ${activeFilters} active` : ''}</summary><div class="chooser-filters">${facets
+  return `<form method="get" action="${h(action)}" class="chooser-search">${hidden}<label for="chooser-q">Find a persona</label><div class="chooser-search-row"><input id="chooser-q" name="q" type="search" value="${h(selected.q)}" placeholder="Name, role, account, tag or description" autocomplete="off"><button>Search</button><a href="${h(action + '?' + new URLSearchParams([...params].filter(([key]) => !CHOOSER_PARAMETERS.includes(key))))}" data-chooser-clear>Clear</a></div><details class="chooser-filter-disclosure"${activeFilters ? ' open' : ''}><summary>Filters${activeFilterCount(activeFilters)}</summary><div class="chooser-filters">${facets
     .filter(([, , options]) => options.length)
     .map(
       ([key, label, options, values]) =>
@@ -200,3 +217,4 @@ export function chooserSearch(report, params, action, hidden) {
       '',
     )}<label>Web roles<select name="hasRoles"><option value="">Any</option><option value="true"${selected.hideNoRoles ? ' selected' : ''}>Has roles</option><option value="false"${selected.withoutRoles ? ' selected' : ''}>No roles</option></select></label></div><p class="chooser-meta">All search terms match. Choose any values within a filter; different filters narrow the results. Ctrl/Cmd selects multiple values.${facets.some(([, , options]) => options.length > 100) ? ' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.' : ''}</p></details></form>`;
 }
+const activeFilterCount = (count) => (count ? ' · ' + count + ' active' : '');

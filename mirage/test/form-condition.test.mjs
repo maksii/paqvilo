@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's multistep condition evaluation (step conditions and their operators)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateStepCondition, submitPortalForm, createWebFormSessions } from '../lib/form-service.mjs';
@@ -264,4 +265,73 @@ test('condition uses exact provider-saved digits rather than the earlier submitt
   assert.equal(text(store.snapshot().tables.precisionrow[0].n), '9007199254740993');
   assert.equal(sessions.list('wizard', 'visitor')[0].completed, true);
   assert.equal(text(below), '9007199254740992');
+});
+
+const GLOB_TABLE = [
+  ['a*', 'abc', true],
+  ['*c', 'abc', true],
+  ['a*c', 'abc', true],
+  ['a*d', 'abc', false],
+  ['*', '', true],
+  ['*', 'anything', true],
+  ['**', 'x', true],
+  ['a**b', 'ab', true],
+  ['a**b', 'axxb', true],
+  ['a*%b', 'axb', true],
+  ['a%%', 'a', true],
+  ['a%', 'abc', true],
+  ['%b%', 'abc', true],
+  ['', '', true],
+  ['', 'a', false],
+  ['abc', '', false],
+  ['abc', 'ABC', true],
+  ['A*B', 'axb', true],
+  ['a.c*', 'abcd', false],
+  ['a.c*', 'a.cd', true],
+  ['(*', '(x', true],
+  ['(*', 'x', false],
+  ['[a-z]*', 'q', false],
+  ['[a-z]*', '[a-z]x', true],
+  ['a\\*', 'a\\zz', true],
+  ['a\\*', 'azz', false],
+  ['$*', '$5', true],
+  ['x$', 'x$', true],
+  ['x$', 'x', false],
+  ['^*', '^a', true],
+  ['*$', 'a$', true],
+  ['*$', 'a', false],
+  ['a|b*', 'a|bc', true],
+  ['a|b*', 'b', false],
+  ['a+*', 'a+x', true],
+  ['a+*', 'aa', false],
+  ['a?*', 'a?', true],
+  ['a?', 'ab', false],
+  ['ab*b', 'ab', false],
+  ['ab*b', 'abb', true],
+  ['*a*b*', 'xaxbx', true],
+  ['*a*b', 'xbxa', false],
+  ['*ab*ab', 'abab', true],
+  ['*aba*', 'ababa', true],
+  ['a*a', 'a', false],
+  ['%', '', true],
+  ['Jane D*', 'jane doe', true],
+  ['*Z', 'abc', false],
+  ['q*x*y', 'qaxby', true],
+  ['*', null, true],
+  ['a*', null, false],
+  ['', null, true],
+];
+
+test('wildcard conditions match the recorded glob table on ordinary values', () => {
+  for (const [pattern, value, expected] of GLOB_TABLE)
+    assert.equal(
+      evaluateStepCondition(`name =* '${pattern}'`, { name: value }),
+      expected,
+      `${pattern} against ${value}`,
+    );
+});
+
+// @test-kind security: a stored value must not let repeated wildcards stall the single-threaded runtime
+test('repeated wildcards against a long stored value answer without backtracking', () => {
+  assert.equal(evaluateStepCondition("name =* '*a*a*a*a*a*b'", { name: 'a'.repeat(5000) }), false);
 });

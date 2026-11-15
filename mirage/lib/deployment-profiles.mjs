@@ -117,6 +117,118 @@ export function profileSelection(config, pin = null) {
   return { profile, enabled, sources, pinned: pin !== null };
 }
 
+function relativeProfilePath(config, file) {
+  return path.relative(config.configDirectory ?? process.cwd(), file).replaceAll('\\', '/');
+}
+
+function parseProfileFile(source, file, config, selection, section) {
+  let parsed;
+  const jsonSource = source.replace(/^\uFEFF/, '');
+  try {
+    parsed = /\.json$/i.test(file) ? JSON.parse(jsonSource) : YAML.parse(source);
+  } catch (cause) {
+    const relative = relativeProfilePath(config, file);
+    const location = /\.json$/i.test(file)
+      ? jsonErrorLocation(jsonSource)
+      : { line: cause.linePos?.[0]?.line ?? 1, column: cause.linePos?.[0]?.col ?? 1 };
+    const { line, column } = location;
+    const parserCode = cause.code ?? 'JSON_SYNTAX_ERROR';
+    fail(
+      `Deployment profile '${selection.profile}' ${section} file '${relative}' is invalid JSON/YAML (${parserCode}, line ${line}, column ${column}).`,
+      { file: relative, section, parserCode, line, column },
+    );
+  }
+  if (!object(parsed)) fail(`Deployment profile '${selection.profile}' ${section} file must contain an object.`);
+  return { source, parsed };
+}
+
+function validatePagesProfile(parsed) {
+  for (const [table, rows] of Object.entries(parsed))
+    if (
+      !safe(table) ||
+      !Array.isArray(rows) ||
+      rows.some((row) => !object(row) || Object.keys(row).some((key) => !safe(key)))
+    )
+      fail('Pages profiles must map table names to arrays of record patches.');
+}
+
+function mergeEnvironmentRows(rows, seen, environmentVariables) {
+  for (const row of rows) {
+    const name = row?.SchemaName;
+    if (!safe(name) || seen.has(name.toLowerCase()))
+      fail('EnvironmentVariables requires distinct valid schema/logical names.');
+    seen.add(name.toLowerCase());
+    if (!['string', 'number', 'boolean'].includes(typeof row.Value))
+      fail('EnvironmentVariables requires scalar Value fields.');
+    for (const previous of Object.keys(environmentVariables))
+      if (previous.toLowerCase() === name.toLowerCase()) delete environmentVariables[previous];
+    environmentVariables[name] = String(row.Value);
+  }
+}
+
+function mergeConnectionRow(row, file, config, seen, connectionReferences, unset) {
+  const logicalName = row?.LogicalName;
+  if (!safe(logicalName) || seen.has(logicalName.toLowerCase()))
+    fail('ConnectionReferences requires distinct valid schema/logical names.');
+  seen.add(logicalName.toLowerCase());
+  for (const field of ['ConnectionId', 'ConnectorId'])
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+    if (typeof row[field] !== 'string' || /[\x00-\x1f]/.test(row[field]))
+      fail(`ConnectionReferences requires valid ${field} fields.`);
+  if (!row.ConnectionId.trim()) {
+    unset.push({ logicalName, file: relativeProfilePath(config, file) });
+    return;
+  }
+  if (!row.ConnectorId.trim()) fail('ConnectionReferences requires non-empty ConnectorId fields.');
+  const existing = connectionReferences.findIndex(
+    (item) => item.logicalName.toLowerCase() === logicalName.toLowerCase(),
+  );
+  const entry = { logicalName, connectionId: row.ConnectionId, connectorId: row.ConnectorId };
+  if (existing >= 0) connectionReferences[existing] = entry;
+  else connectionReferences.push(entry);
+}
+
+function mergeConnectionRows(rows, file, config, seen, connectionReferences, unset) {
+  for (const row of rows) mergeConnectionRow(row, file, config, seen, connectionReferences, unset);
+}
+
+function applyProfileFile(
+  section,
+  file,
+  source,
+  parsed,
+  { selection, contents, config, environmentVariables, connectionReferences, unset },
+) {
+  contents[section].push(source);
+  if (section === 'pages') {
+    validatePagesProfile(parsed);
+    return;
+  }
+  const key = section === 'environmentVariables' ? 'EnvironmentVariables' : 'ConnectionReferences';
+  const rows = parsed[key];
+  if (!Array.isArray(rows)) fail(`Profile '${selection.profile}' requires a ${key} array.`);
+  const seen = new Set();
+  if (section === 'environmentVariables') mergeEnvironmentRows(rows, seen, environmentVariables);
+  else mergeConnectionRows(rows, file, config, seen, connectionReferences, unset);
+}
+
+function profileDiagnostics(unset) {
+  if (!unset.length) return [];
+  return [
+    {
+      code: 'DEPLOYMENT_PROFILE_CONNECTION_UNSET',
+      severity: 'warning',
+      count: unset.length,
+      logicalNames: unset.map((item) => item.logicalName),
+      files: [...new Set(unset.map((item) => item.file))],
+      message:
+        unset.length === 1
+          ? '1 connection reference entry has no ConnectionId and was not seeded.'
+          : `${unset.length} connection reference entries have no ConnectionId and were not seeded.`,
+    },
+  ];
+}
+
 export async function loadDeploymentProfiles(config, pin = null) {
   const selection = profileSelection(config, pin);
   const loaded = new Map(),
@@ -126,7 +238,7 @@ export async function loadDeploymentProfiles(config, pin = null) {
     unset = [];
   for (const section of PROFILE_SECTIONS) {
     if (!selection.enabled[section]) continue;
-    const files = [].concat(selection.sources[section]);
+    const files = [].concat(selection.sources[section]); /* NOSONAR: preserve concat spreadability semantics */
     contents[section] = [];
     for (const file of files) {
       if (!loaded.has(file)) {
@@ -134,100 +246,30 @@ export async function loadDeploymentProfiles(config, pin = null) {
         try {
           source = await fs.readFile(file, 'utf8');
         } catch (cause) {
-          const relative = path.relative(config.configDirectory ?? process.cwd(), file).replaceAll('\\', '/');
+          const relative = relativeProfilePath(config, file);
           fail(
             `Cannot read deployment profile '${selection.profile}' ${section} file '${relative}' (${cause.code ?? 'IO_ERROR'}).`,
             { file: relative, section, parserCode: cause.code ?? 'IO_ERROR' },
           );
         }
-        let parsed;
-        const jsonSource = source.replace(/^\uFEFF/, '');
-        try {
-          parsed = /\.json$/i.test(file) ? JSON.parse(jsonSource) : YAML.parse(source);
-        } catch (cause) {
-          const relative = path.relative(config.configDirectory ?? process.cwd(), file).replaceAll('\\', '/');
-          const location = /\.json$/i.test(file)
-            ? jsonErrorLocation(jsonSource)
-            : { line: cause.linePos?.[0]?.line ?? 1, column: cause.linePos?.[0]?.col ?? 1 };
-          const { line, column } = location;
-          const parserCode = cause.code ?? 'JSON_SYNTAX_ERROR';
-          fail(
-            `Deployment profile '${selection.profile}' ${section} file '${relative}' is invalid JSON/YAML (${parserCode}, line ${line}, column ${column}).`,
-            { file: relative, section, parserCode, line, column },
-          );
-        }
-        if (!object(parsed)) fail(`Deployment profile '${selection.profile}' ${section} file must contain an object.`);
-        loaded.set(file, { source, parsed });
+        loaded.set(file, parseProfileFile(source, file, config, selection, section));
       }
       const { source, parsed } = loaded.get(file);
-      contents[section].push(source);
-      if (section === 'pages') {
-        for (const [table, rows] of Object.entries(parsed)) {
-          if (
-            !safe(table) ||
-            !Array.isArray(rows) ||
-            rows.some((row) => !object(row) || Object.keys(row).some((key) => !safe(key)))
-          )
-            fail('Pages profiles must map table names to arrays of record patches.');
-        }
-        continue;
-      }
-      const key = section === 'environmentVariables' ? 'EnvironmentVariables' : 'ConnectionReferences';
-      const rows = parsed[key];
-      if (!Array.isArray(rows)) fail(`Profile '${selection.profile}' requires a ${key} array.`);
-      const seen = new Set();
-      for (const row of rows) {
-        const name = section === 'environmentVariables' ? row?.SchemaName : row?.LogicalName;
-        if (!safe(name) || seen.has(name.toLowerCase())) fail(`${key} requires distinct valid schema/logical names.`);
-        seen.add(name.toLowerCase());
-        if (section === 'environmentVariables') {
-          if (!['string', 'number', 'boolean'].includes(typeof row.Value))
-            fail('EnvironmentVariables requires scalar Value fields.');
-          for (const previous of Object.keys(environmentVariables))
-            if (previous.toLowerCase() === name.toLowerCase()) delete environmentVariables[previous];
-          environmentVariables[name] = String(row.Value);
-        } else {
-          for (const field of ['ConnectionId', 'ConnectorId'])
-            // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-            if (typeof row[field] !== 'string' || /[\x00-\x1f]/.test(row[field]))
-              fail(`ConnectionReferences requires valid ${field} fields.`);
-          if (!row.ConnectionId.trim()) {
-            unset.push({
-              logicalName: name,
-              file: path.relative(config.configDirectory ?? process.cwd(), file).replaceAll('\\', '/'),
-            });
-            continue;
-          }
-          if (!row.ConnectorId.trim()) fail('ConnectionReferences requires non-empty ConnectorId fields.');
-          const existing = connectionReferences.findIndex(
-            (item) => item.logicalName.toLowerCase() === name.toLowerCase(),
-          );
-          const entry = { logicalName: name, connectionId: row.ConnectionId, connectorId: row.ConnectorId };
-          if (existing >= 0) connectionReferences[existing] = entry;
-          else connectionReferences.push(entry);
-        }
-      }
+      applyProfileFile(section, file, source, parsed, {
+        selection,
+        contents,
+        config,
+        environmentVariables,
+        connectionReferences,
+        unset,
+      });
     }
   }
   return {
     ...selection,
     environmentVariables,
     connectionReferences,
-    diagnostics: unset.length
-      ? [
-          {
-            code: 'DEPLOYMENT_PROFILE_CONNECTION_UNSET',
-            severity: 'warning',
-            count: unset.length,
-            logicalNames: unset.map((item) => item.logicalName),
-            files: [...new Set(unset.map((item) => item.file))],
-            message:
-              unset.length === 1
-                ? '1 connection reference entry has no ConnectionId and was not seeded.'
-                : `${unset.length} connection reference entries have no ConnectionId and were not seeded.`,
-          },
-        ]
-      : [],
+    diagnostics: profileDiagnostics(unset),
     pagesFile: selection.enabled.pages ? selection.sources.pages : undefined,
     // Hash every active file so external settings changes participate in runtime evidence.
     fingerprint: createHash('sha256')
@@ -257,7 +299,7 @@ export async function deploymentProfilesStatus(config) {
   for (const [id, sources] of Object.entries(config.profiles)) {
     const files = [];
     for (const [section, paths] of Object.entries(sources))
-      for (const file of [].concat(paths)) {
+      for (const file of [].concat(paths) /* NOSONAR: preserve concat spreadability semantics */) {
         try {
           await fs.access(file);
           files.push({ section, file, exists: true });

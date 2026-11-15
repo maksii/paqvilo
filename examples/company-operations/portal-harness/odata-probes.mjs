@@ -6,6 +6,10 @@ const identifier = /^[a-z][a-z0-9_]*$/i;
 const guid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const lowerName = (column) => column.name ?? column.LogicalName ?? column.schemaName?.toLowerCase();
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 
 export function sourceODataColumns(schema, tableName) {
   const table = schema.tables.find((table) => table.name === tableName);
@@ -55,13 +59,16 @@ export function sourceODataSelection({ schema, table, fields }) {
       column.AttributeType === 'Customer' ||
       column.AttributeType === 'Owner';
     const property = lookup ? `_${logical}_value` : logical;
-    const type = lookup
-      ? 'guid'
-      : column.behavior === 'DateOnly'
-        ? 'dateonly'
-        : column.type === 'choice'
-          ? 'integer'
-          : (column.type ?? 'string');
+    const type = chooseLazily(
+      () => lookup,
+      () => 'guid',
+      () =>
+        chooseLazily(
+          () => column.behavior === 'DateOnly',
+          () => 'dateonly',
+          () => (column.type === 'choice' ? 'integer' : (column.type ?? 'string')),
+        ),
+    );
     // Names intentionally match native response properties. Existing canonical
     // row handling can consume these without inventing FetchXML aliases.
     selected.set(property, {

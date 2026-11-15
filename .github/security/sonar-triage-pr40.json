@@ -1,0 +1,45 @@
+{
+  "rule": "javascript:S2187",
+  "disposition": "FALSE-POSITIVE",
+  "issues": [
+    {
+      "branch": "sonar-findings-0.9.8",
+      "key": "8ab291c8-dddc-43e8-bdbb-da15173d9687"
+    },
+    {
+      "branch": "0.9.8",
+      "key": "dc3a6212-8c83-460a-b5c1-ce238588f3ef"
+    }
+  ],
+  "file": "mirage/test/storage-azurite-contract.test.mjs",
+  "reason": "The file passes the real node:test registrar to a shared contract suite; that suite registers eleven asynchronous tests. The analyzer does not recognize registration through the shared function. Each test uses an isolated local fake-storage container, real assertions, and awaited cleanup.",
+  "verification": {
+    "command": "node --test mirage/test/storage-azurite-contract.test.mjs",
+    "cases": 11,
+    "passed": 11,
+    "skipped": 0,
+    "independentReviews": ["Sol reviewer 1", "Sol reviewer 2"]
+  },
+  "sources": [
+    {
+      "path": "mirage/test/storage-azurite-contract.test.mjs",
+      "sha256": "e732224d1783a2f1dbc2915ee43422a0292c327284b06a8b8833f6d34a4c6d1a"
+    },
+    {
+      "path": "mirage/testing/storage-contract.mjs",
+      "sha256": "eb1b0de060851b99cf165f5ebe1adedf1ae9b513373f8960e0c433dce84bede7"
+    },
+    {
+      "path": "mirage/testing/azurite-fake.mjs",
+      "sha256": "96aec1dca4ac31db74407045c2fff566a5832d9fbd51695c69d19b00df9628bd"
+    },
+    {
+      "path": "mirage/lib/storage-azurite.mjs",
+      "sha256": "6feadbe43720351b2051695c0473ef7b96409bc91747e370e8a08eea15cc8d9d"
+    },
+    {
+      "path": "mirage/package.json",
+      "sha256": "345a7766a02fca8626090ef5cc92040e50e01f12722708c329cd643f296995ce"
+    }
+  ]
+}

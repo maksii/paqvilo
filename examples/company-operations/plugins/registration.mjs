@@ -6,7 +6,7 @@ export function localAssemblyIdentity(path) {
   const script =
     '$assembly=[System.Reflection.Assembly]::ReflectionOnlyLoadFrom($env:PAQVILO_PLUGIN_INSPECT_PATH);$name=$assembly.GetName();[pscustomobject]@{name=$name.Name;version=$name.Version.ToString();moduleVersionId=$assembly.ManifestModule.ModuleVersionId.ToString()}|ConvertTo-Json -Compress';
   const result = spawnSync(
-    join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-Command', script],
     {
       encoding: 'utf8',
@@ -99,8 +99,145 @@ export const assemblies = [
     ],
   },
 ];
+
+function appendQueryObservers(business, add) {
+  for (const table of [...business, { name: 'pqvd_chainnode' }])
+    for (const [stage, order] of [
+      [10, 10],
+      [20, 10],
+      [20, 9900],
+      [40, 9900],
+    ])
+      add(assemblies[0].name, 'IncomingQueryObserver', table.name, 'RetrieveMultiple', stage, order);
+}
+
+function appendMutationGuards(add) {
+  for (const [table, type] of [
+    ['pqvd_testoperation', 'OperationIntentGuard'],
+    ['pqvd_pluginevent', 'EvidenceWriteGuard'],
+    ['pqvd_chainnode', 'ChainNodeGuard'],
+  ])
+    for (const message of ['Create', 'Update', 'Delete'])
+      add(assemblies[1].name, type, table, message, 20, 5, {
+        imageColumns:
+          table === 'pqvd_chainnode' ? nodeColumns : ['pqvd_runid', 'pqvd_runnercontactid', 'pqvd_operationid'],
+        ...(message !== 'Create' ? { images: ['Before'] } : {}),
+      });
+}
+
+function appendRecordingGuards(imageColumnsFor, add) {
+  for (const table of ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe'])
+    for (const message of ['Create', 'Update'])
+      add(assemblies[1].name, 'RecordingBindingGuard', table, message, 20, 5, {
+        ...(message === 'Update' ? { images: ['Before'] } : {}),
+        imageColumns: imageColumnsFor(table),
+      });
+}
+
+function appendBusinessProjectionGuards(business, add) {
+  for (const table of business.filter((t) => t.name !== 'transactioncurrency').map((t) => t.name))
+    for (const message of ['Create', 'Update', 'Delete'])
+      add(assemblies[1].name, 'BusinessProjectionGuard', table, message, 20, 5);
+}
+
+function appendEquipmentObservers(lookupTests, add) {
+  for (const message of ['Create', 'Update', 'Delete'])
+    for (const stage of [10, 20, 40])
+      add(assemblies[1].name, 'EquipmentCrudObserver', 'pqvd_equipment', message, stage, 10, {
+        ...(message !== 'Create' && stage !== 10
+          ? {
+              images: ['Before'],
+              imageColumns: [
+                'pqvd_name',
+                'pqvd_canaryrunid',
+                'pqvd_assettag',
+                'pqvd_equipmentstate',
+                'pqvd_currentassignmentid',
+                ...(lookupTests ? ['pqvd_roomid', 'pqvd_accountid'] : []),
+              ],
+            }
+          : {}),
+      });
+}
+
+function contextImages(message, stage) {
+  if (stage === 10) return [];
+  if (message === 'Update') return stage === 40 ? ['Before', 'After'] : ['Before'];
+  if (message === 'Create' && stage === 40) return ['After'];
+  if (message === 'Delete') return ['Before'];
+  return [];
+}
+
+/* NOSONAR */ function appendPipelineContextObservers(probeImages, add) {
+  for (const table of ['pqvd_crudprobe', 'pqvd_chainnode'])
+    for (const message of [
+      'Create',
+      'Update',
+      'Delete',
+      'Retrieve',
+      'RetrieveMultiple',
+      'Assign',
+      'SetState',
+      'Associate',
+      'Disassociate',
+      'Upsert',
+    ])
+      for (const [stage, order] of [
+        [10, 10],
+        [20, 10],
+        [40, 10],
+        [40, 9900],
+      ]) {
+        if (
+          table === 'pqvd_crudprobe' &&
+          ['Assign', 'SetState', 'Associate', 'Disassociate', 'Upsert'].includes(message)
+        )
+          continue;
+        add(assemblies[1].name, 'PipelineContextObserver', table, message, stage, order, {
+          images: contextImages(message, stage),
+          imageColumns: table === 'pqvd_crudprobe' ? probeImages : nodeColumns,
+          secureProfile: order === 9900 ? 'B' : 'A',
+          ...(['Associate', 'Disassociate'].includes(message) ? { global: true } : {}),
+        });
+      }
+}
+
+function appendNamedPipelineSteps(probeImages, add) {
+  add(assemblies[1].name, 'ChainA', 'pqvd_crudprobe', 'Update', 40, 100, {
+    filteringAttributes: ['pqvd_triggernonce'],
+    images: ['Before', 'After'],
+    imageColumns: probeImages,
+    runAsWriter: true,
+  });
+  add(assemblies[1].name, 'ChainB', 'pqvd_chainnode', 'Create', 40, 100, {
+    images: ['After'],
+    imageColumns: nodeColumns,
+  });
+  add(assemblies[1].name, 'ChainC', 'pqvd_chainnode', 'Update', 40, 100, {
+    filteringAttributes: ['pqvd_hop', 'pqvd_requestnonce', 'pqvd_completionnonce'],
+    images: ['Before', 'After'],
+    imageColumns: nodeColumns,
+  });
+  add(assemblies[1].name, 'DepthChain', 'pqvd_chainnode', 'Create', 40, 110, {
+    images: ['After'],
+    imageColumns: nodeColumns,
+  });
+  add(assemblies[1].name, 'AsyncContextObserver', 'pqvd_crudprobe', 'Update', 40, 100, {
+    mode: 1,
+    filteringAttributes: ['pqvd_triggernonce'],
+    images: ['After'],
+    imageColumns: probeImages,
+    runAsWriter: true,
+  });
+}
+
 export function registration(manifest) {
   const steps = [];
+  const imageColumnsFor = (table) => {
+    if (table === 'pqvd_testrun') return ['pqvd_runnercontactid', 'pqvd_runkey'];
+    if (table === 'pqvd_crudprobe') return probeImages;
+    return ['pqvd_runid', 'pqvd_operationid'];
+  };
   const add = (assembly, type, table, message, stage, order, options = {}) =>
     steps.push({
       key: [type, table, message, stage, order, options.mode ?? 0].join('/'),
@@ -128,125 +265,13 @@ export function registration(manifest) {
         'pqvd_chainnode',
       ].includes(t.name),
   );
-  for (const t of [...business, { name: 'pqvd_chainnode' }])
-    for (const [stage, order] of [
-      [10, 10],
-      [20, 10],
-      [20, 9900],
-      [40, 9900],
-    ])
-      add(assemblies[0].name, 'IncomingQueryObserver', t.name, 'RetrieveMultiple', stage, order);
-  for (const [table, type] of [
-    ['pqvd_testoperation', 'OperationIntentGuard'],
-    ['pqvd_pluginevent', 'EvidenceWriteGuard'],
-    ['pqvd_chainnode', 'ChainNodeGuard'],
-  ])
-    for (const message of ['Create', 'Update', 'Delete'])
-      add(assemblies[1].name, type, table, message, 20, 5, {
-        imageColumns:
-          table === 'pqvd_chainnode' ? nodeColumns : ['pqvd_runid', 'pqvd_runnercontactid', 'pqvd_operationid'],
-        ...(message !== 'Create' ? { images: ['Before'] } : {}),
-      });
-  for (const table of ['pqvd_testrun', 'pqvd_testresult', 'pqvd_crudprobe'])
-    for (const message of ['Create', 'Update'])
-      add(assemblies[1].name, 'RecordingBindingGuard', table, message, 20, 5, {
-        ...(message === 'Update' ? { images: ['Before'] } : {}),
-        imageColumns:
-          table === 'pqvd_testrun'
-            ? ['pqvd_runnercontactid', 'pqvd_runkey']
-            : table === 'pqvd_crudprobe'
-              ? probeImages
-              : ['pqvd_runid', 'pqvd_operationid'],
-      });
-  for (const table of business.filter((t) => t.name !== 'transactioncurrency').map((t) => t.name))
-    for (const message of ['Create', 'Update', 'Delete'])
-      add(assemblies[1].name, 'BusinessProjectionGuard', table, message, 20, 5);
-  for (const message of ['Create', 'Update', 'Delete'])
-    for (const stage of [10, 20, 40])
-      add(assemblies[1].name, 'EquipmentCrudObserver', 'pqvd_equipment', message, stage, 10, {
-        ...(message !== 'Create' && stage !== 10
-          ? {
-              images: ['Before'],
-              imageColumns: [
-                'pqvd_name',
-                'pqvd_canaryrunid',
-                'pqvd_assettag',
-                'pqvd_equipmentstate',
-                'pqvd_currentassignmentid',
-                ...(lookupTests ? ['pqvd_roomid', 'pqvd_accountid'] : []),
-              ],
-            }
-          : {}),
-      });
-  for (const table of ['pqvd_crudprobe', 'pqvd_chainnode'])
-    for (const message of [
-      'Create',
-      'Update',
-      'Delete',
-      'Retrieve',
-      'RetrieveMultiple',
-      'Assign',
-      'SetState',
-      'Associate',
-      'Disassociate',
-      'Upsert',
-    ])
-      for (const [stage, order] of [
-        [10, 10],
-        [20, 10],
-        [40, 10],
-        [40, 9900],
-      ]) {
-        if (
-          table === 'pqvd_crudprobe' &&
-          ['Assign', 'SetState', 'Associate', 'Disassociate', 'Upsert'].includes(message)
-        )
-          continue;
-        const images =
-          stage === 10
-            ? []
-            : message === 'Update'
-              ? stage === 40
-                ? ['Before', 'After']
-                : ['Before']
-              : message === 'Create' && stage === 40
-                ? ['After']
-                : message === 'Delete'
-                  ? ['Before']
-                  : [];
-        add(assemblies[1].name, 'PipelineContextObserver', table, message, stage, order, {
-          images,
-          imageColumns: table === 'pqvd_crudprobe' ? probeImages : nodeColumns,
-          secureProfile: order === 9900 ? 'B' : 'A',
-          ...(['Associate', 'Disassociate'].includes(message) ? { global: true } : {}),
-        });
-      }
-  add(assemblies[1].name, 'ChainA', 'pqvd_crudprobe', 'Update', 40, 100, {
-    filteringAttributes: ['pqvd_triggernonce'],
-    images: ['Before', 'After'],
-    imageColumns: probeImages,
-    runAsWriter: true,
-  });
-  add(assemblies[1].name, 'ChainB', 'pqvd_chainnode', 'Create', 40, 100, {
-    images: ['After'],
-    imageColumns: nodeColumns,
-  });
-  add(assemblies[1].name, 'ChainC', 'pqvd_chainnode', 'Update', 40, 100, {
-    filteringAttributes: ['pqvd_hop', 'pqvd_requestnonce', 'pqvd_completionnonce'],
-    images: ['Before', 'After'],
-    imageColumns: nodeColumns,
-  });
-  add(assemblies[1].name, 'DepthChain', 'pqvd_chainnode', 'Create', 40, 110, {
-    images: ['After'],
-    imageColumns: nodeColumns,
-  });
-  add(assemblies[1].name, 'AsyncContextObserver', 'pqvd_crudprobe', 'Update', 40, 100, {
-    mode: 1,
-    filteringAttributes: ['pqvd_triggernonce'],
-    images: ['After'],
-    imageColumns: probeImages,
-    runAsWriter: true,
-  });
+  appendQueryObservers(business, add);
+  appendMutationGuards(add);
+  appendRecordingGuards(imageColumnsFor, add);
+  appendBusinessProjectionGuards(business, add);
+  appendEquipmentObservers(lookupTests, add);
+  appendPipelineContextObservers(probeImages, add);
+  appendNamedPipelineSteps(probeImages, add);
   // The mutator is SDK-only and disabled until its explicit calibration is requested.
   add(assemblies[0].name, 'QueryShapeMutator', 'pqvd_chainnode', 'RetrieveMultiple', 20, 100, { disabled: true });
   for (const message of ['Associate', 'Disassociate'])

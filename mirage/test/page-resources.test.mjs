@@ -1,3 +1,4 @@
+// @test-kind contract: source dependency inspection reports resolvable resources and unresolved dynamic references.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,7 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { resolvePageResources } from '../lib/page-resources.mjs';
+import { pageAccessRules, resolvePageResources } from '../lib/page-resources.mjs';
+import { pageRuleMatcher } from '../lib/page-access.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const portal = () => ({
   sourceDir: 'C:/portal',
@@ -251,6 +254,38 @@ test("resolves a page's static Liquid, component, settings, snippet and data dep
   assert.deepEqual(result.unresolved, []);
 });
 
+// @test-kind security: malformed Liquid with a long whitespace run must not cause quadratic backtracking.
+test('reports dynamic references and handles unterminated whitespace runs', () => {
+  const input = portal();
+  input.pages[0].html = `{% render${'\t'.repeat(5000)}%x`;
+  assert.ok(
+    !resolvePageResources(input, '/workspace/').unresolved.some((item) => item.expression === input.pages[0].html),
+  );
+  input.pages[0].html = `{% render${'\t'.repeat(5000)}choice %}`;
+  assert.ok(
+    resolvePageResources(input, '/workspace/').unresolved.some(
+      (item) => item.kind === 'web-template' && item.expression === input.pages[0].html,
+    ),
+  );
+});
+
+// @test-kind security: repeated incomplete snippet lookups cannot repeatedly scan the remaining source.
+test('handles a long suffix of unterminated snippet lookups', () => {
+  const input = portal();
+  input.pages[0].html = `{{ snippets[request.params.key] }}${'snippets['.repeat(5000)}`;
+  const result = resolvePageResources(input, '/workspace/');
+  assert.equal(result.unresolved.filter((item) => item.kind === 'content-snippet').length, 1);
+});
+
+// @test-kind security: repeated incomplete literal lookups must not rescan the remaining source.
+test('handles incomplete literal snippet and setting lookups while retaining quoted references', () => {
+  const input = portal();
+  input.pages[0].html = `{{ snippets['one' inside'] }} {{ settings['Search/Enabled'] }}${'snippets["a'.repeat(5000)}${'settings["a'.repeat(5000)}`;
+  const result = resolvePageResources(input, '/workspace/');
+  assert.ok(result.usages.some((item) => item.kind === 'snippet' && item.reference === "one' inside"));
+  assert.ok(result.siteSettings.some((item) => item.name === 'Search/Enabled'));
+});
+
 test('reports dynamic or absent references instead of claiming complete page coverage', () => {
   const input = portal();
   input.pages[0].html =
@@ -374,7 +409,7 @@ test('an exported override of entity_list is inspected as a template without ass
 });
 
 test('real PAC and unpacked solution imports return openable source-relative page dependencies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'page-resources-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'page-resources-import-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const portalPath = path.join(root, 'portal'),
     solutionPath = path.join(root, 'solution');
@@ -540,7 +575,14 @@ test('inspection adds include chains, usages, access rules, publishing state, va
       solutionMetadata,
       sourcePortal: { ...input, snippets: { ...input.snippets, 'Workspace/Intro': 'Exported intro' } },
       overrides: { snippets: { 'Workspace/Intro': 'Local intro' } },
-      identity: { roles: ['Member'], roleIds: ['member'], roleSource: 'memberships' },
+      // The persona has a contact id: without one, an identity with role ids is anonymous to the enforced decision.
+      identity: {
+        id: 'member-contact',
+        contactId: 'member-contact',
+        roles: ['Member'],
+        roleIds: ['member'],
+        roleSource: 'memberships',
+      },
       access: () => ({ allowed: true, status: 200, reason: 'public-or-role' }),
       mapping: (entity) =>
         entity === 'sample_application' ? { entitySet: 'sample_applications', idColumn: 'sample_applicationid' } : null,
@@ -600,4 +642,51 @@ test('inspection adds include chains, usages, access rules, publishing state, va
     redirects: [],
     shortcuts: [],
   });
+});
+
+test('inspector rule matches agree with the enforced page decision for a signed-in and an anonymous persona', async () => {
+  const { pageAccess } = await import('../lib/page-access.mjs');
+  const { pageAccessRules } = await import('../lib/page-resources.mjs');
+  const ROLE = '11111111-0000-0000-0000-000000000001';
+  const page = { id: 'p1', name: 'Members', url: '/members/', parentId: null };
+  const input = {
+    pages: [page],
+    siteMarkers: [],
+    records: [
+      { kind: 'webrole', id: ROLE, name: 'Authenticated Users', adx_authenticatedusersrole: true },
+      {
+        kind: 'webpageaccesscontrolrule',
+        id: 'rule1',
+        name: 'Members only',
+        adx_webpageid: 'p1',
+        adx_right: 2,
+        adx_scope: 1,
+        adx_webpageaccesscontrolrule_webrole: [ROLE],
+      },
+    ],
+  };
+  const personas = [
+    { identity: { id: 'c1', contactId: 'c1', roles: [] }, allowed: true },
+    { identity: { roles: ['Authenticated Users'] }, allowed: false },
+  ];
+  for (const { identity, allowed } of personas) {
+    const decision = pageAccess(input, page, identity);
+    const [rule] = pageAccessRules(input, page, identity);
+    assert.equal(decision.allowed, allowed, `enforced decision for ${JSON.stringify(identity)}`);
+    assert.equal(rule.matches, decision.allowed, `inspector matches for ${JSON.stringify(identity)}`);
+  }
+});
+
+test('a portal object without records answers the rule matcher and page access rules as for an anonymous visitor', () => {
+  const page = { id: 'secure', url: '/secure/', name: 'Secure' };
+  const portal = { pages: [page] };
+  const withoutRecords = pageRuleMatcher(portal, {});
+  const withEmptyRecords = pageRuleMatcher({ ...portal, records: [] }, {});
+  for (const roleIds of [['member'], ['anonymous'], []])
+    assert.equal(withoutRecords(roleIds), withEmptyRecords(roleIds));
+  assert.equal(withoutRecords(['member']), false);
+  assert.deepEqual(pageAccessRules(portal, page, {}), []);
+  const persona = { id: 'c1', contactId: 'c1', roles: ['Member'], roleIds: ['member'], roleSource: 'memberships' };
+  assert.equal(pageRuleMatcher(portal, persona)(['member']), false);
+  assert.deepEqual(pageAccessRules(portal, page, persona), []);
 });

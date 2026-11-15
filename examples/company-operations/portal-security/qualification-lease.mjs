@@ -35,9 +35,65 @@ export function planQualificationLease(
   configuration,
   { blueprint, organisationId, siteId, actorContactId, fixtureBindings, roleMask = 0, leaseId = randomUUID() } = {},
 ) {
+  validateLeaseGuids(organisationId, siteId, actorContactId, leaseId);
+  validateLeaseConfiguration(configuration, roleMask);
+  validateFixtureBindings(configuration, fixtureBindings, actorContactId);
+  const businessRoleIds = blueprint.roles
+    .filter((role) => role.code !== 'TESTRUNNER')
+    .map((role) => normalized(role.id));
+  const runner = blueprint.roles.find((role) => role.code === 'TESTRUNNER');
+  if (!runner) throw new Error('The protected recording role is absent.');
+  // Native Contact Self in the baseline recording role would otherwise grant
+  // every isolated Contact query regardless of the temporary graph under test.
+  const overrideKeys = baselineOverrideKeys(configuration, blueprint);
+  const byKey = new Map(blueprint.nodes.map((permission) => [permission.key, permission]));
+  const baselineOverrides = blueprint.nodes
+    .filter((permission) => overrideKeys.has(permission.key))
+    .sort((a, b) => permissionDepth(b, byKey) - permissionDepth(a, byKey))
+    .map((permission) => normalized(permission.id));
+  const components = configuration.components.map((component) => ({
+    ...structuredClone(component),
+    content: {
+      ...structuredClone(component.content),
+      description: `${component.content.description ?? ''} Qualification lease ${leaseId}`,
+    },
+  }));
+  const hasAccountScope = hasAccountLeaseScope(configuration);
+  if (hasAccountScope && !guid.test(fixtureBindings.ownAccountId ?? ''))
+    throw new Error('Account-scope lease requires its verified own Account GUID.');
+  validateEquipmentLease(configuration, fixtureBindings);
+  return {
+    schemaVersion: 1,
+    kind: 'isolated-native-qualification-lease',
+    leaseId,
+    variantId: configuration.variantId,
+    organisationId,
+    siteId,
+    actorContactId,
+    roleMask,
+    businessRoleIds,
+    protectedRunnerRoleId: normalized(runner.id),
+    desiredRoleIds: configuration.roles.filter((_, bit) => roleMask & (1 << bit)).map((role) => normalized(role.id)),
+    temporaryRoleIds: configuration.roles.map((role) => normalized(role.id)),
+    baselineOverrides,
+    components,
+    fixtureBindings: structuredClone(fixtureBindings),
+    fixtureBindingsHash: hash(fixtureBindings),
+    actorParentAccountId: hasAccountScope ? fixtureBindings.ownAccountId : null,
+    negativeFault: hasNegativeLeaseFault(configuration.permissions),
+    state: 'prepared-inputs',
+    liveMutation: false,
+    nativeQualification: false,
+  };
+}
+
+function validateLeaseGuids(organisationId, siteId, actorContactId, leaseId) {
   for (const value of [organisationId, siteId, actorContactId, leaseId])
     if (!guid.test(value ?? ''))
       throw new Error('Qualification lease requires explicit organisation/site/actor/lease GUIDs.');
+}
+
+function validateLeaseConfiguration(configuration, roleMask) {
   if (
     !configuration?.components?.length ||
     !configuration.roles?.length ||
@@ -46,6 +102,9 @@ export function planQualificationLease(
     roleMask >= configuration.roleMaskCount
   )
     throw new Error('Qualification lease needs one materialized configuration and valid role mask.');
+}
+
+function validateFixtureBindings(configuration, fixtureBindings, actorContactId) {
   if (
     fixtureBindings?.actorContactId !== actorContactId ||
     !fixtureBindings.nativeDataVerified ||
@@ -57,13 +116,9 @@ export function planQualificationLease(
     )
   )
     throw new Error('Bind verified native actor and all three fixture regions before preparing a live lease.');
-  const businessRoleIds = blueprint.roles
-    .filter((role) => role.code !== 'TESTRUNNER')
-    .map((role) => normalized(role.id));
-  const runner = blueprint.roles.find((role) => role.code === 'TESTRUNNER');
-  if (!runner) throw new Error('The protected recording role is absent.');
-  // Native Contact Self in the baseline recording role would otherwise grant
-  // every isolated Contact query regardless of the temporary graph under test.
+}
+
+function baselineOverrideKeys(configuration, blueprint) {
   const overrideKeys = new Set(
     ['contact', 'pqvd_equipment'].includes(configuration.query.table)
       ? blueprint.nodes
@@ -84,33 +139,27 @@ export function planQualificationLease(
         changed = true;
       }
   }
-  const byKey = new Map(blueprint.nodes.map((permission) => [permission.key, permission]));
-  const depth = (permission) => {
-    let count = 0;
-    while (permission.parent) {
-      permission = byKey.get(permission.parent);
-      count++;
-    }
-    return count;
-  };
-  const baselineOverrides = blueprint.nodes
-    .filter((permission) => overrideKeys.has(permission.key))
-    .sort((a, b) => depth(b) - depth(a))
-    .map((permission) => normalized(permission.id));
-  const components = configuration.components.map((component) => ({
-    ...structuredClone(component),
-    content: {
-      ...structuredClone(component.content),
-      description: `${component.content.description ?? ''} Qualification lease ${leaseId}`,
-    },
-  }));
-  const hasAccountScope = configuration.permissions.some(
+  return overrideKeys;
+}
+
+function permissionDepth(permission, byKey) {
+  let count = 0;
+  while (permission.parent) {
+    permission = byKey.get(permission.parent);
+    count++;
+  }
+  return count;
+}
+
+function hasAccountLeaseScope(configuration) {
+  return configuration.permissions.some(
     (permission) =>
       permission.scope === 'Account' ||
       (permission.scope === 'Contact' && permission.relationship === 'contact_customer_accounts'),
   );
-  if (hasAccountScope && !guid.test(fixtureBindings.ownAccountId ?? ''))
-    throw new Error('Account-scope lease requires its verified own Account GUID.');
+}
+
+function validateEquipmentLease(configuration, fixtureBindings) {
   if (
     configuration.family === 'equipment-lifecycle' &&
     (!guid.test(fixtureBindings.ownedRunId ?? '') ||
@@ -118,34 +167,15 @@ export function planQualificationLease(
       fixtureBindings.stockEquipmentVerified !== true)
   )
     throw new Error('Equipment lifecycle lease needs verified Stock fixtures and Contact-owned run.');
-  return {
-    schemaVersion: 1,
-    kind: 'isolated-native-qualification-lease',
-    leaseId,
-    variantId: configuration.variantId,
-    organisationId,
-    siteId,
-    actorContactId,
-    roleMask,
-    businessRoleIds,
-    protectedRunnerRoleId: normalized(runner.id),
-    desiredRoleIds: configuration.roles.filter((_, bit) => roleMask & (1 << bit)).map((role) => normalized(role.id)),
-    temporaryRoleIds: configuration.roles.map((role) => normalized(role.id)),
-    baselineOverrides,
-    components,
-    fixtureBindings: structuredClone(fixtureBindings),
-    fixtureBindingsHash: hash(fixtureBindings),
-    actorParentAccountId: hasAccountScope ? fixtureBindings.ownAccountId : null,
-    negativeFault: configuration.permissions.some(
-      (permission) =>
-        permission.active &&
-        permission.parentId &&
-        configuration.permissions.find((parent) => parent.id === permission.parentId)?.active === false,
-    ),
-    state: 'prepared-inputs',
-    liveMutation: false,
-    nativeQualification: false,
-  };
+}
+
+function hasNegativeLeaseFault(permissions) {
+  return permissions.some(
+    (permission) =>
+      permission.active &&
+      permission.parentId &&
+      permissions.find((parent) => parent.id === permission.parentId)?.active === false,
+  );
 }
 
 function validateOwned(component, current, siteId) {
@@ -220,7 +250,7 @@ export async function inspectQualificationLease(client, plan) {
   const overrides = [];
   for (const componentId of plan.baselineOverrides) {
     const before = components.find((component) => normalized(component.powerpagecomponentid) === componentId);
-    if (!before || before.powerpagecomponenttype !== 18 || !before['@odata.etag'])
+    if (before?.powerpagecomponenttype !== 18 || !before?.['@odata.etag'])
       throw new Error('Contact baseline override missing or lacks ETag.');
     overrides.push(before);
   }
@@ -233,7 +263,7 @@ export async function inspectQualificationLease(client, plan) {
       })
       .map((component) => normalized(component.powerpagecomponentid)),
   );
-  const testedTable = plan.components.filter((component) => component.type === 18).at(-1)?.content.entitylogicalname;
+  const testedTable = plan.components.findLast((component) => component.type === 18)?.content.entitylogicalname;
   const permissionComponents = new Map(
     components
       .filter((component) => component.powerpagecomponenttype === 18)
@@ -245,7 +275,7 @@ export async function inspectQualificationLease(client, plan) {
     const content = JSON.parse(component.content),
       own = content.adx_entitypermission_webrole ?? [];
     const parent = permissionComponents.get(normalized(content.parententitypermission));
-    if (content.parententitypermission && (!parent || parent.statecode !== 0) && component.statecode === 0)
+    if (content.parententitypermission && parent?.statecode !== 0 && component.statecode === 0)
       throw new Error('Existing active orphan permission prevents isolated qualification.');
     return [...own, ...(parent ? effectiveRoles(parent, new Set([...visited, key])) : [])];
   };
@@ -293,6 +323,22 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
   await client.verify(expectedOrganisationId);
   await validateSite(client, plan.siteId);
   // Preflight every object before the first restoration mutation.
+  const live = await preflightLeaseComponents(client, plan);
+  const currentOverrides = await preflightLeaseOverrides(client, journal);
+  const actor = await checkLeaseRestoreState(client, plan, journal);
+  await deactivateLeaseComponents(client, plan, journal, journalFile, live);
+  await changeMembers(client, plan, journal, journal.before.memberships, journalFile);
+  await restoreLeaseActorParent(client, plan, journal, journalFile, actor);
+  await restoreLeaseOverrides(client, journal, journalFile, currentOverrides);
+  await deleteLeaseComponents(client, plan, journal, journalFile);
+  if (!same(await members(client, plan.actorContactId), journal.before.memberships))
+    throw new Error('Qualification exact membership restoration failed.');
+  journal.state = 'restored';
+  await persist(journal, journalFile, { kind: 'restored' });
+  return { state: journal.state, leaseId: plan.leaseId };
+}
+
+async function preflightLeaseComponents(client, plan) {
   const live = new Map();
   for (const component of plan.components) {
     const current = await client.optional(`powerpagecomponents(${component.id})`);
@@ -302,6 +348,10 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
     }
     live.set(component.id, current);
   }
+  return live;
+}
+
+async function preflightLeaseOverrides(client, journal) {
   const currentOverrides = new Map();
   for (const before of [...journal.before.overrides].reverse()) {
     const current = await client.get(`powerpagecomponents(${before.powerpagecomponentid})`);
@@ -316,6 +366,10 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
       throw new Error('Baseline permission changed; recovery refused.');
     currentOverrides.set(before.powerpagecomponentid, current);
   }
+  return currentOverrides;
+}
+
+async function checkLeaseRestoreState(client, plan, journal) {
   assertForeignMemberships(plan, journal, await members(client, plan.actorContactId));
   const actor = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
   if (
@@ -325,6 +379,10 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
     )
   )
     throw new Error('Actor Account scope changed concurrently; recovery refused.');
+  return actor;
+}
+
+async function deactivateLeaseComponents(client, plan, journal, journalFile, live) {
   for (const component of [...plan.components].reverse()) {
     const current = live.get(component.id);
     if (!current || current.statecode === 1) continue;
@@ -341,28 +399,33 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
     delete journal.pending;
     await persist(journal, journalFile, { kind: 'component-deactivated', componentId: component.id });
   }
-  await changeMembers(client, plan, journal, journal.before.memberships, journalFile);
-  if (plan.actorParentAccountId && actor._parentcustomerid_value !== journal.before.actor._parentcustomerid_value) {
-    const latest = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
-    if ((latest._parentcustomerid_value ?? null) !== (actor._parentcustomerid_value ?? null) || !latest['@odata.etag'])
-      throw new Error('Actor Account changed during recovery; refusing stale conditional restoration.');
-    journal.pending = { kind: 'actor-parent-restore' };
-    await persist(journal, journalFile);
-    await client.request(`contacts(${plan.actorContactId})`, {
-      method: 'PATCH',
-      body: {
-        [journal.before.parentNavigation + '@odata.bind']: journal.before.actor._parentcustomerid_value
-          ? `/accounts(${journal.before.actor._parentcustomerid_value})`
-          : null,
-      },
-      ifMatch: latest['@odata.etag'],
-    });
-    const restored = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
-    if ((restored._parentcustomerid_value ?? null) !== (journal.before.actor._parentcustomerid_value ?? null))
-      throw new Error('Actor Account restoration readback failed.');
-    delete journal.pending;
-    await persist(journal, journalFile, { kind: 'actor-parent-restored' });
-  }
+}
+
+async function restoreLeaseActorParent(client, plan, journal, journalFile, actor) {
+  if (!plan.actorParentAccountId || actor._parentcustomerid_value === journal.before.actor._parentcustomerid_value)
+    return;
+  const latest = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
+  if ((latest._parentcustomerid_value ?? null) !== (actor._parentcustomerid_value ?? null) || !latest['@odata.etag'])
+    throw new Error('Actor Account changed during recovery; refusing stale conditional restoration.');
+  journal.pending = { kind: 'actor-parent-restore' };
+  await persist(journal, journalFile);
+  await client.request(`contacts(${plan.actorContactId})`, {
+    method: 'PATCH',
+    body: {
+      [journal.before.parentNavigation + '@odata.bind']: journal.before.actor._parentcustomerid_value
+        ? `/accounts(${journal.before.actor._parentcustomerid_value})`
+        : null,
+    },
+    ifMatch: latest['@odata.etag'],
+  });
+  const restored = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
+  if ((restored._parentcustomerid_value ?? null) !== (journal.before.actor._parentcustomerid_value ?? null))
+    throw new Error('Actor Account restoration readback failed.');
+  delete journal.pending;
+  await persist(journal, journalFile, { kind: 'actor-parent-restored' });
+}
+
+async function restoreLeaseOverrides(client, journal, journalFile, currentOverrides) {
   for (const before of [...journal.before.overrides].reverse()) {
     const current = currentOverrides.get(before.powerpagecomponentid);
     if (current.statecode === before.statecode) continue;
@@ -379,6 +442,9 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
     delete journal.pending;
     await persist(journal, journalFile, { kind: 'baseline-restored', componentId: before.powerpagecomponentid });
   }
+}
+
+async function deleteLeaseComponents(client, plan, journal, journalFile) {
   for (const component of [...plan.components].reverse()) {
     const current = await client.optional(`powerpagecomponents(${component.id})`);
     if (!current) continue;
@@ -391,11 +457,6 @@ export async function restoreQualificationLease(client, journal, { journalFile, 
     delete journal.pending;
     await persist(journal, journalFile, { kind: 'component-deleted', componentId: component.id });
   }
-  if (!same(await members(client, plan.actorContactId), journal.before.memberships))
-    throw new Error('Qualification exact membership restoration failed.');
-  journal.state = 'restored';
-  await persist(journal, journalFile, { kind: 'restored' });
-  return { state: journal.state, leaseId: plan.leaseId };
 }
 
 export async function withQualificationLease(client, plan, callback, { journalFile } = {}) {
@@ -419,75 +480,11 @@ export async function withQualificationLease(client, plan, callback, { journalFi
   await privateJson(journalFile, journal, true);
   let result;
   try {
-    for (const component of plan.components) {
-      journal.pending = { kind: 'component-create', componentId: component.id };
-      await persist(journal, journalFile);
-      await client.request('powerpagecomponents', {
-        method: 'POST',
-        body: {
-          ...componentBody({ ...component, state: 1 }),
-          powerpagecomponentid: component.id,
-          powerpagecomponenttype: component.type,
-          'powerpagesiteid@odata.bind': `/powerpagesites(${plan.siteId})`,
-        },
-      });
-      const created = await client.get(`powerpagecomponents(${component.id})`);
-      validateOwned(component, created, plan.siteId);
-      if (created.statecode !== 1) throw new Error('New qualification component must begin inactive.');
-      delete journal.pending;
-      await persist(journal, journalFile, { kind: 'component-created', componentId: component.id });
-    }
-    for (const original of before.overrides.filter((component) => component.statecode === 0)) {
-      journal.pending = { kind: 'baseline-deactivate', componentId: original.powerpagecomponentid };
-      await persist(journal, journalFile);
-      await client.request(`powerpagecomponents(${original.powerpagecomponentid})`, {
-        method: 'PATCH',
-        body: inactiveBody,
-        ifMatch: original['@odata.etag'],
-      });
-      const changed = await client.get(`powerpagecomponents(${original.powerpagecomponentid})`);
-      if (changed.content !== original.content || changed.statecode !== 1)
-        throw new Error('Baseline deactivation readback failed.');
-      delete journal.pending;
-      await persist(journal, journalFile, { kind: 'baseline-deactivated', componentId: original.powerpagecomponentid });
-    }
+    await createLeaseComponents(client, plan, journal, journalFile);
+    await deactivateBaselineOverrides(client, before, journal, journalFile);
     await changeMembers(client, plan, journal, plan.desiredRoleIds, journalFile);
-    if (plan.actorParentAccountId && before.actor._parentcustomerid_value !== plan.actorParentAccountId) {
-      const latest = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
-      if (
-        (latest._parentcustomerid_value ?? null) !== (before.actor._parentcustomerid_value ?? null) ||
-        !latest['@odata.etag']
-      )
-        throw new Error('Actor Account changed before activation; refusing stale conditional mutation.');
-      journal.pending = { kind: 'actor-parent-change' };
-      await persist(journal, journalFile);
-      await client.request(`contacts(${plan.actorContactId})`, {
-        method: 'PATCH',
-        body: { [before.parentNavigation + '@odata.bind']: `/accounts(${plan.actorParentAccountId})` },
-        ifMatch: latest['@odata.etag'],
-      });
-      const changed = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
-      if (changed._parentcustomerid_value !== plan.actorParentAccountId)
-        throw new Error('Actor Account-scope readback failed.');
-      delete journal.pending;
-      await persist(journal, journalFile, { kind: 'actor-parent-changed' });
-    }
-    for (const component of plan.components.filter((component) => component.state === 0)) {
-      const current = await client.get(`powerpagecomponents(${component.id})`);
-      validateOwned(component, current, plan.siteId);
-      journal.pending = { kind: 'component-activate', componentId: component.id };
-      await persist(journal, journalFile);
-      await client.request(`powerpagecomponents(${component.id})`, {
-        method: 'PATCH',
-        body: { statecode: 0, statuscode: 1 },
-        ifMatch: current['@odata.etag'],
-      });
-      const active = await client.get(`powerpagecomponents(${component.id})`);
-      validateOwned(component, active, plan.siteId);
-      if (active.statecode !== 0) throw new Error('Qualification activation readback failed.');
-      delete journal.pending;
-      await persist(journal, journalFile, { kind: 'component-activated', componentId: component.id });
-    }
+    await changeLeaseActorParent(client, plan, before, journal, journalFile);
+    await activateLeaseComponents(client, plan, journal, journalFile);
     journal.state = 'active';
     await persist(journal, journalFile, { kind: 'active' });
     result = await callback({ plan, journal, qualification: 'configuration-active-await-native-cache-and-capture' });
@@ -495,4 +492,83 @@ export async function withQualificationLease(client, plan, callback, { journalFi
     await restoreQualificationLease(client, journal, { journalFile, expectedOrganisationId: plan.organisationId });
   }
   return result;
+}
+
+async function createLeaseComponents(client, plan, journal, journalFile) {
+  for (const component of plan.components) {
+    journal.pending = { kind: 'component-create', componentId: component.id };
+    await persist(journal, journalFile);
+    await client.request('powerpagecomponents', {
+      method: 'POST',
+      body: {
+        ...componentBody({ ...component, state: 1 }),
+        powerpagecomponentid: component.id,
+        powerpagecomponenttype: component.type,
+        'powerpagesiteid@odata.bind': `/powerpagesites(${plan.siteId})`,
+      },
+    });
+    const created = await client.get(`powerpagecomponents(${component.id})`);
+    validateOwned(component, created, plan.siteId);
+    if (created.statecode !== 1) throw new Error('New qualification component must begin inactive.');
+    delete journal.pending;
+    await persist(journal, journalFile, { kind: 'component-created', componentId: component.id });
+  }
+}
+
+async function deactivateBaselineOverrides(client, before, journal, journalFile) {
+  for (const original of before.overrides.filter((component) => component.statecode === 0)) {
+    journal.pending = { kind: 'baseline-deactivate', componentId: original.powerpagecomponentid };
+    await persist(journal, journalFile);
+    await client.request(`powerpagecomponents(${original.powerpagecomponentid})`, {
+      method: 'PATCH',
+      body: inactiveBody,
+      ifMatch: original['@odata.etag'],
+    });
+    const changed = await client.get(`powerpagecomponents(${original.powerpagecomponentid})`);
+    if (changed.content !== original.content || changed.statecode !== 1)
+      throw new Error('Baseline deactivation readback failed.');
+    delete journal.pending;
+    await persist(journal, journalFile, { kind: 'baseline-deactivated', componentId: original.powerpagecomponentid });
+  }
+}
+
+async function changeLeaseActorParent(client, plan, before, journal, journalFile) {
+  if (!plan.actorParentAccountId || before.actor._parentcustomerid_value === plan.actorParentAccountId) return;
+  const latest = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
+  if (
+    (latest._parentcustomerid_value ?? null) !== (before.actor._parentcustomerid_value ?? null) ||
+    !latest['@odata.etag']
+  )
+    throw new Error('Actor Account changed before activation; refusing stale conditional mutation.');
+  journal.pending = { kind: 'actor-parent-change' };
+  await persist(journal, journalFile);
+  await client.request(`contacts(${plan.actorContactId})`, {
+    method: 'PATCH',
+    body: { [before.parentNavigation + '@odata.bind']: `/accounts(${plan.actorParentAccountId})` },
+    ifMatch: latest['@odata.etag'],
+  });
+  const changed = await client.get(`contacts(${plan.actorContactId})?$select=contactid,_parentcustomerid_value`);
+  if (changed._parentcustomerid_value !== plan.actorParentAccountId)
+    throw new Error('Actor Account-scope readback failed.');
+  delete journal.pending;
+  await persist(journal, journalFile, { kind: 'actor-parent-changed' });
+}
+
+async function activateLeaseComponents(client, plan, journal, journalFile) {
+  for (const component of plan.components.filter((component) => component.state === 0)) {
+    const current = await client.get(`powerpagecomponents(${component.id})`);
+    validateOwned(component, current, plan.siteId);
+    journal.pending = { kind: 'component-activate', componentId: component.id };
+    await persist(journal, journalFile);
+    await client.request(`powerpagecomponents(${component.id})`, {
+      method: 'PATCH',
+      body: { statecode: 0, statuscode: 1 },
+      ifMatch: current['@odata.etag'],
+    });
+    const active = await client.get(`powerpagecomponents(${component.id})`);
+    validateOwned(component, active, plan.siteId);
+    if (active.statecode !== 0) throw new Error('Qualification activation readback failed.');
+    delete journal.pending;
+    await persist(journal, journalFile, { kind: 'component-activated', componentId: component.id });
+  }
 }

@@ -48,13 +48,10 @@ const MODERN_LIST_ACTIONS = new Set([
 /** Why a modern include of `list` renders the classic list instead (one rule for preflight and the renderer), or null. */
 export function modernListFallback(list) {
   const metadata = list?.metadata;
-  return on(field(metadata, 'map_enabled', false))
-    ? 'map lists'
-    : on(field(metadata, 'calendar_enabled', false))
-      ? 'calendar lists'
-      : on(field(metadata, 'iscodecomponent', false))
-        ? 'dataset code component lists'
-        : null;
+  if (on(field(metadata, 'map_enabled', false))) return 'map lists';
+  if (on(field(metadata, 'calendar_enabled', false))) return 'calendar lists';
+  if (on(field(metadata, 'iscodecomponent', false))) return 'dataset code component lists';
+  return null;
 }
 /** The configured list action types the local modern list does not serve (associate, workflow, activate, ...). */
 export function modernListUnservedActions(list) {

@@ -1,10 +1,11 @@
+// @test-kind tooling: test fixture ownership releases every loopback listener it opened before a test ends.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { tempDir } from './fixture.mjs';
 
 const helper = new URL('../mirage/testing/owned-fixture.mjs', import.meta.url).href;
 
@@ -15,8 +16,8 @@ for (const mode of [
   'concurrent-first-close-failure',
   'diagnostic-failure',
 ]) {
-  test(`fixture ownership drains actual loopback listeners after ${mode}`, { timeout: 10000 }, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-owner-lifecycle-'));
+  test(`fixture ownership drains actual loopback listeners after ${mode}`, async (t) => {
+    const directory = await tempDir('paqvilo-owner-lifecycle-');
     const state = path.join(directory, 'state');
     await fs.mkdir(state);
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));

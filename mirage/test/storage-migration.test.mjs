@@ -1,6 +1,7 @@
+// @test-kind contract: Paqvilo's own storage routing migration of state files: one migration on load, idempotent reloads and one diagnostic.
 // A state file written without storage routing (inline file data, note documentbody, attachment body) migrates to the storage
 // provider once on load, is idempotent on the next load, reports one STORAGE_MIGRATED diagnostic with counts, and Web API reads
-// answer as before. Without a router the same file loads unchanged.
+// answer with the same data. Without a router the same file loads unchanged.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

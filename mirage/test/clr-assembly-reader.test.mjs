@@ -1,16 +1,23 @@
+// @test-kind contract: Paqvilo's own reader of CLR assembly and plug-in package bytes, including its refusals of malformed input
 // The CLR assembly reader: identity, strong-name state and plug-in / workflow-activity types, on images built by
 // clr-assembly-fixture.mjs, plus one real compiled assembly when dotnet is installed. Nothing is loaded.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from '../lib/clr-assembly-reader.mjs';
+import {
+  InvalidAssembly,
+  inspectAssembly,
+  inspectPackage,
+  inspectSigningCertificate,
+} from '../lib/clr-assembly-reader.mjs';
 import { buildAssembly, fakePublicKey, certificateInspectionFixture } from './clr-assembly-fixture.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const IPLUGIN = 'Microsoft.Xrm.Sdk.IPlugin';
 const ACTIVITY = 'System.Activities.CodeActivity';
@@ -228,55 +235,121 @@ namespace Contoso.Plugins
 `;
 
 describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
-  it(
-    'reads a real compiled plug-in assembly',
-    { skip: dotnet.status !== 0 && 'dotnet is not installed', timeout: 240000 },
-    async () => {
-      const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
-      const dir = await mkdtemp(path.join(tmpdir(), 'paqvilo-clr-'));
-      try {
-        await writeFile(
-          path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
-          `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
-        );
-        await writeFile(path.join(dir, 'Types.cs'), SOURCE);
-        // The temporary build directory is outside the checkout's global.json ancestry.
-        await writeFile(
-          path.join(dir, 'global.json'),
-          JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
-        );
-        const build = spawnSync(
-          'dotnet',
-          [
-            'build',
-            '-o',
-            path.join(dir, 'out'),
-            '--nologo',
-            '-v',
-            'q',
-            '-nodeReuse:false',
-            '-p:UseSharedCompilation=false',
-          ],
-          {
-            cwd: dir,
-            encoding: 'utf8',
-            timeout: 220000,
-            env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
-          },
-        );
-        assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-        const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
-        assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
-        assert.equal(facts.culture, 'neutral');
-        assert.equal(facts.strongNamed, false);
-        assert.equal(facts.publicKeyToken, null);
-        assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
-      } finally {
-        await rm(dir, { recursive: true, force: true, maxRetries: 3 });
-      }
-    },
+  it('reads a real compiled plug-in assembly', { skip: dotnet.status !== 0 && 'dotnet is not installed' }, async () => {
+    const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
+    const dir = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-clr-'));
+    try {
+      await writeFile(
+        path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
+        `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
+      );
+      await writeFile(path.join(dir, 'Types.cs'), SOURCE);
+      // The temporary build directory is outside the checkout's global.json ancestry.
+      await writeFile(
+        path.join(dir, 'global.json'),
+        JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
+      );
+      const build = spawnSync(
+        'dotnet',
+        [
+          'build',
+          '-o',
+          path.join(dir, 'out'),
+          '--nologo',
+          '-v',
+          'q',
+          '-nodeReuse:false',
+          '-p:UseSharedCompilation=false',
+        ],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          timeout: 170_000, // hang guard only, the same bound as the lane's CLI hang guard in fixtures/clr-sdk.mjs
+          env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+        },
+      );
+      assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
+      const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
+      assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
+      assert.equal(facts.culture, 'neutral');
+      assert.equal(facts.strongNamed, false);
+      assert.equal(facts.publicKeyToken, null);
+      assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+});
+
+const PACKAGE_NUSPEC = Buffer.from('<package><metadata><id>p</id><version>1.0.0</version></metadata></package>');
+const isInvalidAssembly = (pattern) => (error) => error instanceof InvalidAssembly && pattern.test(error.message);
+// Offsets of the central directory entries of a ZIP whose end record has no archive comment.
+const centralOffsets = (zip) => {
+  const end = zip.length - 22,
+    offsets = [];
+  let offset = zip.readUInt32LE(end + 16);
+  for (let index = 0; index < zip.readUInt16LE(end + 10); index++) {
+    offsets.push(offset);
+    offset += 46 + zip.readUInt16LE(offset + 28) + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+  }
+  return offsets;
+};
+
+it('refuses a NuGet package whose central entries share one local header', () => {
+  const dll = buildAssembly({ typeRefs: [IPLUGIN], typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }] });
+  const zip = zipOf([
+    { name: 'p.nuspec', data: PACKAGE_NUSPEC },
+    { name: 'lib/net462/a.dll', data: dll },
+    { name: 'lib/net462/b.dll', data: dll },
+  ]);
+  const [, first, second] = centralOffsets(zip);
+  // The second assembly entry is pointed at the local header of the first one.
+  zip.writeUInt32LE(zip.readUInt32LE(first + 42), second + 42);
+  assert.throws(() => inspectPackage(zip), isInvalidAssembly(/overlapping ZIP entries/));
+});
+
+it('refuses a NuGet package whose entries inflate past the total budget', () => {
+  const dll = buildAssembly({ typeRefs: [IPLUGIN], typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }] });
+  const zip = zipOf([
+    { name: 'p.nuspec', data: PACKAGE_NUSPEC },
+    { name: 'lib/net462/a.dll', data: dll },
+  ]);
+  const total = PACKAGE_NUSPEC.length + dll.length;
+  assert.throws(
+    () => inspectPackage(zip, { maxInflatedBytes: total - 1 }),
+    isInvalidAssembly(/package inflates beyond the local limit/),
   );
+  assert.equal(inspectPackage(zip, { maxInflatedBytes: total }).assemblies.length, 1);
+});
+
+it('names an 8,000-deep nested type chain without exhausting the stack', () => {
+  const depth = 8000;
+  const typeDefs = [{ full: 'Contoso.Deep', base: null, interfaces: [] }];
+  let full = 'Contoso.Deep';
+  for (let index = 1; index < depth; index++) {
+    const outer = full;
+    full = `${outer}+B`;
+    typeDefs.push({ full, base: null, interfaces: [], nestedIn: outer });
+  }
+  const facts = inspectAssembly(buildAssembly({ typeDefs }));
+  assert.equal(facts.types.length, depth);
+  assert.equal(facts.types.at(-1).fullName.split('+').length, depth);
+});
+
+it('walks an 8,000-deep base-class chain to its plug-in root without exhausting the stack', () => {
+  const depth = 8000;
+  const typeDefs = [{ full: 'Contoso.Chain.T0', interfaces: [IPLUGIN] }];
+  for (let index = 1; index < depth; index++) {
+    typeDefs.push({ full: `Contoso.Chain.T${index}`, base: `Contoso.Chain.T${index - 1}` });
+  }
+  const facts = inspectAssembly(buildAssembly({ typeRefs: [IPLUGIN], typeDefs }));
+  assert.equal(facts.types.length, depth);
+  assert.deepEqual(facts.types.at(-1), {
+    fullName: `Contoso.Chain.T${depth - 1}`,
+    isPlugin: true,
+    isWorkflowActivity: false,
+  });
 });

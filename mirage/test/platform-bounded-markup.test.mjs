@@ -1,6 +1,21 @@
+// @test-kind security: contextual condition substitution and label stripping of hostile markup do work linear in its length.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contextualViewFetchXml, renderComponent } from '../lib/platform.mjs';
+import { contextualViewFetchXml, plainText, renderComponent } from '../lib/platform.mjs';
+
+// The work bound, at both sizes: each scan that must read the hostile run steps over it (so the counted scanners, not an
+// uncounted pattern, decided the input), and the total stays within a small multiple of the input length. A rescan or
+// backtracking regression grows with the square of the run and exceeds the bound by orders of magnitude.
+const RUN_SCALES = [1, 2];
+const SCAN_FACTOR = 4;
+const SCAN_SLACK = 64;
+
+function assertLinearWork(work, length, label, { run = length, readers = 1 } = {}) {
+  assert.ok(
+    work >= readers * run - SCAN_SLACK && work <= SCAN_FACTOR * length + SCAN_SLACK,
+    `${label}: ${work} positions for ${length}`,
+  );
+}
 
 test('contextual view substitution preserves unknown attributes and quoted tag delimiters', () => {
   const source =
@@ -62,16 +77,21 @@ test('contextual conditions retain missing-principal defaults and leave unknown 
 });
 
 test('condition scanning remains bounded for repeated incomplete tags and long closing whitespace', () => {
-  const incomplete = '<condition '.repeat(100000),
-    spaces = ' '.repeat(500000),
-    source = '<condition uitype="contact"' + spaces + '>';
-  const started = performance.now();
-  assert.equal(contextualViewFetchXml(incomplete, { user: { id: 'person' } }), incomplete);
-  assert.equal(
-    contextualViewFetchXml(source, { user: { id: 'person' } }),
-    '<condition uitype="contact" value="person"' + spaces + '>',
-  );
-  assert.ok(performance.now() - started < 3000, 'Pathological source processing completes with bounded work');
+  for (const scale of RUN_SCALES) {
+    const incomplete = '<condition '.repeat(1000 * scale),
+      spaces = ' '.repeat(5000 * scale),
+      source = '<condition uitype="contact"' + spaces + '>';
+    let stats = { positions: 0 };
+    assert.equal(contextualViewFetchXml(incomplete, { user: { id: 'person' } }, stats), incomplete);
+    assertLinearWork(stats.positions, incomplete.length, 'repeated incomplete tags');
+    stats = { positions: 0 };
+    assert.equal(
+      contextualViewFetchXml(source, { user: { id: 'person' } }, stats),
+      '<condition uitype="contact" value="person"' + spaces + '>',
+    );
+    // The tag-end, attribute and closing-whitespace scans each step over the spaces.
+    assertLinearWork(stats.positions, source.length, 'long closing whitespace', { run: spaces.length, readers: 3 });
+  }
 });
 
 async function renderSectionLabel(label) {
@@ -114,9 +134,13 @@ test('plain native section labels retain legacy tag stripping, whitespace entiti
 });
 
 test('native labels with many unmatched opening delimiters remain authored without quadratic stripping', async () => {
-  const label = '<'.repeat(100000) + 'tail',
-    started = performance.now(),
-    html = await renderSectionLabel(label);
-  assert.ok(html.includes('<fieldset aria-label="' + '&lt;'.repeat(100000) + 'tail">'));
-  assert.ok(performance.now() - started < 3000, 'An unterminated native label completes with bounded work');
+  for (const scale of RUN_SCALES) {
+    const count = 5000 * scale,
+      label = '<'.repeat(count) + 'tail',
+      stats = { positions: 0 };
+    assert.ok((await renderSectionLabel(label)).includes('<fieldset aria-label="' + '&lt;'.repeat(count) + 'tail">'));
+    // The section label is rendered through this stripper.
+    assert.equal(plainText(label, stats), label);
+    assertLinearWork(stats.positions, label.length, 'unmatched opening delimiters');
+  }
 });

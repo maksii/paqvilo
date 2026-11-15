@@ -1,0 +1,548 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "tds-sql",
+  "suite": "sql-server-date-string-facts-v1",
+  "oracle": {
+    "kind": "reference-engine",
+    "name": "Microsoft SQL Server",
+    "version": "16.0.4305.5",
+    "scope": "Repeated SQL Server engine results for nine exact date-string inputs; no Dataverse TDS claim Client-derived encodings (CLR type, precision and scale of fixed-width types, binary layouts of decimal and float values) are not recorded; values are recorded as exact text."
+  },
+  "captures": [
+    {
+      "id": "sqlserver-run-1",
+      "sha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "sqlserver-run-2",
+      "sha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sql-function-date-string-83",
+      "input": {
+        "query": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "-2"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-84",
+      "input": {
+        "query": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-85",
+      "input": {
+        "query": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-86",
+      "input": {
+        "query": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-87",
+      "input": {
+        "query": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-88",
+      "input": {
+        "query": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-89",
+      "input": {
+        "query": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "90"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-109",
+      "input": {
+        "query": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-date-string-110",
+      "input": {
+        "query": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "0"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

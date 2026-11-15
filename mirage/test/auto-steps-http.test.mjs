@@ -7,9 +7,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('auto-generated steps post back tab by tab and save every tab on Insert', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'auto-steps-http-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'auto-steps-http-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: fixture-site\nadx_name: Invented stepped form',
     'Home.webpage.yml':
@@ -57,10 +59,7 @@ test('auto-generated steps post back tab by tab and save every tab on Insert', a
       },
     },
   });
-  t.after(async () => {
-    await app.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const ids = nativeFormControlIds('entityform', 'stepped');
   const viewStateOf = (html) => /name="__VIEWSTATE" id="__VIEWSTATE" value="([^"]*)"/.exec(html)[1];
   const post = (entries) =>

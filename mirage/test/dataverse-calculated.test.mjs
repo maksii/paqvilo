@@ -96,6 +96,22 @@ test('supported formulas compute on read, including the one-hop parent field', a
   assert.deepEqual(diagnostics, []);
 });
 
+test('calculated capability descriptions skip column scans when no overrides can establish behaviour', async (t) => {
+  const { api, store } = await setup(t);
+  const original = store.fieldDefinitions;
+  let reads = 0;
+  store.fieldDefinitions = function (...args) {
+    reads++;
+    return original.apply(this, args);
+  };
+  try {
+    assert.equal(api.calculatedColumns.describe().level, 'contract');
+  } finally {
+    store.fieldDefinitions = original;
+  }
+  assert.equal(reads, 0);
+});
+
 test('an unsupported formula reads null and reports CALCULATED_UNSUPPORTED once per column', async (t) => {
   const { request, json, diagnostics } = await setup(t);
   for (let index = 0; index < 2; index += 1) {

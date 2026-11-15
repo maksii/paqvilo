@@ -1,3 +1,4 @@
+// @test-kind unproven: local models of basic-form create permission, postback descriptors and panel markup
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -46,7 +47,8 @@ test('a column placed twice on a form is declared once for its postback', () => 
   );
 });
 
-test('a plugin rejection surfaces its message in the Bootstrap 5 danger panel', () => {
+// @test-kind observation: native basic-form plug-in refusal display, 7 captures on 2026-11-15 (message shown in the Bootstrap 5 danger panel when Site/EnableCustomPluginError is true)
+test('a plugin rejection surfaces its message in the Bootstrap 5 danger panel when Site/EnableCustomPluginError is true', () => {
   const id = '30000000-0000-4000-8000-000000000001';
   const step = {
     id,
@@ -89,7 +91,9 @@ test('a plugin rejection surfaces its message in the Bootstrap 5 danger panel', 
     },
   );
   failure.nativeFormWriteFailure = true;
-  const outcome = formWriteError(failure);
+  const outcome = formWriteError(failure, undefined, 'entityform', {
+    settings: { 'Site/EnableCustomPluginError': 'true' },
+  });
   assert.equal(outcome.message, 'Widget rejected <here>');
   assert.equal(
     formErrorPanel(outcome, { v5: true, closeButton: '<input id="btnCloseMessage">' }),

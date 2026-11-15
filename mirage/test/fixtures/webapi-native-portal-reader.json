@@ -1,0 +1,744 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-08",
+  "scope": "40 concrete typed-reader cases across two authenticated native rounds. Selected HTTP status and full error JSON before its CLR suffix; response property order retained. Only entity/property aliases change, and unparsed owned POST identifiers/bootstrap names are omitted. Both native date columns are Edm.DateTimeOffset; date-format label does not claim DateOnly behavior. Private native full-body byte replay is separate.",
+  "captures": [
+    {
+      "runSha256": "50e53d0466271ea45a7ab825adc96c7c46f8f41e27e9dc1838362b4dc6a19316",
+      "collectorSha256": "37a49d9b03ad8f8d1fb70f41016d005de6b02b3b2f568a9e241f23376adf8eab",
+      "planSha256": "ee9a9e725310288a20540da21ef6ee809969521847d6b78d5e7aad77b7b9dbc3"
+    },
+    {
+      "runSha256": "4ce753eb335d2958337b7574a928f3560af0a9fee7d4f276223552ec4c54b207",
+      "collectorSha256": "37a49d9b03ad8f8d1fb70f41016d005de6b02b3b2f568a9e241f23376adf8eab",
+      "planSha256": "16fe1e90022c0b57ee249d962dbcdf61b836084ce1712516b14160ab00b81669"
+    }
+  ],
+  "normalizations": [
+    "Entity accounts -> invented probes.",
+    "Property names -> invented schema aliases preserving primitive EDM types.",
+    "Only CLR suffix beginning CRLF + three spaces + at is excluded from the public selected error facet; raw endpoint bytes remain private."
+  ],
+  "cases": [
+    {
+      "id": "round-1.integer-decimal.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":1.5}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '1.5' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "c29793ed9dc9add0a8fe2c1fe52dffa10cf312f131083f48feb5e73d921630b5"
+    },
+    {
+      "id": "round-1.integer-decimal.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":1.5}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '1.5' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "4b6696160aafc63ccb8bc80786c551d6e74aa879b1b69522bf66427c9dff3226"
+    },
+    {
+      "id": "round-1.integer-string.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":\"invalid-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-A' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format."
+          }
+        }
+      },
+      "nativeBodySha256": "6f0bb3dad2568352f6500452d0b8ecf46b1d81aaa273fd6e8c31e4ddcc8b8aae"
+    },
+    {
+      "id": "round-1.integer-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":\"invalid-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-A' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format."
+          }
+        }
+      },
+      "nativeBodySha256": "02c935b553d9991610f7986ddf06976e43cee1122f727c271c22d10bf5652437"
+    },
+    {
+      "id": "round-1.integer-bool.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":true}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "94bac5c662be8bf7cc0626ab2d31d062727482b30c65a8b868940990a4e30417"
+    },
+    {
+      "id": "round-1.integer-bool.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":true}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "590b3c03e4719945daff5404b0fed249dedd977889a5755589d4630128d15115"
+    },
+    {
+      "id": "round-1.integer-object.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":{}}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'quantity' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "50c2af4098a10ff8625ebcf59c490e315cc86c3b8b387140ebd979c84fd9ba73"
+    },
+    {
+      "id": "round-1.integer-object.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":{}}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'quantity' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "58066d35765a49f22b0bb0c299e8d3825de4d249e41c53159f185d7bf21cc20d"
+    },
+    {
+      "id": "round-1.integer-array.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":[]}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "26e0f6aa3312a8e10db48dee054def31b2dab70ee398498fb7b6516c6326d8e0"
+    },
+    {
+      "id": "round-1.integer-array.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":[]}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "194124643eeac25b1457a780ecb81c0d18d29e02940df3827a9daf94874160e1"
+    },
+    {
+      "id": "round-1.boolean-string.POST",
+      "method": "POST",
+      "raw": "{\"enabled\":\"invalid-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-A' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean."
+          }
+        }
+      },
+      "nativeBodySha256": "627e550ca8bc468776eae76544f985fb796d402ca1c51c07379f759ffcee590b"
+    },
+    {
+      "id": "round-1.boolean-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"enabled\":\"invalid-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-A' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean."
+          }
+        }
+      },
+      "nativeBodySha256": "9cf5c1e2528883591a426d28ebf21ff8486c6df70f2cd5ef602247c6151b1570"
+    },
+    {
+      "id": "round-1.decimal-string.POST",
+      "method": "POST",
+      "raw": "{\"amount\":\"2.25\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert a value to target type 'Edm.Decimal' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true."
+          }
+        }
+      },
+      "nativeBodySha256": "7579132de23aaa7542358fac58f3f0e6c374308b69790eeda34cdb780c4868a6"
+    },
+    {
+      "id": "round-1.decimal-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"amount\":\"2.25\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert a value to target type 'Edm.Decimal' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true."
+          }
+        }
+      },
+      "nativeBodySha256": "da9a510f72f3d997791db46ba544f3123cdde436a2132aa7ca101615e38aa1ef"
+    },
+    {
+      "id": "round-1.date-string.POST",
+      "method": "POST",
+      "raw": "{\"day\":\"invalid-date-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-1.date-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"day\":\"invalid-date-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-1.date-format-string.POST",
+      "method": "POST",
+      "raw": "{\"day\":\"invalid-date-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-1.date-format-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"day\":\"invalid-date-A\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-1.string-number.POST",
+      "method": "POST",
+      "raw": "{\"title\":2}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'."
+          }
+        }
+      },
+      "nativeBodySha256": "049f37bb7e60a196186add6554eb6542abfb911cb60014fdffd3e86247e27863"
+    },
+    {
+      "id": "round-1.string-number.PATCH",
+      "method": "PATCH",
+      "raw": "{\"title\":2}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '2' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'."
+          }
+        }
+      },
+      "nativeBodySha256": "259889a7b079731e68fd176acfca0c625b4ee78edcc46784ab07d79629e19d73"
+    },
+    {
+      "id": "round-2.integer-decimal.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":2.5}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '2.5' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "0b3c71baa7549a7ba74d7fd802622a382ae041cc770815e8934de1e447957115"
+    },
+    {
+      "id": "round-2.integer-decimal.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":2.5}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '2.5' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "c8cdbaa427ae5b74bf2445a2a10ecfc8cfe6fe92234b7ec8385a96cda2f3cae7"
+    },
+    {
+      "id": "round-2.integer-string.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":\"invalid-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-B' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format."
+          }
+        }
+      },
+      "nativeBodySha256": "d5fad382229dcddccf07d50653d0eee2927b38c8908f7a3e226c3272b040a22c"
+    },
+    {
+      "id": "round-2.integer-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":\"invalid-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-B' to the expected type 'Edm.Int32'. ---> System.FormatException: Input string was not in a correct format."
+          }
+        }
+      },
+      "nativeBodySha256": "abf343fa1aa3662ea9226a4a57175ae71927b582d57064e8c504b844af534cb2"
+    },
+    {
+      "id": "round-2.integer-bool.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":false}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "a96df9728ca78d8093888035e5c13f7b073e7afc4e0d1a2daa86cfc859cd9697"
+    },
+    {
+      "id": "round-2.integer-bool.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":false}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'False' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+          }
+        }
+      },
+      "nativeBodySha256": "8a27c378b7c2015e2e76256d98f7c5cc6661ea2dfb42f8c5f02547e8dd95c5cd"
+    },
+    {
+      "id": "round-2.integer-object.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":{}}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'quantity' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "50c2af4098a10ff8625ebcf59c490e315cc86c3b8b387140ebd979c84fd9ba73"
+    },
+    {
+      "id": "round-2.integer-object.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":{}}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'quantity' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "58066d35765a49f22b0bb0c299e8d3825de4d249e41c53159f185d7bf21cc20d"
+    },
+    {
+      "id": "round-2.integer-array.POST",
+      "method": "POST",
+      "raw": "{\"quantity\":[]}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "26e0f6aa3312a8e10db48dee054def31b2dab70ee398498fb7b6516c6326d8e0"
+    },
+    {
+      "id": "round-2.integer-array.PATCH",
+      "method": "PATCH",
+      "raw": "{\"quantity\":[]}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+          }
+        }
+      },
+      "nativeBodySha256": "194124643eeac25b1457a780ecb81c0d18d29e02940df3827a9daf94874160e1"
+    },
+    {
+      "id": "round-2.boolean-string.POST",
+      "method": "POST",
+      "raw": "{\"enabled\":\"invalid-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-B' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean."
+          }
+        }
+      },
+      "nativeBodySha256": "744a1e7c4e13ac0390752297c38e2741514255265c1a3eb6116472257adbd489"
+    },
+    {
+      "id": "round-2.boolean-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"enabled\":\"invalid-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal 'invalid-B' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean."
+          }
+        }
+      },
+      "nativeBodySha256": "64a8f3f7eef5938d74fecef8afac9c03a413995ceb3374bdcab313bd133192bb"
+    },
+    {
+      "id": "round-2.decimal-string.POST",
+      "method": "POST",
+      "raw": "{\"amount\":\"3.75\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert a value to target type 'Edm.Decimal' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true."
+          }
+        }
+      },
+      "nativeBodySha256": "7579132de23aaa7542358fac58f3f0e6c374308b69790eeda34cdb780c4868a6"
+    },
+    {
+      "id": "round-2.decimal-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"amount\":\"3.75\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert a value to target type 'Edm.Decimal' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true."
+          }
+        }
+      },
+      "nativeBodySha256": "da9a510f72f3d997791db46ba544f3123cdde436a2132aa7ca101615e38aa1ef"
+    },
+    {
+      "id": "round-2.date-string.POST",
+      "method": "POST",
+      "raw": "{\"day\":\"invalid-date-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-2.date-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"day\":\"invalid-date-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-2.date-format-string.POST",
+      "method": "POST",
+      "raw": "{\"day\":\"invalid-date-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-2.date-format-string.PATCH",
+      "method": "PATCH",
+      "raw": "{\"day\":\"invalid-date-B\"}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040239",
+          "innererror": {
+            "code": "0x80040239",
+            "message": "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+          }
+        }
+      },
+      "nativeBodySha256": "03ceebe287bc9781e35d2595d993cfa17ac271804a71c6239da88c9e79a7a3e6"
+    },
+    {
+      "id": "round-2.string-number.POST",
+      "method": "POST",
+      "raw": "{\"title\":3}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '3' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'."
+          }
+        }
+      },
+      "nativeBodySha256": "042ff51e3b0444e0caf424e7be8643da682ffe06a181cd7b50fa58d4a7e4b1da"
+    },
+    {
+      "id": "round-2.string-number.PATCH",
+      "method": "PATCH",
+      "raw": "{\"title\":3}",
+      "expected": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80048d19",
+          "innererror": {
+            "code": "0x80048d19",
+            "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '3' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Int32' to the expected target type 'Edm.String'."
+          }
+        }
+      },
+      "nativeBodySha256": "099f936984926809c228b7981ea8c010c3ad3c32307e7124d958c352fb8bd79e"
+    }
+  ]
+}

@@ -1,0 +1,933 @@
+{
+  "schemaVersion": 1,
+  "project": "paqvilo",
+  "branch": "sonar-findings-0.9.8",
+  "analyzedRevision": "0bac4f7401b6fead99fdaeea6e5fbd886dd672f9",
+  "analysisId": "b5042f02-c7f5-4dea-b6ba-3159b52cd970",
+  "policy": "Per-issue reviewed false positives; no exclusion or automatic suppression list; future revisions require fresh analysis",
+  "entries": [
+    {
+      "key": "dc1417b1-7167-4a0c-ad56-53094a7350b6",
+      "rule": "javascript:S8786",
+      "file": "mirage/dataverse-parity.mjs",
+      "line": 781,
+      "sourceSha256": "417a4c3dde6cc8b508f0b02a8e40623e6ed840297063341a1081f6751cd02f0a",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Inspected throughLastTagClose at761: slices through final >. Every <Parameter candidate that reaches attributes therefore finds a >; [^>]* consumes to its first > and succeeds. Namespace-word failures cannot cross another <, so failed prefix runs and consumed tag spans are disjoint. Total O(n); existing NOSONAR783 misses issue781. Approve precise server FP; no expression change required.",
+        "Actual inspectCsdl truncates content through its final >. After a <Parameter prefix succeeds, [^>]* reaches next >, and optional slash/whitespace can always finish there. It cannot fail then retry a suffix. Prefix namespace-word scans cannot cross <; failed candidates and successful consumed tags own disjoint runs. O(n). Existing precise proof is misplaced on783 rather than781."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "cc7fb75a-b588-4969-86bb-f01865e202ce",
+      "rule": "javascript:S8786",
+      "file": "mirage/lib/model-driven/client-runtime.mjs",
+      "line": 228,
+      "sourceSha256": "4b829038f49878e9cc512e8ef8474d741ddcc5a9954245c4fa928fe72522de6c",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Anchored HTTP status prefix; [^CRLF]* only scans status line. First optional newline enters lazy header group. At each position, body alternative only tests a constant-size blank-line delimiter; its unrestricted final wildcard succeeds immediately when delimiter found. Otherwise header scans once to end. No failure after final wildcard can cause repeated suffix scans. Linear O(n); comment227 misses expression228. Approve exact server FP.",
+        "Anchored HTTP status has fixed three digits and status-text excluding CR/LF. Lazy header wildcard advances once seeking double newline or end. First double newline enables final unrestricted body wildcard, which always consumes to end successfully; failure cannot force repeated suffix body scans. Optional CR choices constant width. O(n) on actual primitive response text, including no delimiter. Existing proof comment adjacent rather than flagged line."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "56cd3975-a60f-4062-a0e6-9b4296d83bb0",
+      "rule": "javascript:S2189",
+      "file": "mirage/webapi-inventory.mjs",
+      "line": 228,
+      "sourceSha256": "6f1b2e6cda4eb96eb525363669685c2954ee7479486c88bb8cda75f20ca2196d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Inner loop updates end using text.indexOf(close,end+1); nonnegative result strictly increases end, otherwise -1 falsifies next condition. Finite text bounds iterations. standalone is intentionally invariant and does not establish an infinite loop.",
+        "In replaceBlocks, standalone is invariant configuration while end is initialized by indexOf and strictly advances via indexOf(close,end+1) or becomes-1. Finite text guarantees termination. A nonboundary close is intentionally skipped; removing standalone changes grammar."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "01c73594-1ca1-4657-a272-5138ea9a8dbe",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/audit-log.mjs",
+      "line": 210,
+      "sourceSha256": "00404a35795d820d2e3dd9ff05f64406b89e52d7f0164d0fe826628163533f5f",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "finish callback receives status; line206 assigns Number.isInteger(status)?status:500. Integer401 remains401, so equality is reachable and denied classification is intentional.",
+        "finish dynamically accepts status and assigns Number.isInteger(status)?status:500 immediately before comparison. Input401 makes first equality true;403 makes second true. Denied output is observable and neither is constant-false."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "eaaa6716-9f77-4fec-aeba-77f40cb75345",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/audit-log.mjs",
+      "line": 210,
+      "sourceSha256": "00404a35795d820d2e3dd9ff05f64406b89e52d7f0164d0fe826628163533f5f",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "finish callback receives status; line206 assigns Number.isInteger(status)?status:500. Integer403 remains403, so equality is reachable and denied classification is intentional.",
+        "Separate403 equality key: finish with status403 retains integer403 and enters denied branch, while200 reaches success. Initial entry status is not its permanent value."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a93c927f-64df-40cc-858a-f9f2ca3710ec",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-odata.mjs",
+      "line": 279,
+      "sourceSha256": "2c4808083a04486de7c78ac630a6d47e0b693de5aac954a594fcad047b2d4497",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "SEGMENT17 optional parenthesized KEY produces missing head.args=undefined for an unkeyed collection, and nonempty string for keyed input. Empty string is separately rejected277; key guard is necessary.",
+        "head.args is optional request-segment parenthesized capture. Collection widgets has args undefined and bypasses keyProblem; keyed widgets(...) has string args and validates it. Empty parentheses separately rejected. Both outcomes real."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "958c02b7-6d04-4140-a011-ed672a7b8839",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-values.mjs",
+      "line": 175,
+      "sourceSha256": "088be65ffd64e5388a964e5a2ffb17485209eeb67a9f767891f7daa08f3e0ccc",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "namedMonthDate197-199 returns null for an alphabetic unknown month after named regex matches. Example Foo 1, 2020 reaches text===null true; ordinary numeric date reaches false.",
+        "portalMonthFirstDate replaces string text with namedMonthDate result; ENGLISH_MONTHS missing key returnsnull. Foo 1, 2020 reaches text===null while January 1, 2020 becomes normalized text. Guard prevents invalid month flowing onward."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "d0d013ae-8d2b-48f3-b0f7-83de19b917a4",
+      "rule": "javascript:S3782",
+      "file": "mirage/lib/native-services.mjs",
+      "line": 1461,
+      "sourceSha256": "5ab0af2a3d0121a5eee891ad57b5a926a8b4cf9d1be028f6c2eecfff31473dd4",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "formatMoneyEntry1444 sets number to null or Number(inner). chooseLazily61-64 calls only chosen branch; null test1454 selects empty result and never invokes Math.abs. Math.abs branch receives a number, including possible NaN, never null.",
+        "formatMoneyEntry number is null for missing/empty inner, otherwise Number(inner). Actual chooseLazily calls only yes when number==null and otherwise only no. Math.abs is inside no callback; null never reaches it. Example inner5 formats numeric5; missing inner emits empty string."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "399ed857-c956-4011-9515-48453746e8ce",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/plugin-clr.mjs",
+      "line": 2710,
+      "sourceSha256": "a768fbe918dcd6bc481ec6345625a0487360afe053d5fee3be821b44c551f97a",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "readRequestParameters2655-2665 is built dynamically: internal/delegated reads or portalInputParameters filtering omit IncludeAnnotations; ordinary outside-plugin reads supply false. Both undefined and false paths reach this condition.",
+        "readRequestParameters comes from conditional spreads and property filter through Object.fromEntries. Outside reads include IncludeAnnotations:false; delegated/internal/portal override paths omit it. Property is false or undefined; necessary branch controls nonSDK annotation flags."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "411a2255-0a31-4d09-bdc6-06d79f7385ba",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/browser-launch.mjs",
+      "line": 37,
+      "sourceSha256": "a219c525782b59f7303058328cfe5bd0f5728e9b56854439100218b3c34a84d7",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Exported windowsLaunchOptions defaults only undefined; explicit null is retained by default parameter and must return unchanged. Object/array/string alternatives are also deliberately validated before args inspection.",
+        "Exported windowsLaunchOptions {} default applies only to undefined. Explicit null on win32 satisfies options===null and returns unchanged for Playwright validation; object proceeds. Guard has real public input outcome."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "519d1fa4-2ea5-41b5-a624-5b0b66491709",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-sdk-message-catalogue.mjs",
+      "line": 231,
+      "sourceSha256": "4c3c532fbeaf0031762c1993e550c784b6cd18be3d071d23dda28b59a663488e",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "ROWS has six-field rows such as Archive12 and eight-field rows such as ApplyRecordCreationAndUpdateRule11. Destructured seventh allowed is undefined or number; missing maps none to null, present maps frozen flags.",
+        "Concrete ROWS: Archive has only six fields so allowedundefined and none:null; ApplyRecordCreationAndUpdateRule allowed1 makes [true,0]; AssociateEntities allowed0. Optional tuple fields and allowed1 are actual checked-in values, not hypothetical."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "3c976c44-4d8e-43f0-a833-15255a9791f5",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/exported-plugins.mjs",
+      "line": 1644,
+      "sourceSha256": "b3362178a3db1212c596429085a7e05128a768fc24b0009378eb8184bc023abf",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "phaseFrame construction receives concurrencyBehavior option default0 at1560, and real explicit null flows exist (plugin-bulk549, plugin-async504, data1157). Null intentionally omits named-operation concurrency parameter; default0 retains it.",
+        "concurrencyBehavior defaults0 but explicitnull survives. Actual callers data.mjs omitConcurrencyBehavior, plugin-bulk and plugin-async supplynull. Named-message main update omits synthetic slot; ordinary update inserts it. Null contract is real."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a4a3a1db-3c31-48af-99dd-5020b9338f70",
+      "rule": "javascript:S3782",
+      "file": "mirage/lib/plugin-clr.mjs",
+      "line": 911,
+      "sourceSha256": "a768fbe918dcd6bc481ec6345625a0487360afe053d5fee3be821b44c551f97a",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "value907-911 is proven primitive string. String.prototype.slice end undefined explicitly means string length; optional trailing percent flag supplies -1 only when stripping trailing %. Undefined is valid standard API input.",
+        "Actual Like/NotLike branch narrows value to primitive string. String.slice accepts undefined end as string length: abc with no trailing percent preserves c; abc% end-1 removes percent. Valid built-in use, not wrong argument type."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "4cefa099-706f-4e3c-a3d5-feb1a1e74f80",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/plugin-images.mjs",
+      "line": 62,
+      "sourceSha256": "02ab8d1e88ff123072bc3c768f0d1734f75c9b1994b3cef0a9e9a37eec789acd",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "primaryName is an explicit exported option, not fixed to null. exported-plugins2016 supplies primaryNameSide(operation); plugin-images45-48 returns pre for delete/deletemultiple/assign. Asynchronous steps make branch reachable.",
+        "Public stageImageSet receives actual primaryNameSide(operation) from exported-plugins. Delete/assign returns pre; asynchronous step adds platform pre-image. Parameter defaultnull does not constrain actual caller."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "13c02b05-ebfe-4f7a-8c12-2893a6b496ae",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/plugin-images.mjs",
+      "line": 70,
+      "sourceSha256": "02ab8d1e88ff123072bc3c768f0d1734f75c9b1994b3cef0a9e9a37eec789acd",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "primaryNameSide45-48 returns post for supported other messages and is supplied by exported-plugins2016. Asynchronous post step reaches this branch; missing option/null remains distinct.",
+        "Same public caller: eligible non-delete operation returns post. Queued asynchronous step adds platform post-image after its own images. Null/pre do not. Flagged equality reachable."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "45d9c305-130a-4d09-965b-e240a9d4e16c",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/plugin-sdk-query.mjs",
+      "line": 145,
+      "sourceSha256": "79df3510d071ce0aa21c92ecf9156ad6010f9429c32d4b48573a454fdbe762b6",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "AGGREGATES132 is finite seven-element array; member(expression,AggregateType) is decoded dynamic SDK value. Out-of-range value99 gives undefined, while0 gives null and1 count. Unsupported enum guard is real.",
+        "AGGREGATES finite array(null,count,countcolumn,sum,avg,min,max) indexed by dynamic SDK AggregateType. Value99 yieldsundefined and fails;0 yieldsnull and accepted. Necessary unsupported enum rejection."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "d79716a9-7aaa-450a-9a67-18cb96b3f57d",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/plugin-sdk-query.mjs",
+      "line": 145,
+      "sourceSha256": "79df3510d071ce0aa21c92ecf9156ad6010f9429c32d4b48573a454fdbe762b6",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "GROUPINGS133 is finite eight-element array; member(expression,DateTimeGrouping) is decoded dynamic SDK value. Out-of-range99 gives undefined and triggers validation; valid0 null is intentionally accepted.",
+        "GROUPINGS finite array(null,day,week,month,quarter,year,fiscal-period,fiscal-year) indexed by dynamic DateTimeGrouping.99 yieldsundefined;0 returnsnull. Separate key validates other operand of same guard."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "3b0e9757-26b0-44b9-8a6b-f125ce743e79",
+      "rule": "javascript:S3782",
+      "file": "mirage/admin/view-activity.mjs",
+      "line": 2386,
+      "sourceSha256": "af13598faf45dd6f05d591f90175536bd312ff856043ec36c53e8391c9e33a4c",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "compareTrees2277-2280 computes delta as null sentinel or numeric subtraction. Table items filter removes null2385 before sort. Math.abs(y.delta) therefore receives number (NaN remains number), not null.",
+        "Compare constructs delta asnull or primitive numeric subtraction. Immediate filter(delta!==null) precedes sort; both comparator operands come from nonnull array. Math.abs(y.delta) receives number (possibly NaN, stillnumber), notnull."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "c105b714-2b7e-44b4-91ad-bf00e744200e",
+      "rule": "javascript:S3782",
+      "file": "mirage/admin/view-activity.mjs",
+      "line": 2386,
+      "sourceSha256": "af13598faf45dd6f05d591f90175536bd312ff856043ec36c53e8391c9e33a4c",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Same comparison pipeline: numeric subtraction or null; filter2385 excludes null before sorting. Math.abs(x.delta) receives number, not null.",
+        "Separate x.delta Math.abs: completed durations10/15 produce delta5; unfinished null-duration row removed by preceding filter before comparator. No runtime expression change needed."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "e55bc716-6e0f-441a-a652-15e6d46e3689",
+      "rule": "javascript:S4123",
+      "file": "mirage/lib/canvas-http.mjs",
+      "line": 565,
+      "sourceSha256": "9c16406683bd9cee3ce8d85bf08742fac53f84c733ba77a57cf35a20289df6fa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "createCanvasHandler313 accepts principal callback injection. Actual canvas-runtime.test201 injects async()=>caller, proving thenable path. Optional setActor call skips argument evaluation when current trace absent; preserving await also preserves scheduling on synchronous callback.",
+        "createCanvasHandler documents principal(req) returning principal/null OR Promise thereof. Injected callback is not constrained by default syncnull. Await resolves async principal before traceActor; optional setActor skips argument evaluation if no current span. Sync callback retains original microtask ordering."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "64e896d3-a650-43c8-adc2-503633590a81",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/record-tables.mjs",
+      "line": 1044,
+      "sourceSha256": "4ba5f660538c722e16ddbf98c5ab73685df2fc88bf4fb59017bc93375030562b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Legacy descriptor path711 assigns descriptor.versionHighWatermark directly. Validation707 permits undefined for older descriptors, so constructor initial0 can become undefined. retainVersion must lazily initialize via maximumVersion before comparison.",
+        "RecordTable starts watermark0 but descriptor restore explicitly permits omitted legacy versionHighWatermark and assigns descriptor value at711. retainVersion then seesundefined and invokes maximumVersion. Not permanently initialized numeric after constructor."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "d1076bc6-7e06-4752-8fc4-a891413fba23",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/record-tables.mjs",
+      "line": 1048,
+      "sourceSha256": "4ba5f660538c722e16ddbf98c5ab73685df2fc88bf4fb59017bc93375030562b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Legacy descriptor711 permits missing watermark. maximumVersion tests undefined, initializes0 before calling retainVersion in scan1050, preventing recursive initialization while computing actual maximum.",
+        "Legacy descriptor omission setsundefined; maximumVersion writes0 before scanning and calling retainVersion, preventing recursion. Numeric saved watermark bypasses scan. Both guard outcomes supported."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "54b05faa-9129-44b2-b1fc-b627c5dd25dd",
+      "rule": "javascript:S3403",
+      "file": "lense/panel-ui.mjs",
+      "line": 3194,
+      "sourceSha256": "56eb9ef333ecb6731b9ddbdeb3fb6df4702df143a5a453c5ea9b6d55dcc908a1",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "pending3191 is same object assigned S.diff before await3193. No overlapping interaction leaves equality true; closediff3199 or another diff replaces it while request waits and makes false. This stale-response identity guard is reachable both ways.",
+        "pending is exactly object assigned S.diff before awaited API. No intervening event makes identity comparisontrue; closediff/newdiff during await replaces reference and makesfalse. Guard prevents stale publication."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "6f5aca52-82a2-4af6-a0ed-9565349baa81",
+      "rule": "javascript:S2259",
+      "file": "lense/setup/app.mjs",
+      "line": 1693,
+      "sourceSha256": "4fd9ad3018413df75f219714b8e835e828291d61c9ae403b2ed39d4605f8093d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Own request324-332 returns parsed JSON only on HTTP ok and throws otherwise. GET /_setup/api/folders route338-351 always returns awaited listFolders; listFolders213-263 returns object with path,kind,files,folders or throws on fs error219. Catch1687-1690 exits before dereference. Null is not a successful own API result.",
+        "Followed request through owned /_setup/api/folders GET and listFolders. Success returns explicit object(path,shown,value,config,parent,kind,folders,files); fs failure throws, request catch returns before line. picker.data assigned resolved object then read without await. Proof is owned successful server return contract, not merely that arbitrary null would already throw."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "7169e471-37c1-4827-9b83-392e9d69fea5",
+      "rule": "javascript:S3403",
+      "file": "lense/setup/app.mjs",
+      "line": 1756,
+      "sourceSha256": "4fd9ad3018413df75f219714b8e835e828291d61c9ae403b2ed39d4605f8093d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "useFolder destructures dynamic picker.kind1732. PICK includes website1630 onwards; chooseFolder passes chosen kind into picker. Website without existing matching radio reaches1756, updates website-other and picks blank radio. kind is not constrained to default.",
+        "openPicker copies dynamic PICK kind into picker, including website. useFolder destructures it. If no existing radio matches, website updates website-other while solution appends row. Kind not fixed by initial state."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "d5a5db06-9e58-4b00-9a9a-0fe709de8dbf",
+      "rule": "javascript:S2259",
+      "file": "lense/setup/preview.mjs",
+      "line": 58,
+      "sourceSha256": "259b066bcf7d84946b67d765e9aab8057a2a0cbcd76744fe05bac5d556c4d639",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "folderKind52-58 nullish assignment awaits fs.readdir(withFileTypes:true). Successful fs API supplies Dirent array; rejection exits catch. Other call125 passes same array from directory read, call260 passes entries from readdir217. entries cannot remain null on reachable map.",
+        "folderKind entries??=await fs.readdir(...withFileTypes:true) inside try; rejection returnsnull from catch. At map, absent entries replaced by directory-entry array; nonnull caller listFolders supplies its array. Nullable initialization cannot reach map."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "31e4fd2f-a295-4511-8008-a4bec5597b3c",
+      "rule": "javascript:S3782",
+      "file": "mirage/baseline-capture.mjs",
+      "line": 39,
+      "sourceSha256": "febf984256e9a16d5226cd22f380ef3dbefa84b81e4287db2a8c844e68998174",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "plain is string; hash index negative intentionally passes undefined as String.slice end, which means end-of-string. Positive hash preserves fragment split. Standard optional numeric end accepts undefined.",
+        "plain is primitive replaced string; hash=indexOf(#,question). Without fragment-1 causes slice endundefined, deliberately query through string end. Fragment uses numeric end. Standard String.slice behavior."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "6aee2ab3-1517-47be-a55e-af2047199814",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/canvas-http.mjs",
+      "line": 87,
+      "sourceSha256": "9c16406683bd9cee3ce8d85bf08742fac53f84c733ba77a57cf35a20289df6fa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Object.fromEntries(URLSearchParams(text)) creates only supplied fields. No item parameter means property absent/undefined, item=0 yields string0; check prevents Number(undefined) and preserves absent item.",
+        "Object.fromEntries(URLSearchParams) includes only supplied item. Empty request has itemundefined and omits action.item; item=2 givesnumber2; item= empty excluded. Record value type does not imply every property present."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "79fb89fd-1cec-4c67-b8c0-06a1750ee5a9",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/canvas-http.mjs",
+      "line": 88,
+      "sourceSha256": "9c16406683bd9cee3ce8d85bf08742fac53f84c733ba77a57cf35a20289df6fa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "fields is dynamic URLSearchParams record: absent index gives undefined, present index nonempty numeric text gives number. Guard preserves index precedence and prevents absent-index NaN.",
+        "Index counterpart: missingindexundefined, index=empty, index=2 numeric2. Both missing and empty intentionally skip conversion."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "03b87a48-98d4-4918-9626-01f02884e3a1",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/canvas-http.mjs",
+      "line": 89,
+      "sourceSha256": "9c16406683bd9cee3ce8d85bf08742fac53f84c733ba77a57cf35a20289df6fa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "fields.value can be absent/undefined or supplied string including empty string. Guard intentionally distinguishes no value from explicit empty value.",
+        "After no nonempty index, missing value isundefined and action.value stays absent; value= is present emptystring and preserved. Constant-true rewrite would add unwanted own property."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "db289a55-e414-4549-82b7-940456ad1620",
+      "rule": "javascript:S4123",
+      "file": "mirage/lib/canvas-http.mjs",
+      "line": 373,
+      "sourceSha256": "9c16406683bd9cee3ce8d85bf08742fac53f84c733ba77a57cf35a20289df6fa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "principal is injected option313 and real async caller is in canvas-runtime.test201. Await resolves promises before reading principalId and is also original scheduling boundary for synchronous callbacks.",
+        "callerOf uses same documented injected principal callback supporting promised values. Await must precede required-principal check; preserves sync microtask/error behavior too."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "51b44204-637c-404e-890b-4c56b779b837",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/canvas-runtime.mjs",
+      "line": 910,
+      "sourceSha256": "4604ca55aaaae54cc147cb01b867278fc8997fee91910be68f16e227b20057aa",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "createCanvasApp605 computes context only when api && caller; records609-615 is non-null only if context truthy. If api absent records is null and optional call short-circuits argument api.store; if call runs api must have been truthy. Captured parameter api is not reassigned.",
+        "createCanvasApp context=api&&caller?caller(principal):null; records=context?dataverseHost(api,...):null. api is stable parameter. Nullapi -> nullrecords, so records?.dataSource skips argument evaluation containing api.store. If evaluated, api truthy. Null dereference unreachable."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "64d93b82-3014-4431-9cf2-5972f876753e",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/custom-connector.mjs",
+      "line": 502,
+      "sourceSha256": "d1346fd5a9f58c30ada95b5c0fe6eaaed5c17b87bfcae4f4c3a63cf43c85887b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Object.keys(rewrites??{}).filter(...).sort(...)[0] can be undefined for empty/no matching rewrite. Example rewrite URL with default{} returns original URL through true arm; matching prefix reaches concatenation.",
+        "Exported rewrite filters/sorts Object.keys(rewrites??{}) then[0]. Empty map or no matching prefix yieldsundefined and returns unchanged URL. Matching prefix rewrites. Actual no-match example rewrite(http://a,{}) takes true guard."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "276d9aaf-9c38-4c6b-be34-2ff96e0c1223",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/dataverse-api.mjs",
+      "line": 2004,
+      "sourceSha256": "e05a7e55bce9d4b0243c0be78a5db31f217c44fb0c92b8c54fa522be74e27fc1",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "organization option1986 defaults null; nullish assignment1991 awaits createOrganizationRuntime. This returns transaction result of compose167-173, whose return444 includes api,registry,records. Passed organization must satisfy same host object contract; missing/null default is filled. Prior destructure is secondary evidence, not sole proof.",
+        "startDataverseApi first organization??=await createOrganizationRuntime; successful imported composition returns explicit runtime object through init/transaction result propagation, otherwise rethrows. Supplied nonnull runtime bypasses creation. At line2004 these contracts and two destructurings completed. Proof is nonnull creation, not solely earlier potential crash."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "97e962db-1560-4728-8d62-b29cf24ba757",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-calendar-messages.mjs",
+      "line": 384,
+      "sourceSha256": "21f694e74396eeed9e5cedc62e9b9d18e10989e66ac0c7c60904ef1e2b4a9931",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "parts375-381 is Object.fromEntries of supplied recurrence pairs. FREQ=DAILY without INTERVAL produces absent property undefined, selecting1; supplied INTERVAL is checked via integerOf. This is valid supported grammar.",
+        "parseCalendarRecurrence Object.fromEntries semicolon properties. FREQ=DAILY omitsINTERVAL and defaults1; FREQ=DAILY;INTERVAL=2 validates2. Missing property real."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "c72901b6-87fd-4085-a315-e1c132d93c04",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-discovery.mjs",
+      "line": 320,
+      "sourceSha256": "43e183f94ccfe351c9c84c63b47de4f8f6fe073341cd931fa296ec616fcc58c7",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "PATH6 optional discovery target group allows /api/discovery/v2.0 with no suffix. target capture undefined then returns service document. Instances/$metadata provide nonundefined targets.",
+        "Anchored PATH optional entire target group: /api/discovery/v9.2 succeeds with targetundefined and returns service document; /Instances targetstring. Nonparticipating capture correctlyundefined."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "77637a34-db88-421e-97e8-aac22229213f",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-discovery.mjs",
+      "line": 334,
+      "sourceSha256": "43e183f94ccfe351c9c84c63b47de4f8f6fe073341cd931fa296ec616fcc58c7",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "PATH6 makes Instances key predicate optional. Unkeyed /Instances yields undefined keyText, keyed /Instances(...) supplies string; key decoder must run only latter.",
+        "PATH optional parenthesized Instances key: unkeyed /Instances has keyTextundefined and collection result; keyed path decodes/parses/filter. Both outcomes supported."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "daad8328-e9a6-4292-adae-f3b3bcc0475c",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-files.mjs",
+      "line": 833,
+      "sourceSha256": "919141b8f22a7da86d70f7e01d4353e5eb825d0204f6fe9c29b23c8d472cf77a",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "files operation API option815 defaults size null but accepts explicit full. download && size full synthesizes ?size=full for same download closure, other options keep thumbnail/default. Default does not constrain actual argument.",
+        "Public fileContentInternal size=null default applies only to undefined. Explicit size:full download adds ?size=full; missing/other sizes do not. WebAPI caller passes request querysize. Real dynamic option."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "bec41e93-19fa-432a-9c20-f022c4eb6e1b",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-fls.mjs",
+      "line": 293,
+      "sourceSha256": "5108a60f8b0dde2096a476018f5b2a10b6a20834ba2655beeb83c808099b75ba",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "rules is mutable closure cache, initialized revision:null290. After first mismatch293 it stores computed revision string. Repeated same store.dataRevision and row counts yield equal strings, so comparison can be false; writes/count changes make true.",
+        "rules starts revisionnull but maskOf calculates string revision and replaces closure cell. Same revision subsequent call compares equal; data revision/row-count change unequal and invalidates cache. Both outcomes required."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a75bea73-5ba4-41e5-9350-fbfd4941bdb5",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-odata.mjs",
+      "line": 197,
+      "sourceSha256": "2c4808083a04486de7c78ac630a6d47e0b693de5aac954a594fcad047b2d4497",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "METADATA_SEGMENTS includes Attributes25; result.segment assigned second.name188 before check197. Valid EntityDefinitions(key)/Attributes(key)/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/OptionSet reaches true; other supported segments differ.",
+        "Metadata parser sets result.segment=second.name after validation. Attributes segment of EntityDefinitions(...)/Attributes(...)/Microsoft.Dynamics.CRM.X/OptionSet makes equalitytrue; other segmentsfalse. Initial result value not permanent."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "06c9d54d-b76c-46cd-9d3b-c08a0f7abf79",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-odata.mjs",
+      "line": 568,
+      "sourceSha256": "2c4808083a04486de7c78ac630a6d47e0b693de5aac954a594fcad047b2d4497",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "decode117-122 catches malformed decodeURIComponent and returns null. Raw % invalid encoding reaches raw===null568 true; valid encoded XML returns string. Needed invalid-cookie response.",
+        "Local decode tries decodeURIComponent and catch returnsnull. decodeSkipToken(%) setsrawnull and takes guard; valid encoded cookie proceeds. Necessary invalid-token refusal."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "dc775b01-bf23-4e94-a7bc-7433b80bebb6",
+      "rule": "javascript:S4123",
+      "file": "mirage/lib/dataverse-storage-routing.mjs",
+      "line": 406,
+      "sourceSha256": "ad6b9208254219331fc3838a501e909dc35ff8a9b62beed0b1ae0f1720e5a455",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "released210-221 assigns state.flushing from detached(()=>flush(...)).catch(...).finally(...); flush is async, so this is Promise until finally null. settle loops awaiting actual work and possible newly scheduled flush, not just initial null type.",
+        "released assigns state.flushing=detached(async flush).catch(...).finally(...), a Promise; finally resetsnull. settle while currentPromise awaits pendingflush, including replacement flush. Null initialization does not constrain later type. Removing await would spin/block."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "647da083-e935-475b-b2cd-10cc8dbd9afb",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-tds-protocol.mjs",
+      "line": 214,
+      "sourceSha256": "58602aa7983697faa3ebbdfe5f3b10a15912cd1ba7358f804261fed806d6793d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "query handler creates controller, assigns conn.running=controller205, then awaits query207. Normal completion retains identity true; attention cancellation118-120 can null it during await, giving false. Guard prevents clearing newer ownership.",
+        "New AbortController assigned conn.running before awaited onQuery. Unreplaced current query makes finally equalitytrue and clears slot; newer query replacement makesfalse. Identity guard preserves current ownership."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "4d2deed6-cc00-48c0-96cb-5e4a6853a3c8",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-tds-sql-functions.mjs",
+      "line": 763,
+      "sourceSha256": "4caecc1e46c9367ac186947aad3a766a29a947cbce25139f2a0a961472995823",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "compareValues exported756 accepts typeB optional param but defaultnull only applies omitted/undefined. sql-eval1380-1381 forwards resolved operand tA,tB; explicit nvarchar valid. Buffer/string path requires UTF16LE only for that type; null/default takes latin1.",
+        "Exported compareValues typeB defaultnull only when omitted. Buffer left/stringright/typeBnvarchar usesUTF16LE, e.g. textA; null/varchar useslatin1. Real caller type metadata affects bytes."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "8d1b3de0-b64c-4103-8e8f-e36997ba6465",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/dataverse-tds-sql-functions.mjs",
+      "line": 764,
+      "sourceSha256": "4caecc1e46c9367ac186947aad3a766a29a947cbce25139f2a0a961472995823",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Same exported typeA input756, forwarded tA in sql-eval1380-1381. Buffer on right/string on left with explicit nvarchar must use UTF16LE; default null does not restrict explicit supported type.",
+        "Symmetric compareValues typeA:nvarchar with Buffer right/textleft usesUTF16LE. Defaultnull not sole argument. Equality reachable."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "ffcc8c1a-ab0a-4aa1-bc7e-a3abe93e7622",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/flow-triggers.mjs",
+      "line": 841,
+      "sourceSha256": "ff801680a7953e2c5ed89123a1e13cf1013d71487acb99fc20b6b442e9a7c569",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "candidates668-678 only retains recurrence,connector,http,dataverse-action. sync910 starts supported nonhttp only. startHost821-839 returns for recurrence and dataverse-action, leaving connector. inspectConnectorTrigger382-407 returns supported only after connectors?.flowTriggers?. returns hosted entry. Connectors is stable captured parameter; null can never produce supported connector candidate.",
+        "Inspected chain: candidates -> inspectFlowTrigger(connectors) -> inspectConnectorTrigger uses connectors?.flowTriggers?.(...) and rejects no hosted entry. syncTriggers calls private startHost only supported nonHTTP; recurrence/dataverse-action return before connector line. Stable captured connectors cannot become null across await. Provider method mutation/entry disappearance is separate unsupported dependency violation, not this null finding."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "9c895e2a-f8f2-4466-88b8-5d70b630b600",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/model-driven/offline.mjs",
+      "line": 340,
+      "sourceSha256": "1bd0c2c80656f3931a20a5af27027d86f8a942cc93c1657bfc289821e6827a0b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "state captured option333 never reassigned. restored initialized !state336; restore immediately returns when restored337-338. Null/undefined/other falsy state makes restored true; code below can only run for truthy state. Once run sets true before iteration.",
+        "createOfflineSessions captures stable state parameter. restored starts!state; null/undefined provider immediately returns before state.load. Present provider startsfalse, marksrestoredtrue then loads once. Optional state safe."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a6aeba42-080f-45e3-8982-ac35ede00497",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/model-driven/pcf-runtime.mjs",
+      "line": 89,
+      "sourceSha256": "ce4179d2828bfcdea215db0365d5eb2acfff42d0db2b117e17e36e901cd015bc",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "When currency is nullish, currency?.isoCode??empty produces empty string, regex exact three uppercase letters fails, and false arm XXX skips currency.isoCode. True arm implies currency nonnull; nullish dereference impossible.",
+        "currency is const reference staff.transactionCurrency. Nullish reference gives emptystring which fails three-uppercase-letter regex and selectsXXX. Only nonnull matching object can reach currency.isoCode branch."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "f86f218f-0f84-4497-b949-c566ef7b61bd",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/organization-host.mjs",
+      "line": 722,
+      "sourceSha256": "bc2252ded71dd1564a0f9df53234296892c06decec8740b01d1a870218d1687a",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "dataverseApiEnabled719 takes raw option defaultnull, not fixed type. dataverse===true explicitly enables power-pages defaults when no object; null/false disable. Caller options may be true, object or absent.",
+        "Raw dataverse param defaultnull not fixed. On power-pages host, configobject wins; booleantrue uses{} enabled defaults; false/null uses enabledfalse. Public boolean configuration branch."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "dfec1757-611e-42c1-94d0-59862dc7c88b",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/power-fx-functions.mjs",
+      "line": 1058,
+      "sourceSha256": "192766e08dea20949f3404afca041a98fe8cbdf82ba576e296a080db0fad263b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "numericPair exact-numeric54-59 yields scaled BigInt coefficients. rest=pair.x%pair.y can equal0n (e.g4n%2n) or nonzero (3n%2n); first check is not always true. Sign comparison then adds divisor only for nonzero remainder with opposite sign; preserves modulus semantics.",
+        "Mod numericPair produces scaled BigInt coefficients; rest=x%y.4mod2 remainder0 makes firstguardfalse;3mod2 remainder1 signcomparisonfalse; -3mod2 remainder-1 signsdiffer true adds2 to1. Negative divisor symmetric. Both comparisons nonconstant; divisor-signed modulus preserved."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "5f026750-4812-4f02-81e3-8c34c6063b4a",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/standalone-runtime.mjs",
+      "line": 730,
+      "sourceSha256": "ca4c1f403601f5795dfc508f45c76b1a9e3dc7b79948a48d2bed5b04e8fe1ca5",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "route729 is regex capture or undefined from actual pathname. HOST_API508-525 includes preflight/operations/model-driven/offline. GET matching /_sim/api/preflight yields route=/preflight and prefix equality true; nonmatching routes false.",
+        "hostApi optional route capture matches actual HOST_API strings /preflight and /operations. GET/_sim/api/preflight selects real prefix; absent route givesundefined; POST bypasses lookup. Dynamic method/route strict equalities both valid."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "9c35146e-1d43-4466-8aa4-4f09b82a310d",
+      "rule": "javascript:S4123",
+      "file": "mirage/parity-suite.mjs",
+      "line": 2180,
+      "sourceSha256": "fb60e597a8819fc3c1742092ddc4eeae5c973713bdee730eea4d5e86e11f72d1",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "CDP body producer2356-2375 pushes send(...).then(...).catch(...) Promise into state.bodies. Playwright producer2763-2772 similarly pushes response.text promise chain. Initial empty array does not constrain future element types; aggregator awaits bounded response projection completion.",
+        "CDP state.bodies initially[]; handleCdpNetworkFinished pushes send(Network.getResponseBody...).then(...).catch(...) actual Promise chain results. allSettled waits body work, bounded by within5000. Not iterable of plain projections; retain ordering."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "7f3272d5-b783-46ab-be5b-22fe9243b903",
+      "rule": "javascript:S3403",
+      "file": "mirage/server.mjs",
+      "line": 1118,
+      "sourceSha256": "40ea2673ff605c9d7936d633134f616df2590e80a674138798b3b9b221aa7475",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "createServer raw dataverseOption parameter586 defaultsnull; caller can pass true or config object. dataverseInput only object; booleantrue selects default enablement1118. Not a fixed-null comparison.",
+        "Server destructures dataverse:dataverseOption=null but explicittrue retained. Booleantrue enables defaultconfig, object choosesproperties, false/null disables. Public option equality reachable."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a110cc04-e907-4bc8-be66-13e4adae1bd1",
+      "rule": "javascript:S2259",
+      "file": "mirage/lib/fetchxml-engine.mjs",
+      "line": 636,
+      "sourceSha256": "467c11ce38da4c8338a368dff14857e49a0062a5521ffd9b918f83be931f5d19",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "parseXmlDocument244-261 either throws via fail176-178 or returns document.children[0] after requiring exactly one child/root. Catch633 invokes throwing fail; no continuation with undefined node. Successful node always has attrs from parser construction.",
+        "parseXmlDocument enforces exactly one complete root and returns attrs-bearing document.children[0] or calls fail. fail throws DataError. parsePagingCookie catch also calls throwingfail, so no path falls through with nodeundefined. Valid cookie reaches attrs; malformed rejects beforehand."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "4aaded3d-2d50-4b76-86c4-e8b2f894ebc8",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/liquid-engine.mjs",
+      "line": 786,
+      "sourceSha256": "ee6e707a5c0da3be2e05e322acd45d82f52240afde29bb6be699d78c444f4419",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "scan74-76 returns match array mapped to strings. Empty markup/no VARIABLE_PARSER matches gives[] and parts[0] undefined; valid variable produces string. Early null return is reachable and prevents indexing missing string.",
+        "scan returns matchAll array; empty variable markup has zero matches, so parts[0]undefined and guard returnsnull before first[0]/findVariable. Array element type does not prove nonempty."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "caa5580d-7508-4575-9731-f7089fb074ce",
+      "rule": "javascript:S3403",
+      "file": "mirage/lib/odata-query.mjs",
+      "line": 119,
+      "sourceSha256": "475e5b77a1d5ac6e21556ea731fcc1f9309f5ccffe7a92031e7cac2d1136fbdc",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "TOKEN69-81 contains alternative named capturing groups. RegExp groups record includes nonparticipating alternatives as undefined. For string token only string is defined and all other groups undefined; find must filter undefined to select actual token kind.",
+        "Sticky TOKEN uses named alternatives. match.groups includesundefined for all nonparticipating alternatives; tokenabc has identstring and earlier string/guid groupsundefined. find(v!==undefined) selects participating group. Constant-true rewrite corrupts tokenkind/value."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "b8f48cde-b416-4a19-9b3b-a424dc6fe127",
+      "rule": "javascript:S3403",
+      "file": "mirage/parity-suite.mjs",
+      "line": 1793,
+      "sourceSha256": "fb60e597a8819fc3c1742092ddc4eeae5c973713bdee730eea4d5e86e11f72d1",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Patched XMLHttpRequest.open1791 uses ordinary optional async argument. Calling open(method,url) supplies undefined; explicitfalse must stayfalse, other provided values pass through. Existing native open is called withtrue only when omitted, preserving wrapper behavior.",
+        "Patched XMLHttpRequest.open ordinary optional async positional argument: open(GET,url) givesundefined and forwards true; explicitfalse staysfalse. Actual omitted-argument semantics require guard."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "61c57711-7ff0-4197-83c2-d9f8db00ac9c",
+      "rule": "javascript:S5869",
+      "file": "examples/project/deployment/configure.mjs",
+      "line": 55,
+      "sourceSha256": "247f5dc24d2a3e5fde0ce629eea00d73b1e47787d6f14586d94bdeadc85b33e5",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Horizontal-whitespace complement excludes nonspace OR CR/LF/U+2028/U+2029. U+2028/2029 are whitespace, not members of \\S, so their explicit outer exclusions are necessary, not duplicates.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "80dc5aa5-2993-4f89-8492-9abbcc96fe1b",
+      "rule": "javascript:S5869",
+      "file": "examples/project/deployment/configure.mjs",
+      "line": 66,
+      "sourceSha256": "247f5dc24d2a3e5fde0ce629eea00d73b1e47787d6f14586d94bdeadc85b33e5",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Same horizontal-whitespace complement in catalogue rewrite. Removing explicit U+2028/2029 accepts line separators and changes replacement spans; preserve this exact key/expression.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "aeb4dbde-08d7-4dc4-9c70-cd2813c57d59",
+      "rule": "javascript:S5869",
+      "file": "lense/dataverse/connection.mjs",
+      "line": 84,
+      "sourceSha256": "e5bef0fe0fb81f0b2b6be830e876ef5e5b3adca2a2ed306236f94093612ea355",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "PAC Error-line classifier excludes all four JS line terminators. U+2028/2029 are not in \\S, so explicit exclusions in outer negated class are necessary.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "eda9da41-e295-49b4-a60a-0644f40a9b3a",
+      "rule": "javascript:S5869",
+      "file": "lense/dataverse/connection.mjs",
+      "line": 215,
+      "sourceSha256": "e5bef0fe0fb81f0b2b6be830e876ef5e5b3adca2a2ed306236f94093612ea355",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Recovery/PAC Error classifier has same valid horizontal-whitespace complement; retain U+2028/2029 exclusions so stdout/stderr boundaries remain exact.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "059adbbc-f798-4516-96ae-84d06f3bcba8",
+      "rule": "javascript:S5869",
+      "file": "lense/dataverse/provision.mjs",
+      "line": 685,
+      "sourceSha256": "fd19ac027bded95e0deccf7d801c8e4e23b123dc23cf8d66989d7afe4cf4c3cf",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Unpack failure classifier must retain horizontal indentation. U+2028/2029 whitespace is not covered by \\S in outer negated class; no duplicate.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "a486b283-43c8-4506-8863-14c0480cdca8",
+      "rule": "javascript:S2310",
+      "file": "mirage/lib/capture-control-redaction.mjs",
+      "line": 212,
+      "sourceSha256": "8ccd3688504c6945cbea25271476d6b306a801d228f47052661849821ba39d0b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Read whole redactQueryControlFields194-216: end207 scans query value, index=end-1 then for increment resumes at delimiter. Intentional linear skip; removing it rescans payload and changes candidate detection/redaction.",
+        "Actual redactQueryControlFields consumes value through end then assigns index=end-1 so loop increment resumes at delimiter. Removing assignment rescans consumed value chars and can change next candidate/redaction. Cursor/copy/name/candidate updates inspected; valid monotone scanner advance."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "7f96db11-49c1-480f-b746-b6fde3b7f172",
+      "rule": "javascript:S1994",
+      "file": "mirage/lib/native-services.mjs",
+      "line": 3130,
+      "sourceSha256": "5ab0af2a3d0121a5eee891ad57b5a926a8b4cf9d1be028f6c2eecfff31473dd4",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "page is consumed by gridData3133, records grows3140; empty results/MoreRecords false break3141, records.length limits accumulated results. Different page cursor/result limit is intentional. Finite local/mock data terminates; no universal claim for Infinity maximum and arbitrary infinite custom/live provider.",
+        "Actual records.push mutates stop operand before next iteration, then MoreRecords false or empty Records breaks. Finite maximum plus nonempty pages advances length; finite dataset ends. Infinity is accepted and arbitrary never-ending custom/live provider not universally bounded. Approve precise progress finding only, with explicit limitation; no blanket termination claim."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "56b22026-5802-412a-a030-06e64de51818",
+      "rule": "javascript:S5332",
+      "file": "mirage/lib/operation-catalogue.mjs",
+      "line": 76,
+      "sourceSha256": "68fd2c95803eeee88ec5061e9e1155ba3f26fb089e9f45d1a4349a984e884d7b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "URL76 only parses optional trigger URL against http://local.invalid sentinel. Origin/path classification returns pathname81/87; URL/base never goes to fetch/network transport.",
+        "Actual URL is parser only: construct with invalidHTTPbase, check origin and route pathname grammar, copy url.pathname into catalogue. No URL/fetch/transport uses base. Both constructor/equality findings are specific nontransport parser placeholders; scheme change alters route classification."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "0a76a7d2-5afc-496e-9ad3-179441a6e53c",
+      "rule": "javascript:S5332",
+      "file": "mirage/lib/operation-catalogue.mjs",
+      "line": 78,
+      "sourceSha256": "68fd2c95803eeee88ec5061e9e1155ba3f26fb089e9f45d1a4349a984e884d7b",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Origin comparison78 is a parser guard, not insecure transport. Only matching local pathname is stored in operation path; no HTTP request to local.invalid occurs.",
+        "Actual URL is parser only: construct with invalidHTTPbase, check origin and route pathname grammar, copy url.pathname into catalogue. No URL/fetch/transport uses base. Both constructor/equality findings are specific nontransport parser placeholders; scheme change alters route classification."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "9f453470-30ae-4fe5-8ab7-3859e2953416",
+      "rule": "javascript:S5869",
+      "file": "scripts/check-test-tags.mjs",
+      "line": 24,
+      "sourceSha256": "a54cc31c7d2ec59f975ea1b73c8c663a765426e11ddf25042a9ebc881beb1c46",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "ANY_TAG horizontal indentation excludes all four line terminators. U+2028/2029 are not in \\S, so explicit exclusions in outer negated class are necessary.",
+        "Actual horizontal whitespace class excludes nonwhitespace plus CR/LF/LS/PS. ECMAScript LS/PS are whitespace, so neither belongs to nonwhitespace shorthand; explicit exclusions are not duplicates. Removing them admits line separators, changing anchored mapping replacements/PAC error recognition/test tags. Each actual source site/context read; retain expression."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "b459ea53-bd6b-4773-9e33-5a664954dd14",
+      "rule": "javascript:S4036",
+      "file": "scripts/verify-sonar-branch.mjs",
+      "line": 9,
+      "sourceSha256": "ef4de0cb269741292518c3ff99050dd9c74ed0197bbc23a0ddf8259619e1fe74",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Fixed git program/rev-parse arguments, no shell/request-derived executable. Trusted CI PATH established by pinned checkout/setup; npm ci --ignore-scripts runs before verifier. Approve in trusted CLI/CI environment, not attacker-controlled OS PATH.",
+        "Analysis workflow inspected: pinned checkout/setup and npm ci --ignore-scripts, then direct node verifier. Fixed git executable plus fixed rev-parse/status vectors; inherited trusted hosted job PATH, not request data/npm-run local-bin dispatch. No source-provided PATH mutation before invocation. Scoped actual gate proof, not blanket safety of arbitrary local PATH."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "9b83199a-208b-4ffc-9acb-09232991b96b",
+      "rule": "javascript:S4036",
+      "file": "scripts/verify-sonar-branch.mjs",
+      "line": 10,
+      "sourceSha256": "ef4de0cb269741292518c3ff99050dd9c74ed0197bbc23a0ddf8259619e1fe74",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Fixed git/status argument vector with no shell. Same trusted runner PATH and no install scripts before gate; repository hooks are not executed by this status command. No arbitrary-PATH safety claim.",
+        "Analysis workflow inspected: pinned checkout/setup and npm ci --ignore-scripts, then direct node verifier. Fixed git executable plus fixed rev-parse/status vectors; inherited trusted hosted job PATH, not request data/npm-run local-bin dispatch. No source-provided PATH mutation before invocation. Scoped actual gate proof, not blanket safety of arbitrary local PATH."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "bb666c2a-0618-4136-a740-c900f993bb45",
+      "rule": "javascript:S9383",
+      "file": "mirage/lib/code-apps-workbench.js",
+      "line": 138,
+      "sourceSha256": "0de90cd07ca6c868dccabaa374a7849facec9029fab8a387cc6091825847782d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Read launch51-85: ordinary synchronous function, no async modifier/Promise return; frame updates, early undefined return, caught failures. Direct138 invocation cannot create unhandled Promise rejection.",
+        "Read lexical launch51-85 in full: synchronous function with early undefined return or synchronous URL/frame/status changes in try/catch. No async, await or returned Promise. Both flagged callsites invoke that declaration; promise-ignore warning cannot apply."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    },
+    {
+      "key": "be707b81-f32a-4f68-9c11-4d3d1e693c6b",
+      "rule": "javascript:S9383",
+      "file": "mirage/lib/code-apps-workbench.js",
+      "line": 144,
+      "sourceSha256": "0de90cd07ca6c868dccabaa374a7849facec9029fab8a387cc6091825847782d",
+      "disposition": "FALSE-POSITIVE",
+      "independentEvidence": [
+        "Same synchronous launch51-85 and direct apply handler144. Return is undefined, not Promise; no async conversion or await required.",
+        "Read lexical launch51-85 in full: synchronous function with early undefined return or synchronous URL/frame/status changes in try/catch. No async, await or returned Promise. Both flagged callsites invoke that declaration; promise-ignore warning cannot apply."
+      ],
+      "reviewers": ["sol1-independent-GPT6.1-Sol", "Second independent GPT6.1 Sol semantic/evidence reviewer"]
+    }
+  ]
+}

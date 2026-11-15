@@ -1,7 +1,8 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
+import { loopbackServer } from './shared-browser.mjs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +50,7 @@ test('header dropdowns open once with a captured native bundle, duplicate jQuery
     ),
     [BUNDLE]: Buffer.from(bundle),
   };
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (pages[url.pathname]) {
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -61,12 +62,6 @@ test('header dropdowns open once with a captured native bundle, duplicate jQuery
     }
     res.writeHead(404);
     res.end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
   });
   assert.equal((pages['/native'].match(/bootstrap-plugins-compat/g) ?? []).length, 0);
   assert.equal((pages['/local'].match(/bootstrap-plugins-compat/g) ?? []).length, 1);
@@ -106,7 +101,7 @@ test('local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
   // Shape of a portal confirm helper: buttons object, dialogClass, open callback styling and a close button override.
   const confirm = `window.showConfirm=function(msg,ok,cancel){$('#confirm').html('<div class="confrim-dialog-cntr">'+msg+'</div>');$('#confirm').dialog({modal:true,width:340,dialogClass:'confirmContainer',draggable:false,resizable:false,buttons:{No:function(){cancel(this);},Yes:function(){ok(this);}},open:function(){$('.ui-dialog').find(".ui-dialog-buttonset button:contains('Yes')").addClass('sample-btn sample-btn-primary');$('.ui-dialog').find(".ui-dialog-buttonset button:contains('No')").addClass('sample-btn sample-btn-secondary noConfirmdelete');$('.ui-dialog-titlebar').find('span').text('Confirmation');}});$('.ui-dialog-titlebar-close').off().on('click',function(){$(this).closest('.confirmContainer').find('.noConfirmdelete').click();});};`;
   const html = `<!doctype html><html><head>${jquery}<script src="/xrm-adx/js/jquery-ui-1.11.4.min.js"></script></head><body><div id="confirm"></div><script>${confirm}</script></body></html>`;
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -119,14 +114,8 @@ test('local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
     res.writeHead(404);
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const page = await browser.newPage();
-  t.after(() => page.context().close());
+  ownedFixture(t).add(() => page.context().close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);

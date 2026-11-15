@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -74,7 +75,7 @@ test('the Web API refuses a delegated token whose user left the organization wit
     users: [{ domainname: 'pat@example.test', objectId: USER_OID, fullname: 'Pat', roles: ['Basic User'] }],
   });
   const server = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const user = store.state.tables.systemuser.find((row) => row.azureactivedirectoryobjectid === USER_OID);
   await store.transact(() => {
     (store.state.dataverse ??= {}).passwords = { [user.systemuserid]: hashSecret('invented-password') };

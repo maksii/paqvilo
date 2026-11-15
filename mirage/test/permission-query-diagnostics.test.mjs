@@ -11,6 +11,7 @@ import { platformSettingEntries } from '../lib/platform-settings.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { createMirageContext } from '../lib/mirage-context.mjs';
 import { classifyResponse, ciSummary } from '../render-sweep.mjs';
@@ -200,13 +201,14 @@ test('catalogue platform settings apply to embedded contexts and bootstrap repor
   const context = await createMirageContext({ config, site: 'synthetic' });
   assert.equal(new context.DataStore({ state: state() }).querySettings().fetchLimits.links, 50);
   const app = await context.createSimulator({ watch: false });
-  t.after(() => app.close());
+  // The fixture closes its registered runtimes before it removes the catalogue root.
+  fixture.onCleanup(() => app.close());
   const status = await fetch(app.url + '/_sim/api/status').then((r) => r.json());
   assert.equal(status.platformSettings.find((row) => row.key === 'QueryLinkEntityLimit').origin, 'Catalogue');
 });
 test('HTTP scoped Web API FetchXML omission deduplicates roots and pages while explicit false keeps multiplicity', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-permission-query-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-permission-query-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, body] of Object.entries({
     'website.yml': 'adx_websiteid: site\nadx_name: Invented',
     'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
@@ -253,7 +255,7 @@ test('HTTP scoped Web API FetchXML omission deduplicates roots and pages while e
       ],
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const headers = signInHeaders(app, 'person', { roles: ['Member'] }),
     fetchXml = async (xml) => {
       const response = await fetch(app.url + '/_api/items?fetchXml=' + encodeURIComponent(xml), { headers });

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { SetupStore } from '../lense/setup/store.mjs';
 import { renderTemplate, setupTemplates } from '../lense/setup/templates.mjs';
 
 async function work(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-templates-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-templates-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }

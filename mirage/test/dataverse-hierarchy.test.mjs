@@ -1,6 +1,6 @@
 // Record hierarchy (lib/dataverse-hierarchy.mjs): the four directions, the depth bound, the cycle guard, both lookup shapes,
 // the metadata and explicit hierarchy sources, install diagnostics and describe.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, resolveHierarchy, validateHierarchies } from '../lib/dataverse-hierarchy.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -80,6 +80,16 @@ async function setup(t, options = {}) {
   return { ...fixture, api: captured.api, diagnostics };
 }
 
+// The read-only cases share one organization (a fixture starts a whole Dataverse API); the explicit-map case installs
+// other options and has its own. The resolver cases pass their own diagnostic sink, so the shared install's once-only
+// reports (api.hierarchy.resolve walks the same cycle) cannot hide or double theirs.
+const cleanups = [];
+let shared = null;
+const sharedSetup = () => (shared ??= setup({ after: (fn) => cleanups.push(fn) }));
+after(async () => {
+  for (const cleanup of cleanups.reverse()) await cleanup();
+});
+
 test('validateHierarchies normalises a valid explicit map and rejects bad entries', () => {
   assert.deepEqual(validateHierarchies(undefined), {});
   assert.deepEqual(validateHierarchies({ X_Plain: 'X_ParentId' }), { x_plain: 'x_parentid' });
@@ -89,29 +99,30 @@ test('validateHierarchies normalises a valid explicit map and rejects bad entrie
   assert.throws(() => validateHierarchies({ x_plain: 7 }), TypeError);
 });
 
-test('under and eq-or-under walk the descendants of a root across a cycle, each record once', async (t) => {
-  const { api } = await setup(t);
+test('under and eq-or-under walk the descendants of a root across a cycle, each record once', async () => {
+  const { api } = await sharedSetup();
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', ROOT, 'under')), sorted([B, E, C, F, D]));
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', ROOT, 'eq-or-under')), sorted([ROOT, B, E, C, F, D]));
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', F, 'under')), []);
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', F, 'eq-or-under')), [F]);
 });
 
-test('above and eq-or-above walk the ancestors of a record, stopping at the cycle', async (t) => {
-  const { api } = await setup(t);
+test('above and eq-or-above walk the ancestors of a record, stopping at the cycle', async () => {
+  const { api } = await sharedSetup();
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', D, 'above')), sorted([C, B, ROOT]));
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', D, 'eq-or-above')), sorted([D, C, B, ROOT]));
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', F, 'above')), sorted([E, ROOT, D, C, B]));
 });
 
-test('a root that is not a row yields an empty set', async (t) => {
-  const { api } = await setup(t);
+test('a root that is not a row yields an empty set', async () => {
+  const { api } = await sharedSetup();
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', MISSING, 'under')), []);
   assert.deepEqual(sorted(api.hierarchy.resolve('x_node', MISSING, 'eq-or-above')), []);
 });
 
-test('the depth bound stops the walk once, reports HIERARCHY_DEPTH_EXCEEDED once and never throws', async (t) => {
-  const { store, diagnostics } = await setup(t);
+test('the depth bound stops the walk once, reports HIERARCHY_DEPTH_EXCEEDED once and never throws', async () => {
+  const { store } = await sharedSetup();
+  const diagnostics = [];
   const found = resolveHierarchy(store, 'x_node', 'x_parentid', ROOT, 'under', {
     maxDepth: 2,
     diagnostic: (entry) => diagnostics.push(entry),
@@ -121,8 +132,9 @@ test('the depth bound stops the walk once, reports HIERARCHY_DEPTH_EXCEEDED once
   assert.equal(diagnostics.find((entry) => entry.code === 'HIERARCHY_DEPTH_EXCEEDED').maxDepth, 2);
 });
 
-test('the cycle guard reports HIERARCHY_CYCLE for a loop that reaches the root', async (t) => {
-  const { store, diagnostics } = await setup(t);
+test('the cycle guard reports HIERARCHY_CYCLE for a loop that reaches the root', async () => {
+  const { store } = await sharedSetup();
+  const diagnostics = [];
   resolveHierarchy(store, 'x_node', 'x_parentid', ROOT, 'under', { diagnostic: (entry) => diagnostics.push(entry) });
   assert.equal(diagnostics.filter((entry) => entry.code === 'HIERARCHY_CYCLE').length, 1);
 });
@@ -154,8 +166,8 @@ test('object and bare-GUID lookups resolve to the same records', () => {
   assert.deepEqual(sorted(objects), sorted(bare));
 });
 
-test('a table is hierarchical only through a self-referencing IsHierarchical relationship', async (t) => {
-  const { api, diagnostics } = await setup(t);
+test('a table is hierarchical only through a self-referencing IsHierarchical relationship', async () => {
+  const { api, diagnostics } = await sharedSetup();
   assert.deepEqual(api.hierarchy.isHierarchical('x_node'), { column: 'x_parentid' });
   assert.equal(api.hierarchy.isHierarchical('x_plain'), null);
   assert.equal(api.hierarchy.isHierarchical('x_unknown'), null);

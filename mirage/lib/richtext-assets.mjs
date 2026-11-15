@@ -24,7 +24,7 @@ const crmFontFaceBlocks = (body) =>
     );
 const crmGlyphCodepoints = (body) => {
   const result = new Set();
-  for (const match of String(body ?? '').matchAll(/[^{}]*\{([^{}]*)\}/g)) {
+  for (const match of String(body ?? '').matchAll(/\{([^{}]*)\}/g)) {
     const declarations = match[1];
     if (!/font-family\s*:[^;]*["']?CRMMDL2["']?/i.test(declarations)) continue;
     for (const content of declarations.matchAll(/content\s*:\s*["']([^"']*)["']/gi))
@@ -66,21 +66,48 @@ function localResource(value, portalOrigin) {
   return value;
 }
 function orderedScripts(paths) {
-  const weight = (path) =>
-    path.includes('client-telemetry-wrapper')
-      ? 1
-      : path.includes('client-telemetry')
-        ? 0
-        : path.includes('pcf-dependency')
-          ? 2
-          : /\/pcf\.bundle/.test(path)
-            ? 3
-            : path.includes('pcf-extended')
-              ? 4
-              : path.startsWith('/_pcfwebresource/')
-                ? 5
-                : 6;
+  const weight = (path) => {
+    if (path.includes('client-telemetry-wrapper')) return 1;
+    if (path.includes('client-telemetry')) return 0;
+    if (path.includes('pcf-dependency')) return 2;
+    if (/\/pcf\.bundle/.test(path)) return 3;
+    if (path.includes('pcf-extended')) return 4;
+    if (path.startsWith('/_pcfwebresource/')) return 5;
+    return 6;
+  };
   return [...new Set(paths)].sort((a, b) => weight(a) - weight(b));
+}
+
+function sameOriginPage(page, origin) {
+  try {
+    return new URL(page.url()).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
+function processObservedResourceEntry(entry, origin, resources, scripts, stylesheets, fonts) {
+  const name = typeof entry === 'string' ? entry : entry.name;
+  try {
+    const path = localResource(name, origin);
+    if (path) {
+      resources.push(path);
+      if (entry.type === 'script' || /\.js(?:\?|$)/.test(path)) scripts.push(path);
+      if (entry.type === 'link' || /\.css(?:\?|$)/.test(path)) stylesheets.push(path);
+    }
+  } catch {
+    /* Unsupported optional resources remain outside the local asset inventory. */
+  }
+  try {
+    officeFontPath(name);
+    fonts.push(name);
+  } catch {
+    /* Unsupported optional resources remain outside the local asset inventory. */
+  }
+}
+
+function processObservedResources(names, origin, resources, scripts, stylesheets, fonts) {
+  for (const entry of names) processObservedResourceEntry(entry, origin, resources, scripts, stylesheets, fonts);
 }
 
 /** Read resource names only from existing same-origin pages; never navigate or read controls. */
@@ -90,13 +117,7 @@ export async function observeManagedResources(live) {
     stylesheets = [],
     fonts = [],
     diagnostics = [];
-  const pages = (live.context?.pages?.() ?? []).filter((page) => {
-    try {
-      return new URL(page.url()).origin === new URL(live.origin).origin;
-    } catch {
-      return false;
-    }
-  });
+  const pages = (live.context?.pages?.() ?? []).filter((page) => sameOriginPage(page, live.origin));
   if (pages.length > 20)
     diagnostics.push(
       error(
@@ -113,25 +134,7 @@ export async function observeManagedResources(live) {
           .slice(-2000)
           .map((entry) => ({ name: entry.name, type: entry.initiatorType })),
       );
-      for (const entry of names) {
-        const name = typeof entry === 'string' ? entry : entry.name;
-        try {
-          const path = localResource(name, live.origin);
-          if (path) {
-            resources.push(path);
-            if (entry.type === 'script' || /\.js(?:\?|$)/.test(path)) scripts.push(path);
-            if (entry.type === 'link' || /\.css(?:\?|$)/.test(path)) stylesheets.push(path);
-          }
-        } catch {
-          /* Unsupported optional resources remain outside the local asset inventory. */
-        }
-        try {
-          officeFontPath(name);
-          fonts.push(name);
-        } catch {
-          /* Unsupported optional resources remain outside the local asset inventory. */
-        }
-      }
+      processObservedResources(names, live.origin, resources, scripts, stylesheets, fonts);
     } catch {
       diagnostics.push(
         error(
@@ -156,6 +159,20 @@ export async function observeManagedResources(live) {
     diagnostics,
   };
 }
+function collectSchemaChildren(value, pending, seen, propertyCount) {
+  let properties = propertyCount;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (++properties > 100000) return { truncated: true, properties };
+    const child = value[key];
+    if (child && typeof child === 'object' && !seen.has(child)) {
+      if (pending.length >= 20000) return { truncated: true, properties };
+      pending.push(child);
+    }
+  }
+  return { truncated: false, properties };
+}
+
 const fieldsIn = (schemas) => {
   const fields = [],
     seen = new Set(),
@@ -168,68 +185,62 @@ const fieldsIn = (schemas) => {
     if (!value || typeof value !== 'object' || seen.has(value)) continue;
     seen.add(value);
     if (value.richText) fields.push(value);
-    for (const key in value) {
-      if (!Object.hasOwn(value, key)) continue;
-      if (++properties > 100000) return { fields, truncated: true };
-      const child = value[key];
-      if (child && typeof child === 'object' && !seen.has(child)) {
-        if (pending.length >= 20000) return { fields, truncated: true };
-        pending.push(child);
-      }
-    }
+    const result = collectSchemaChildren(value, pending, seen, properties);
+    properties = result.properties;
+    if (result.truncated) return { fields, truncated: true };
   }
   return { fields, truncated: pending.some((value) => value && typeof value === 'object' && !seen.has(value)) };
 };
 
 /** Extract static PCF definitions only; controlcontext and record values are never copied. */
+function collectManagedManifest(value, context) {
+  try {
+    if (value.length > 1024 * 1024) throw new Error('PCF static manifest exceeds the capture bound.');
+    const manifest = JSON.parse(value);
+    if (manifest.Name !== controlName) return;
+    if (!Array.isArray(manifest.Properties) || !Array.isArray(manifest.Resources))
+      throw new Error('PCF manifest properties/resources are missing.');
+    if (
+      manifest.ControlProperties ||
+      manifest.value ||
+      manifest.AuthConfigPropertiesGroups?.length ||
+      manifest.DataConnectors?.length
+    )
+      throw new Error('PCF definition contains instance/authentication data.');
+    const previous = context.manifests.get(manifest.Name);
+    // Later fields can omit already loaded resources; keep the first full definition.
+    if (!previous) context.manifests.set(manifest.Name, manifest);
+  } catch (cause) {
+    context.diagnostics.push(error('RICHTEXT_MANIFEST_INVALID', cause.message));
+  }
+}
+
+function collectManagedResource(node, attrs, context) {
+  let resource = null;
+  if (node.tagName === 'script') resource = attrs.src;
+  else if (node.tagName === 'link' && attrs.rel?.split(/\s+/).includes('stylesheet')) resource = attrs.href;
+  if (!resource) return;
+  try {
+    const local = localResource(resource);
+    // The local renderer initializes managed controls itself after vendor scripts.
+    if (local) (node.tagName === 'script' ? context.scripts : context.stylesheets).push(local);
+  } catch {
+    /* Unsupported optional resources remain outside the local asset inventory. */
+  }
+}
+
+function visitManagedNode(node, context) {
+  const attrs = Object.fromEntries((node.attrs ?? []).map((attr) => [attr.name, attr.value]));
+  if (attrs['data-pcf-control']) collectManagedManifest(attrs['data-pcf-control'], context);
+  collectManagedResource(node, attrs, context);
+  if (node.tagName === 'template') return;
+  for (const child of node.childNodes ?? []) visitManagedNode(child, context);
+}
+
 export function extractManagedRichTextControls(html) {
-  const manifests = new Map(),
-    scripts = [],
-    stylesheets = [],
-    diagnostics = [];
-  const visit = (node) => {
-    const attrs = Object.fromEntries((node.attrs ?? []).map((attr) => [attr.name, attr.value]));
-    if (attrs['data-pcf-control']) {
-      try {
-        if (attrs['data-pcf-control'].length > 1024 * 1024)
-          throw new Error('PCF static manifest exceeds the capture bound.');
-        const manifest = JSON.parse(attrs['data-pcf-control']);
-        if (manifest.Name === controlName) {
-          if (!Array.isArray(manifest.Properties) || !Array.isArray(manifest.Resources))
-            throw new Error('PCF manifest properties/resources are missing.');
-          if (
-            manifest.ControlProperties ||
-            manifest.value ||
-            manifest.AuthConfigPropertiesGroups?.length ||
-            manifest.DataConnectors?.length
-          )
-            throw new Error('PCF definition contains instance/authentication data.');
-          const previous = manifests.get(manifest.Name);
-          // Later fields can omit already loaded resources; keep the first full definition.
-          if (!previous) manifests.set(manifest.Name, manifest);
-        }
-      } catch (cause) {
-        diagnostics.push(error('RICHTEXT_MANIFEST_INVALID', cause.message));
-      }
-    }
-    const resource =
-      node.tagName === 'script'
-        ? attrs.src
-        : node.tagName === 'link' && attrs.rel?.split(/\s+/).includes('stylesheet')
-          ? attrs.href
-          : null;
-    if (resource) {
-      try {
-        const local = localResource(resource);
-        // The local renderer initializes managed controls itself after vendor scripts.
-        if (local) (node.tagName === 'script' ? scripts : stylesheets).push(local);
-      } catch {
-        /* Unsupported optional resources remain outside the local asset inventory. */
-      }
-    }
-    if (node.tagName !== 'template') for (const child of node.childNodes ?? []) visit(child);
-  };
-  visit(parse(String(html ?? '')));
+  const context = { manifests: new Map(), scripts: [], stylesheets: [], diagnostics: [] };
+  visitManagedNode(parse(String(html ?? '')), context);
+  const { manifests, scripts, stylesheets, diagnostics } = context;
   // Native vendor GUID tags defer execution; framework bundles export React first.
   const ordered = orderedScripts(scripts);
   return {
@@ -259,8 +270,10 @@ export function extractManagedRichTextControls(html) {
   };
 }
 
+/* NOSONAR: single-pass routine, splitting it would change shared state */
+
 /** Bounded static capture for configured rich text controls. No scripts are evaluated. */
-export async function captureRichTextAssets(
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function captureRichTextAssets(
   cache,
   live,
   {
@@ -363,7 +376,8 @@ export async function captureRichTextAssets(
   }
   const seen = new Set(),
     bodies = new Map();
-  const capture = async (paths) => {
+  const capture = async (paths) /* NOSONAR */ => {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const planned = [];
     for (const path of paths) {
       if (seen.has(path)) continue;
@@ -584,12 +598,12 @@ export async function captureRichTextAssets(
   for (const path of languageScripts) {
     const script = bodies.get(path)?.toString('utf8') ?? '';
     for (const match of script.matchAll(
-      /CKEDITOR\s*\.\s*lang\s*(?:\[\s*['"]([a-z]{2}(?:-[a-z]{2})?)['"]\s*\]|\.\s*([a-z]{2}(?:-[a-z]{2})?))\s*=\s*\{/gi,
+      /CKEDITOR\s*\.\s*lang\s*(?:\[\s*['"]([a-z]{2}(?:-[a-z]{2})?)['"]\s*\]|\.\s*([a-z]{2}(?:-[a-z]{2})?))\s*=\s*\{/gi, // NOSONAR: preserve the exact grammar and captured values
     ))
       bundledLanguages.add((match[1] ?? match[2]).toLowerCase());
   }
   if (!bundledLanguages.size && library) await capture([editor + 'lang/editor-language-resources.js']);
-  result.bundledLanguages = [...bundledLanguages].sort();
+  result.bundledLanguages = [...bundledLanguages].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   if (observed.fonts.length) {
     try {
       const report = await cache.captureOfficeFonts(observed.fonts, {

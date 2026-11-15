@@ -12,7 +12,7 @@ const buses = new Map(); // one emulator bus (one AMQP connection) per provider 
 // An env: reference of the shared process environment (SHARE_ENV), resolved here: the main thread never posts the value.
 const fromEnv = (ref) => {
   if (ref == null) return '';
-  const name = /^env:([A-Za-z_][A-Za-z0-9_]{0,127})$/.exec(String(ref))?.[1];
+  const name = /^env:([A-Za-z_]\w{0,127})$/.exec(String(ref))?.[1];
   if (!name) throw new Error('The synchronous I/O bridge takes authentication only as an env: reference.');
   return process.env[name] ?? '';
 };

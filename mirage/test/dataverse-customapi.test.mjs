@@ -1,7 +1,8 @@
+// @test-kind compatibility: Microsoft Learn custom API tables, bindings, CSDL and Web API error codes; individual codes not re-recorded natively
 // Custom APIs: customapi tables, unpacked solution parsing and registry operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -10,9 +11,11 @@ import { dataverseError, parseDataverseRoute, parsePrefer } from '../lib/dataver
 import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { customApiHandlers, install, parseCustomApiFiles, readCustomApiSolution } from '../lib/dataverse-customapi.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
+const ACCOUNT_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
 const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
 const LOGICAL = ['customapi', 'customapirequestparameter', 'customapiresponseproperty'];
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -107,12 +110,16 @@ function harness(files = FILES, options = {}) {
       params,
       body,
       user,
+      ...(op(name).binding === 'entity'
+        ? { target: { mapping: { logicalName: op(name).entity }, id: ACCOUNT_ID, row: { accountid: ACCOUNT_ID } } }
+        : {}),
     });
   return { store, ops, grants, sync, op, call };
 }
 
 const innerCode = (code) => (error) => error.details?.innerCode === code;
 
+// @test-kind contract: Paqvilo install seeds the custom API tables as dataverse-only mappings and keeps an existing mapping
 test('install seeds the three tables as dataverse-only mappings and keeps an existing mapping', () => {
   const state = emptyState();
   state.mappings.customapi = { logicalName: 'customapi', entitySet: 'custom', idColumn: 'customapiid', fields: {} };
@@ -164,11 +171,11 @@ test('a function returns each response property at its type default in a complex
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, {
     '@odata.context': `${ORIGIN}/api/data/v9.2/$metadata#Microsoft.Dynamics.CRM.sample_BoundResponse`,
-    Score: 0,
+    Score: null,
     Labels: [],
-    Enabled: false,
-    Stamp: '0001-01-01T00:00:00Z',
-    Id: '00000000-0000-0000-0000-000000000000',
+    Enabled: null,
+    Stamp: null,
+    Id: null,
   });
 });
 
@@ -195,6 +202,7 @@ test('executeprivilegename is checked: a missing privilege is a 403 0x80040220',
   assert.equal((await call('sample_Collection')).status, 200);
 });
 
+// @test-kind parity: native live baseline case custom.no-output-function: a function with no response property is absent (404 0x80060888)
 test('a function with no response property is absent: 404 0x80060888 (native custom.no-output-function)', async () => {
   const { call } = harness();
   await assert.rejects(call('sample_Empty'), innerCode('0x80060888'));
@@ -219,6 +227,7 @@ test('CSDL: entity-bound function, unbound action, collection-bound function; pr
   assert.equal(op('sample_Empty').csdl, '');
 });
 
+// @test-kind contract: Paqvilo registry sync: rows added after install register once per revision; a deleted row fails at call time
 test('sync registers rows added after install once per revision; a deleted row fails at call time', async () => {
   const { store, ops, sync, call, op } = harness();
   const before = ops.length;
@@ -258,7 +267,7 @@ test('the solution parser links child rows to their API and reads flags, types a
 });
 
 test('readCustomApiSolution reads the unpacked folders from disk', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'customapi-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'customapi-'));
   try {
     for (const file of FILES) {
       const path = join(dir, file.path);
@@ -299,6 +308,7 @@ test('a documented deep insert creates the parameter and property rows under the
   const body = {
     uniquename: 'sample_Deep',
     name: 'sample_Deep',
+    description: 'Invented deep insert custom API',
     bindingtype: 0,
     isfunction: false,
     isprivate: false,
@@ -334,8 +344,9 @@ test('a documented deep insert creates the parameter and property rows under the
   );
 });
 
+// @test-kind contract: Paqvilo persists the seeded custom API mappings in the ready transaction
 test('the seeded customapi mappings are persisted by the ready transaction', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'customapi-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'customapi-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'state.json');
   const store = await new DataStore({ file, state: emptyState() }).init();
@@ -366,8 +377,6 @@ const ECHO = apiFiles('sample_Echo', {
   ],
 });
 const ECHO_ROW = `${ORIGIN}/api/data/v9.2/$metadata#Microsoft.Dynamics.CRM.sample_EchoResponse`;
-const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
-const ZERO_TIME = '0001-01-01T00:00:00Z';
 const payloadError = (detail) => (error) =>
   error.status === 400 &&
   error.details?.innerCode === '0x80048d19' &&
@@ -415,20 +424,20 @@ test('Boolean takes JSON booleans and the strings true and false; the handler re
   assert.equal(seen[0].Flag, true);
   assert.equal(seen[0].Count, 3);
   assert.deepEqual(seen[0].Ids, ['a']);
-  assert.equal(seen[0].Text, undefined);
+  assert.equal(seen[0].Text, null, 'an omitted optional String is present as null');
   assert.equal(seen[1].Flag, false);
 });
 
-test('without a handler the response is the native defaults: a string is null, DateTime and Guid are their zero values', async () => {
+test('without a handler unset scalar responses are null independently of input value defaults', async () => {
   const { call } = harness([...FILES, ...ECHO]);
   assert.deepEqual((await call('sample_Echo', { method: 'POST', body: {} })).body, {
     '@odata.context': ECHO_ROW,
     Reply: null,
-    Count: 0,
-    Flag: false,
+    Count: null,
+    Flag: null,
     Note: null,
-    Stamp: ZERO_TIME,
-    Key: ZERO_GUID,
+    Stamp: null,
+    Key: null,
   });
 });
 
@@ -441,7 +450,9 @@ test('handler outputs fill the response by name; the bound target and caller rea
     },
     sample_Echo: () => ({ outputs: { Reply: 'hello', Note: 'n' } }),
   });
-  const { call, op } = harness([...FILES, ...ECHO], { handlers });
+  const { call, op, store } = harness([...FILES, ...ECHO], { handlers });
+  store.state.mappings.account = { logicalName: 'account', entitySet: 'accounts', idColumn: 'accountid', fields: {} };
+  store.state.tables.account = [{ accountid: ACCOUNT_ID }];
   const bound = await op('sample_Bound').handle({
     method: 'GET',
     url: new URL('/api/data/v9.2/sample_Bound', ORIGIN),
@@ -450,22 +461,51 @@ test('handler outputs fill the response by name; the bound target and caller rea
     params: { Flag: true },
     user: ADMIN,
     caller: { systemuserid: ADMIN.systemuserid },
-    target: { mapping: { logicalName: 'account' }, id: 'acc-1', row: { accountid: 'acc-1' } },
+    target: { mapping: { logicalName: 'account' }, id: ACCOUNT_ID, row: { accountid: ACCOUNT_ID } },
   });
   assert.equal(bound.body.Score, 7);
   assert.deepEqual(bound.body.Labels, ['x']);
   assert.equal(seen[0].target.logicalName, 'account');
-  assert.equal(seen[0].target.id, 'acc-1');
+  assert.equal(seen[0].target.id, ACCOUNT_ID);
   assert.equal(seen[0].caller.systemuserid, ADMIN.systemuserid);
   assert.deepEqual((await call('sample_Echo', { method: 'POST', body: {} })).body, {
     '@odata.context': ECHO_ROW,
     Reply: 'hello',
-    Count: 0,
-    Flag: false,
+    Count: null,
+    Flag: null,
     Note: 'n',
-    Stamp: ZERO_TIME,
-    Key: ZERO_GUID,
+    Stamp: null,
+    Key: null,
   });
+});
+
+// @test-kind contract: Paqvilo handler setup failures clear the request timeout and never invoke the handler
+test('bound handler context setup failures clear the request timeout and do not invoke the handler', async (t) => {
+  let invoked = false;
+  const timers = [],
+    cleared = [],
+    schedule = globalThis.setTimeout,
+    cancel = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (...args) => {
+    const timer = schedule(...args);
+    timers.push(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (timer) => {
+    cleared.push(timer);
+    return cancel(timer);
+  });
+  const { call } = harness(FILES, {
+    handlers: handlersOf({
+      sample_Bound: () => {
+        invoked = true;
+      },
+    }),
+  });
+  await assert.rejects(call('sample_Bound', { params: { Flag: true } }), /No mapping or local table for account/);
+  assert.equal(invoked, false);
+  assert.equal(timers.length, 1);
+  assert.deepEqual(cleared, timers, 'setup failures must release the existing timeout through the same finally path');
 });
 
 const SUBERROR = 'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode';
@@ -584,6 +624,7 @@ test('a timeout names the custom API when the pack names no plug-in type', async
   );
 });
 
+// @test-kind contract: Paqvilo pack API: customApiHandlers keyed by lowercase unique name; bad or duplicate entries rejected
 test('customApiHandlers keys handlers by lowercase unique name, takes a bare function or { handler, pluginType }, and rejects a bad entry or a duplicate', () => {
   const handlers = customApiHandlers([
     {
@@ -611,6 +652,7 @@ test('customApiHandlers keys handlers by lowercase unique name, takes a bare fun
   );
 });
 
+// @test-kind contract: Paqvilo reads the configured plug-in limit per call
 test('the plug-in limit is read per call: a limit raised while the simulator runs lets a slow handler finish', async () => {
   let limit = 20;
   const handlers = handlersOf({ sample_Echo: () => new Promise((resolve) => setTimeout(() => resolve({}), 60)) });

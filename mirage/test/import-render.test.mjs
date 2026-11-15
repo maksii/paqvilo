@@ -1,3 +1,4 @@
+// @test-kind unproven: portal import, local adapter and native-facing rendering models without recorded replay evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,9 +10,10 @@ import { observedHeaderNotifications } from '../lib/header-notification-capture.
 import { registerShellConventions } from '../lib/extensions.mjs';
 import { observedPageCopyLayout } from '../lib/observed-pagecopy-layout.mjs';
 import { observedSnippetComposition } from '../lib/observed-snippet-composition.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, files) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-simulation-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-simulation-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(files)) {
     const file = path.join(dir, name);

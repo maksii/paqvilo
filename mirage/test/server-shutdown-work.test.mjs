@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,9 +8,10 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { createSimulator } from '../server.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 test('Stop drains accepted GET observers before closing their backend and rejects late reads', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-read-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-read-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented Read Shutdown');
   await fs.writeFile(
@@ -79,8 +81,9 @@ test('Stop drains accepted GET observers before closing their backend and reject
     ['Accepted GET recorded'],
   );
 });
+// @test-kind contract+unproven: shutdown policy is local; imported flow execution has no native capture.
 test('Stop rejects new HTTP writes and drains an accepted streaming mutation plus its automatic imported flow', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-flow-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const flow = '10000000-0000-0000-0000-000000000001';
   const files = {

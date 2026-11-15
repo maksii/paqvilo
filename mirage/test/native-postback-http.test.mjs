@@ -1,3 +1,4 @@
+// @test-kind contract: the native postback HTTP transport (postback, JSON, attach-file staging and CSRF) answers as the Paqvilo runtime designs it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,6 +7,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
   t,
@@ -16,9 +18,10 @@ async function fixture(
     wizard = false,
     lookup = false,
     attachments = false,
+    forms = ['Second'],
   } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-postback-http-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-postback-http-'));
   const files = {
     'website.yml': 'adx_websiteid: fixture-site\nadx_name: Invented native transport',
     'Home.webpage.yml':
@@ -26,10 +29,10 @@ async function fixture(
     'Main.pagetemplate.yml':
       'adx_pagetemplateid: template\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: true',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
-    'Main.webtemplate.source.html':
-      '<!doctype html><html><body><form id="liquid_form">{% entityform name: "First" %}{% entityform name: "Second" %}</form></body></html>',
-    'First.basicform.yml': `adx_entityformid: first\nadx_name: First\nadx_mode: ${readOnly ? 100000002 : 100000001}\nadx_recordidquerystringparametername: firstrow`,
-    'Second.basicform.yml': `adx_entityformid: second\nadx_name: Second\nadx_mode: 100000001\nadx_recordidquerystringparametername: secondrow\nadx_successmessage: Saved source message\nadx_hideformonsuccess: false${redirect ? '\nadx_onsuccess: 756150001\nadx_redirecturl: /done/?source=owned\nadx_redirecturlappendentityidquerystring: true\nadx_redirecturlquerystringname: row' : ''}`,
+    // The platform renders only the first entityform or webform tag of a page (Microsoft Learn, Dataverse Liquid tags).
+    'Main.webtemplate.source.html': `<!doctype html><html><body><form id="liquid_form">${forms.map((name) => `{% entityform name: "${name}" %}`).join('')}</form></body></html>`,
+    'First.basicform.yml': `adx_entityformid: first\nadx_name: First\nadx_mode: 100000001\nadx_recordidquerystringparametername: firstrow`,
+    'Second.basicform.yml': `adx_entityformid: second\nadx_name: Second\nadx_mode: ${readOnly ? 100000002 : 100000001}\nadx_recordidquerystringparametername: secondrow\nadx_successmessage: Saved source message\nadx_hideformonsuccess: false${redirect ? '\nadx_onsuccess: 756150001\nadx_redirecturl: /done/?source=owned\nadx_redirecturlappendentityidquerystring: true\nadx_redirecturlquerystringname: row' : ''}`,
   };
   if (wizard) {
     files['Main.webtemplate.source.html'] =
@@ -109,7 +112,7 @@ async function fixture(
     app.store.state.mappings.annotation = { entitySet: 'annotations', idColumn: 'annotationid' };
     app.store.state.tables.annotation = [];
   }
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -280,7 +283,7 @@ test('advanced URLencoded submission follows its own visitor session and previou
   assert.equal(response.headers.get('pragma'), 'no-cache');
   assert.equal(response.headers.get('expires'), '-1');
   assert.equal(response.headers.get('vary'), null);
-  assert.ok(response.headers.get('x-frame-options'));
+  assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN');
   assert.match(
     await response.text(),
     /^<html><head><title>Object moved<\/title><\/head><body>\r\n<h2>Object moved to <a href="[^"]*stepid=edit[^"]*">here<\/a>\.<\/h2>\r\n<\/body><\/html>\r\n$/,
@@ -308,6 +311,7 @@ test('advanced URLencoded submission follows its own visitor session and previou
   );
 });
 
+// @test-kind security: a postback without the CSRF token, or to a read-only control, never saves
 test('CSRF, duplicate scalar, unknown targets and read-only controls retain failure status and never save', async (t) => {
   const { app, post, controls } = await fixture(t, { readOnly: true });
   const noToken = await fetch(app.url + '/?secondrow=second-row', {
@@ -319,6 +323,21 @@ test('CSRF, duplicate scalar, unknown targets and read-only controls retain fail
   assert.equal((await post({ title: 'Unknown' }, [], 'unknown')).status, 400);
   assert.equal((await post({ title: 'Duplicated' }, [[controls.names + 'title', 'second']])).status, 400);
   assert.equal((await post({}, [], nativeFormControlIds('entityform', 'first').buttons + 'UpdateButton')).status, 400);
+  assert.deepEqual(
+    app.store.snapshot().tables.sample.map((row) => row.title),
+    ['First', 'Second'],
+  );
+});
+
+// @test-kind compatibility: Microsoft Learn, Dataverse Liquid tags (entityform and webform): only a single entityform or webform tag is rendered per page; tags after the first are not rendered.
+test('a page whose second entityform tag is not rendered refuses a postback addressed to that form and saves nothing', async (t) => {
+  const { app, post, route, controls } = await fixture(t, { forms: ['First', 'Second'] });
+  const html = await (await fetch(app.url + route)).text();
+  assert.ok(html.includes(nativeFormControlIds('entityform', 'first').buttons));
+  assert.ok(!html.includes(controls.buttons));
+  const refused = await post({ title: 'Must not save' });
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /Native postback target is unknown or ambiguous/);
   assert.deepEqual(
     app.store.snapshot().tables.sample.map((row) => row.title),
     ['First', 'Second'],
@@ -337,6 +356,7 @@ test('default JSON route and JSON profile remain unchanged', async (t) => {
   assert.equal((await response.json()).outcome.message, 'Saved source message');
 });
 
+// @test-kind security: the attach-file API stages nothing without the token
 test('the attach-file API stages a file under an annotation id only with the token and in order', async (t) => {
   const { app } = await fixture(t);
   const headers = {
@@ -359,7 +379,7 @@ test('the attach-file API stages a file under an annotation id only with the tok
   assert.equal(started.status, 200);
   assert.equal(started.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
   assert.equal(started.headers.get('vary'), 'Accept-Encoding');
-  assert.ok(started.headers.get('x-frame-options'));
+  assert.equal(started.headers.get('x-frame-options'), 'SAMEORIGIN');
   const { AnnotationId, FileContinuationToken } = await started.json();
   assert.match(AnnotationId, /^[0-9a-f-]{36}$/);
   const block = (offset, token = FileContinuationToken) =>
@@ -373,7 +393,7 @@ test('the attach-file API stages a file under an annotation id only with the tok
   assert.equal((await block(0)).status, 204);
 });
 
-test('overlapping file blocks cannot both commit the same offset', { timeout: 5000 }, async (t) => {
+test('overlapping file blocks cannot both commit the same offset', async (t) => {
   const { app } = await fixture(t);
   const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': 'parallel.txt', 'x-ms-file-size': '6' };
   const { AnnotationId, FileContinuationToken } = await initializeFile(app, headers).then((response) =>
@@ -398,7 +418,7 @@ test('overlapping file blocks cannot both commit the same offset', { timeout: 50
   assert.equal(next.status, 204, 'A rejected duplicate preserves the valid next offset');
 });
 
-test('aborted or expired slow upload bodies never commit a partial block', { timeout: 5000 }, async (t) => {
+test('aborted or expired slow upload bodies never commit a partial block', async (t) => {
   const { app } = await fixture(t);
   const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': 'slow.txt', 'x-ms-file-size': '3' };
   const initialize = () => initializeFile(app, headers).then((response) => response.json());
@@ -432,6 +452,7 @@ test('aborted or expired slow upload bodies never commit a partial block', { tim
   }
 });
 
+// @test-kind security: one visitor's upload cannot evict another visitor's staged file
 test('staging capacity rejects a new upload without evicting an existing visitor file', async (t) => {
   const { app } = await fixture(t);
   const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': 'bounded.txt', 'x-ms-file-size': '1' };
@@ -550,6 +571,7 @@ test('staged attachments survive failed validation and are consumed only once by
   );
 });
 
+// @test-kind security: a staged file is visible only to the visitor and persona that staged it
 test('staged files stay private to the browser visitor and persona that initialized them', async (t) => {
   const { app, post, controls } = await fixture(t, { attachments: true });
   app.store.state.tables.contact.push({ contactid: 'other-contact' });
@@ -598,4 +620,129 @@ test('staged files stay private to the browser visitor and persona that initiali
   assert.equal((await post({ title: 'Own browser' }, values, undefined, { cookie: first.cookie })).status, 200);
   assert.equal(app.store.state.tables.annotation.length, 1);
   assert.equal(app.store.state.tables.sample[1].title, 'Own browser');
+});
+
+// The staged name, as the invalid postback re-renders it after its file block has been received.
+async function stagedNameShown(app, post, controls, headers) {
+  const staged = await initializeFile(app, headers).then((response) => response.json());
+  const block = await fetch(app.url + `/_api/file/UploadFileBlock/note?noteId=${staged.AnnotationId}&offset=0`, {
+    method: 'PUT',
+    headers: { ...headers, 'x-ms-file-continuation-token': staged.FileContinuationToken },
+    body: 'abc',
+  });
+  assert.equal(block.status, 204);
+  const controlsValue = [
+    [controls.names + 'AttachFile_HiddenField_AnnotationIds', JSON.stringify([staged.AnnotationId])],
+  ];
+  const invalid = await post({ title: '' }, controlsValue, undefined, { cookie: headers.cookie });
+  return invalid.text();
+}
+
+// @test-kind unproven: no native capture of the wire form of non-Latin-1 file names exists; the marker header is Mirage's own.
+test('an attach-file name sent percent-encoded with the uri-component marker is staged under its decoded name', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': encodeURIComponent('отчёт 測試.pdf'),
+    'x-ms-file-name-encoding': 'uri-component',
+    'x-ms-file-size': '3',
+    'x-ms-file-type': 'application/pdf',
+  };
+  const html = await stagedNameShown(app, post, controls, headers);
+  assert.match(html, /отчёт 測試\.pdf \(3 bytes\)/);
+});
+
+// @test-kind unproven: no native capture of the wire form of non-Latin-1 file names exists; the marker header is Mirage's own.
+test('a malformed percent-escape in an attach-file name with the uri-component marker answers 400', async (t) => {
+  const { app } = await fixture(t, { attachments: true });
+  const response = await initializeFile(app, {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': '100%.pdf',
+    'x-ms-file-name-encoding': 'uri-component',
+    'x-ms-file-size': '3',
+  });
+  assert.equal(response.status, 400);
+});
+
+// @test-kind unproven: no native capture of the wire form of non-Latin-1 file names exists; the marker header is Mirage's own.
+test('an attach-file name without the marker is staged as sent, so a literal percent sign is kept', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': '100%.pdf', 'x-ms-file-size': '3' };
+  const html = await stagedNameShown(app, post, controls, headers);
+  assert.match(html, /100%\.pdf \(3 bytes\)/);
+});
+
+// @test-kind security: a control character in an attach-file name is refused before any file is staged, so the name never reaches the staged list or the form.
+test('an attach-file name whose percent-encoded control character decodes to U+0000 answers 400', async (t) => {
+  const { app } = await fixture(t, { attachments: true });
+  const response = await initializeFile(app, {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': encodeURIComponent('x\u0000.pdf'),
+    'x-ms-file-name-encoding': 'uri-component',
+    'x-ms-file-size': '3',
+  });
+  assert.equal(response.status, 400);
+});
+
+// @test-kind security: a directory part of an attach-file name is a path the browser never sends; only the base name may be stored, so a traversal name cannot choose a location.
+test('an encoded attach-file name with parent directory parts is staged under its base name', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': '..%2F..%2Fx.pdf',
+    'x-ms-file-name-encoding': 'uri-component',
+    'x-ms-file-size': '3',
+    'x-ms-file-type': 'application/pdf',
+  };
+  const html = await stagedNameShown(app, post, controls, headers);
+  assert.match(html, /x\.pdf \(3 bytes\)/);
+  assert.doesNotMatch(html, /\.\.\/x\.pdf/);
+});
+
+// @test-kind security: a backslash directory part of an attach-file name sent without the marker is removed the same way as a slash part.
+test('an attach-file name without the marker keeps only the part after its last backslash', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': '..\\x.pdf', 'x-ms-file-size': '3' };
+  const html = await stagedNameShown(app, post, controls, headers);
+  assert.match(html, /x\.pdf \(3 bytes\)/);
+  assert.doesNotMatch(html, /\.\.\\x\.pdf/);
+});
+
+// @test-kind security: the dot names are path entries, not file names; a staged file named by one of them could address its parent directory.
+test('an attach-file name that is a dot name after its path is removed answers 400', async (t) => {
+  const { app } = await fixture(t, { attachments: true });
+  for (const name of ['..', '.', 'folder/..']) {
+    const response = await initializeFile(app, {
+      __RequestVerificationToken: app.csrf,
+      'x-ms-file-name': name,
+      'x-ms-file-size': '3',
+    });
+    assert.equal(response.status, 400, name);
+  }
+});
+
+// @test-kind security: a name longer than 255 UTF-16 code units exceeds the file name length that a file store accepts, so it is refused rather than truncated.
+test('an attach-file name of 256 characters answers 400 and one of 255 characters is accepted', async (t) => {
+  const { app } = await fixture(t, { attachments: true });
+  const sized = (length) => ({
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': 'a'.repeat(length),
+    'x-ms-file-size': '3',
+  });
+  assert.equal((await initializeFile(app, sized(255))).status, 200);
+  assert.equal((await initializeFile(app, sized(256))).status, 400);
+});
+
+// @test-kind security: the name checks must not change ordinary non-Latin names, so a valid name with spaces and a percent sign is staged exactly as the visitor named it.
+test('a non-Latin attach-file name with spaces and a percent sign is staged under its decoded name', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-name': encodeURIComponent('отчёт 測試 100%.pdf'),
+    'x-ms-file-name-encoding': 'uri-component',
+    'x-ms-file-size': '3',
+    'x-ms-file-type': 'application/pdf',
+  };
+  const html = await stagedNameShown(app, post, controls, headers);
+  assert.ok(html.includes('отчёт 測試 100%.pdf (3 bytes)'));
 });

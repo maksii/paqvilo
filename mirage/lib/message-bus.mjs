@@ -4,12 +4,14 @@
 // client amqp-client.mjs; serviceBusEmulatorPreflight probes its health endpoint. Nothing here contacts a non-loopback host.
 // Callers already inside a store transaction pass `{ nested: true }` so send, receive, complete, abandon and deadLetter join it.
 import { randomUUID } from 'node:crypto';
+import dns from 'node:dns';
 import { DataError } from './data-error.mjs';
-import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
-import { ProviderError } from './storage-provider.mjs';
+import { isLoopbackUrl, loopbackAddresses, loopbackFetch } from './dataverse-webhooks.mjs';
+import { ProviderError, requestBound } from './storage-provider.mjs';
 import { CODE, connectAmqp, decodeMessage, described, encodeMessage, sym } from './amqp-client.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
+import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
 
 export const QUEUE_MESSAGE_TABLE = 'paqvilo_queuemessage';
 export const DEAD_LETTER_SUFFIX = '/$deadletterqueue';
@@ -29,6 +31,20 @@ export const QUEUE_MESSAGE_MAPPING = Object.freeze({
     deliverycount: { dataverseType: 'int' },
     locktoken: { dataverseType: 'nvarchar' },
     lockeduntil: { dataverseType: 'bigint' },
+  },
+  relationships: {},
+});
+// One counter row per entity. It outlives the messages it numbered, so a sequence number is never issued twice.
+export const QUEUE_SEQUENCE_TABLE = 'paqvilo_queuesequence';
+const SEQUENCE_ID = 'paqvilo_queuesequenceid';
+export const QUEUE_SEQUENCE_MAPPING = Object.freeze({
+  logicalName: QUEUE_SEQUENCE_TABLE,
+  idColumn: SEQUENCE_ID,
+  dataverseOnly: true,
+  fields: {
+    [SEQUENCE_ID]: { dataverseType: 'uniqueidentifier' },
+    entity: { dataverseType: 'nvarchar' },
+    sequencenumber: { dataverseType: 'bigint' },
   },
   relationships: {},
 });
@@ -80,15 +96,20 @@ function entityName(entity, { deadLetter = false } = {}) {
 }
 const time = (value) => {
   if (value == null) return null;
-  const ms = value instanceof Date ? value.getTime() : typeof value === 'number' ? value : Date.parse(value);
+  let ms;
+  if (value instanceof Date) ms = value.getTime();
+  else if (typeof value === 'number') ms = value;
+  else ms = Date.parse(value);
   if (!Number.isFinite(ms)) throw new DataError('scheduledEnqueueTime must be a date', 400, 'InvalidRequest');
   return ms;
 };
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
-function json(value, label) {
+function json(value, label, { exact = true } = {}) {
   if (value === undefined) throw new DataError(`${label} must be JSON`, 400, 'InvalidRequest');
   try {
-    return JSON.parse(JSON.stringify(value));
+    return exact
+      ? parseExactJson(stringifyExactJson(value), { allowFiniteDouble: true })
+      : JSON.parse(JSON.stringify(value)); // NOSONAR: JSON round trip semantics differ from structuredClone
   } catch {
     throw new DataError(`${label} must be JSON`, 400, 'InvalidRequest');
   }
@@ -108,7 +129,7 @@ function messageInput(entity, body, { messageId, properties = {}, scheduledEnque
     throw new DataError('messageId must be 1-128 characters', 400, 'InvalidRequest');
   return {
     value,
-    properties: json(properties, 'Message properties'),
+    properties: json(properties, 'Message properties', { exact: false }),
     messageId,
     scheduled: time(scheduledEnqueueTime),
   };
@@ -120,6 +141,17 @@ function receiveInput(entity, mode, maxMessages) {
     throw new DataError('mode must be peekLock or receiveAndDelete', 400, 'InvalidRequest');
   if (!Number.isInteger(maxMessages) || maxMessages < 1 || maxMessages > 1000)
     throw new DataError('maxMessages must be 1-1000', 400, 'InvalidRequest');
+}
+function localMessageState(row, locked, now) {
+  if (row.entity.endsWith(DEAD_LETTER_SUFFIX)) return 'deadLettered';
+  if (locked) return 'locked';
+  if (row.visibleat > now) return 'scheduled';
+  return 'active';
+}
+function emulatorMessageState(entity, lockToken) {
+  if (entity.endsWith(DEAD_LETTER_SUFFIX)) return 'deadLettered';
+  if (lockToken) return 'locked';
+  return 'active';
 }
 function view(row, now, { lock = true } = {}) {
   const locked = row.locktoken != null && row.lockeduntil > now;
@@ -134,16 +166,17 @@ function view(row, now, { lock = true } = {}) {
     deliveryCount: row.deliverycount,
     lockToken: lock && locked ? row.locktoken : null,
     lockedUntil: locked ? iso(row.lockeduntil) : null,
-    state: row.entity.endsWith(DEAD_LETTER_SUFFIX)
-      ? 'deadLettered'
-      : locked
-        ? 'locked'
-        : row.visibleat > now
-          ? 'scheduled'
-          : 'active',
+    state: localMessageState(row, locked, now),
     deadLetterReason: row.deadletterreason ?? null,
     deadLetterDescription: row.deadletterdescription ?? null,
   };
+}
+
+function locked(rows, lockToken, at) {
+  if (typeof lockToken !== 'string') throw lockLost();
+  const row = rows.find((candidate) => candidate.locktoken === lockToken);
+  if (!row || !(row.lockeduntil > at)) throw lockLost(); // NOSONAR: operand can be NaN or undefined, the negated test differs
+  return row;
 }
 
 /**
@@ -169,15 +202,32 @@ export function createLocalMessageBus({
   const rowsOf = () => store.state.tables?.[QUEUE_MESSAGE_TABLE] ?? [];
   // The organization composes the table at startup (dataverse-organization.mjs INTERNAL_TABLES); this insert-only seed
   // inside each write covers a bus over a bare store and a replaced state.
-  const seed = () => {
-    store.state.mappings[QUEUE_MESSAGE_TABLE] ??= structuredClone(QUEUE_MESSAGE_MAPPING);
-    return (store.state.tables[QUEUE_MESSAGE_TABLE] ??= []);
+  const seedTable = (mapping) => {
+    store.state.mappings[mapping.logicalName] ??= structuredClone(mapping);
+    store.state.tables[mapping.logicalName] ??= [];
+    return store.state.tables[mapping.logicalName];
   };
+  const seed = () => seedTable(QUEUE_MESSAGE_MAPPING);
   const write = (fn, nested) => store.transact(() => fn(seed()), { incremental: true, nested });
   const indexOf = (rows, rowId) => rows.findIndex((row) => row[ID] === rowId);
   // ponytail: every operation scans the table (O(messages)); index by entity if queues grow past a few thousand rows.
   const ordered = (rows, entity) =>
     rows.filter((row) => row.entity === entity).sort((a, b) => a.sequencenumber - b.sequencenumber);
+  // The counter starts at the highest number the entity's messages hold when no counter row exists yet.
+  function nextSequenceNumber(rows, entity) {
+    const counters = seedTable(QUEUE_SEQUENCE_MAPPING),
+      index = counters.findIndex((row) => row.entity === entity);
+    if (index < 0) {
+      const highest = rows
+        .filter((row) => row.entity === entity || row.entity === entity + DEAD_LETTER_SUFFIX)
+        .reduce((max, row) => Math.max(max, row.sequencenumber), 0);
+      store.insertRow(QUEUE_SEQUENCE_TABLE, counters, { [SEQUENCE_ID]: uuid(), entity, sequencenumber: highest + 1 });
+      return highest + 1;
+    }
+    const sequencenumber = counters[index].sequencenumber + 1;
+    store.mutateRow(QUEUE_SEQUENCE_TABLE, counters, index, { sequencenumber });
+    return sequencenumber;
+  }
 
   function moveToDeadLetter(rows, row, reason, description, explicit = false) {
     const index = indexOf(rows, row[ID]);
@@ -207,13 +257,6 @@ export function createLocalMessageBus({
       visibleat: at + backoff(row.deliverycount),
     });
   }
-  function locked(rows, lockToken, at) {
-    if (typeof lockToken !== 'string') throw lockLost();
-    const row = rows.find((candidate) => candidate.locktoken === lockToken);
-    if (!row || !(row.lockeduntil > at)) throw lockLost();
-    return row;
-  }
-
   const bus = {
     id,
     descriptor: localMessageBusDescriptor,
@@ -233,7 +276,7 @@ export function createLocalMessageBus({
           messageid: key,
           body: value,
           properties,
-          sequencenumber: rows.reduce((max, item) => Math.max(max, item.sequencenumber), 0) + 1,
+          sequencenumber: nextSequenceNumber(rows, entity),
           enqueuedon: iso(at),
           scheduledat: scheduled,
           visibleat: scheduled ?? at,
@@ -331,6 +374,11 @@ const diagnostic = (code, message, severity = 'error') => ({ code, severity, mes
 const EMULATOR_AMQP_PORT = 5672; // Service Bus emulator default AMQP port.
 const EMULATOR_MAX_MESSAGE = 256 * 1024; // Emulator quota: message size 256 KB, not configurable.
 
+const NOT_LOOPBACK = {
+  code: 'SERVICEBUS_EMULATOR_NOT_LOOPBACK',
+  message: 'The emulator endpoint must be localhost, 127.0.0.0/8 or ::1; other hosts are never contacted.',
+};
+
 /**
  * The one reading of an emulator connection string: { host, bracketed, keyName, key } or { error: { code, message } }.
  * Only Endpoint=sb://<loopback host> with UseDevelopmentEmulator=true is accepted; nothing is contacted here.
@@ -355,17 +403,13 @@ function emulatorConnection(connectionString) {
   let host;
   try {
     const url = new URL(parts.get('endpoint'));
-    if (url.protocol !== 'sb:') throw new Error();
+    if (url.protocol !== 'sb:') throw new Error('Expected an sb: emulator endpoint.');
     host = url.hostname;
   } catch {
     return refuse('SERVICEBUS_EMULATOR_ENDPOINT_INVALID', 'The connection string Endpoint must be sb://<host>.');
   }
   const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
-  if (!isLoopbackUrl(`http://${bracketed}/`))
-    return refuse(
-      'SERVICEBUS_EMULATOR_NOT_LOOPBACK',
-      'The emulator endpoint must be localhost, 127.0.0.0/8 or ::1; other hosts are never contacted.',
-    );
+  if (!isLoopbackUrl(`http://${bracketed}/`)) return { error: NOT_LOOPBACK };
   return {
     host: bracketed.replace(/^\[|\]$/g, ''),
     bracketed,
@@ -374,8 +418,11 @@ function emulatorConnection(connectionString) {
   };
 }
 
-/** Probe a Service Bus emulator's health endpoint on loopback. Never throws; the result never carries the connection string or its key. */
-export async function serviceBusEmulatorPreflight({ connectionString, healthPort = 5300, timeoutMs = 2000 } = {}) {
+/**
+ * Probe a Service Bus emulator's health endpoint on loopback. Never throws; the result never carries the connection string or its key.
+ * timeoutMs, when given, is the caller's bound; by default the probe is ended by the idle window (requestBound).
+ */
+export async function serviceBusEmulatorPreflight({ connectionString, healthPort = 5300, timeoutMs } = {}) {
   const result = {
     name: 'message-bus:servicebus-emulator',
     kind: 'servicebus-emulator',
@@ -398,8 +445,9 @@ export async function serviceBusEmulatorPreflight({ connectionString, healthPort
   if (target.error) return fail(target.error.code, target.error.message);
   const probe = `http://${target.bracketed}:${healthPort}/health`;
   result.endpoint = `sb://${target.bracketed}`;
+  const bound = requestBound(timeoutMs);
   try {
-    const response = await loopbackFetch(probe, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await loopbackFetch(probe, { method: 'GET', signal: bound.signal });
     await response.body?.cancel();
     result.reachable = true;
     result.ready = response.ok;
@@ -414,6 +462,8 @@ export async function serviceBusEmulatorPreflight({ connectionString, healthPort
         `No emulator health endpoint answered on loopback port ${Number(healthPort)}.`,
       ),
     );
+  } finally {
+    bound.done();
   }
   return result;
 }
@@ -473,6 +523,7 @@ function lockTokenOf(tag) {
  * entity names configuration maps to this provider (preflight attaches a link to each). The connection string is read from env
  * when a connection opens; its key goes to SASL only and never into state, results or errors. One connection, opened lazily,
  * reopened after a failure; links are cached per entity. Every wait is bounded by timeoutMs.
+ * lookup (default dns.promises.lookup) resolves the endpoint name for the loopback check; tests inject it.
  */
 export function createServiceBusEmulatorBus({
   id = 'servicebus-emulator',
@@ -481,8 +532,9 @@ export function createServiceBusEmulatorBus({
   env = process.env,
   timeoutMs = 5000,
   now = Date.now,
+  lookup = dns.promises.lookup,
 } = {}) {
-  const variable = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(settings.connectionString ?? '')?.[1];
+  const variable = /^env:([A-Za-z_]\w*)$/.exec(settings.connectionString ?? '')?.[1];
   if (!variable) throw new TypeError('createServiceBusEmulatorBus requires settings.connectionString as env:NAME');
   const port = settings.amqpPort ?? EMULATOR_AMQP_PORT;
   const names = [...new Set(entities)];
@@ -492,7 +544,7 @@ export function createServiceBusEmulatorBus({
     locks = new Map();
   let session = null;
 
-  function open(source, ms, signal = null) {
+  function open(source, bound = {}) {
     const target = emulatorConnection(source?.[variable]);
     if (target.error) {
       const message =
@@ -501,15 +553,40 @@ export function createServiceBusEmulatorBus({
           : `${target.error.message} (${variable})`;
       return Promise.reject(new ProviderError('Unavailable', message, { provider: id, diagnostic: target.error.code }));
     }
-    return connectAmqp({
-      host: target.host,
-      port,
-      hostname: target.host,
-      timeoutMs: ms,
-      signal,
-      provider: id,
-      credentials: () => ({ user: target.keyName, password: target.key }),
-    });
+    return checkedHosts(target).then((hosts) => connectFirst(hosts, target, bound));
+  }
+  // The sockets go to the addresses that the loopback check accepts for the endpoint name, in lookup order, because a *.localhost
+  // name may resolve to a routable address. Any other answer, or none, refuses the endpoint before a connection is attempted.
+  async function checkedHosts(target) {
+    const addresses = await loopbackAddresses(`http://${target.bracketed}/`, lookup).catch(() => []);
+    if (addresses === null) return [target.host]; // localhost and IP literals skip the lookup and connect as written
+    if (!addresses.length) {
+      const { code, message } = NOT_LOOPBACK;
+      throw new ProviderError('Unavailable', `${message} (${variable})`, { provider: id, diagnostic: code });
+    }
+    return addresses.map(({ address }) => address);
+  }
+  // Each host is tried in turn; the first connection that becomes usable is returned. When every attempt fails, the last failure
+  // is rethrown. An aborted signal stops the attempts, because an already-aborted signal would never bound the next one.
+  // bound: { timeoutMs, signal, onProgress } as connectAmqp takes them.
+  async function connectFirst(hosts, target, bound) {
+    let failure;
+    for (const host of hosts) {
+      try {
+        return await connectAmqp({
+          host,
+          port,
+          hostname: target.host,
+          ...bound,
+          provider: id,
+          credentials: () => ({ user: target.keyName, password: target.key }),
+        });
+      } catch (error) {
+        failure = error;
+        if (bound.signal?.aborted) break;
+      }
+    }
+    throw failure;
   }
   // The live connection, opened on first use and again after it failed (Service Bus has no link recovery: locks die with it).
   async function current() {
@@ -522,7 +599,7 @@ export function createServiceBusEmulatorBus({
     senders.clear();
     receivers.clear();
     locks.clear();
-    session = open(env, timeoutMs);
+    session = open(env, { timeoutMs });
     session.catch(() => {});
     return session;
   }
@@ -552,7 +629,7 @@ export function createServiceBusEmulatorBus({
     let body = message.body;
     if (Buffer.isBuffer(body) && contentType === 'application/json') {
       try {
-        body = JSON.parse(body.toString('utf8'));
+        body = parseExactJson(body.toString('utf8'), { allowFiniteDouble: true });
       } catch {
         /* kept as bytes */
       }
@@ -569,7 +646,7 @@ export function createServiceBusEmulatorBus({
       deliveryCount: (Number(message.header[4]) || 0) + 1,
       lockToken,
       lockedUntil: lockToken ? stamp(lockedUntil) : null,
-      state: entity.endsWith(DEAD_LETTER_SUFFIX) ? 'deadLettered' : lockToken ? 'locked' : 'active',
+      state: emulatorMessageState(entity, lockToken),
       // Assumed: the emulator carries dead-letter reasons as the application properties DeadLetterReason/DeadLetterErrorDescription.
       deadLetterReason: DeadLetterReason,
       deadLetterDescription: DeadLetterErrorDescription,
@@ -594,6 +671,36 @@ export function createServiceBusEmulatorBus({
     return true;
   }
 
+  // A probe whose bound ended can still be closing its own connection: close() waits for each probe that has not settled.
+  const probes = new Set();
+  const track = (probe) => {
+    const forget = () => probes.delete(settled);
+    const settled = probe.then(forget, forget);
+    probes.add(settled);
+    return probe;
+  };
+  // Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity. env
+  // overrides the environment for this probe only. Under a probe ({ signal, progress } from preflightProvider) the probe's idle
+  // guard bounds every wait and each completed step calls progress(); a direct call is bounded by the shared idle window.
+  async function probeEmulator({ env: source = env, signal, progress } = {}) {
+    let connection = null;
+    const idle = signal ? null : requestBound(undefined);
+    const bound = { timeoutMs: null, signal: signal ?? idle.signal, onProgress: progress };
+    try {
+      connection = await open(source, bound);
+      for (const entity of names) await connection.detach(await connection.attach({ role: 'sender', address: entity }));
+      return { ready: true, reason: null };
+    } catch (error) {
+      return { ready: false, reason: error.message };
+    } finally {
+      try {
+        await connection?.close();
+      } finally {
+        idle?.done();
+      }
+    }
+  }
+
   return {
     id,
     descriptor: serviceBusEmulatorDescriptor,
@@ -613,7 +720,7 @@ export function createServiceBusEmulatorBus({
         annotations,
         properties: [messageId, null, null, null, null, null, sym('application/json')],
         applicationProperties: properties,
-        body: Buffer.from(JSON.stringify(value), 'utf8'),
+        body: Buffer.from(stringifyExactJson(value), 'utf8'),
       });
       if (payload.length > EMULATOR_MAX_MESSAGE)
         throw new ProviderError(
@@ -679,22 +786,12 @@ export function createServiceBusEmulatorBus({
         },
       );
     },
-    /** Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity, within
-     * 1.8 s (inside the 2 s preflight bound). env overrides the environment for this probe only. */
-    async preflight({ env: source = env } = {}) {
-      let connection = null;
-      try {
-        connection = await open(source, 1800, AbortSignal.timeout(1800));
-        for (const entity of names)
-          await connection.detach(await connection.attach({ role: 'sender', address: entity }));
-        return { ready: true, reason: null };
-      } catch (error) {
-        return { ready: false, reason: error.message };
-      } finally {
-        await connection?.close();
-      }
+    /** Readiness probe (probeEmulator); the returned promise is tracked until it settles. */
+    preflight(context) {
+      return track(probeEmulator(context));
     },
     async close() {
+      await Promise.all(probes);
       const connection = await session?.catch(() => null);
       session = null;
       senders.clear();
@@ -720,7 +817,7 @@ export function mappedEntities(settings, providerId) {
 const PROVIDER_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const KINDS = new Set(['local-queue', 'servicebus-emulator']);
 const PACK_KIND = /^pack:[A-Za-z0-9@._-]+\/[A-Za-z0-9._-]+$/;
-const ENV_REFERENCE = /^env:[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const ENV_REFERENCE = /^env:[A-Za-z_]\w{0,127}$/;
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function retrySettings(value, label) {
@@ -750,68 +847,77 @@ export function messagingSettings(value, label = 'providers.messaging') {
   const result = {};
   for (const [providerId, provider] of Object.entries(value)) {
     if (providerId === 'endpoints') continue;
-    const at = `${label}.${providerId}`;
-    if (!PROVIDER_ID.test(providerId))
-      throw new Error(`${label} provider ids must be lower-case names (got '${providerId.slice(0, 64)}')`);
-    if (!plainObject(provider)) throw new Error(`${at} must be an object`);
-    const { kind } = provider;
-    if (typeof kind !== 'string' || !(KINDS.has(kind) || PACK_KIND.test(kind)))
-      throw new Error(`${at}.kind must be local-queue, servicebus-emulator or pack:<packId>/<name>`);
-    // The emulator's config.json owns lock duration and MaxDeliveryCount, so its entry takes no retry; amqpPort is its AMQP port.
-    const allowed =
-      kind === 'local-queue'
-        ? ['kind', 'retry', 'lockDurationMs']
-        : kind === 'servicebus-emulator'
-          ? ['kind', 'connectionString', 'amqpPort']
-          : ['kind', 'retry', 'connectionString'];
-    for (const key of Object.keys(provider))
-      if (!allowed.includes(key)) throw new Error(`Unknown ${at} key '${key}' for kind ${kind}`);
-    // Only kinds that accept retry get one, so a normalised result parses again unchanged (config-keys and the host both run this).
-    const normalized = {
-      kind,
-      ...(allowed.includes('retry') ? { retry: retrySettings(provider.retry, `${at}.retry`) } : {}),
-    };
-    if (provider.amqpPort !== undefined) {
-      if (!Number.isInteger(provider.amqpPort) || provider.amqpPort < 1 || provider.amqpPort > 65535)
-        throw new Error(`${at}.amqpPort must be an integer from 1 through 65535`);
-      normalized.amqpPort = provider.amqpPort;
-    }
-    if (provider.lockDurationMs !== undefined) {
-      if (
-        !Number.isInteger(provider.lockDurationMs) ||
-        provider.lockDurationMs < 1000 ||
-        provider.lockDurationMs > 300_000
-      )
-        throw new Error(`${at}.lockDurationMs must be an integer from 1000 through 300000`);
-      normalized.lockDurationMs = provider.lockDurationMs;
-    }
-    if (provider.connectionString !== undefined) {
-      if (typeof provider.connectionString !== 'string' || !ENV_REFERENCE.test(provider.connectionString))
-        throw new Error(
-          `${at}.connectionString must be an env:NAME reference; literal connection strings are not accepted in config`,
-        );
-      normalized.connectionString = provider.connectionString;
-    } else if (kind === 'servicebus-emulator') throw new Error(`${at}.connectionString is required (env:NAME)`);
-    result[providerId] = normalized;
+    result[providerId] = normalizeMessagingProvider(providerId, provider, label);
   }
   result.local ??= { kind: 'local-queue', retry: retrySettings(undefined) };
   const endpoints = value.endpoints ?? {};
   if (!plainObject(endpoints))
     throw new Error(`${label}.endpoints must map service endpoint ids or names to <provider>/<entity>`);
   result.endpoints = {};
-  for (const [key, target] of Object.entries(endpoints)) {
-    if (!key.trim() || key.length > 200)
-      throw new Error(`${label}.endpoints keys must be service endpoint ids or names of at most 200 characters`);
-    const slash = typeof target === 'string' ? target.indexOf('/') : -1;
-    const providerId = slash > 0 ? target.slice(0, slash) : '',
-      entity = slash > 0 ? target.slice(slash + 1) : '';
-    if (!Object.hasOwn(result, providerId) || providerId === 'endpoints' || !ENTITY.test(entity))
-      throw new Error(
-        `${label}.endpoints.${key.slice(0, 64)} must be <provider>/<entity> naming a declared messaging provider`,
-      );
-    result.endpoints[key] = target;
-  }
+  for (const [key, target] of Object.entries(endpoints)) validateMessagingEndpoint(result, key, target, label);
   return result;
+}
+
+function normalizeMessagingProvider(providerId, provider, label) {
+  const at = `${label}.${providerId}`;
+  if (!PROVIDER_ID.test(providerId))
+    throw new Error(`${label} provider ids must be lower-case names (got '${providerId.slice(0, 64)}')`);
+  if (!plainObject(provider)) throw new Error(`${at} must be an object`);
+  const { kind } = provider;
+  if (typeof kind !== 'string' || !(KINDS.has(kind) || PACK_KIND.test(kind)))
+    throw new Error(`${at}.kind must be local-queue, servicebus-emulator or pack:<packId>/<name>`);
+  const allowed = allowedMessagingKeys(kind);
+  for (const key of Object.keys(provider))
+    if (!allowed.includes(key)) throw new Error(`Unknown ${at} key '${key}' for kind ${kind}`);
+  const normalized = {
+    kind,
+    ...(allowed.includes('retry') ? { retry: retrySettings(provider.retry, `${at}.retry`) } : {}),
+  };
+  applyMessagingProviderOptions(provider, normalized, at, kind);
+  return normalized;
+}
+
+function allowedMessagingKeys(kind) {
+  if (kind === 'local-queue') return ['kind', 'retry', 'lockDurationMs'];
+  if (kind === 'servicebus-emulator') return ['kind', 'connectionString', 'amqpPort'];
+  return ['kind', 'retry', 'connectionString'];
+}
+
+function applyMessagingProviderOptions(provider, normalized, at, kind) {
+  if (provider.amqpPort !== undefined) {
+    if (!Number.isInteger(provider.amqpPort) || provider.amqpPort < 1 || provider.amqpPort > 65535)
+      throw new Error(`${at}.amqpPort must be an integer from 1 through 65535`);
+    normalized.amqpPort = provider.amqpPort;
+  }
+  if (provider.lockDurationMs !== undefined) {
+    if (
+      !Number.isInteger(provider.lockDurationMs) ||
+      provider.lockDurationMs < 1000 ||
+      provider.lockDurationMs > 300_000
+    )
+      throw new Error(`${at}.lockDurationMs must be an integer from 1000 through 300000`);
+    normalized.lockDurationMs = provider.lockDurationMs;
+  }
+  if (provider.connectionString !== undefined) {
+    if (typeof provider.connectionString !== 'string' || !ENV_REFERENCE.test(provider.connectionString))
+      throw new Error(
+        `${at}.connectionString must be an env:NAME reference; literal connection strings are not accepted in config`,
+      );
+    normalized.connectionString = provider.connectionString;
+  } else if (kind === 'servicebus-emulator') throw new Error(`${at}.connectionString is required (env:NAME)`);
+}
+
+function validateMessagingEndpoint(result, key, target, label) {
+  if (!key.trim() || key.length > 200)
+    throw new Error(`${label}.endpoints keys must be service endpoint ids or names of at most 200 characters`);
+  const slash = typeof target === 'string' ? target.indexOf('/') : -1;
+  const providerId = slash > 0 ? target.slice(0, slash) : '',
+    entity = slash > 0 ? target.slice(slash + 1) : '';
+  if (!Object.hasOwn(result, providerId) || providerId === 'endpoints' || !ENTITY.test(entity))
+    throw new Error(
+      `${label}.endpoints.${key.slice(0, 64)} must be <provider>/<entity> naming a declared messaging provider`,
+    );
+  result.endpoints[key] = target;
 }
 
 /** Pack `messageProviders`: provider kinds mapping to factory functions. */

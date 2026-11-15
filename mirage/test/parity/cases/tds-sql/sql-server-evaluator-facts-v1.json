@@ -1,0 +1,1197 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "tds-sql",
+  "suite": "sql-server-evaluator-facts-v1",
+  "oracle": {
+    "kind": "reference-engine",
+    "name": "Microsoft SQL Server",
+    "version": "16.0.4305.5",
+    "scope": "Private draft repeated SQL Server engine results for 21 original evaluator cases; no qualification claim Client-derived encodings (CLR type, precision and scale of fixed-width types, binary layouts of decimal and float values) are not recorded; values are recorded as exact text."
+  },
+  "captures": [
+    {
+      "id": "sqlserver-run-1",
+      "sha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "sqlserver-run-2",
+      "sha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sql-eval-semantic-0",
+      "input": {
+        "query": "SELECT 7.0 / 2 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 7,
+                "scale": 6
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "3.500000"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-1",
+      "input": {
+        "query": "SELECT 1 / 3.0 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 8,
+                "scale": 6
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "0.333333"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-2",
+      "input": {
+        "query": "SELECT 10 / 3.0 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 9,
+                "scale": 6
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "3.333333"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-3",
+      "input": {
+        "query": "SELECT -7.0 / 2 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 7,
+                "scale": 6
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "-3.500000"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-4",
+      "input": {
+        "query": "SELECT 7.0 * 2.5 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "17.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-5",
+      "input": {
+        "query": "SELECT 7.5 - 0.25 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 4,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "7.25"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-6",
+      "input": {
+        "query": "SELECT 7 % 3.0 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 2,
+                "scale": 1
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "1.0"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-7",
+      "input": {
+        "query": "SELECT 7.0E0 / 2 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "float"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "float64",
+                  "roundtrip": "3.5"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-8",
+      "input": {
+        "query": "SELECT CAST(1 AS float) / 4 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "float"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "float64",
+                  "roundtrip": "0.25"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-10",
+      "input": {
+        "query": "SELECT 2147483647 + 1 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 8115,
+            "severity": 16,
+            "state": 2,
+            "line": 1,
+            "message": "Arithmetic overflow error converting expression to data type int."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-13",
+      "input": {
+        "query": "SELECT CAST('99999999999999999999999999999999999999' AS decimal(38,0)) * 10 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 8115,
+            "severity": 16,
+            "state": 2,
+            "line": 1,
+            "message": "Arithmetic overflow error converting expression to data type numeric."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-14",
+      "input": {
+        "query": "SELECT 1.0 / 0 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 8134,
+            "severity": 16,
+            "state": 1,
+            "line": 1,
+            "message": "Divide by zero error encountered."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-15",
+      "input": {
+        "query": "SELECT '5' + 1 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "6"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-16",
+      "input": {
+        "query": "SELECT 'x' + 1 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 245,
+            "severity": 16,
+            "state": 1,
+            "line": 1,
+            "message": "Conversion failed when converting the varchar value 'x' to data type int."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-17",
+      "input": {
+        "query": "SELECT '2.5' * 2 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 245,
+            "severity": 16,
+            "state": 1,
+            "line": 1,
+            "message": "Conversion failed when converting the varchar value '2.5' to data type int."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-18",
+      "input": {
+        "query": "SELECT '2.5' * 2.0 AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "decimal",
+                "precision": 5,
+                "scale": 2
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "sql-decimal",
+                  "exact": "5.00"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-30",
+      "input": {
+        "query": "SELECT 1 AS d WHERE 1 + 1",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 4145,
+            "severity": 15,
+            "state": 1,
+            "line": 1,
+            "message": "An expression of non-boolean type specified in a context where a condition is expected, near '1'."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-31",
+      "input": {
+        "query": "SELECT CASE WHEN 1 THEN 'y' END AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "sql-error",
+        "errors": [
+          {
+            "number": 4145,
+            "severity": 15,
+            "state": 1,
+            "line": 1,
+            "message": "An expression of non-boolean type specified in a context where a condition is expected, near 'THEN'."
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-34",
+      "input": {
+        "query": "SELECT 1 AS d WHERE 1 = 1",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-42",
+      "input": {
+        "query": "SELECT CAST(0xFFFFFFFF AS int) AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "-1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-eval-semantic-43",
+      "input": {
+        "query": "SELECT CAST(0x1 AS int) AS d",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "d",
+                "sqlType": "int"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "System.Int32",
+                  "exact": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -20,10 +20,19 @@ export function datePickerFormat(format, dateOnly = true) {
 
 /** Bind the actual captured native picker; no substitute DateTimePicker API is installed. */
 export function clientDateControlsRuntime() {
-  return `(() => {
+  return String.raw`(() => {
     const convert=${datePickerFormat.toString()};
     // Bound controls are tracked in script state: the platform markup carries no local attributes.
     const ready=((window.__portalSimulation||={}).dateControlsReady||=new WeakSet());
+    // A UserLocal value is stored in UTC (ending in Z). The fallback shows its browser-local wall time, so committing
+    // the shown value unchanged stores the same instant. Other values are shown as stored.
+    const shownValue=(value,dateOnly,userLocal)=>{
+      const instant=userLocal&&/Z$/.test(value)?new Date(value):null;
+      if(!instant||Number.isNaN(instant.getTime()))return value;
+      const pad=(number,length=2)=>String(number).padStart(length,'0');
+      const day=pad(instant.getFullYear(),4)+'-'+pad(instant.getMonth()+1)+'-'+pad(instant.getDate());
+      return dateOnly?day:day+'T'+pad(instant.getHours())+':'+pad(instant.getMinutes());
+    };
     const initialize=()=>{
       const jq=window.jQuery;
       const bs5=Boolean(document.querySelector('link[href*=".BootstrapV5."]'));
@@ -47,14 +56,14 @@ export function clientDateControlsRuntime() {
         const userLocal=input.dataset?.behavior==='UserLocal';
         if(typeof jq?.fn?.datetimepicker!=='function'||typeof window.moment!=='function'){
           if(input.readOnly){
-            display.value=input.value||'';display.readOnly=true;display.setAttribute?.('readonly','readonly');display.classList.add('readonly');
+            display.value=shownValue(input.value||'',dateOnly,userLocal);display.readOnly=true;display.setAttribute?.('readonly','readonly');display.classList.add('readonly');
             const icon=group.querySelector('.input-group-addon');if(icon)icon.style.display='none';
           }else{
-            display.type=dateOnly?'date':'datetime-local';display.value=(input.value||'').slice(0,dateOnly?10:16);
+            display.type=dateOnly?'date':'datetime-local';display.value=shownValue(input.value||'',dateOnly,userLocal).slice(0,dateOnly?10:16);
             display.addEventListener('change',()=>{
               const value=display.value;
               if(!value)input.value='';
-              else if(userLocal){const parts=value.split(/[-T:]/).map(Number),date=new Date(0);date.setFullYear(parts[0],parts[1]-1,parts[2]);date.setHours(parts[3]||0,parts[4]||0,0,0);input.value=date.toISOString().replace(/\\.\\d{3}Z$/,'.0000000Z');}
+              else if(userLocal){const parts=value.split(/[-T:]/).map(Number),date=new Date(0);date.setFullYear(parts[0],parts[1]-1,parts[2]);date.setHours(parts[3]||0,parts[4]||0,0,0);input.value=date.toISOString().replace(/\.\d{3}Z$/,'.0000000Z');}
               else input.value=(dateOnly?value+'T00:00:00':value.length===16?value+':00':value)+'.0000000';
               input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
             });

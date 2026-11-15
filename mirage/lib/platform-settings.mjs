@@ -1,5 +1,6 @@
 import { organizationRecord } from './organization-context.mjs';
 import { DataError } from './data-error.mjs';
+import { parseXmlDocument } from './fetchxml-engine.mjs';
 
 const learn = 'https://learn.microsoft.com/en-us/';
 const organization = learn + 'power-apps/developer/data-platform/organization-table';
@@ -8,7 +9,7 @@ const fileTypes = learn + 'power-apps/developer/data-platform/files-images-overv
 const fetch = learn + 'power-apps/developer/data-platform/fetchxml/';
 const support =
   'https://support.microsoft.com/en-au/topic/timeline-does-not-render-and-shows-records-could-not-be-loaded-4ce9200a-1afe-3ef4-ac11-a74b91f4f40c';
-const item = (key, type, defaultValue, access, coverage, source, description, extra = {}) => ({
+const item = (key, { type, defaultValue, access, coverage, source, description, extra = {} }) => ({
   key,
   type,
   defaultValue,
@@ -21,56 +22,62 @@ const item = (key, type, defaultValue, access, coverage, source, description, ex
 
 /** Curated feature-documented controls, not every writable Organization column. */
 const PLATFORM_SETTINGS = Object.freeze([
-  item(
-    'QueryLinkEntityLimit',
-    'integer',
-    15,
-    'Microsoft support request',
-    'FetchXML and SDK QueryExpression joins',
-    support,
-    'Organization-wide support-managed join budget. Raising it here simulates an approved support change.',
-    { min: 1, max: 1000 },
-  ),
-  item(
-    'MaxUploadFileSize',
-    'integer',
-    5242880,
-    'Organization setting',
-    'Annotation and ActivityMimeAttachment writes',
-    files,
-    'Maximum base64-encoded attachment size in bytes; file/image columns have separate limits.',
-    { min: 1, max: 131072000, column: 'maxuploadfilesize' },
-  ),
-  item(
-    'BlockedAttachments',
-    'string',
-    '',
-    'Organization setting',
-    'Annotation and ActivityMimeAttachment writes',
-    fileTypes,
-    'Semicolon-separated blocked extensions, without dots. Empty local default; use the organization row or an override for the actual environment list.',
-    { column: 'blockedattachments' },
-  ),
-  item(
-    'BlockedMimeTypes',
-    'string',
-    '',
-    'Organization setting',
-    'Annotation and ActivityMimeAttachment writes',
-    fileTypes,
-    'Semicolon-separated blocked MIME types.',
-    { column: 'blockedmimetypes' },
-  ),
-  item(
-    'AllowedMimeTypes',
-    'string',
-    '',
-    'Organization setting',
-    'Annotation and ActivityMimeAttachment writes',
-    fileTypes,
-    'Semicolon-separated allowed MIME types; empty means no allowlist.',
-    { column: 'allowedmimetypes' },
-  ),
+  item('BypassBusinessLogicExecutionStepIdsLimit', {
+    type: 'integer',
+    defaultValue: 3,
+    access: 'OrgDbOrgSettings',
+    coverage: 'Selective synchronous and asynchronous plug-in step bypass',
+    source: learn + 'power-apps/developer/data-platform/bypass-custom-business-logic#limit-on-the-number-of-steps',
+    description:
+      'Maximum step IDs supplied for one operation. Microsoft recommends no more than ten; exported organization settings remain authoritative.',
+    extra: { min: 0, max: 2147483647, orgDbOrgSetting: true },
+  }),
+  item('QueryLinkEntityLimit', {
+    type: 'integer',
+    defaultValue: 15,
+    access: 'Microsoft support request',
+    coverage: 'FetchXML and SDK QueryExpression joins',
+    source: support,
+    description: 'Organization-wide support-managed join budget. Raising it here simulates an approved support change.',
+    extra: { min: 1, max: 1000 },
+  }),
+  item('MaxUploadFileSize', {
+    type: 'integer',
+    defaultValue: 5242880,
+    access: 'Organization setting',
+    coverage: 'Annotation and ActivityMimeAttachment writes',
+    source: files,
+    description: 'Maximum base64-encoded attachment size in bytes; file/image columns have separate limits.',
+    extra: { min: 1, max: 131072000, column: 'maxuploadfilesize' },
+  }),
+  item('BlockedAttachments', {
+    type: 'string',
+    defaultValue: '',
+    access: 'Organization setting',
+    coverage: 'Annotation and ActivityMimeAttachment writes',
+    source: fileTypes,
+    description:
+      'Semicolon-separated blocked extensions, without dots. Empty local default; use the organization row or an override for the actual environment list.',
+    extra: { column: 'blockedattachments' },
+  }),
+  item('BlockedMimeTypes', {
+    type: 'string',
+    defaultValue: '',
+    access: 'Organization setting',
+    coverage: 'Annotation and ActivityMimeAttachment writes',
+    source: fileTypes,
+    description: 'Semicolon-separated blocked MIME types.',
+    extra: { column: 'blockedmimetypes' },
+  }),
+  item('AllowedMimeTypes', {
+    type: 'string',
+    defaultValue: '',
+    access: 'Organization setting',
+    coverage: 'Annotation and ActivityMimeAttachment writes',
+    source: fileTypes,
+    description: 'Semicolon-separated allowed MIME types; empty means no allowlist.',
+    extra: { column: 'allowedmimetypes' },
+  }),
   ...[
     ['AuditSettings', 'string', 'auditsettings'],
     ['IsAuditEnabled', 'boolean', 'isauditenabled'],
@@ -84,95 +91,93 @@ const PLATFORM_SETTINGS = Object.freeze([
     ['ExpireSubscriptionsInDays', 'integer', 'expiresubscriptionsindays'],
     ['IsExternalSearchIndexEnabled', 'boolean', 'isexternalsearchindexenabled'],
   ].map(([key, type, column]) =>
-    item(
-      key,
+    item(key, {
       type,
-      null,
-      'Organization setting',
-      'Catalogue only; behavior not simulated',
-      organization,
-      'Feature-documented organization option. Stored and reported for scenario provenance; changing it does not invent the associated service.',
-      {
+      defaultValue: null,
+      access: 'Organization setting',
+      coverage: 'Catalogue only; behavior not simulated',
+      source: organization,
+      description:
+        'Feature-documented organization option. Stored and reported for scenario provenance; changing it does not invent the associated service.',
+      extra: {
         column,
         ...(type === 'integer' ? { min: 0, max: 2147483647 } : {}),
         ...(key === 'PluginTraceLogSetting' ? { min: 0, max: 2 } : {}),
         ...(key === 'AuditRetentionPeriodV2' ? { min: -1 } : {}),
       },
-    ),
+    }),
   ),
   ...['AllowSaveAsDraftAppointment', 'AutoTrackSentFolderItems'].map((key) =>
-    item(
-      key,
-      'boolean',
-      false,
-      'OrgDBOrgSettings tool',
-      'Catalogue only; Exchange synchronization not simulated',
-      learn + 'power-platform/admin/orgdborgsettings',
-      'Documented server-side synchronization option; change through the supported OrganizationSettingsEditor tool in a real environment.',
-    ),
+    item(key, {
+      type: 'boolean',
+      defaultValue: false,
+      access: 'OrgDBOrgSettings tool',
+      coverage: 'Catalogue only; Exchange synchronization not simulated',
+      source: learn + 'power-platform/admin/orgdborgsettings',
+      description:
+        'Documented server-side synchronization option; change through the supported OrganizationSettingsEditor tool in a real environment.',
+    }),
   ),
-  item(
-    'WorkflowSettings.MaxDepth',
-    'integer',
-    8,
-    'On-premises deployment PowerShell',
-    'Catalogue only; CLR/async safety bounds remain independent',
-    learn + 'dotnet/api/microsoft.xrm.sdk.iexecutioncontext.depth',
-    'Documented legacy deployment control; not presented as a self-service cloud organization setting.',
-    { min: 1, max: 32 },
-  ),
-  item(
-    'FetchConditionLimit',
-    'integer',
-    500,
-    'Simulator experiment',
-    'FetchXML condition/link count',
-    fetch + 'filter-rows',
-    'Documented default limit; this local override is not a claim of a supported cloud administration setting.',
-    { min: 1, max: 10000 },
-  ),
-  item(
-    'FetchLinkAndFilterLimit',
-    'integer',
-    27,
-    'Simulator experiment',
-    'FetchXML ordinary joins plus existential filter links',
-    null,
-    'Combined native admission bound independently reported by the backend conversion error. Separate from the ordinary join limit; this local override is not a cloud administration setting.',
-    { min: 1, max: 1000 },
-  ),
-  item(
-    'AggregateQueryRecordLimit',
-    'integer',
-    50000,
-    'Simulator experiment',
-    'FetchXML aggregates only',
-    fetch + 'aggregate-data',
-    'Documented FetchXML aggregate bound. Local override; no inferred cloud support ticket entitlement. OData aggregate limits remain separate.',
-    { min: 1, max: 1000000 },
-  ),
-  item(
-    'FetchLinkDepth',
-    'integer',
-    32,
-    'Simulator safety bound',
-    'FetchXML nesting',
-    fetch + 'join-tables',
-    'Local execution bound, not a documented Dataverse organization option.',
-    { min: 1, max: 60 },
-  ),
-  item(
-    'FetchJoinRowLimit',
-    'integer',
-    250000,
-    'Simulator safety bound',
-    'Intermediate FetchXML joined rows',
-    null,
-    'Local memory protection; exceeding it fails rather than truncating rows.',
-    { min: 1, max: 1000000, stateSetting: 'fetchJoinRowLimit' },
-  ),
+  item('WorkflowSettings.MaxDepth', {
+    type: 'integer',
+    defaultValue: 8,
+    access: 'On-premises deployment PowerShell',
+    coverage: 'Catalogue only; CLR/async safety bounds remain independent',
+    source: learn + 'dotnet/api/microsoft.xrm.sdk.iexecutioncontext.depth',
+    description: 'Documented legacy deployment control; not presented as a self-service cloud organization setting.',
+    extra: { min: 1, max: 32 },
+  }),
+  item('FetchConditionLimit', {
+    type: 'integer',
+    defaultValue: 500,
+    access: 'Simulator experiment',
+    coverage: 'FetchXML condition/link count',
+    source: fetch + 'filter-rows',
+    description:
+      'Documented default limit; this local override is not a claim of a supported cloud administration setting.',
+    extra: { min: 1, max: 10000 },
+  }),
+  item('FetchLinkAndFilterLimit', {
+    type: 'integer',
+    defaultValue: 27,
+    access: 'Simulator experiment',
+    coverage: 'FetchXML ordinary joins plus existential filter links',
+    source: null,
+    description:
+      'Combined native admission bound independently reported by the backend conversion error. Separate from the ordinary join limit; this local override is not a cloud administration setting.',
+    extra: { min: 1, max: 1000 },
+  }),
+  item('AggregateQueryRecordLimit', {
+    type: 'integer',
+    defaultValue: 50000,
+    access: 'Simulator experiment',
+    coverage: 'FetchXML aggregates only',
+    source: fetch + 'aggregate-data',
+    description:
+      'Documented FetchXML aggregate bound. Local override; no inferred cloud support ticket entitlement. OData aggregate limits remain separate.',
+    extra: { min: 1, max: 1000000 },
+  }),
+  item('FetchLinkDepth', {
+    type: 'integer',
+    defaultValue: 32,
+    access: 'Simulator safety bound',
+    coverage: 'FetchXML nesting',
+    source: fetch + 'join-tables',
+    description: 'Local execution bound, not a documented Dataverse organization option.',
+    extra: { min: 1, max: 60 },
+  }),
+  item('FetchJoinRowLimit', {
+    type: 'integer',
+    defaultValue: 250000,
+    access: 'Simulator safety bound',
+    coverage: 'Intermediate FetchXML joined rows',
+    source: null,
+    description: 'Local memory protection; exceeding it fails rather than truncating rows.',
+    extra: { min: 1, max: 1000000, stateSetting: 'fetchJoinRowLimit' },
+  }),
 ]);
 const definitions = new Map(PLATFORM_SETTINGS.map((x) => [x.key, x]));
+const organizationSettingsCache = new WeakMap();
 export function validatePlatformOverrides(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new DataError('Platform overrides must be an object.', 400, 'InvalidPlatformSetting');
@@ -193,32 +198,57 @@ export function platformSettingEntries(state) {
   const { evidence: configuredEvidence, ...configured } = state.simulator?.platformDefaults ?? {};
   validatePlatformOverrides(configured);
   const org = organizationRecord(state) ?? {};
+  let orgDbOrg;
+  const orgValue = (d) => {
+    if (!d.orgDbOrgSetting || !org.orgdborgsettings) return undefined;
+    if (!orgDbOrg) {
+      const cached = organizationSettingsCache.get(org);
+      orgDbOrg = cached?.xml === org.orgdborgsettings ? cached.document : parseXmlDocument(org.orgdborgsettings);
+      organizationSettingsCache.set(org, { xml: org.orgdborgsettings, document: orgDbOrg });
+    }
+    const matches = [];
+    const visit = (node) => {
+      if (node.name.split(':').at(-1) === d.key) matches.push(node.text.trim());
+      for (const child of node.children ?? []) visit(child);
+    };
+    visit(orgDbOrg);
+    if (!matches.length) return undefined;
+    const value = Number(matches[0]);
+    if (
+      matches.length !== 1 ||
+      !/^\d+$/.test(matches[0]) ||
+      !Number.isSafeInteger(value) ||
+      value < d.min ||
+      value > d.max
+    )
+      throw new DataError('Invalid organization setting ' + d.key, 400, 'InvalidPlatformSetting');
+    return value;
+  };
   return PLATFORM_SETTINGS.map((d) => {
+    const orgDbOrgValue = orgValue(d);
     const local = Object.hasOwn(overrides, d.key),
       catalogued = Object.hasOwn(configured, d.key),
-      fromOrganization = d.column && Object.hasOwn(org, d.column) && org[d.column] != null,
-      fromSetting = d.stateSetting && state.settings?.[d.stateSetting] != null,
-      source = catalogued
-        ? configured[d.key]
-        : fromOrganization
-          ? org[d.column]
-          : fromSetting
-            ? state.settings[d.stateSetting]
-            : d.defaultValue;
+      fromOrganization =
+        orgDbOrgValue !== undefined || (d.column && Object.hasOwn(org, d.column) && org[d.column] != null),
+      fromSetting = d.stateSetting && state.settings?.[d.stateSetting] != null;
+    let source;
+    if (catalogued) source = configured[d.key];
+    else if (fromOrganization) source = orgDbOrgValue ?? org[d.column];
+    else if (fromSetting) source = state.settings[d.stateSetting];
+    else source = d.defaultValue;
+    const settingOrigin = () => {
+      if (local) return 'Instance override';
+      if (catalogued) return 'Catalogue';
+      if (fromOrganization) return 'Organization row';
+      if (fromSetting) return 'Existing simulator setting';
+      return 'Default / not configured';
+    };
     return {
       ...d,
       sourceValue: source,
       value: local ? overrides[d.key] : source,
       overridden: local,
-      origin: local
-        ? 'Instance override'
-        : catalogued
-          ? 'Catalogue'
-          : fromOrganization
-            ? 'Organization row'
-            : fromSetting
-              ? 'Existing simulator setting'
-              : 'Default / not configured',
+      origin: settingOrigin(),
       ...(catalogued ? { configuredEvidence, source: 'catalogue' } : {}),
     };
   });

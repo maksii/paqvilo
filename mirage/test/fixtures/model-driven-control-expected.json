@@ -1,0 +1,172 @@
+[
+  {
+    "id": "choice.sourceOptions",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "choice.attributeOptionsAfterControlEdit",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "choice.controlOptionsAfterControlEdit",
+    "value": [
+      {
+        "text": "",
+        "value": null
+      },
+      {
+        "text": "Invented zero",
+        "value": 0
+      },
+      {
+        "text": "Invented source",
+        "value": 198720001
+      }
+    ]
+  },
+  {
+    "id": "choice.setDynamicValue",
+    "value": 0
+  },
+  {
+    "id": "choice.dynamicText",
+    "value": null
+  },
+  {
+    "id": "choice.dynamicOption",
+    "value": null
+  },
+  {
+    "id": "choice.sourceValueAfterRemoval",
+    "value": 198720000
+  },
+  {
+    "id": "multi.sourceOptions",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "multi.attributeOptionsAfterControlEdit",
+    "value": [
+      {
+        "text": "Planned",
+        "value": 198720000
+      },
+      {
+        "text": "In progress",
+        "value": 198720001
+      },
+      {
+        "text": "Complete",
+        "value": 198720002
+      }
+    ]
+  },
+  {
+    "id": "multi.controlOptionsAfterControlEdit",
+    "value": [
+      {
+        "text": "",
+        "value": null
+      },
+      {
+        "text": "Invented zero",
+        "value": 0
+      },
+      {
+        "text": "Invented source",
+        "value": 198720001
+      }
+    ]
+  },
+  {
+    "id": "multi.setDynamicValue",
+    "value": [
+      0
+    ]
+  },
+  {
+    "id": "multi.dynamicText",
+    "value": []
+  },
+  {
+    "id": "multi.dynamicOption",
+    "value": null
+  },
+  {
+    "id": "multi.sourceValueAfterRemoval",
+    "value": [
+      0
+    ]
+  },
+  {
+    "id": "numeric.baselineValidity",
+    "value": true
+  },
+  {
+    "id": "numeric.bound.-1",
+    "value": {
+      "value": null,
+      "valid": false
+    }
+  },
+  {
+    "id": "numeric.bound.10001",
+    "value": {
+      "value": -1,
+      "valid": false
+    }
+  },
+  {
+    "id": "numeric.bound.0",
+    "value": {
+      "value": 0,
+      "valid": true
+    }
+  },
+  {
+    "id": "numeric.bound.10000",
+    "value": {
+      "value": 10000,
+      "valid": true
+    }
+  }
+]

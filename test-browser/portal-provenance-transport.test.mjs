@@ -1,3 +1,5 @@
+// @test-kind contract: Local interception and provenance transport are exercised with synthetic loopback fixtures.
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -23,8 +25,8 @@ const scope = {
   uiEpoch: 1,
   sourceRevision: 'invented-current',
 };
-async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
+async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair = false } = {}) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(
@@ -63,7 +65,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   };
   const server = http.createServer((request, response) => {
     const address = new URL(request.url, 'http://fixture.invalid');
-    requests.push({ path: address.pathname, cookie: request.headers.cookie });
+    requests.push({ path: address.pathname, cookie: request.headers.cookie, proof: address.searchParams.get('proof') });
     if (address.pathname === '/_sim/api/page-provenance') {
       if (request.headers['x-paqvilo-provenance-access'] !== '1'.repeat(64))
         return response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
@@ -94,11 +96,24 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(5000);
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);
   const acknowledgments = [];
+  let acknowledge = () => {};
+  // Resolves with the fulfillment result of `pathname` once interception has it.
+  const acknowledgment = async (pathname) => {
+    while (!acknowledgments.some((item) => item.path === pathname))
+      await new Promise((resolve) => (acknowledge = resolve));
+    const result = acknowledgments.find((item) => item.path === pathname);
+    if (result.error) throw result.error;
+    return result;
+  };
+  // Resolves once the server has received the Mirage sideband request for `proof`.
+  const sideband = async (proof) => {
+    while (!requests.some((item) => item.path === '/_sim/api/page-provenance' && item.proof === proof))
+      await once(server, 'request');
+  };
   let releaseSlow, enteredSlow;
   const slowEntered = new Promise((resolve) => {
     enteredSlow = resolve;
@@ -106,10 +121,18 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   const slowReleased = new Promise((resolve) => {
     releaseSlow = resolve;
   });
+  let releaseRepair, enteredRepair;
+  const repairEntered = new Promise((resolve) => {
+    enteredRepair = resolve;
+  });
+  const repairReleased = new Promise((resolve) => {
+    releaseRepair = resolve;
+  });
   let detached;
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     releaseDescriptors();
     releaseSlow();
+    releaseRepair();
     await detached?.();
     await context.close();
     server.closeAllConnections();
@@ -122,6 +145,11 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
       origin,
       async (route) => {
         const address = new URL(route.request().url());
+        if (address.pathname === '/native' && holdRepair) {
+          holdRepair = false;
+          enteredRepair();
+          await repairReleased;
+        }
         if (mirage || route.request().resourceType() !== 'document' || address.pathname === '/native')
           return route.fallback();
         if (address.pathname === '/abort') return route.abort();
@@ -129,20 +157,27 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
           enteredSlow();
           await slowReleased;
         }
-        const script =
-          address.pathname === '/clone'
-            ? '<script>const original=document.getElementById("original");original.replaceWith(original.cloneNode(true));</script>'
-            : '';
-        const html = generated.html.replace(
-          '</body>',
-          `${address.pathname === '/parent' ? '<iframe id="child" src="/child"></iframe>' : ''}${script}</body>`,
-        );
-        const acknowledged = await route.fulfill({
-          body: html,
-          headers: { 'content-type': 'text/html', 'content-security-policy': "script-src 'unsafe-inline'" },
-          provenance: { ...generated.provenance, channel: 'lense-applied-response' },
-        });
-        acknowledgments.push({ path: address.pathname, acknowledged });
+        try {
+          const script =
+            address.pathname === '/clone'
+              ? '<script>const original=document.getElementById("original");original.replaceWith(original.cloneNode(true));</script>'
+              : '';
+          const html = generated.html.replace(
+            '</body>',
+            `${address.pathname === '/parent' ? '<iframe id="child" src="/child"></iframe>' : ''}${script}</body>`,
+          );
+          const acknowledged = await route.fulfill({
+            body: html,
+            headers: { 'content-type': 'text/html', 'content-security-policy': "script-src 'unsafe-inline'" },
+            provenance: { ...generated.provenance, channel: 'lense-applied-response' },
+          });
+          acknowledgments.push({ path: address.pathname, acknowledged });
+        } catch (error) {
+          acknowledgments.push({ path: address.pathname, error });
+          throw error;
+        } finally {
+          acknowledge();
+        }
       },
       { onAttach: transport.onAttach },
     );
@@ -175,8 +210,12 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
     proved,
     requests,
     acknowledgments,
+    acknowledgment,
+    sideband,
     slowEntered,
     releaseSlow,
+    repairEntered,
+    releaseRepair,
     slot: transport.slot,
     proof: generated.provenance,
     releaseDescriptors,
@@ -308,7 +347,9 @@ test('Mirage observes one native document response and reads only its same-cooki
     fx.requests.some(({ path, cookie }) => path === '/_sim/api/page-provenance' && cookie?.includes('invented=one')),
   );
   await fx.page.goto(fx.origin + '/redirect');
-  await fx.page.waitForTimeout(100);
+  await fx.sideband('redirect-proof');
+  // A followed redirect would request its location as soon as the 302 arrives; nothing marks one that never comes.
+  await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal((await fx.query()).facts.length, 0);
   assert.equal(
     fx.requests.some(({ path }) => path === '/must-not-follow'),
@@ -316,8 +357,9 @@ test('Mirage observes one native document response and reads only its same-cooki
   );
 });
 
+// @test-kind security: An authored registry cannot be claimed and canceled responses cannot publish across documents.
 test('existing authored lookalike registries are never claimed and canceled fulfillments cannot publish into a later document', async (t) => {
-  const fx = await fixture(t);
+  const fx = await fixture(t, { holdRepair: true });
   let claims = 0;
   await fx.context.exposeBinding('inventedClaimAttempt', () => claims++);
   await fx.page.goto(fx.origin + '/native');
@@ -333,18 +375,39 @@ test('existing authored lookalike registries are never claimed and canceled fulf
       },
     };
   }, fx.slot);
+  const repairNavigation = fx.page.waitForEvent(
+    'framenavigated',
+    (frame) => frame === fx.page.mainFrame() && new URL(frame.url()).pathname === '/native',
+  );
+  let repairCommitted = false;
+  repairNavigation.then(
+    () => {
+      repairCommitted = true;
+    },
+    () => {},
+  );
   await fx.attach();
+  await fx.repairEntered;
+  assert.equal(repairCommitted, false, 'the held repair has not committed before the gate opens');
+  fx.releaseRepair();
+  await repairNavigation;
   await fx.page.waitForLoadState();
   assert.equal(claims, 0, 'no backend claim is attempted against the already-authored Document');
-  const canceled = fx.page.goto(fx.origin + '/slow-fulfill').catch(() => null);
-  await fx.slowEntered;
+  const canceled = fx.page.goto(fx.origin + '/slow-fulfill').then(
+    () => ({ error: null }),
+    (error) => ({ error }),
+  );
+  await Promise.race([
+    fx.slowEntered,
+    canceled.then(({ error }) => {
+      throw new Error('Slow navigation settled before its interception gate', { cause: error });
+    }),
+  ]);
   await fx.page.goto(fx.origin + '/native');
   fx.releaseSlow();
-  await canceled;
-  const deadline = Date.now() + 3000;
-  while (!fx.acknowledgments.some((item) => item.path === '/slow-fulfill') && Date.now() < deadline)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(fx.acknowledgments.find((item) => item.path === '/slow-fulfill')?.acknowledged, false);
+  const outcome = await canceled;
+  assert.match(outcome.error?.message ?? '', /ERR_ABORTED|navigation.*interrupted|frame was detached/i);
+  assert.equal((await fx.acknowledgment('/slow-fulfill')).acknowledged, false);
   const packet = await fx.query();
   assert.ok(packet === null || packet.facts.length === 0);
 });

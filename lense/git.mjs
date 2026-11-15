@@ -4,11 +4,30 @@ import path from 'node:path';
 
 const GIT_ARGS = ['-c', 'core.quotepath=off', '-c', 'core.longpaths=true'];
 
+// Hang guard for one Git command. A command that outlasts it has given no answer and is reported as a failure.
+export const GIT_HANG_GUARD_MS = 120_000;
+
+/**
+ * Whether a failed Git command was answered by Git: it ran and exited with a status (`code` of an execFile error,
+ * `status` of an execFileSync one). A command that could not start, was killed or outlasted its hang guard gave
+ * no answer, which callers never read as a negative one.
+ */
+export const gitAnswered = (error) => Number.isInteger(error?.code) || Number.isInteger(error?.status);
+
+/**
+ * Whether a Git command could not start because no `git` program was found: Git is not installed or not on PATH.
+ * It is one way of giving no answer, and asking again cannot change it, so callers say so instead of "retry".
+ */
+export const gitMissing = (error) => error?.code === 'ENOENT';
+export const GIT_MISSING_MESSAGE = 'Git was not found. Install Git or add it to PATH, then try again.';
+
 function gitOptions(cwd, { buffer = false, input } = {}) {
+  // Variables a Git hook sets would point the command at another repository. The ceiling stays: it is the
+  // user's own limit on how far up Git looks for a repository.
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
-        !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(
+        !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(
           key,
         ),
     ),
@@ -20,67 +39,123 @@ function gitOptions(cwd, { buffer = false, input } = {}) {
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
     windowsHide: true,
     input: typeof input === 'string' ? Buffer.from(input) : input,
-    timeout: 30_000,
+    timeout: GIT_HANG_GUARD_MS,
     env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
   };
 }
 
-const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options));
-const gitAsync = (cwd, args) =>
+const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options)); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+const gitAsync = (cwd, args, options) =>
   new Promise((resolve, reject) => {
-    execFile('git', [...GIT_ARGS, ...args], gitOptions(cwd), (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    const { input, ...settings } = gitOptions(cwd, options);
+    /* NOSONAR */ const child = execFile('git', [...GIT_ARGS, ...args], settings, (err, stdout) =>
+      err ? reject(err) : resolve(stdout),
+    );
+    // A Git process that exits early reports through the callback; an unread stdin is no crash.
+    if (input !== undefined) child.stdin.on('error', () => {}).end(input);
   });
 
 /**
  * Where HEAD of the checkout points right now: its commit and branch (null when detached or in an
- * unborn repository). Read-only and asynchronous; null outside a Git working tree.
+ * unborn repository). Read-only and asynchronous; null when Git answers that there is no HEAD (outside a Git
+ * working tree, or before the first commit). Rejects when Git gives no answer.
  * @returns {Promise<{commit: string, branch: string|null, detached: boolean}|null>}
  */
 export async function gitHead(sourceDir) {
+  let output;
   try {
-    const [commit, name] = (await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']))
-      .trim()
-      .split(/\r?\n/);
-    if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) return null;
-    const branch = name && name !== 'HEAD' ? name : null;
-    return { commit, branch, detached: branch === null };
-  } catch {
-    return null;
+    output = await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']);
+  } catch (error) {
+    if (gitAnswered(error)) return null;
+    throw error;
   }
+  const [commit, name] = output.trim().split(/\r?\n/);
+  if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) return null;
+  const branch = name && name !== 'HEAD' ? name : null;
+  return { commit, branch, detached: branch === null };
 }
 
 /**
  * Directories whose files change when HEAD or a ref moves: the checkout's own git dir (HEAD of a
- * linked worktree lives there) and the common dir (refs, packed-refs). Null outside a repository.
+ * linked worktree lives there) and the common dir (refs, packed-refs). Null when Git answers that the folder is
+ * not in a working tree; rejects when Git gives no answer.
  * @returns {Promise<{gitDir: string, commonDir: string, toplevel: string}|null>}
  */
 export async function gitDirectories(sourceDir) {
   sourceDir = path.resolve(sourceDir);
+  let output;
   try {
-    const [gitDir, commonDir, toplevel] = (
-      await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel'])
-    )
-      .trim()
-      .split(/\r?\n/);
-    if (!gitDir || !commonDir || !toplevel) return null;
-    return {
-      gitDir: path.resolve(sourceDir, gitDir),
-      commonDir: path.resolve(sourceDir, commonDir),
-      toplevel: path.resolve(toplevel),
-    };
-  } catch {
-    return null;
+    output = await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel']);
+  } catch (error) {
+    if (gitAnswered(error)) return null;
+    throw error;
   }
+  const [gitDir, commonDir, toplevel] = output.trim().split(/\r?\n/);
+  if (!gitDir || !commonDir || !toplevel) return null;
+  return {
+    gitDir: path.resolve(sourceDir, gitDir),
+    commonDir: path.resolve(sourceDir, commonDir),
+    toplevel: path.resolve(toplevel),
+  };
+}
+
+/** Blob contents (null for a missing path or a non-blob) of a `cat-file --batch` response, in request order. */
+function parseBatch(entries, output) {
+  let offset = 0;
+  const loaded = new Map();
+  for (const { file } of entries) {
+    const newline = output.indexOf(10, offset);
+    if (newline < 0) throw new Error('incomplete git batch response');
+    const header = output.toString('utf8', offset, newline);
+    offset = newline + 1;
+    if (header.endsWith(' missing')) {
+      loaded.set(file, null);
+      continue;
+    }
+    const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+    if (!match) throw new Error('invalid git batch response');
+    const size = Number(match[2]);
+    if (offset + size >= output.length || output[offset + size] !== 10) throw new Error('incomplete git blob');
+    loaded.set(file, match[1] === 'blob' ? output.toString('utf8', offset, offset + size) : null);
+    offset += size + 1;
+  }
+  return loaded;
+}
+
+/** The read-only command that resolves a baseline ref to its commit; throws for an unsafe ref. */
+function refArgs(ref) {
+  if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref))
+    throw new Error('invalid baseline ref');
+  const target = ref.startsWith('merge-base:') ? ref.slice('merge-base:'.length) : null;
+  if (target !== null && (!target || target.startsWith('-'))) throw new Error('invalid merge-base ref');
+  return target === null
+    ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]
+    : ['merge-base', 'HEAD', target];
 }
 
 // All paths go to git relative to sourceDir (and come back that way), so it does not matter how the
 // folder is spelled (8.3 short names, symlinks, drive letter case).
 export class GitBaseline {
   /**
+   * Like the constructor, but resolves the ref without blocking the event loop, so startup can
+   * read sources meanwhile. An unresolvable ref takes the constructor's synchronous diagnosis.
+   */
+  static async create(sourceDir, ref) {
+    let commit;
+    try {
+      commit = (await gitAsync(path.resolve(sourceDir), refArgs(ref))).trim();
+    } catch {
+      commit = undefined;
+    }
+    return new GitBaseline(sourceDir, ref, commit);
+  }
+
+  /**
    * @param {string} sourceDir
    * @param {string} ref a git ref, or `merge-base:<ref>` for the commit the current branch forked from
+   * @param {string} [commit] the ref's commit, already resolved by create()
    */
-  constructor(sourceDir, ref) {
+  constructor(sourceDir, ref, commit) {
     this.sourceDir = path.resolve(sourceDir);
     this.spec = ref;
     this.ref = ref;
@@ -90,18 +165,11 @@ export class GitBaseline {
     this.changeGeneration = 0;
     this.baselineVersion = 0;
     this.pendingChanges = 0;
-    this.changeQueue = Promise.resolve();
+    this.changeQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.pendingRefCheck = null;
     try {
-      if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref))
-        throw new Error('invalid baseline ref');
-      const target = ref.startsWith('merge-base:') ? ref.slice('merge-base:'.length) : null;
-      if (target !== null && (!target || target.startsWith('-'))) throw new Error('invalid merge-base ref');
-      this.refArgs =
-        target === null
-          ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]
-          : ['merge-base', 'HEAD', target];
-      this.#acceptCommit(git(this.sourceDir, this.refArgs).trim());
+      this.refArgs = refArgs(ref);
+      this.#acceptCommit(commit ?? git(this.sourceDir, this.refArgs).trim());
     } catch (err) {
       this.#unavailable(err);
       // A repository without commits has no baseline yet (not a broken ref): callers skip baseline checks with a note.
@@ -109,8 +177,10 @@ export class GitBaseline {
         this.unborn =
           git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' &&
           !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
-      } catch {
+      } catch (error) {
         this.unborn = false;
+        // Without an answer the folder may be a repository before its first commit; say so instead of the ref error.
+        if (!gitAnswered(error)) this.#unavailable(error);
       }
     }
   }
@@ -142,7 +212,7 @@ export class GitBaseline {
   /** Non-blocking ref check for the watcher, including merge-base changes and lost/recovered refs. */
   async checkForUpdate() {
     if (!this.refArgs) return false;
-    if (this.pendingRefCheck) return this.pendingRefCheck;
+    if (this.pendingRefCheck) return this.pendingRefCheck; // NOSONAR: optional pending promise, awaited only when set
     const generation = ++this.refGeneration;
     const pending = (async () => {
       try {
@@ -162,45 +232,66 @@ export class GitBaseline {
     const rel = path.relative(this.sourceDir, path.resolve(file));
     return !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)
       ? null
-      : rel.replace(/\\/g, '/');
+      : rel.replaceAll('\\', '/');
+  }
+
+  #batch(files) {
+    const entries = this.available
+      ? [...new Set(files.map((file) => path.resolve(file)))]
+          .filter((file) => !this.cache.has(file))
+          .map((file) => ({ file, rel: this.#relative(file) }))
+          .filter(({ rel }) => rel && !/[\r\n]/.test(rel))
+      : [];
+    return { entries, input: entries.map(({ rel }) => `${this.commit}:./${rel}\n`).join('') };
   }
 
   /** Read many baseline blobs in one process. Each batch response is framed by its byte length. */
   preload(files) {
-    if (!this.available) return;
-    const entries = [...new Set(files.map((file) => path.resolve(file)))]
-      .filter((file) => !this.cache.has(file))
-      .map((file) => ({ file, rel: this.#relative(file) }))
-      .filter(({ rel }) => rel && !/[\r\n]/.test(rel));
+    const { entries, input } = this.#batch(files);
     if (!entries.length) return;
+    let output;
     try {
-      const input = entries.map(({ rel }) => `${this.commit}:./${rel}\n`).join('');
-      const output = git(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
-      let offset = 0;
-      const loaded = new Map();
-      for (const { file } of entries) {
-        const newline = output.indexOf(10, offset);
-        if (newline < 0) throw new Error('incomplete git batch response');
-        const header = output.toString('utf8', offset, newline);
-        offset = newline + 1;
-        if (header.endsWith(' missing')) {
-          loaded.set(file, null);
-          continue;
-        }
-        const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
-        if (!match) throw new Error('invalid git batch response');
-        const size = Number(match[2]);
-        if (offset + size >= output.length || output[offset + size] !== 10) throw new Error('incomplete git blob');
-        loaded.set(file, match[1] === 'blob' ? output.toString('utf8', offset, offset + size) : null);
-        offset += size + 1;
-      }
-      for (const [file, content] of loaded) this.cache.set(file, content);
+      output = git(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+    } catch (err) {
+      // A Git that gave no answer is not asked again per file: the baseline is unavailable until a ref check
+      // gets an answer. A failed batch leaves show() as an individual-file fallback.
+      if (!gitAnswered(err)) this.#unavailable(err);
+      return;
+    }
+    try {
+      for (const [file, content] of parseBatch(entries, output)) this.cache.set(file, content);
     } catch {
-      // A failed batch leaves show() available as an individual-file fallback.
+      // An incomplete response leaves show() as the individual-file fallback.
     }
   }
 
-  /** Content of `file` at the baseline ref; null when it does not exist there (a new file). */
+  /** preload() without blocking the event loop; a result read for a superseded commit is dropped. */
+  async preloadAsync(files) {
+    const { entries, input } = this.#batch(files);
+    if (!entries.length) return;
+    const version = this.baselineVersion;
+    let output;
+    try {
+      output = await gitAsync(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+    } catch (err) {
+      // As preload(): no answer makes the baseline unavailable, a failed batch leaves show() as the fallback.
+      if (version === this.baselineVersion && !gitAnswered(err)) this.#unavailable(err);
+      return;
+    }
+    if (version !== this.baselineVersion) return;
+    try {
+      for (const [file, content] of parseBatch(entries, output))
+        if (!this.cache.has(file)) this.cache.set(file, content);
+    } catch {
+      // As preload(): an incomplete response leaves show() as the fallback.
+    }
+  }
+
+  /**
+   * Content of `file` at the baseline ref; null when Git answers that it does not exist there (a new file), or
+   * when the baseline is unavailable. A Git that gives no answer makes the baseline unavailable (with the error)
+   * instead of recording the file as new; the next ref check that gets an answer makes it available again.
+   */
   show(file) {
     if (!this.available) return null;
     file = path.resolve(file);
@@ -209,8 +300,11 @@ export class GitBaseline {
     try {
       const rel = this.#relative(file);
       if (rel) content = git(this.sourceDir, ['show', `${this.commit}:./${rel}`], { buffer: true }).toString('utf8');
-    } catch {
-      content = null;
+    } catch (err) {
+      if (!gitAnswered(err)) {
+        this.#unavailable(err);
+        return null;
+      }
     }
     this.cache.set(file, content);
     return content;
@@ -286,19 +380,22 @@ export class GitBaseline {
         plan,
         plan.commands.map((args) => git(this.sourceDir, args)),
       );
-    } catch (err) {
-      this.#unavailable(err);
+    } catch (error) {
+      this.#unavailable(error);
       return new Set();
     }
   }
 
-  /** Non-blocking equivalent of changedFiles. Newer scans supersede older pending results. */
-  changedFilesAsync({ files, refreshRef = true } = {}) {
+  /* NOSONAR: preserve await boundaries and concurrent scan ordering */ changedFilesAsync({
+    files,
+    refreshRef = true,
+  } = {}) {
     const generation = ++this.changeGeneration;
     const forceFull = this.pendingChanges++ > 0;
     const current = () => new Set(this.changedSnapshot ?? []);
     const previous = this.changeQueue;
-    const pending = (async () => {
+    const pending = (async () /* NOSONAR */ => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       // Only one scan owns subprocesses; a save burst skips superseded queued work.
       await previous;
       if (generation !== this.changeGeneration || !this.refArgs) return current();
@@ -310,9 +407,9 @@ export class GitBaseline {
             if (generation !== this.changeGeneration) return current();
             if (refGeneration === this.refGeneration) this.#acceptCommit(commit);
             else if (this.pendingRefCheck) await this.pendingRefCheck;
-          } catch (err) {
+          } catch (error) {
             if (generation !== this.changeGeneration) return current();
-            if (refGeneration === this.refGeneration) this.#unavailable(err);
+            if (refGeneration === this.refGeneration) this.#unavailable(error);
             else if (this.pendingRefCheck) await this.pendingRefCheck;
           }
         }
@@ -340,8 +437,8 @@ export class GitBaseline {
           );
         }
         return current();
-      } catch (err) {
-        if (generation === this.changeGeneration) this.#unavailable(err);
+      } catch (error) {
+        if (generation === this.changeGeneration) this.#unavailable(error);
         return current();
       }
     })().finally(() => {

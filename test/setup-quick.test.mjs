@@ -1,6 +1,7 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Quick setup (lense/setup/quick.mjs, preview.mjs): export detection, the documents and edits it writes, and the guards of
 // the preview operation endpoint.
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { createDocument, dataEdits, filesEdits, partsEdits, quickSteps, targetOf
 import { startSetupServer } from '../lense/setup/server.mjs';
 
 async function folder(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-quick-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-quick-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   for (const [name, text] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });

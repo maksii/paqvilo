@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { writeFile, readFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { encodeArtifact } from '../portal-harness/core.mjs';
@@ -12,6 +12,7 @@ import {
   appendNativeMaskPage,
   finishNativeMaskWindow,
 } from '../portal-harness/native-mask-window.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const hash = 'a'.repeat(64),
   contactId = '00000000-0000-0000-0000-000000000001';
@@ -39,7 +40,7 @@ const control = {
   registrationSha256: hash,
 };
 async function setup(t) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'mask-window-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mask-window-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const journalFile = path.join(directory, 'window.json'),
     cacheJournalFile = path.join(directory, 'cache.json');

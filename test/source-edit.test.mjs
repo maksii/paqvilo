@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +9,7 @@ import { editSource } from '../lense/source-edit.mjs';
 import { componentContent } from '../lense/portal-model.mjs';
 
 test('unchanged edits preserve exact XML/BOM bytes and timestamps without any write', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const component = path.join(dir, 'powerpagecomponent.xml');
   const script = path.join(dir, 'script.js');
@@ -36,7 +37,7 @@ test('unchanged edits preserve exact XML/BOM bytes and timestamps without any wr
 });
 
 test('enhanced edits preserve unrelated fields and metadata, and failed edits leave bytes intact', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'powerpagecomponent.xml');
   const outer = '<name>Fixture &amp; metadata</name><powerpagecomponenttype>15</powerpagecomponenttype>';
@@ -71,7 +72,7 @@ test('enhanced edits preserve unrelated fields and metadata, and failed edits le
 });
 
 test('source edits enforce the discovered extract boundary before and after transformation', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const sourceDir = path.join(dir, 'extract');
   const externalDir = path.join(dir, 'external');
@@ -108,7 +109,7 @@ test('source edits enforce the discovered extract boundary before and after tran
 });
 
 test('a simultaneous component save is preserved instead of overwriting unrelated fields', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'powerpagecomponent.xml');
   const original = '<component><content>{"customjavascript":"before","customcss":"red"}</content></component>';
@@ -126,7 +127,7 @@ test('a simultaneous component save is preserved instead of overwriting unrelate
 });
 
 test('explicit YAML edits preserve comments, sibling fields, BOM and CRLF', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'Footer.weblinkset.yml');
   const raw =
@@ -151,7 +152,7 @@ test('explicit YAML edits preserve comments, sibling fields, BOM and CRLF', (t) 
 });
 
 test('YAML edits require an explicit field and preserve other records in a sequence', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'metadata.yml');
   const raw = '- id: one\n  adx_description: Before # field comment\n- id: two\n  adx_description: Keep\n';
@@ -172,7 +173,7 @@ test('YAML edits require an explicit field and preserve other records in a seque
 });
 
 test('localized YAML JSON edits preserve languages, settings, records and comments', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'metadata.yml');
   const localized = [
@@ -216,7 +217,7 @@ test('localized YAML JSON edits preserve languages, settings, records and commen
 });
 
 test('YAML aliases cannot silently change sibling fields during an explicit edit', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'Footer.weblinkset.yml');
   const raw = 'adx_copy: &markup "<p>Before</p>"\nsibling: *markup\n';
@@ -229,7 +230,7 @@ test('YAML aliases cannot silently change sibling fields during an explicit edit
 });
 
 test('localized component JSON edits preserve other languages and XML metadata', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'powerpagecomponent.xml');
   const localized = [
@@ -258,7 +259,7 @@ test('localized component JSON edits preserve other languages and XML metadata',
 });
 
 test('stale record and language descriptors cannot edit a reordered metadata value', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'metadata.yml');
   const languages = [
@@ -296,7 +297,7 @@ test('stale record and language descriptors cannot edit a reordered metadata val
 });
 
 test('component edits preserve XML when CDATA contains closing-tag text and split terminators', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'powerpagecomponent.xml');
   const initial = {
@@ -318,7 +319,7 @@ test('component edits preserve XML when CDATA contains closing-tag text and spli
 });
 
 test('duplicate JSON keys cannot be collapsed and lost by component or localized source edits', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const component = path.join(dir, 'powerpagecomponent.xml');
   const metadata = path.join(dir, 'metadata.yml');
@@ -354,7 +355,7 @@ test('duplicate JSON keys cannot be collapsed and lost by component or localized
 });
 
 test('discovered component descriptors edit one field at a time and XML edits require an explicit field', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-source-edit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-source-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'powerpagecomponent.xml');
   fs.writeFileSync(

@@ -1,11 +1,12 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // /_sim/api/messages and /_sim/api/outbox over a plain loopback http server with a stub api object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createLocalMessageBus, messagingSettings } from '../lib/message-bus.mjs';
 import { createOutbox } from '../lib/outbox.mjs';
 import { createMessagingRoutes, redactSecrets } from '../lib/sim-messaging-routes.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 
 const CSRF = 'invented-csrf-token';
 
@@ -13,15 +14,7 @@ async function serve(t, providers, csrf = () => CSRF) {
   const store = await new DataStore({ state: emptyState() }).init();
   const api = { store, providers: providers(store) };
   const routes = createMessagingRoutes({ api, csrf });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = await serveRoutes(t, routes);
   const call = async (method, path, headers = {}) => {
     const response = await fetch(origin + path, { method, headers });
     return { status: response.status, body: await response.json().catch(() => null) };
@@ -38,6 +31,7 @@ const withBus = (store) => {
   };
 };
 
+// @test-kind contract+security: message peeks redact credentials
 test('GET /_sim/api/messages lists entities with stats and peeks one entity with its dead-letter queue, credentials redacted', async (t) => {
   const { api, call } = await serve(t, withBus);
   const { bus } = api.providers.messaging;
@@ -83,6 +77,7 @@ test('GET /_sim/api/messages lists entities with stats and peeks one entity with
   assert.equal((await call('GET', '/_sim/api/messages?entity=x-queue')).body.messages.length, 1);
 });
 
+// @test-kind contract+security: purging requires the CSRF header
 test('DELETE /_sim/api/messages/<entity> needs the CSRF header and purges only that entity', async (t) => {
   const { api, call } = await serve(t, withBus);
   const { bus } = api.providers.messaging;
@@ -123,6 +118,7 @@ test('without providers the GETs answer configured false and the purge 404', asy
   assert.equal((await call('GET', '/_sim/api/other')).status, 404, 'other paths are left to the host');
 });
 
+// @test-kind contract+security: redactSecrets replaces credential values
 test('redactSecrets replaces credential values and DataContract pairs only', () => {
   assert.deepEqual(
     redactSecrets({
@@ -144,6 +140,7 @@ test('redactSecrets replaces credential values and DataContract pairs only', () 
   );
 });
 
+// @test-kind contract+security: redactSecrets covers credential suffixes and pair forms
 test('redactSecrets covers credential suffixes and pair forms, keeping sharedaccesskeyname and the bare key field', () => {
   const context = {
     Target: {
@@ -177,6 +174,7 @@ test('redactSecrets covers credential suffixes and pair forms, keeping sharedacc
   });
 });
 
+// @test-kind contract+security: a missing simulator CSRF token fails closed
 test('DELETE fails closed when the simulator has no CSRF token, even without a header', async (t) => {
   const { api, call } = await serve(t, withBus, () => undefined);
   const { bus } = api.providers.messaging;

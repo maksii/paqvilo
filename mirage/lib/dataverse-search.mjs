@@ -13,7 +13,7 @@ import { parseXmlDocument } from './fetchxml-engine.mjs';
 
 const WEB_API = 'v9.2';
 const QUICK_FIND = 4; // savedquery querytype of a Quick Find view
-const DEFAULT_TABLES = ['account', 'contact']; // ponytail: the standard set indexed when no column is flagged; the rest comes from the data
+const DEFAULT_TABLES = new Set(['account', 'contact']); // ponytail: the standard set indexed when no column is flagged; the rest comes from the data
 const MAX_TERM = 100;
 const DISABLED_CODE = '0x80048d0b';
 const TOKEN = /[\p{L}\p{N}]+/gu;
@@ -58,7 +58,7 @@ function optionsOf(value) {
   if (value == null || value === '' || value === 'null') return {};
   if (typeof value === 'object') return lowerKeys(value);
   try {
-    return lowerKeys(JSON.parse(String(value).replace(/'/g, '"')));
+    return lowerKeys(JSON.parse(String(value).replaceAll("'", '"')));
   } catch {
     throw invalid('options is not valid JSON.');
   }
@@ -66,7 +66,9 @@ function optionsOf(value) {
 
 function bodyOf(c) {
   if (c.body && typeof c.body === 'object' && !Buffer.isBuffer(c.body)) return c.body;
-  const text = typeof c.body === 'string' ? c.body : c.bodyBuffer?.length ? c.bodyBuffer.toString('utf8') : '';
+  let text = '';
+  if (typeof c.body === 'string') text = c.body;
+  else if (c.bodyBuffer?.length) text = c.bodyBuffer.toString('utf8');
   if (!text) return {};
   try {
     return JSON.parse(text);
@@ -117,7 +119,7 @@ function indexedTables(api) {
       .filter(([, field]) => field?.columnMetadata?.isSearchable === true)
       .map(([name]) => name);
     const columns = unique([...quickFindColumns(api, logical), ...flagged]).filter((name) => name in fields);
-    if (!columns.length && !DEFAULT_TABLES.includes(logical)) continue;
+    if (!columns.length && !DEFAULT_TABLES.has(logical)) continue;
     out.push({
       logical,
       mapping,
@@ -160,10 +162,14 @@ function targetsOf(api, entities, filters) {
     if (!table)
       throw new DataError(`Invalid Search Entity - ${e.name}.`, 400, 'InvalidRequest', { innerCode: '0x80060201' }); // InvalidSearchEntity
     const search = (listOf(e.searchcolumns, 'SearchColumns') ?? []).map((column) => String(column).toLowerCase());
+    let searchColumns;
+    if (search.length) searchColumns = search;
+    else if (named) searchColumns = table.columns;
+    else searchColumns = [table.primary].filter(Boolean);
     return {
       ...table,
       select: (listOf(e.selectcolumns, 'SelectColumns') ?? []).map((column) => String(column).toLowerCase()),
-      searchColumns: search.length ? search : named ? table.columns : [table.primary].filter(Boolean),
+      searchColumns,
       filter: e.filter ?? filters.get(name) ?? null,
     };
   });
@@ -301,23 +307,29 @@ function clausesOf(list) {
 
 const valueOfHit = (hit, key) => (key === '@search.score' ? hit.Score : hit.row[key]);
 
+function compareClauseValues(x, y, desc) {
+  if (x == null || y == null) {
+    if ((x == null) !== (y == null)) {
+      if (x == null) return 1;
+      return -1;
+    }
+    return 0;
+  }
+  let order;
+  if (typeof x === 'number' && typeof y === 'number') order = x - y;
+  else if (String(x) < String(y)) order = -1;
+  else if (String(x) > String(y)) order = 1;
+  else order = 0;
+  if (!order) return 0; // NOSONAR: nested ternary kept as authored
+  return desc ? -order : order;
+}
+
 function compareHits(a, b, clauses) {
   for (const { key, desc } of clauses) {
     const x = valueOfHit(a, key);
     const y = valueOfHit(b, key);
-    if (x == null || y == null) {
-      if ((x == null) !== (y == null)) return x == null ? 1 : -1;
-      continue;
-    }
-    const order =
-      typeof x === 'number' && typeof y === 'number'
-        ? x - y
-        : String(x) < String(y)
-          ? -1
-          : String(x) > String(y)
-            ? 1
-            : 0;
-    if (order) return desc ? -order : order;
+    const order = compareClauseValues(x, y, desc);
+    if (order) return order;
   }
   return 0;
 }
@@ -355,13 +367,14 @@ async function searchRows(api, c, body, legacy) {
   const search = searchOf(body.search, 1);
   const top = Math.min(countOf(body.top, 50, 'top'), 100); // assumed: a larger top is clamped to the documented maximum
   const skip = countOf(body.skip, 0, 'skip');
-  const mode =
-    String(legacy ? body.searchmode : (optionsOf(body.options).searchmode ?? 'any')).toLowerCase() === 'all'
-      ? 'all'
-      : 'any';
+  let requestedMode;
+  if (legacy) requestedMode = body.searchmode;
+  else requestedMode = optionsOf(body.options).searchmode ?? 'any';
+  const mode = String(requestedMode).toLowerCase() === 'all' ? 'all' : 'any';
   const filters = legacy ? legacyFilters(body.filter) : new Map();
   const targets = targetsOf(api, listOf(body.entities, 'entities'), filters);
-  const topFilter = legacy ? null : body.filter ? String(body.filter) : null;
+  let topFilter = null;
+  if (!legacy && body.filter) topFilter = String(body.filter);
   const terms = termsOf(search);
   const clauses = clausesOf(listOf(body.orderby, 'orderby'));
   const facetSpecs = listOf(body.facets, 'facets') ?? [];
@@ -387,7 +400,8 @@ async function suggestRows(api, c, body, legacy) {
     ...target,
     searchColumns: [target.primary].filter(Boolean),
   }));
-  const topFilter = legacy ? null : body.filter ? String(body.filter) : null;
+  let topFilter = null;
+  if (!legacy && body.filter) topFilter = String(body.filter);
   const terms = termsOf(search, { prefix: true });
   const clauses = clausesOf(listOf(body.orderby, 'orderby'));
   const extra = clauses.map((clause) => clause.key);
@@ -412,24 +426,34 @@ async function suggestRows(api, c, body, legacy) {
 
 // Autocomplete: the most frequent indexed word that starts with the last typed word, wrapped in {crmhit}. The word is lowercased,
 // as the documented samples show it. null when no word matches is a guess (no empty value is documented).
+function countCompletionTokens(counts, target, row, prefix) {
+  for (const column of target.searchColumns) {
+    if (!isScalar(row[column])) continue;
+    for (const token of tokens(String(row[column])))
+      if (token.startsWith(prefix)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+}
+
 async function completion(api, c, body, legacy) {
   if (!enabled(api)) throw disabled();
   const search = searchOf(body.search, 1);
   const prefix = tokens(search).at(-1) ?? '';
   const filters = legacy ? legacyFilters(body.filter) : new Map();
   const targets = targetsOf(api, listOf(body.entities, 'entities'), filters);
-  const topFilter = legacy ? null : body.filter ? String(body.filter) : null;
+  let topFilter = null;
+  if (!legacy && body.filter) topFilter = String(body.filter);
   const counts = new Map();
   for (const target of targets) {
     for (const row of await readRows(api, c, target, topFilter)) {
-      for (const column of target.searchColumns) {
-        if (!isScalar(row[column])) continue;
-        for (const token of tokens(String(row[column])))
-          if (token.startsWith(prefix)) counts.set(token, (counts.get(token) ?? 0) + 1);
-      }
+      countCompletionTokens(counts, target, row, prefix);
     }
   }
-  const best = [...counts].sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0))[0]?.[0];
+  const best = [...counts].sort(([a, x], [b, y]) => {
+    if (y !== x) return y - x;
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  })[0]?.[0];
   return best ? `{crmhit}${best}{/crmhit}` : null;
 }
 

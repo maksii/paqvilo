@@ -70,7 +70,12 @@ const same = (a, b) => JSON.stringify(plain(a)) === JSON.stringify(plain(b));
 const lower = (value) => String(value ?? '').toLowerCase();
 const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const rowsOf = (store) => (store.state.tables.audit ??= []);
-const detailsOf = (store) => ((store.state.dataverse ??= {}).auditDetails ??= {});
+const detailsOf = (store) => {
+  store.state.dataverse ??= {};
+  if (store.state.dataverse.auditDetails === null || store.state.dataverse.auditDetails === undefined)
+    store.state.dataverse.auditDetails = {};
+  return store.state.dataverse.auditDetails;
+};
 const organizationOf = (store) => organizationRecord(store) ?? {};
 const schemaOf = (api) => (typeof api.schema === 'function' ? api.schema() : api.schema);
 
@@ -150,23 +155,17 @@ function eventEntries(api, event, transactionId) {
   if (!mapping || !auditable(api, mapping) || !OPERATION[event.operation]) return [];
   const audited = auditedColumns(mapping);
   // Assumption: create rows list every non-null audited column in attributemask.
-  const changed =
-    event.operation === 'create'
-      ? audited.filter((column) => plain(event.row[column]) !== null)
-      : event.operation === 'update'
-        ? audited.filter((column) => !same(event.previous?.[column], event.row[column]))
-        : [];
+  let changed = [];
+  if (event.operation === 'create') changed = audited.filter((column) => plain(event.row[column]) !== null);
+  else if (event.operation === 'update')
+    changed = audited.filter((column) => !same(event.previous?.[column], event.row[column]));
   if (event.operation === 'update' && changed.length === 0) return [];
-  const action =
-    event.operation === 'delete'
-      ? ACTION.delete
-      : event.operation === 'create'
-        ? ACTION.create
-        : changed.includes('ownerid')
-          ? ACTION.assign
-          : changed.includes('statecode')
-            ? ACTION.setState
-            : ACTION.update;
+  let action;
+  if (event.operation === 'delete') action = ACTION.delete;
+  else if (event.operation === 'create') action = ACTION.create;
+  else if (changed.includes('ownerid')) action = ACTION.assign;
+  else if (changed.includes('statecode')) action = ACTION.setState;
+  else action = ACTION.update;
   const row = auditRow(api, {
     entity: event.entity,
     id: event.row[mapping.idColumn],
@@ -192,15 +191,16 @@ function eventEntries(api, event, transactionId) {
 function onCommitted(api, events) {
   const transactionId = (api.ids ?? systemIds).uuid();
   const entries = events.flatMap((event) => eventEntries(api, event, transactionId));
-  if (entries.length) appendLater(api, entries);
+  if (entries.length) void appendLater(api, entries);
 }
 
 // N:N association writes are not committed events, so the record hook writes them inside the write's transaction.
 // A failure is logged, never thrown: auditing must not break the write.
 async function afterWrite(api, c, mapping, { operation, id, relationship }) {
   try {
-    const action =
-      operation === 'associate' ? ACTION.associate : operation === 'disassociate' ? ACTION.disassociate : null;
+    let action = null;
+    if (operation === 'associate') action = ACTION.associate;
+    else if (operation === 'disassociate') action = ACTION.disassociate;
     if (!action || !auditable(api, mapping)) return;
     // Assumption: an association is recorded as Operation Update.
     const row = auditRow(api, {
@@ -381,7 +381,7 @@ function pageOf(params, rows, render) {
 
 function requirePrivileges(api, user, names, entity) {
   const grants = api.principals.privileges(user);
-  const missing = names.find((name) => !(grants.get(name) > 0));
+  const missing = names.find((name) => !(grants.get(name) > 0)); // NOSONAR: operand can be NaN or undefined, the negated test differs
   if (missing) throw privilegeDeniedError(user, missing, entity);
 }
 
@@ -604,7 +604,7 @@ function operations(api) {
               const rows = rowsOf(store),
                 details = detailsOf(store);
               for (let i = rows.length - 1; i >= 0; i--) {
-                if (!(Date.parse(rows[i].createdon) < end)) continue;
+                if (!(Date.parse(rows[i].createdon) < end)) continue; // NOSONAR: operand can be NaN or undefined, the negated test differs
                 delete details[rows[i].auditid];
                 rows.splice(i, 1);
               }

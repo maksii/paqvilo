@@ -23,8 +23,7 @@ ${cell('Banner', '<control id="WebResource_banner" classid="{9FDF5F91-88B1-47f4-
 </rows></section></sections></column></columns></tab></tabs></form></systemform></forms></FormXml></Dashboard></Dashboards></ImportExportXml>`;
 
 async function startDashboardApp() {
-  const initial = await modelDrivenFixture(scope);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(scope, { defer: true });
   const dir = initial.solutionDir;
   await fs.writeFile(path.join(dir, 'Other/Customizations.xml'), CUSTOMIZATIONS);
   const siteMap = path.join(dir, 'AppModuleSiteMaps/x_example/AppModuleSiteMap.xml');
@@ -36,7 +35,6 @@ async function startDashboardApp() {
     ),
   );
   const sim = await initial.start();
-  scope.after(() => sim.close());
   return sim.origin ?? sim.url;
 }
 

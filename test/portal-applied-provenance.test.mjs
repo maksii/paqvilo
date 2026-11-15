@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import { SITE } from './fixture.mjs';
 import { createHash } from 'node:crypto';
 
 function fixture(t, base, current) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-applied-proof-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-applied-proof-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
   const file = path.join(dir, 'Main.html');
   fs.writeFileSync(file, current);
@@ -93,7 +94,7 @@ test('CRLF response offsets preserve original decoded source line/column', (t) =
 });
 
 test('replaced inline code with sourceMaps disabled retains script implementation proof without DOM ownership', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-inline-proof-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-inline-proof-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
   const file = path.join(dir, 'Form.basicform.custom_javascript.js'),
     metadataFile = path.join(dir, 'Form.basicform.yml');

@@ -1,0 +1,489 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "tds-sql",
+  "suite": "sql-server-format-null-facts-v1",
+  "oracle": {
+    "kind": "reference-engine",
+    "name": "Microsoft SQL Server",
+    "version": "16.0.4305.5",
+    "scope": "Repeated SQL Server engine results for eight exact format and null-input cases; no Dataverse TDS claim Client-derived encodings (CLR type, precision and scale of fixed-width types, binary layouts of decimal and float values) are not recorded; values are recorded as exact text."
+  },
+  "captures": [
+    {
+      "id": "sqlserver-run-1",
+      "sha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "sqlserver-run-2",
+      "sha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sql-function-format-null-3",
+      "input": {
+        "query": "SELECT ROUND(CAST(N'1.5' AS decimal(2,1)), NULL) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "float"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "null"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-69",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'#,##0.00' AS nvarchar(8))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "1,234.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-70",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'0.5' AS float), CAST(N'0.00' AS nvarchar(4))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "0.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-73",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'en-US' AS nvarchar(5))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "1,234.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-74",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'de-DE' AS nvarchar(5))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "1.234,50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-75",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'#,##0.00' AS nvarchar(8)), CAST(N'de-DE' AS nvarchar(5))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "1.234,50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-76",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'C' AS nvarchar(1)), CAST(N'en-US' AS nvarchar(5))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "$1,234.50"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "sql-function-format-null-77",
+      "input": {
+        "query": "SELECT FORMAT(CAST(N'0.5' AS float), CAST(N'P0' AS nvarchar(2)), CAST(N'en-US' AS nvarchar(5))) AS [value]",
+        "context": {
+          "version": {
+            "kind": "string",
+            "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+          },
+          "productVersion": {
+            "kind": "string",
+            "value": "16.0.4305.5"
+          },
+          "edition": {
+            "kind": "string",
+            "value": "Developer Edition (64-bit)"
+          },
+          "collation": {
+            "kind": "string",
+            "value": "SQL_Latin1_General_CP1_CI_AS"
+          },
+          "language": {
+            "kind": "string",
+            "value": "us_english"
+          },
+          "dateFirst": {
+            "kind": "System.Byte",
+            "exact": "7"
+          },
+          "options": {
+            "kind": "System.Int32",
+            "exact": "5432"
+          }
+        }
+      },
+      "output": {
+        "outcome": "result",
+        "resultSets": [
+          {
+            "columns": [
+              {
+                "name": "value",
+                "sqlType": "nvarchar"
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "kind": "string",
+                  "value": "50%"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

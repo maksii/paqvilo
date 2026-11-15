@@ -1,0 +1,396 @@
+[
+  {
+    "role": "field1",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field2",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field3",
+    "type": "EmailString",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field4",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field5",
+    "type": "UrlString",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field6",
+    "type": "TickerSymbolString",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field7",
+    "type": "Memo",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field8",
+    "type": "Integer",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field9",
+    "type": "Money",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": {
+        "undefined": true
+      },
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": false
+    }
+  },
+  {
+    "role": "field10",
+    "type": "Decimal",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field11",
+    "type": "Double",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field12",
+    "type": "Picklist",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": {
+        "undefined": true
+      },
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field13",
+    "type": "Lookup",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": {
+        "undefined": true
+      },
+      "isReadonly": false,
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field14",
+    "type": "DateTime",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field15",
+    "type": "DateTime",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field16",
+    "type": "Lookup",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": {
+        "undefined": true
+      },
+      "isReadonly": false,
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field17",
+    "type": "Lookup",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": {
+        "undefined": true
+      },
+      "isReadonly": false,
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field18",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field19",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field20",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field21",
+    "type": "DateTime",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": true,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field22",
+    "type": "DateTime",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": true,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field23",
+    "type": "AddressComposite",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    },
+    "editable": "True",
+    "domReadOnly": true
+  },
+  {
+    "role": "field24",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "field25",
+    "type": "String",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": true,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  },
+  {
+    "role": "boolean",
+    "type": "Boolean",
+    "nameMatchesHtml": false,
+    "nameMatchesLabel": true,
+    "properties": {
+      "isReadOnly": false,
+      "isReadonly": {
+        "undefined": true
+      },
+      "readOnly": {
+        "undefined": true
+      }
+    }
+  }
+]

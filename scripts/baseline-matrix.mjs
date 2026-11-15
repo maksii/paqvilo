@@ -210,6 +210,576 @@ const behaviourPage = (record, project) => !project.behaviourPages || project.be
 const cites = (record, pattern) =>
   (record.catalog ?? []).some((id) => (pattern instanceof RegExp ? pattern.test(id) : id === pattern));
 
+function addBasicFormInsertBase(state) {
+  const { out, record, parts, T, full, stepped, external, captcha, submit, firstStep, idSuffix, page, rules } = state;
+  out.push(
+    scenario(`basic-form/${idSuffix('empty')}`, { ...parts, state: 'empty' }, [{ goto: page }], { present: [FORM] }),
+  );
+  const attachments = cites(record, 'pp.basicform.attach-file') ? [attach()] : [];
+  // The attach forms redirect to the saved record's edit page (the uploaded note shows there): a rejected upload or
+  // submit stays on the insert form, so the capture fails instead of reporting a page that never saved.
+  const saved = attachments.length
+    ? {
+        urlPattern: '[?&]id=[0-9a-f-]{36}',
+        present: ['#pqvd_name'],
+        absent: [...SIGN_IN, '.validation-summary:visible'],
+      }
+    : {};
+  let outcome = saved;
+  if (external) outcome = { leavesOrigin: true };
+  else if (captcha) outcome = { present: [FORM] };
+  out.push(
+    scenario(
+      `basic-form/${idSuffix(captcha ? 'insert-captcha' : 'insert')}`,
+      { ...parts, state: captcha ? 'insert-captcha' : 'insert' },
+      [
+        { goto: page },
+        ...T.insert('Baseline inserted item', 'I-NEW-{id:run}'),
+        ...attachments,
+        ...submit,
+        { wait: { navigation: true } },
+      ],
+      outcome,
+    ),
+  );
+  if (full || stepped)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('required-missing')}`,
+        { ...parts, state: 'required-missing' },
+        [{ goto: page }, ...firstStep, { wait: 1500 }],
+        { present: [FORM] },
+      ),
+    );
+  rules(
+    (scenarioState) =>
+      T.insert(`Baseline ${scenarioState}`, `I-${scenarioState.replace(/-.*/, '').toUpperCase()}-{id:run}`),
+    [{ goto: page }],
+  );
+  if (full && T.plugins)
+    for (const stage of PLUGIN_STAGES)
+      out.push(
+        scenario(
+          'basic-form/' + idSuffix(`plugin-error-create-${stage}`),
+          { ...parts, state: `plugin-error-create-${stage}` },
+          [
+            { goto: page },
+            ...T.insert(`Baseline plugin ${stage}`, `I-PL-${stage.slice(0, 3)}-{id:run}`),
+            { fill: '#pqvd_text', value: `plugin-fail-create-${stage}` },
+            ...submit,
+            { wait: { navigation: true } },
+          ],
+          {},
+        ),
+      );
+  // The rule's error action fires above 500; the live portal saves the record (basic forms run no business rules): `watch` shows the value.
+  if (full && T.rules)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('rule-error')}`,
+        { ...parts, state: 'rule-error' },
+        [
+          { goto: page },
+          ...T.insert('Baseline rule error', 'I-RE-{id:run}'),
+          { fill: '#pqvd_ruleerror', value: '600' },
+          ...submit,
+          { wait: { navigation: true } },
+        ],
+        {},
+        { watch: ['pqvd_ruleerror'] },
+      ),
+    );
+}
+
+function addBasicFormInsertPermissions(state) {
+  const { out, parts, personas, idSuffix, page } = state;
+  if (personas)
+    for (const persona of ['reader', 'none', 'anonymous'])
+      out.push(
+        scenario(
+          `basic-form/${idSuffix('permission-denied', persona)}`,
+          { ...parts, persona, state: 'permission-denied' },
+          [{ goto: page }],
+          { absent: persona === 'anonymous' ? [] : SIGN_IN },
+        ),
+      );
+  // The scope personas hold Create on their scope: the insert form may render for them.
+  if (personas)
+    for (const persona of ['contact-scope', 'account-scope', 'parent-scope'])
+      out.push(
+        scenario(
+          `basic-form/${idSuffix('permission', persona)}`,
+          { ...parts, persona, state: 'permission' },
+          [{ goto: page }],
+          {},
+        ),
+      );
+}
+
+function addBasicFormEditCore(state) {
+  const { out, record, parts, T, full, submit, firstStep, idSuffix, open, rules } = state;
+  out.push(
+    scenario(`basic-form/${idSuffix('populated')}`, { ...parts, state: 'populated' }, [{ goto: open(T.record) }], {
+      present: [FORM, '#pqvd_name'],
+    }),
+  );
+  if (full)
+    out.push(
+      scenario(`basic-form/${idSuffix('minimal')}`, { ...parts, state: 'minimal' }, [{ goto: open(T.minimal) }], {
+        present: [FORM],
+      }),
+    );
+  if (full)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('inactive-record')}`,
+        { ...parts, state: 'inactive-record' },
+        [{ goto: open(T.inactive) }],
+        {},
+      ),
+    );
+  // The configured record-not-found message renders when the page has no (or an empty or malformed) id; a well-formed id
+  // no record has (`missing`, the zero GUID) renders the platform exception instead.
+  if (cites(record, 'pp.basicform.record-not-found-message'))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('record-not-found')}`,
+        { ...parts, state: 'record-not-found' },
+        [{ goto: state.page }],
+        {},
+      ),
+      scenario(
+        `basic-form/${idSuffix('record-missing-id')}`,
+        { ...parts, state: 'record-missing-id' },
+        [{ goto: open('missing') }],
+        {},
+      ),
+    );
+  if (full && T.rules)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('hidden-by-rule')}`,
+        { ...parts, state: 'hidden-by-rule' },
+        [{ goto: open(T.ruled) }],
+        { present: [FORM] },
+        { watch: ['pqvd_hiddenbyrule', 'pqvd_flag'] },
+      ),
+    );
+  out.push(
+    scenario(
+      `basic-form/${idSuffix('save-text')}`,
+      { ...parts, state: 'save-text' },
+      [
+        { goto: open(T.record) },
+        { fill: T.text, value: 'edited by baseline' },
+        ...submit,
+        { wait: { navigation: true } },
+      ],
+      {},
+    ),
+  );
+  if (full || /summary/i.test(record.variation ?? ''))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('required-missing')}`,
+        { ...parts, state: 'required-missing' },
+        [{ goto: open(T.record) }, { clear: T.required }, ...firstStep, { wait: 1500 }],
+        { present: [FORM] },
+      ),
+    );
+  rules(() => [], [{ goto: open(T.record) }]);
+}
+
+function addBasicFormEditPlugins(state) {
+  const { out, parts, T, full, submit, idSuffix, open, clearCache } = state;
+  if (full && T.plugins)
+    for (const stage of PLUGIN_STAGES)
+      out.push(
+        scenario(
+          'basic-form/' + idSuffix(`plugin-error-update-${stage}`),
+          { ...parts, state: `plugin-error-update-${stage}` },
+          [
+            { goto: open(T.record) },
+            { fill: '#pqvd_text', value: `plugin-fail-update-${stage}` },
+            ...submit,
+            { wait: { navigation: true } },
+          ],
+          {},
+        ),
+      );
+  // The live portal serves the record from its read cache for a few seconds after the save (pre-save values 3 s
+  // later; the plugin's write showed after 4 s and a navigation), so the reload waits 6 s and expects the plugin's text.
+  // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
+  // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
+  const mutate = [
+    { goto: open(T.record) },
+    { fill: '#pqvd_ticker', value: '  mut  ' },
+    { fill: '#pqvd_textarea', value: 'mutate-me' },
+    ...submit,
+    { wait: { navigation: true } },
+  ];
+  if (full && T.plugins)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('plugin-mutation')}`,
+        { ...parts, state: 'plugin-mutation' },
+        [...mutate, { wait: 6000 }, ...clearCache, { goto: open(T.record) }, { wait: 1500 }],
+        { present: [FORM, "textarea#pqvd_textarea:has-text('mutated by plugin')"] },
+        { watch: ['pqvd_ticker', 'pqvd_textarea'] },
+      ),
+    );
+  if (full && T.plugins)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('plugin-mutation-postback')}`,
+        { ...parts, state: 'plugin-mutation-postback' },
+        mutate,
+        { present: [FORM] },
+        { watch: ['pqvd_ticker', 'pqvd_textarea'] },
+      ),
+    );
+}
+
+function addBasicFormEditLookups(state) {
+  const { out, parts, full, T, idSuffix, open } = state;
+  if (full && T.lookup)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('lookup-dialog-open')}`,
+        { ...parts, state: 'lookup-dialog-open' },
+        [
+          { goto: open(T.record) },
+          { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { wait: 1500 },
+        ],
+        { present: ['.modal'] },
+      ),
+    );
+  if (full && T.lookup)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('lookup-search')}`,
+        { ...parts, state: 'lookup-search' },
+        [
+          { goto: open(T.record) },
+          { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { fill: '.modal.in input.query, .modal.show input.query', value: '*Other' },
+          { press: '.modal.in input.query, .modal.show input.query', key: 'Enter' },
+          { wait: 1500 },
+        ],
+        { present: ['.modal'] },
+      ),
+    );
+  if (full && T.lookup)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('lookup-select')}`,
+        { ...parts, state: 'lookup-select' },
+        [
+          { goto: open(T.record) },
+          { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { wait: 1500 },
+          { click: '.modal.in table tbody tr:nth-child(2), .modal.show table tbody tr:nth-child(2)' },
+          { click: '.modal.in button.primary, .modal.show button.primary' },
+          { wait: 1000 },
+        ],
+        { present: [FORM] },
+        { watch: ['pqvd_contactid_name'] },
+      ),
+    );
+  if (full && T.lookup)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('lookup-clear')}`,
+        { ...parts, state: 'lookup-clear' },
+        [{ goto: open(T.record) }, { click: `button.clearlookupfield[aria-label*='${T.lookup}']` }, { wait: 800 }],
+        { present: [FORM] },
+        { watch: ['pqvd_contactid_name'] },
+      ),
+    );
+  if (full && T.notes)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('note-add')}`,
+        { ...parts, state: 'note-add' },
+        [
+          { goto: open(T.record) },
+          { wait: { selector: 'a.addnote:visible, .entity-notes .add-note:visible', state: 'visible' } },
+          { click: 'a.addnote:visible, .entity-notes .add-note:visible' },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { fill: '.modal.in textarea, .modal.show textarea', value: 'note added by baseline' },
+          {
+            click:
+              '.modal.in button.primary, .modal.show button.primary, .modal.in .btn-primary, .modal.show .btn-primary',
+          },
+          { wait: 2500 },
+        ],
+        { present: [FORM] },
+      ),
+    );
+}
+
+function addBasicFormEditActions(state) {
+  const { out, record, parts, T, context, clearCache, idSuffix, open } = state;
+  if (cites(record, 'pp.basicform.action.delete'))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('delete-dialog')}`,
+        { ...parts, state: 'delete-dialog' },
+        [
+          { goto: open(T.record) },
+          { click: 'button.delete-link' },
+          { wait: { selector: '.modal-delete.in, .modal-delete.show', state: 'visible' } },
+          { wait: 1000 },
+        ],
+        { present: ['.modal-delete'] },
+      ),
+    );
+  // State actions run on a row reserved for this variant; clear cache before both state scenarios.
+  const own = T.actionRecords?.[context.actionSlot?.get(record.path) ?? 0] ?? T.inactive;
+  if (cites(record, 'pp.basicform.action.activate'))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('activate')}`,
+        { ...parts, state: 'activate' },
+        [...clearCache, { goto: open(own) }, { click: 'button.activate-link' }, { wait: 3000 }],
+        {},
+      ),
+    );
+  if (cites(record, 'pp.basicform.action.deactivate'))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('deactivate')}`,
+        { ...parts, state: 'deactivate' },
+        [
+          ...clearCache,
+          { goto: open(own) },
+          { click: 'button.activate-link', optional: true },
+          { wait: 3000 },
+          { click: 'button.deactivate-link' },
+          { wait: 3000 },
+        ],
+        {},
+      ),
+    );
+  if (cites(record, 'pp.basicform.action.create-related-record'))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('create-related-dialog')}`,
+        { ...parts, state: 'create-related-dialog' },
+        [
+          { goto: open(T.record) },
+          { click: 'button.create-related-record-link' },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { wait: 2500 },
+        ],
+        { present: ['.modal'] },
+      ),
+    );
+}
+
+function addBasicFormEditSubgrids(state) {
+  const { out, metadata, parts, T, idSuffix, open } = state;
+  for (const meta of metadata.filter((item) => cites(item, 'pp.bfmeta.subgrid.action.associate')))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('associate-dialog')}`,
+        { ...parts, state: 'associate-dialog' },
+        [
+          { goto: open(T.record) },
+          { click: `#${meta.name} a.action` },
+          { wait: { selector: MODAL, state: 'visible' } },
+          { wait: 2500 },
+        ],
+        { present: ['.modal'] },
+      ),
+    );
+  for (const meta of metadata.filter((item) => cites(item, 'pp.bfmeta.subgrid.action.disassociate')))
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('disassociate')}`,
+        { ...parts, state: 'disassociate' },
+        [
+          { goto: open(T.record) },
+          { click: `#${meta.name} tr[data-id] button[aria-label='action menu']` },
+          { wait: 500 },
+          { click: `#${meta.name} tr[data-id] a.disassociate-link` },
+          { wait: 3000 },
+        ],
+        { present: [FORM] },
+      ),
+    );
+  for (const meta of metadata.filter((item) => cites(item, 'pp.bfmeta.attribute.lookup.formforcreate'))) {
+    const launch = [
+      { goto: open(T.record) },
+      { click: `.control[data-logical-name='${meta.name}'] button.launchentitylookup` },
+      { wait: { selector: within(`#${meta.name}_lookupmodal`), state: 'visible' } },
+      { wait: 1500 },
+    ];
+    out.push(
+      scenario(`basic-form/${idSuffix('lookup-dialog-open')}`, { ...parts, state: 'lookup-dialog-open' }, launch, {
+        present: ['.modal'],
+      }),
+      scenario(
+        `basic-form/${idSuffix('lookup-create-dialog')}`,
+        { ...parts, state: 'lookup-create-dialog' },
+        [...launch, { click: `#${meta.name}_lookupmodal button.new-value` }, { wait: 2500 }],
+        { present: ['.modal'] },
+      ),
+    );
+  }
+}
+
+function addBasicFormEditPermissions(state) {
+  const { out, parts, personas, idSuffix, open, T } = state;
+  if (personas)
+    for (const persona of ['reader', 'contact-scope', 'account-scope', 'parent-scope', 'none', 'anonymous'])
+      out.push(
+        scenario(
+          `basic-form/${idSuffix('permission', persona)}`,
+          { ...parts, persona, state: 'permission' },
+          [{ goto: open(T.record) }],
+          { absent: persona === 'anonymous' ? [] : SIGN_IN },
+        ),
+      );
+  if (personas)
+    out.push(
+      scenario(
+        `basic-form/${idSuffix('contact-scope-foreign', 'contact-scope')}`,
+        { ...parts, persona: 'contact-scope', state: 'contact-scope-foreign' },
+        [{ goto: open(T.foreign) }],
+        {},
+      ),
+    );
+}
+
+function addBasicFormReadOnlyScenarios(state) {
+  const { out, record, parts, personas, T, idSuffix, open } = state;
+  const inactiveForm = cites(record, 'pp.basicform.statecode');
+  out.push(
+    scenario(
+      `basic-form/${idSuffix('read-only')}`,
+      { ...parts, state: 'read-only' },
+      [{ goto: open(T.record) }],
+      inactiveForm ? {} : { present: [FORM] },
+    ),
+  );
+  if (personas)
+    for (const persona of ['reader', 'contact-scope', 'account-scope', 'parent-scope', 'none', 'anonymous'])
+      out.push(
+        scenario(
+          `basic-form/${idSuffix('read-only', persona)}`,
+          { ...parts, persona, state: 'read-only' },
+          [{ goto: open(T.record) }],
+          {},
+        ),
+      );
+}
+
+function addListModalScenarios(s, page) {
+  s(
+    'modal-details',
+    [
+      { goto: page },
+      { wait: 1500 },
+      { click: 'tr .details-link, tr a.details-link, tr .launch-modal' },
+      { wait: { selector: MODAL, state: 'visible' } },
+      { wait: 2500 },
+    ],
+    { present: ['.modal'] },
+  );
+  s(
+    'modal-create',
+    [
+      { goto: page },
+      { wait: 1500 },
+      { click: '.toolbar a.create-action, a.create-action, .btn.create-action' },
+      { wait: { selector: MODAL, state: 'visible' } },
+      { wait: 2500 },
+    ],
+    { present: ['.modal'] },
+  );
+  s(
+    'modal-edit',
+    [
+      { goto: page },
+      { wait: 1500 },
+      { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" },
+      { wait: 500 },
+      { click: 'tr .dropdown-menu .edit-link, tr .dropdown-menu a.edit-link' },
+      { wait: { selector: MODAL, state: 'visible' } },
+      { wait: 2500 },
+    ],
+    { present: ['.modal'] },
+  );
+  s(
+    'modal-delete',
+    [
+      { goto: page },
+      { wait: 1500 },
+      { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" },
+      { wait: 500 },
+      { click: 'tr .dropdown-menu .delete-link, tr .dropdown-menu a.delete-link' },
+      { wait: { selector: MODAL, state: 'visible' } },
+      { wait: 1000 },
+    ],
+    { present: ['.modal'] },
+  );
+}
+
+function addListFilterScenarios(s, filter, page, grid) {
+  if (!filter('pp.listfilter.definition')) return;
+  if (filter('pp.listfilter.text'))
+    s(
+      'filter-text',
+      [
+        { goto: page },
+        { wait: 1500 },
+        { fill: ".entitylist-filter input[type='text'], .filter-text input", value: '*Alpha' },
+        { click: ".entitylist-filter button[type='submit'], .filter-submit, button:has-text('Apply')" },
+        { wait: 2000 },
+      ],
+      { present: [grid] },
+    );
+  if (filter('pp.listfilter.visualization.dropdown'))
+    s(
+      'filter-dropdown',
+      [
+        { goto: page },
+        { wait: 1500 },
+        { select: '.entitylist-filter select', label: 'Beta' },
+        { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
+        { wait: 2000 },
+      ],
+      { present: [grid] },
+    );
+  if (filter('pp.listfilter.visualization.checkbox'))
+    s(
+      'filter-checkbox',
+      [
+        { goto: page },
+        { wait: 1500 },
+        { check: ".entitylist-filter input[type='checkbox']" },
+        { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
+        { wait: 2000 },
+      ],
+      { present: [grid] },
+    );
+  s(
+    'filter-reset',
+    [
+      { goto: page },
+      { wait: 1500 },
+      { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
+      { wait: 2000 },
+    ],
+    { present: [grid] },
+  );
+}
+
 function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   const out = [];
   const personas = personaPage(record, project);
@@ -225,7 +795,7 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   const tabs = project.formTabs?.[record.formName ?? record.form ?? ''] ?? project.formTabs?.default ?? 1;
   const submit = stepped
     ? [
-        ...Array(Math.max(0, tabs - 1))
+        ...new Array(Math.max(0, tabs - 1))
           .fill([{ click: NEXT, dispatch: true, optional: true }, { wait: 1500 }])
           .flat(),
         { click: SUBMIT },
@@ -234,12 +804,9 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   const firstStep = stepped ? [{ click: NEXT, dispatch: true }] : [...submit];
   const parts = { component: 'basic-form', variation: record.variation ?? record.name, persona: 'editor' };
   const page = record.path + recordQuery(record);
-  const mode =
-    /insert/i.test(record.variation ?? '') || /Insert/.test(record.name)
-      ? 'insert'
-      : /read/i.test(record.variation ?? record.name)
-        ? 'read-only'
-        : 'edit';
+  let mode = 'edit';
+  if (/insert/i.test(record.variation ?? '') || /Insert/.test(record.name)) mode = 'insert';
+  else if (/read/i.test(record.variation ?? record.name)) mode = 'read-only';
   // The project's live refresh steps (portal "Clear cache") as harness steps (their requests are not evidence), optional
   // because Mirage has no such control (the click is skipped there). A reload 16 s after a save can still serve the
   // pre-save record from the portal cache.
@@ -269,458 +836,42 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
         ),
       );
   };
+  const state = {
+    out,
+    record,
+    project,
+    metadata,
+    context,
+    parts,
+    T,
+    page,
+    full,
+    personas,
+    stepped,
+    external,
+    captcha,
+    submit,
+    firstStep,
+    clearCache,
+    idSuffix,
+    open,
+    rules,
+  };
   if (mode === 'insert') {
-    out.push(
-      scenario(`basic-form/${idSuffix('empty')}`, { ...parts, state: 'empty' }, [{ goto: page }], { present: [FORM] }),
-    );
-    const attachments = cites(record, 'pp.basicform.attach-file') ? [attach()] : [];
-    // The attach forms redirect to the saved record's edit page (the uploaded note shows there): a rejected upload or
-    // submit stays on the insert form, so the capture fails instead of reporting a page that never saved.
-    const saved = attachments.length
-      ? {
-          urlPattern: '[?&]id=[0-9a-f-]{36}',
-          present: ['#pqvd_name'],
-          absent: [...SIGN_IN, '.validation-summary:visible'],
-        }
-      : {};
-    out.push(
-      scenario(
-        `basic-form/${idSuffix(captcha ? 'insert-captcha' : 'insert')}`,
-        { ...parts, state: captcha ? 'insert-captcha' : 'insert' },
-        [
-          { goto: page },
-          ...T.insert('Baseline inserted item', 'I-NEW-{id:run}'),
-          ...attachments,
-          ...submit,
-          { wait: { navigation: true } },
-        ],
-        external ? { leavesOrigin: true } : captcha ? { present: [FORM] } : saved,
-      ),
-    );
-    if (full || stepped)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('required-missing')}`,
-          { ...parts, state: 'required-missing' },
-          [{ goto: page }, ...firstStep, { wait: 1500 }],
-          { present: [FORM] },
-        ),
-      );
-    rules(
-      (state) => T.insert(`Baseline ${state}`, `I-${state.replace(/-.*/, '').toUpperCase()}-{id:run}`),
-      [{ goto: page }],
-    );
-    if (full && T.plugins)
-      for (const stage of PLUGIN_STAGES)
-        out.push(
-          scenario(
-            `basic-form/${idSuffix(`plugin-error-create-${stage}`)}`,
-            { ...parts, state: `plugin-error-create-${stage}` },
-            [
-              { goto: page },
-              ...T.insert(`Baseline plugin ${stage}`, `I-PL-${stage.slice(0, 3)}-{id:run}`),
-              { fill: '#pqvd_text', value: `plugin-fail-create-${stage}` },
-              ...submit,
-              { wait: { navigation: true } },
-            ],
-            {},
-          ),
-        );
-    // The rule's error action fires above 500; the live portal saves the record (basic forms run no business rules): `watch` shows the value.
-    if (full && T.rules)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('rule-error')}`,
-          { ...parts, state: 'rule-error' },
-          [
-            { goto: page },
-            ...T.insert('Baseline rule error', 'I-RE-{id:run}'),
-            { fill: '#pqvd_ruleerror', value: '600' },
-            ...submit,
-            { wait: { navigation: true } },
-          ],
-          {},
-          { watch: ['pqvd_ruleerror'] },
-        ),
-      );
-    if (personas)
-      for (const persona of ['reader', 'none', 'anonymous'])
-        out.push(
-          scenario(
-            `basic-form/${idSuffix('permission-denied', persona)}`,
-            { ...parts, persona, state: 'permission-denied' },
-            [{ goto: page }],
-            { absent: persona === 'anonymous' ? [] : SIGN_IN },
-          ),
-        );
-    // The scope personas hold Create on their scope: the insert form may render for them.
-    if (personas)
-      for (const persona of ['contact-scope', 'account-scope', 'parent-scope'])
-        out.push(
-          scenario(
-            `basic-form/${idSuffix('permission', persona)}`,
-            { ...parts, persona, state: 'permission' },
-            [{ goto: page }],
-            {},
-          ),
-        );
+    addBasicFormInsertBase(state);
+    addBasicFormInsertPermissions(state);
   } else if (mode === 'edit') {
-    out.push(
-      scenario(`basic-form/${idSuffix('populated')}`, { ...parts, state: 'populated' }, [{ goto: open(T.record) }], {
-        present: [FORM, '#pqvd_name'],
-      }),
-    );
-    if (full)
-      out.push(
-        scenario(`basic-form/${idSuffix('minimal')}`, { ...parts, state: 'minimal' }, [{ goto: open(T.minimal) }], {
-          present: [FORM],
-        }),
-      );
-    if (full)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('inactive-record')}`,
-          { ...parts, state: 'inactive-record' },
-          [{ goto: open(T.inactive) }],
-          {},
-        ),
-      );
-    // The configured record-not-found message renders when the page has no (or an empty or malformed) id; a well-formed id
-    // no record has (`missing`, the zero GUID) renders the platform exception instead.
-    if (cites(record, 'pp.basicform.record-not-found-message')) {
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('record-not-found')}`,
-          { ...parts, state: 'record-not-found' },
-          [{ goto: page }],
-          {},
-        ),
-      );
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('record-missing-id')}`,
-          { ...parts, state: 'record-missing-id' },
-          [{ goto: open('missing') }],
-          {},
-        ),
-      );
-    }
-    if (full && T.rules)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('hidden-by-rule')}`,
-          { ...parts, state: 'hidden-by-rule' },
-          [{ goto: open(T.ruled) }],
-          { present: [FORM] },
-          { watch: ['pqvd_hiddenbyrule', 'pqvd_flag'] },
-        ),
-      );
-    out.push(
-      scenario(
-        `basic-form/${idSuffix('save-text')}`,
-        { ...parts, state: 'save-text' },
-        [
-          { goto: open(T.record) },
-          { fill: T.text, value: 'edited by baseline' },
-          ...submit,
-          { wait: { navigation: true } },
-        ],
-        {},
-      ),
-    );
-    // Variants that change the validation summary (links, header, CSS) show it on a missing required value.
-    if (full || /summary/i.test(record.variation ?? ''))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('required-missing')}`,
-          { ...parts, state: 'required-missing' },
-          [{ goto: open(T.record) }, { clear: T.required }, ...firstStep, { wait: 1500 }],
-          { present: [FORM] },
-        ),
-      );
-    rules(() => [], [{ goto: open(T.record) }]);
-    if (full && T.plugins)
-      for (const stage of PLUGIN_STAGES)
-        out.push(
-          scenario(
-            `basic-form/${idSuffix(`plugin-error-update-${stage}`)}`,
-            { ...parts, state: `plugin-error-update-${stage}` },
-            [
-              { goto: open(T.record) },
-              { fill: '#pqvd_text', value: `plugin-fail-update-${stage}` },
-              ...submit,
-              { wait: { navigation: true } },
-            ],
-            {},
-          ),
-        );
-    // The live portal serves the record from its read cache for a few seconds after the save (pre-save values 3 s
-    // later; the plugin's write showed after 4 s and a navigation), so the reload waits 6 s and expects the plugin's text.
-    // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
-    // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
-    const mutate = [
-      { goto: open(T.record) },
-      { fill: '#pqvd_ticker', value: '  mut  ' },
-      { fill: '#pqvd_textarea', value: 'mutate-me' },
-      ...submit,
-      { wait: { navigation: true } },
-    ];
-    if (full && T.plugins)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('plugin-mutation')}`,
-          { ...parts, state: 'plugin-mutation' },
-          [...mutate, { wait: 6000 }, ...clearCache, { goto: open(T.record) }, { wait: 1500 }],
-          { present: [FORM, "textarea#pqvd_textarea:has-text('mutated by plugin')"] },
-          { watch: ['pqvd_ticker', 'pqvd_textarea'] },
-        ),
-      );
-    if (full && T.plugins)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('plugin-mutation-postback')}`,
-          { ...parts, state: 'plugin-mutation-postback' },
-          mutate,
-          { present: [FORM] },
-          { watch: ['pqvd_ticker', 'pqvd_textarea'] },
-        ),
-      );
-    if (full && T.lookup)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('lookup-dialog-open')}`,
-          { ...parts, state: 'lookup-dialog-open' },
-          [
-            { goto: open(T.record) },
-            { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { wait: 1500 },
-          ],
-          { present: ['.modal'] },
-        ),
-      );
-    if (full && T.lookup)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('lookup-search')}`,
-          { ...parts, state: 'lookup-search' },
-          [
-            { goto: open(T.record) },
-            { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { fill: '.modal.in input.query, .modal.show input.query', value: '*Other' },
-            { press: '.modal.in input.query, .modal.show input.query', key: 'Enter' },
-            { wait: 1500 },
-          ],
-          { present: ['.modal'] },
-        ),
-      );
-    if (full && T.lookup)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('lookup-select')}`,
-          { ...parts, state: 'lookup-select' },
-          [
-            { goto: open(T.record) },
-            { click: `button.launchentitylookup[aria-label*='${T.lookup}']` },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { wait: 1500 },
-            { click: '.modal.in table tbody tr:nth-child(2), .modal.show table tbody tr:nth-child(2)' },
-            { click: '.modal.in button.primary, .modal.show button.primary' },
-            { wait: 1000 },
-          ],
-          { present: [FORM] },
-          { watch: ['pqvd_contactid_name'] },
-        ),
-      );
-    if (full && T.lookup)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('lookup-clear')}`,
-          { ...parts, state: 'lookup-clear' },
-          [{ goto: open(T.record) }, { click: `button.clearlookupfield[aria-label*='${T.lookup}']` }, { wait: 800 }],
-          { present: [FORM] },
-          { watch: ['pqvd_contactid_name'] },
-        ),
-      );
-    if (full && T.notes)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('note-add')}`,
-          { ...parts, state: 'note-add' },
-          [
-            { goto: open(T.record) },
-            { wait: { selector: 'a.addnote:visible, .entity-notes .add-note:visible', state: 'visible' } },
-            { click: 'a.addnote:visible, .entity-notes .add-note:visible' },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { fill: '.modal.in textarea, .modal.show textarea', value: 'note added by baseline' },
-            {
-              click:
-                '.modal.in button.primary, .modal.show button.primary, .modal.in .btn-primary, .modal.show .btn-primary',
-            },
-            { wait: 2500 },
-          ],
-          { present: [FORM] },
-        ),
-      );
-    // Form actions (basic form settings): the delete dialog opens and stays open; activate/deactivate post without a
-    // dialog when the settings require no confirmation (the fixture reset restores the record's state).
-    if (cites(record, 'pp.basicform.action.delete'))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('delete-dialog')}`,
-          { ...parts, state: 'delete-dialog' },
-          [
-            { goto: open(T.record) },
-            { click: 'button.delete-link' },
-            { wait: { selector: '.modal-delete.in, .modal-delete.show', state: 'visible' } },
-            { wait: 1000 },
-          ],
-          { present: ['.modal-delete'] },
-        ),
-      );
-    // State actions run on a row reserved for this variant (T.actionRecords, deactivated in the fixture): the portal's
-    // record cache would otherwise serve one variant's state change to the next capture of a shared record.
-    // The reset restores the row's inactive state in Dataverse, but the portal kept serving the state the previous scenario
-    // left (deactivate found item11 active on live and inactive on Mirage, so only Mirage clicked Activate): both
-    // state scenarios clear the portal cache first, so both sides start from the fixture's inactive row.
-    const own = T.actionRecords?.[context.actionSlot?.get(record.path) ?? 0] ?? T.inactive;
-    if (cites(record, 'pp.basicform.action.activate'))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('activate')}`,
-          { ...parts, state: 'activate' },
-          [...clearCache, { goto: open(own) }, { click: 'button.activate-link' }, { wait: 3000 }],
-          {},
-        ),
-      );
-    if (cites(record, 'pp.basicform.action.deactivate'))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('deactivate')}`,
-          { ...parts, state: 'deactivate' },
-          [
-            ...clearCache,
-            { goto: open(own) },
-            { click: 'button.activate-link', optional: true },
-            { wait: 3000 },
-            { click: 'button.deactivate-link' },
-            { wait: 3000 },
-          ],
-          {},
-        ),
-      );
-    if (cites(record, 'pp.basicform.action.create-related-record'))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('create-related-dialog')}`,
-          { ...parts, state: 'create-related-dialog' },
-          [
-            { goto: open(T.record) },
-            { click: 'button.create-related-record-link' },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { wait: 2500 },
-          ],
-          { present: ['.modal'] },
-        ),
-      );
-    // Subgrid associate (lookup dialog) and disassociate (the first row's action menu; no confirmation configured).
-    for (const meta of metadata.filter((m) => cites(m, 'pp.bfmeta.subgrid.action.associate')))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('associate-dialog')}`,
-          { ...parts, state: 'associate-dialog' },
-          [
-            { goto: open(T.record) },
-            { click: `#${meta.name} a.action` },
-            { wait: { selector: MODAL, state: 'visible' } },
-            { wait: 2500 },
-          ],
-          { present: ['.modal'] },
-        ),
-      );
-    for (const meta of metadata.filter((m) => cites(m, 'pp.bfmeta.subgrid.action.disassociate')))
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('disassociate')}`,
-          { ...parts, state: 'disassociate' },
-          [
-            { goto: open(T.record) },
-            { click: `#${meta.name} tr[data-id] button[aria-label='action menu']` },
-            { wait: 500 },
-            { click: `#${meta.name} tr[data-id] a.disassociate-link` },
-            { wait: 3000 },
-          ],
-          { present: [FORM] },
-        ),
-      );
-    // A lookup with a form for create offers "New" in its dialog, which opens the create form dialog.
-    for (const meta of metadata.filter((m) => cites(m, 'pp.bfmeta.attribute.lookup.formforcreate'))) {
-      const launch = [
-        { goto: open(T.record) },
-        { click: `.control[data-logical-name='${meta.name}'] button.launchentitylookup` },
-        { wait: { selector: within(`#${meta.name}_lookupmodal`), state: 'visible' } },
-        { wait: 1500 },
-      ];
-      out.push(
-        scenario(`basic-form/${idSuffix('lookup-dialog-open')}`, { ...parts, state: 'lookup-dialog-open' }, launch, {
-          present: ['.modal'],
-        }),
-      );
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('lookup-create-dialog')}`,
-          { ...parts, state: 'lookup-create-dialog' },
-          [...launch, { click: `#${meta.name}_lookupmodal button.new-value` }, { wait: 2500 }],
-          { present: ['.modal'] },
-        ),
-      );
-    }
-    if (personas)
-      for (const persona of ['reader', 'contact-scope', 'account-scope', 'parent-scope', 'none', 'anonymous'])
-        out.push(
-          scenario(
-            `basic-form/${idSuffix('permission', persona)}`,
-            { ...parts, persona, state: 'permission' },
-            [{ goto: open(T.record) }],
-            { absent: persona === 'anonymous' ? [] : SIGN_IN },
-          ),
-        );
-    if (personas)
-      out.push(
-        scenario(
-          `basic-form/${idSuffix('contact-scope-foreign', 'contact-scope')}`,
-          { ...parts, persona: 'contact-scope', state: 'contact-scope-foreign' },
-          [{ goto: open(T.foreign) }],
-          {},
-        ),
-      );
-  } else {
-    // A deactivated basic form record renders no form on live: whatever the page shows is the evidence.
-    const inactiveForm = cites(record, 'pp.basicform.statecode');
-    out.push(
-      scenario(
-        `basic-form/${idSuffix('read-only')}`,
-        { ...parts, state: 'read-only' },
-        [{ goto: open(T.record) }],
-        inactiveForm ? {} : { present: [FORM] },
-      ),
-    );
-    if (personas)
-      for (const persona of ['reader', 'contact-scope', 'account-scope', 'parent-scope', 'none', 'anonymous'])
-        out.push(
-          scenario(
-            `basic-form/${idSuffix('read-only', persona)}`,
-            { ...parts, persona, state: 'read-only' },
-            [{ goto: open(T.record) }],
-            {},
-          ),
-        );
-  }
+    addBasicFormEditCore(state);
+    addBasicFormEditPlugins(state);
+    addBasicFormEditLookups(state);
+    addBasicFormEditActions(state);
+    addBasicFormEditSubgrids(state);
+    addBasicFormEditPermissions(state);
+  } else addBasicFormReadOnlyScenarios(state);
   return out;
 }
 
-function listScenarios(record, project = {}) {
+/* NOSONAR */ function listScenarios(record, project = {}) {
   const out = [];
   // A list filtered by the signed-in contact's account shows rows only for the persona whose contact has one.
   const editor = cites(record, 'pp.list.filteraccount')
@@ -807,106 +958,10 @@ function listScenarios(record, project = {}) {
     );
   // The OData feed is a document of its own under /_odata/<entity set name>.
   if (record.odataEntitySet) s('feed', [{ goto: `/_odata/${record.odataEntitySet}` }], {});
-  if (/modal/i.test(record.variation ?? '')) {
-    s(
-      'modal-details',
-      [
-        { goto: page },
-        { wait: 1500 },
-        { click: 'tr .details-link, tr a.details-link, tr .launch-modal' },
-        { wait: { selector: MODAL, state: 'visible' } },
-        { wait: 2500 },
-      ],
-      { present: ['.modal'] },
-    );
-    s(
-      'modal-create',
-      [
-        { goto: page },
-        { wait: 1500 },
-        { click: '.toolbar a.create-action, a.create-action, .btn.create-action' },
-        { wait: { selector: MODAL, state: 'visible' } },
-        { wait: 2500 },
-      ],
-      { present: ['.modal'] },
-    );
-    s(
-      'modal-edit',
-      [
-        { goto: page },
-        { wait: 1500 },
-        { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" },
-        { wait: 500 },
-        { click: 'tr .dropdown-menu .edit-link, tr .dropdown-menu a.edit-link' },
-        { wait: { selector: MODAL, state: 'visible' } },
-        { wait: 2500 },
-      ],
-      { present: ['.modal'] },
-    );
-    s(
-      'modal-delete',
-      [
-        { goto: page },
-        { wait: 1500 },
-        { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" },
-        { wait: 500 },
-        { click: 'tr .dropdown-menu .delete-link, tr .dropdown-menu a.delete-link' },
-        { wait: { selector: MODAL, state: 'visible' } },
-        { wait: 1000 },
-      ],
-      { present: ['.modal'] },
-    );
-  }
+  if (/modal/i.test(record.variation ?? '')) addListModalScenarios(s, page);
   // Each filter state needs the filter type the list's definition declares (the horizontal list carries only the text filter).
   const filter = (id) => cites(record, id);
-  if (filter('pp.listfilter.definition')) {
-    if (filter('pp.listfilter.text'))
-      s(
-        'filter-text',
-        [
-          { goto: page },
-          { wait: 1500 },
-          { fill: ".entitylist-filter input[type='text'], .filter-text input", value: '*Alpha' },
-          { click: ".entitylist-filter button[type='submit'], .filter-submit, button:has-text('Apply')" },
-          { wait: 2000 },
-        ],
-        { present: [grid] },
-      );
-    if (filter('pp.listfilter.visualization.dropdown'))
-      s(
-        'filter-dropdown',
-        [
-          { goto: page },
-          { wait: 1500 },
-          { select: '.entitylist-filter select', label: 'Beta' },
-          { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
-          { wait: 2000 },
-        ],
-        { present: [grid] },
-      );
-    if (filter('pp.listfilter.visualization.checkbox'))
-      s(
-        'filter-checkbox',
-        [
-          { goto: page },
-          { wait: 1500 },
-          { check: ".entitylist-filter input[type='checkbox']" },
-          { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
-          { wait: 2000 },
-        ],
-        { present: [grid] },
-      );
-    s(
-      'filter-reset',
-      [
-        { goto: page },
-        { wait: 1500 },
-        { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" },
-        { wait: 2000 },
-      ],
-      { present: [grid] },
-    );
-  }
+  addListFilterScenarios(s, filter, page, grid);
   if (personaPage(record, project))
     for (const persona of ['reader', 'contact-scope', 'account-scope', 'parent-scope', 'none', 'anonymous'])
       s('permission', [{ goto: page }, { wait: 1500 }], { absent: persona === 'anonymous' ? [] : SIGN_IN }, persona);
@@ -984,14 +1039,10 @@ function pageScenarios(record, manifest) {
   const out = [];
   const rule = manifest.records.find((r) => r.kind === 'webpagerule' && r.path === record.path);
   const template = manifest.records.find((r) => r.kind === 'pagetemplate' && r.path === record.path);
-  const parts = {
-    component: 'page',
-    variation: rule
-      ? `${record.name}: ${rule.variation}`
-      : template
-        ? `${record.name}: ${template.variation}`
-        : record.name,
-  };
+  let variation = record.name;
+  if (rule) variation = `${record.name}: ${rule.variation}`;
+  else if (template) variation = `${record.name}: ${template.variation}`;
+  const parts = { component: 'page', variation };
   const expectText = record.kind === 'webfile' ? {} : { text: [record.name] };
   if (!rule) {
     out.push(
@@ -1136,7 +1187,7 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

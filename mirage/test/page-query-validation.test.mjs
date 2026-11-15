@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 import { observedPageQueryValidation } from '../lib/page-query-validation.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const observed = { requestValidation: 'aspnet-query', evidence: 'invented-loopback/query-rejection.json' };
 
@@ -44,10 +44,10 @@ test('query validation configuration requires site evidence and a known mode', (
 });
 
 async function start(t, options) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-query-validation-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-query-validation-'));
   ownedFixture(t).remove(async () => {
-    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory, { directChild: true });
+    await fs.rm(physical, { recursive: true, force: true });
   });
   const files = {
     'website.yml': 'adx_websiteid: query-site\nadx_name: Invented query site',

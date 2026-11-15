@@ -24,6 +24,21 @@ The native bridge accepts supported single-field bindings, keeps the original fo
 
 Native type groups use the exported FormXml parameter type when available. An unresolved group containing incompatible types produces a diagnostic instead of choosing the first declaration. Bound parameter attributes carry available source column names, labels, required level, length, numeric bounds, precision and its source, format, date behavior, targets, options and defaults. Unavailable metadata is omitted. Date outputs preserve the native form's seven fractional digits and its date/time behavior. These source-backed attributes do not by themselves establish identical native Power Pages context values or formatting.
 
+## Model-driven dataset sizing
+
+A trusted dataset component on a model-driven subgrid can call
+`context.mode.trackContainerResize(true)` in `init`. The first context reports
+`allocatedWidth` and `allocatedHeight` as `-1`. During `updateView`, tracking
+provides the container width in pixels; height remains unconstrained (`-1`),
+following the [model-driven sizing contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/mode/trackcontainerresize).
+Width changes trigger `updateView` with `layout` in `updatedProperties`.
+Pending dataset updates retain their change markers when coalesced with layout.
+Disabling tracking restores width to `-1` and disconnects the resize observer;
+component destruction and initialization/render failures also disconnect it.
+Repeating the current tracking setting does not schedule another update or replace
+the observer, including when called during `updateView`.
+A retained context cannot restart observation after destruction or failure.
+
 ## Manifest feature declarations
 
 Import retains each `uses-feature` declaration's attributes and source order. The [Power Pages component contract](https://learn.microsoft.com/en-us/power-pages/configure/component-framework#unsupported-code-components-in-power-pages) excludes required feature declarations. Mirage reports `PCF_HOST_UNSUPPORTED` with reason `PCF_FEATURE_DECLARATIONS_UNSUPPORTED` and the individual declarations before emitting a mount or loading their bundles. XML Boolean values `true` and `1` are required; `false` and `0` are optional. Missing names or missing/invalid Boolean attributes receive `PCF_FEATURE_DECLARATION_INVALID`, a local diagnostic for malformed declarations.

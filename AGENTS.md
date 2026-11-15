@@ -40,8 +40,25 @@ Runtime changes need relevant regressions. Run `npm run validate`. Do not run a 
 
 For CI fixes, reproduce the failing operation and add a regression that exercises its failure mode. Explicit full validation must execute fresh; failed validation revokes earlier receipts. Report local results separately from hosted checks, and confirm the required CI and security gates on the final pushed PR head before claiming the PR is green. Preserve every applicable lane and functional assertion.
 
-Browser document load does not establish local interception readiness. Wait for observed local application before exercising post-startup edits, and cover edits during startup separately. Use controlled protocol or event gates to reproduce ordering failures instead of increasing sleeps or retrying until a test passes.
+Browser document load does not establish local interception readiness. Wait for observed local application before exercising post-startup edits, and cover edits during startup separately. Use controlled protocol or event gates to reproduce ordering failures instead of increasing sleeps or retrying until a test passes. The browser test bootstrap removes Playwright's default action, navigation, launch and connectOverCDP timeouts in every browser test process (the browser lanes and the processes they start); pass a timeout only on the step a test asserts.
 
 Verify the PR's effective merge state as well as job results. `gh pr checks <number> --required` and a successful historical check-run list can disagree with the PR panel when a newer workflow omits a required context. Run `npm run check:pr -- --pr <number>` and require the pushed HEAD to match, both gates to pass, no pending checks, and GitHub's merge state to be `CLEAN`. A `BLOCKED` or `UNKNOWN` PR is not a green result. Keep the required `CI gate` name stable across PR events.
 
 Every PR must report all CodeQL configurations present on main, including unchanged languages and documentation-only changes. Successful workflow jobs and zero open findings do not prove merge readiness when required analysis configurations are missing.
+
+## Test kinds
+
+Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit, local validation and CI run `scripts/check-test-tags.mjs` on changed test files.
+
+- `parity` assertions are replay cases: `scripts/parity-cases.mjs build` writes each case from two or more
+  recorded oracle captures, and `mirage/test/parity-replay.test.mjs` replays them. A failing replay case means
+  the code is wrong: fix the code.
+- Never edit a case file by hand. A recorded case changes only through `build` with new captures and a `history`
+  entry. Never add a known gap for an already recorded case to make it pass: fix the code. Never retag or remove an
+  existing parity test or case, except with an explicit user request naming the exact change, recorded as a
+  retirement entry in `scripts/parity-retirements.json`.
+- Hand-written tests cannot be newly tagged `parity`. Evidence linked by hand, or a single capture, is
+  `observation`; a local model without proof is `unproven` and is never presented as parity.
+- Never weaken a `security` test without explicit user approval. Documentation, memory, another tool, a forum
+  post or an assumption is not proof.
+- Do not tag a whole file `parity` because one test is; split or tag per test.

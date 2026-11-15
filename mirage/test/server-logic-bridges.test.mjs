@@ -1,5 +1,6 @@
 // Server objects in exported server logic, through runExportedServerLogic (the production caller), not the bare worker:
 // environment variables, Dataverse.InvokeCustomApi, CloudFlow.TriggerAsync, HttpClient (loopback contract) and Logger.
+// @test-kind contract: exported server logic, custom API bridges and connector envelopes over invented fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,14 +12,18 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
 import { organizationCustomApi, runExportedServerLogic } from '../lib/exported-operations.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777730';
 const CONTACT = '77777777-7777-4777-8777-777777777731';
 const portal = { settings: {}, website: { id: SITE, name: 'Invented site' } };
+// These tests are about the bridges, not the local 5 s bound: each run has the platform's default limit
+// (ServerLogic/TimeoutInSeconds 120), so a loaded machine cannot end it early.
+const PLATFORM_DEFAULT_TIMEOUT_MS = 120_000;
 const identity = { id: CONTACT, contactId: CONTACT, roleIds: ['77777777-7777-4777-8777-777777777732'] };
 
 async function logic(t, code) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-logic-bridges-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'server-logic-bridges-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'logic.js'), code);
   return { name: 'invented', file: await fs.realpath(path.join(dir, 'logic.js')) };
@@ -32,11 +37,12 @@ const run = async (t, code, options = {}) =>
       identity,
       method: 'POST',
       operation: 'post',
-      timeout: 4000,
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
       ...options,
     }),
   );
 
+// @test-kind security: server code never receives a Secret environment variable value
 test('Server.EnvironmentVariable.get reads the store effective values when the caller passes none; a Secret answers null', async (t) => {
   const state = emptyState();
   state.tables.environmentvariabledefinition = [
@@ -69,6 +75,40 @@ test('Server.EnvironmentVariable.get reads the store effective values when the c
   assert.doesNotMatch(JSON.stringify(diagnostics), /vault/);
 });
 
+test('a custom API function parameter keeps commas inside its quoted literal', async (t) => {
+  const store = await new DataStore({ state: emptyState() }).init();
+  const handler = async (context) => ({ outputs: { Result: `echo:${context.inputs.Text}` } });
+  const organization = await createOrganizationRuntime({
+    store,
+    extensions: await sourceOrganizationExtensions({ customApis: new Map([['fx_echo', { handler }]]) }),
+    settings: dataverseSettings({ enabled: false }),
+  });
+  ownedFixture(t).add(() => organization.close());
+  const api = await store.create(
+    'customapi',
+    { uniquename: 'fx_Echo', name: 'Echo', bindingtype: 0, isfunction: true },
+    { admin: true },
+  );
+  const customApiid = { id: api.customapiid, logical_name: 'customapi' };
+  await store.create(
+    'customapirequestparameter',
+    { uniquename: 'Text', name: 'Text', type: 10, isoptional: false, customapiid: customApiid },
+    { admin: true },
+  );
+  await store.create(
+    'customapiresponseproperty',
+    { uniquename: 'Result', name: 'Result', type: 10, customapiid: customApiid },
+    { admin: true },
+  );
+  const system =
+    store.tableRows('systemuser').find((row) => /SYSTEM/i.test(String(row.fullname ?? row.domainname ?? ''))) ??
+    store.tableRows('systemuser')[0];
+  const invoke = organizationCustomApi(organization, { principal: system.systemuserid });
+  const response = await invoke({ method: 'GET', url: "fx_Echo(Text='a,b')" });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.Result, 'echo:a,b');
+});
+
 test('Dataverse.InvokeCustomApi runs the custom API through the organization', async (t) => {
   const store = await new DataStore({ state: emptyState() }).init();
   const callers = [];
@@ -81,7 +121,7 @@ test('Dataverse.InvokeCustomApi runs the custom API through the organization', a
     extensions: await sourceOrganizationExtensions({ customApis: new Map([['fx_echo', { handler }]]) }),
     settings: dataverseSettings({ enabled: false }),
   });
-  t.after(() => organization.close());
+  ownedFixture(t).add(() => organization.close());
   await (async () => {
     const api = await store.create(
       'customapi',
@@ -122,6 +162,7 @@ test('Dataverse.InvokeCustomApi runs the custom API through the organization', a
   assert.deepEqual([unwired.StatusCode, unwired.IsSuccessStatusCode, unwired.ServerError], [501, false, true]);
 });
 
+// @test-kind security: a caller without the web role cannot trigger a cloud flow
 test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including the web-role refusal and 202', async (t) => {
   const calls = [];
   const triggerFlow = async ({ flowId, payload, identity: caller }) => {
@@ -149,12 +190,14 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
       identity: { id: CONTACT, contactId: CONTACT, roleIds: [] },
       method: 'POST',
       operation: 'post',
+      timeout: PLATFORM_DEFAULT_TIMEOUT_MS,
       services: { triggerFlow },
     }),
   )[0];
   assert.deepEqual([refused.StatusCode, refused.IsSuccessStatusCode], [403, false]);
 });
 
+// @test-kind security: server code can reach only declared loopback hosts
 test('HttpClient reaches a declared loopback rewrite and refuses any other host with the envelope; Logger writes with the operation id', async (t) => {
   const server = http.createServer((req, res) => {
     let body = '';
@@ -167,7 +210,7 @@ test('HttpClient reaches a declared loopback rewrite and refuses any other host 
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const local = `http://127.0.0.1:${server.address().port}/`;
   const logs = [],
     diagnostics = [];

@@ -41,7 +41,7 @@ An upload whose extension is in the organization's blocked list answers 400 `Att
 
 ## Adapter B: Graph and SharePoint REST contract fixture
 
-Module: `mirage/lib/sharepoint-contract.mjs`. Capability record `sharePointContractDescriptor`: level `contract`, requires `connection:sharepoint`. Exports `createSharePointContractRoutes({ fixtures, diagnostic })`, `createSharePointFixtureServer({ fixtures, diagnostic, host })`, `dispatchSharePointRoute(routes, req)`, `validateSharePointFixtures(value)` and `SHAREPOINT_CONTRACT_OPERATIONS`.
+Module: `mirage/lib/sharepoint-contract.mjs`. Capability record `sharePointContractDescriptor`: level `contract`, requires `connection:sharepoint`. Exports `createSharePointContractRoutes({ fixtures, diagnostic })`, `createSharePointFixtureServer({ fixtures, diagnostic, host, traces })` (with a trace store, each request is an `http` trace root on host `sharepoint` that joins the caller's trace headers and records the Graph error of a refused request), `dispatchSharePointRoute(routes, req)`, `validateSharePointFixtures(value)` and `SHAREPOINT_CONTRACT_OPERATIONS`.
 
 **Behaviour.** Routes answer from an in-memory store seeded by `fixtures`:
 

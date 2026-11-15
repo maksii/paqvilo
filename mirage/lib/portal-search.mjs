@@ -48,12 +48,11 @@ const html = (value) =>
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
-const text = (value) =>
-  value == null
-    ? ''
-    : typeof value === 'object'
-      ? String(value.name ?? value.label ?? value.Name ?? value.value ?? '')
-      : String(value);
+const text = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'object') return String(value.name ?? value.label ?? value.Name ?? value.value ?? '');
+  return String(value);
+};
 const searchError = (message, code) => Object.assign(new Error(message), { status: 501, code });
 
 /** Query terms: plain tokens, with a trailing `*` kept as a prefix marker; operators and Lucene syntax are dropped. */
@@ -62,7 +61,7 @@ function queryTerms(query) {
     .split(/\s+/)
     .flatMap((word) => {
       if (/^(?:AND|OR|NOT|&&|\|\|)$/.test(word)) return [];
-      const prefix = /\*$/.test(word);
+      const prefix = word.endsWith('*');
       const parts = searchTokens(word.replace(/^[+\-!]/, ''));
       return parts.map((part, index) => ({ term: part, prefix: prefix && index === parts.length - 1 }));
     });
@@ -134,27 +133,59 @@ function fragmentOf(values, terms) {
     .join('');
 }
 
-/**
- * Runs a portal search for `identity`: { approximate_total_hits, page, page_size, results }. Each result carries entity, fragment,
- * id, logical_name, number, score, title and url (the searchindex object). Unavailable search answers no results and a diagnostic.
- */
-export async function portalSearch({
-  portal,
-  store,
-  readProvider,
-  metadata,
-  config,
-  identity,
-  query = '',
-  filter = null,
-  logicalNames = null,
-  page = 1,
-  pageSize = 10,
-  diagnostic = () => {},
-}) {
-  page = Math.max(1, Math.floor(Number(page)) || 1);
-  pageSize = Math.max(1, Math.min(Math.floor(Number(pageSize)) || 10, 1000));
-  const empty = { approximate_total_hits: 0, page, page_size: pageSize, results: [] };
+function searchRowHit(row, logicalName, mapping, columns, clauses, terms, portal) {
+  if (!clauses.every(({ required, column, value }) => (text(row[column]).toLowerCase() === value) === required))
+    return null;
+  const values = columns.map((column) => text(row[column])).filter(Boolean);
+  const tokens = new Set(values.flatMap(searchTokens));
+  const score = terms.filter(({ term, prefix }) =>
+    prefix ? [...tokens].some((token) => token.startsWith(term)) : tokens.has(term),
+  ).length;
+  if (terms.length && !score) return null;
+  const id = canonical(row[mapping.idColumn]);
+  return {
+    entity: { ...row, logical_name: logicalName },
+    fragment: terms.length ? fragmentOf(values, terms) : null,
+    id,
+    logical_name: logicalName,
+    score,
+    title: text(row[columns[0]]),
+    url: resultUrl(portal, logicalName, id),
+  };
+}
+
+function searchViewModel(logicalName, view, mapping) {
+  const eligible =
+    logicalName === 'knowledgearticle'
+      ? `<filter type="and"><condition attribute="statecode" operator="eq" value="${KNOWLEDGE_PUBLISHED}"/><filter type="or"><condition attribute="isinternal" operator="eq" value="0"/><condition attribute="isinternal" operator="null"/></filter></filter>`
+      : '';
+  const fetchXml = String(view.fetchXml ?? '').replace(
+    /(<entity\b[^>]*>)/i,
+    `$1<attribute name="${mapping.idColumn}"/>${eligible}`,
+  );
+  return {
+    kind: 'view',
+    entity: logicalName,
+    idColumn: mapping.idColumn,
+    primaryName: mapping.nameColumn,
+    views: [{ ...view, fetchXml }],
+    settings: {},
+    pageSize: 5000,
+    search: { enabled: false },
+    userFilters: {},
+    filter: {},
+  };
+}
+
+function appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { terms, portal }) {
+  const columns = result.layout.Columns.filter((column) => column.Type === 0).map((column) => column.LogicalName);
+  for (const row of rows) {
+    const hit = searchRowHit(row, logicalName, mapping, columns, clauses, terms, portal);
+    if (hit) hits.push(hit);
+  }
+}
+
+function searchUnavailable(portal, store, empty, diagnostic) {
   if (!flag(setting(portal, 'Search/Enabled'), true)) {
     diagnostic({
       code: 'PORTAL_SEARCH_DISABLED',
@@ -174,6 +205,42 @@ export async function portalSearch({
     });
     return { ...empty, unavailable: 'dataverse-search-off' };
   }
+  return null;
+}
+
+function noIndexedSearchTables(portal, empty, diagnostic) {
+  diagnostic({
+    code: 'PORTAL_SEARCH_UNAVAILABLE',
+    severity: 'warning',
+    component: 'searchindex',
+    message: `No table has a '${setting(portal, 'Search/IndexQueryName') ?? 'Portal Search'}' view that the site indexes, so global search returns no results.`,
+  });
+  return { ...empty, unavailable: 'no-indexed-tables' };
+}
+
+/**
+ * Runs a portal search for `identity`: { approximate_total_hits, page, page_size, results }. Each result carries entity, fragment,
+ * id, logical_name, number, score, title and url (the searchindex object). Unavailable search answers no results and a diagnostic.
+ */
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function portalSearch({
+  portal,
+  store,
+  readProvider,
+  metadata,
+  config,
+  identity,
+  query = '',
+  filter = null,
+  logicalNames = null,
+  page = 1,
+  pageSize = 10,
+  diagnostic = () => {},
+}) {
+  page = Math.max(1, Math.floor(Number(page)) || 1);
+  pageSize = Math.max(1, Math.min(Math.floor(Number(pageSize)) || 10, 1000));
+  const empty = { approximate_total_hits: 0, page, page_size: pageSize, results: [] };
+  const unavailable = searchUnavailable(portal, store, empty, diagnostic);
+  if (unavailable) return unavailable;
   const tables = indexedSearchTables(portal, metadata);
   const wanted =
     logicalNames == null || logicalNames === ''
@@ -184,15 +251,7 @@ export async function portalSearch({
             .map((name) => name.trim().toLowerCase())
             .filter(Boolean),
         );
-  if (!tables.size) {
-    diagnostic({
-      code: 'PORTAL_SEARCH_UNAVAILABLE',
-      severity: 'warning',
-      component: 'searchindex',
-      message: `No table has a '${setting(portal, 'Search/IndexQueryName') ?? 'Portal Search'}' view that the site indexes, so global search returns no results.`,
-    });
-    return { ...empty, unavailable: 'no-indexed-tables' };
-  }
+  if (!tables.size) return noIndexedSearchTables(portal, empty, diagnostic);
   const terms = queryTerms(query);
   const clauses = filterClauses(filter);
   const hits = [];
@@ -202,26 +261,7 @@ export async function portalSearch({
     // The record id is read with the view's columns (a view's fetch need not select it). Knowledge articles are searchable only
     // when Published and not Internal, whatever the view selects (Learn power-pages search overview, "can't be modified"): the
     // store row decides, never a projected column. A row without isinternal reads as the platform default No.
-    const eligible =
-      logicalName === 'knowledgearticle'
-        ? `<filter type="and"><condition attribute="statecode" operator="eq" value="${KNOWLEDGE_PUBLISHED}"/><filter type="or"><condition attribute="isinternal" operator="eq" value="0"/><condition attribute="isinternal" operator="null"/></filter></filter>`
-        : '';
-    const fetchXml = String(view.fetchXml ?? '').replace(
-      /(<entity\b[^>]*>)/i,
-      `$1<attribute name="${mapping.idColumn}"/>${eligible}`,
-    );
-    const model = {
-      kind: 'view',
-      entity: logicalName,
-      idColumn: mapping.idColumn,
-      primaryName: mapping.nameColumn,
-      views: [{ ...view, fetchXml }],
-      settings: {},
-      pageSize: 5000,
-      search: { enabled: false },
-      userFilters: {},
-      filter: {},
-    };
+    const model = searchViewModel(logicalName, view, mapping);
     // Every page of the view query (the grid's own paging), so the total counts the whole table.
     const rows = [];
     let result;
@@ -236,27 +276,7 @@ export async function portalSearch({
       if (!result.moreRecords || !result.rows?.length) break;
     }
     if (result.accessDenied) continue;
-    const columns = result.layout.Columns.filter((column) => column.Type === 0).map((column) => column.LogicalName);
-    for (const row of rows) {
-      if (!clauses.every(({ required, column, value }) => (text(row[column]).toLowerCase() === value) === required))
-        continue;
-      const values = columns.map((column) => text(row[column])).filter(Boolean);
-      const tokens = new Set(values.flatMap(searchTokens));
-      const score = terms.filter(({ term, prefix }) =>
-        prefix ? [...tokens].some((token) => token.startsWith(term)) : tokens.has(term),
-      ).length;
-      if (terms.length && !score) continue;
-      const id = canonical(row[mapping.idColumn]);
-      hits.push({
-        entity: { ...row, logical_name: logicalName },
-        fragment: terms.length ? fragmentOf(values, terms) : null,
-        id,
-        logical_name: logicalName,
-        score,
-        title: text(row[columns[0]]),
-        url: resultUrl(portal, logicalName, id),
-      });
-    }
+    appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { terms, portal });
   }
   hits.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
   const results = hits
@@ -289,10 +309,12 @@ export async function renderPortalSearchPage({ portal, params, diagnostic = () =
     pageSize: 10,
   });
   const items = found.results
-    .map(
-      (result) =>
-        `<li data-logical-name="${html(result.logical_name)}">${result.url ? `<a href="${html(result.url)}">${html(result.title)}</a>` : html(result.title)}${result.fragment ? `<p>${result.fragment}</p>` : ''}</li>`,
-    )
+    .map((result) => {
+      const titleHtml = html(result.title);
+      const linkHtml = result.url ? `<a href="${html(result.url)}">${titleHtml}</a>` : titleHtml;
+      const fragmentHtml = result.fragment ? `<p>${result.fragment}</p>` : '';
+      return `<li data-logical-name="${html(result.logical_name)}">${linkHtml}${fragmentHtml}</li>`;
+    })
     .join('');
   const status =
     found.unavailable === 'disabled'

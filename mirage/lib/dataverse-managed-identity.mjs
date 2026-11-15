@@ -32,6 +32,7 @@ export function createManagedIdentityEndpoints({
   settings,
   origin,
   secretFile,
+  mode,
   randomBytes = nodeRandomBytes,
 }) {
   const identityHeader = randomBytes(24).toString('hex'); // per-run X-IDENTITY-HEADER value, published through env()
@@ -126,9 +127,13 @@ export function createManagedIdentityEndpoints({
     }));
   };
 
+  // The mode names one path: appservice answers /msi/token, imds and arc answer the IMDS path. Without a mode both answer.
+  const modePath = mode === 'appservice' ? APP_SERVICE_PATH : IMDS_PATH;
+  const pathServed = (pathname) => mode === undefined || pathname === modePath;
+
   // null when the request is not for a managed identity path (or uses a verb these endpoints do not take).
   const handle = (req) => {
-    if (req.method !== 'GET') return null;
+    if (req.method !== 'GET' || !pathServed(req.pathname)) return null;
     if (req.pathname === APP_SERVICE_PATH) return appService(req);
     if (req.pathname === IMDS_PATH) return imds(req);
     return null;

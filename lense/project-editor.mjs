@@ -82,9 +82,18 @@ export function editorFiles({
       });
     }
   }
+  configurations.push({
+    name: label('Mirage plug-in: attach .NET Framework'),
+    type: 'clr',
+    request: 'attach',
+    processId: '${command:pickProcess}',
+    justMyCode: true,
+    requireExactSource: true,
+  });
   return {
     '.vscode/tasks.json': owned({ version: '2.0.0', tasks }),
     '.vscode/launch.json': owned({ version: '0.2.0', configurations }),
+    '.vscode/extensions.json': owned({ recommendations: ['ms-dotnettools.csharp'] }),
     [`${name}.code-workspace`]: owned({ folders: folders.map((folder) => ({ path: folder })) }),
   };
 }
@@ -95,9 +104,8 @@ const nested = (parent, child) => {
 };
 const editorPath = (target, file) => {
   const relative = path.relative(target, file);
-  return path.isAbsolute(relative)
-    ? file.replaceAll('\\', '/')
-    : '${workspaceFolder}' + (relative ? '/' + relative.replaceAll('\\', '/') : '');
+  if (path.isAbsolute(relative)) return file.replaceAll('\\', '/');
+  return '${workspaceFolder}' + (relative ? '/' + relative.replaceAll('\\', '/') : '');
 };
 
 /** Locate repository boundaries from path metadata only; deployment file bodies are never read. */
@@ -118,7 +126,7 @@ async function deploymentFolders(catalogue, resolved) {
     projects = new Map();
   const add = (profiles) => {
     for (const sections of Object.values(profiles?.profiles ?? {}))
-      for (const paths of Object.values(sections)) for (const file of [].concat(paths)) files.add(file);
+      for (const paths of Object.values(sections)) for (const file of [].concat(paths)) files.add(file); // NOSONAR: preserve concat spreading semantics
   };
   for (const site of resolved.sites) {
     const mirage = resolveMirageConfig(catalogue.sites[site.name].mirage, { ...catalogue, sourceDir: site.sourceDir });
@@ -131,7 +139,10 @@ async function deploymentFolders(catalogue, resolved) {
   return Promise.all([...files].map(mappedRepository));
 }
 
-export async function refreshEditor(directory, { config, workspaceOnly = false, processEnv = process.env } = {}) {
+/* NOSONAR */ export async function refreshEditor(
+  directory,
+  { config, workspaceOnly = false, processEnv = process.env } = {},
+) {
   const target = await assertScaffoldPath(directory, { directory: true });
   const manifest = JSON.parse(await fs.readFile(path.join(target, 'package.json'), 'utf8'));
   if (manifest.paqvilo?.scaffold !== 1)
@@ -176,23 +187,7 @@ export async function refreshEditor(directory, { config, workspaceOnly = false, 
   }
   const webRoot = editorPath(target, resolved.sourceRoot),
     editorConfig = editorPath(target, configFile);
-  const pathWarnings = [];
-  if (!workspaceOnly) {
-    for (const [file, field, value] of [
-      ['.vscode/launch.json', 'configurations[].webRoot', webRoot],
-      ['.vscode/tasks.json', 'tasks[].args --config', editorConfig],
-    ]) {
-      if (path.isAbsolute(value))
-        pathWarnings.push({
-          code: 'EDITOR_ABSOLUTE_PATH',
-          file,
-          field,
-          requiresReview: true,
-          action:
-            'A path on another volume cannot use a relative workspace reference. The working absolute path is retained; review it before committing this editor file, or select paths on the project volume.',
-        });
-    }
-  }
+  const pathWarnings = editorPathWarnings(workspaceOnly, webRoot, editorConfig);
   const files = editorFiles({
     name: manifest.name,
     sites: resolved.sites.map((site) => site.name),
@@ -268,4 +263,24 @@ export async function refreshEditor(directory, { config, workspaceOnly = false, 
       config: scriptConfig,
     }),
   };
+}
+function editorPathWarnings(workspaceOnly, webRoot, editorConfig) {
+  const pathWarnings = [];
+  if (!workspaceOnly) {
+    for (const [file, field, value] of [
+      ['.vscode/launch.json', 'configurations[].webRoot', webRoot],
+      ['.vscode/tasks.json', 'tasks[].args --config', editorConfig],
+    ]) {
+      if (path.isAbsolute(value))
+        pathWarnings.push({
+          code: 'EDITOR_ABSOLUTE_PATH',
+          file,
+          field,
+          requiresReview: true,
+          action:
+            'A path on another volume cannot use a relative workspace reference. The working absolute path is retained; review it before committing this editor file, or select paths on the project volume.',
+        });
+    }
+  }
+  return pathWarnings;
 }

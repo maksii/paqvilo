@@ -1,3 +1,4 @@
+// @test-kind unproven: Local identity-provider protocol models; toolkit-only authority isolation and credential-storage policy tests are explicitly distinguished below.
 import assert from 'node:assert/strict';
 import {
   X509Certificate,
@@ -26,6 +27,7 @@ const PUBLIC_APP_ID = '6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e';
 const USER_OID = '0f1e2d3c-4b5a-4968-8778-6a5b4c3d2e1f';
 const APP_USER_OID = '1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9';
 const UNKNOWN_TENANT = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const UNKNOWN_CLIENT = '99999999-9999-4999-8999-999999999999';
 const TOKEN_V2 = `${ORIGIN}/${TENANT}/oauth2/v2.0/token`;
 const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
@@ -40,6 +42,8 @@ const rsa = () => generateKeyPairSync('rsa', { modulusLength: 2048 });
 const CLIENT_KEYS = rsa();
 const FEDERATED_KEYS = rsa();
 const STRANGER = rsa().privateKey;
+// One signing pair for the fixture authorities (createAuthority signingKey); the default per-authority key is tested apart.
+const AUTHORITY_KEYS = rsa();
 const SECRET_RECORD = hashSecret(SECRET);
 
 const TEST_USER = {
@@ -110,7 +114,13 @@ function fixture() {
       redirectUris: [REDIRECT],
     },
   ];
-  const auth = createAuthority({ tenantId: TENANT, applications: () => applications, users, clock: () => state.now });
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+  });
   return { applications, state, auth };
 }
 
@@ -185,6 +195,19 @@ test("JWKS publishes one RS256 key whose n and e verify the authority's tokens",
   const publicKey = createPublicKey({ key: { kty: keys[0].kty, n: keys[0].n, e: keys[0].e }, format: 'jwk' });
   assert.equal(verify('sha256', Buffer.from(`${head}.${body}`), publicKey, Buffer.from(signature, 'base64url')), true);
   assert.equal(JSON.parse(Buffer.from(head, 'base64url').toString('utf8')).kid, keys[0].kid);
+});
+
+// @test-kind security+contract: Each local simulator authority owns its signing key and refuses a sibling simulator token; this isolation policy is not an Entra key-management parity claim.
+test('every authority signs with its own key by default: another one refuses its tokens and publishes a different kid', () => {
+  const { applications } = fixture();
+  const authority = () =>
+    createAuthority({ tenantId: TENANT, applications: () => applications, users, clock: () => T0 });
+  const [first, second] = [authority(), authority()];
+  assert.notEqual(first.jwks().keys[0].kid, second.jwks().keys[0].kid);
+  const bearer = `Bearer ${call(first, ccForm()).body.access_token}`;
+  const opts = { origin: ORIGIN, tenantId: TENANT };
+  assert.equal(first.verifyBearer(bearer, opts).ok, true);
+  assert.deepEqual(second.verifyBearer(bearer, opts), { ok: false, reason: 'signature' });
 });
 
 test('OIDC v2 and v1 documents list the endpoints built from origin and tenant', () => {
@@ -274,6 +297,50 @@ test('a wrong client secret answers 401 invalid_client with AADSTS7000215', () =
 test('an unknown client answers 400 unauthorized_client with AADSTS700016', () => {
   const { auth } = fixture();
   const res = call(auth, ccForm({ client_id: '99999999-9999-4999-8999-999999999999' }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'unauthorized_client');
+  assert.deepEqual(res.body.error_codes, [700016]);
+  assert.match(res.body.error_description, /^AADSTS700016: /);
+});
+
+// @test-kind contract: Paqvilo's diagnostic for an unknown client id
+test('an unknown client reports its id and grant to onUnknownClient, never the secret', () => {
+  const { applications, state } = fixture();
+  const reported = [];
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+    onUnknownClient: (details) => reported.push(details),
+  });
+  const res = call(auth, ccForm({ client_id: UNKNOWN_CLIENT, client_secret: 'invented-secret' }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'unauthorized_client');
+  assert.deepEqual(res.body.error_codes, [700016]);
+  assert.match(res.body.error_description, /^AADSTS700016: /);
+  assert.deepEqual(reported, [{ clientId: UNKNOWN_CLIENT, grant: 'client_credentials' }]);
+  assert.equal(JSON.stringify(reported).includes('invented-secret'), false);
+});
+
+// @test-kind contract: Paqvilo's diagnostic for an unknown client id
+test('a throwing onUnknownClient leaves the unknown-client answer unchanged', () => {
+  const { applications, state } = fixture();
+  let calls = 0;
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+    onUnknownClient: () => {
+      calls += 1;
+      throw new Error('diagnostic sink failed');
+    },
+  });
+  const res = call(auth, ccForm({ client_id: UNKNOWN_CLIENT }));
+  assert.equal(calls, 1);
   assert.equal(res.status, 400);
   assert.equal(res.body.error, 'unauthorized_client');
   assert.deepEqual(res.body.error_codes, [700016]);
@@ -565,6 +632,34 @@ test('verifyBearer tolerates five minutes of clock skew after expiry', () => {
   assert.equal(auth.verifyBearer(`Bearer ${access}`, { origin: ORIGIN, tenantId: TENANT }).ok, true);
 });
 
+// @test-kind security: a bearer or assertion segment that does not decode to a JSON object is malformed input, refused without a server fault.
+test('a JWT whose header or claims segment is not a JSON object is refused as malformed', () => {
+  const { auth } = fixture();
+  const opts = { origin: ORIGIN, tenantId: TENANT };
+  for (const segment of [null, 5, 'text', []]) {
+    assert.deepEqual(auth.verifyBearer(`Bearer ${b64(segment)}.${b64({})}.x`, opts), {
+      ok: false,
+      reason: 'malformed',
+    });
+    assert.deepEqual(auth.verifyBearer(`Bearer ${b64({ alg: 'RS256' })}.${b64(segment)}.x`, opts), {
+      ok: false,
+      reason: 'malformed',
+    });
+  }
+  assert.deepEqual(auth.verifyBearer('Bearer bnVsbA.e30.x', opts), { ok: false, reason: 'malformed' });
+  const obo = (assertion) =>
+    call(auth, {
+      grant_type: JWT_BEARER,
+      ...DELEGATED_CLIENT,
+      requested_token_use: 'on_behalf_of',
+      assertion,
+      scope: `${ORIGIN}/user_impersonation`,
+    });
+  assert.equal(obo('bnVsbA.e30.x').status, 400);
+  assert.equal(obo(`${b64({ alg: 'RS256' })}.${b64(5)}.x`).status, 400);
+});
+
+// @test-kind security: Toolkit credential storage verifies its own salted hash and rejects a different secret; Microsoft token-service storage internals are outside this guarantee.
 test('hashSecret and verifySecret round trip and reject a mismatch', () => {
   const stored = hashSecret('invented-secret');
   assert.match(stored.hash, /^scrypt\$/);
@@ -574,6 +669,7 @@ test('hashSecret and verifySecret round trip and reject a mismatch', () => {
   assert.notEqual(hashSecret('invented-secret').hash, stored.hash);
 });
 
+// @test-kind security+contract: Compatibility with Paqvilo's legacy local hash format and bounds on its work factors are local persistence/security policy, not native identity-provider behavior.
 test('secret verification accepts legacy local hashes and rejects malformed work factors', () => {
   // Historical salted SHA-256 fixture; literal bytes avoid introducing a weak hash writer.
   const legacy = { salt: 'aW52ZW50ZWQtc2FsdA', hash: 'dsuPwGAtfFyufBsFuG9HsfrkwmzU3sG4kDuzD1710d0' };

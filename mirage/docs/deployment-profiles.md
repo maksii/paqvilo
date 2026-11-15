@@ -119,7 +119,7 @@ PUT /__sim/api/environment/profiles        # {"profile":"test","enabled":{"conne
 PUT /__sim/api/environment/profiles        # null removes the pin and reapplies configured defaults
 ```
 
-Mutations use the existing local `x-sim-csrf` protection. API clients can submit only registered
+Mutations need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`). API clients can submit only registered
 profile IDs and section flags, never arbitrary file paths. Environment status includes paths
 and counts, not file values. State exports still contain local simulated data; keep them under
 ignored `.paqvilo/`, and avoid storing production secrets in local deployment profiles.

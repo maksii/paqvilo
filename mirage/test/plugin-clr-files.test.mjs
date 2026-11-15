@@ -1,16 +1,17 @@
+// @test-kind contract: Paqvilo local CLR assembly snapshots: confined verified reads, owned host teardown and the step timeout fault
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { canonicalClrDirectory, readClrDependency, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   return fs.realpath(root);
 }
@@ -132,10 +133,10 @@ test('CLR opened-file read rejects a pathname replaced during reading without re
 });
 test(
   'Actual original CLR case-variant cache compiles once, runs verified snapshot bytes and removes snapshots after success, fault, timeout and nesting',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fixture(t),
-      sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      sdk = clrSdk(),
       source = path.join(root, 'Original.cs'),
       assembly = path.join(root, 'Original.dll'),
       cache = path.join(root, 'MixedCaseCache');
@@ -144,14 +145,7 @@ test(
       source,
       'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Original:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];if(target.GetAttributeValue<string>("title")=="fault")throw new InvalidPluginExecutionException("ordinary owned fault");if(target.GetAttributeValue<string>("title")=="timeout")System.Threading.Thread.Sleep(5000);if(target.GetAttributeValue<string>("title")=="nested"){var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var child=new Entity("widget");child["title"]="ordinary";service.Create(child);}target["title"]="saved by original";}}}',
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const user = '10000000-0000-0000-0000-000000000001',
       runtime = await prepareClrRuntime({
         trust: 'execute-local-assembly',
@@ -161,7 +155,6 @@ test(
         sdkRoot: path.dirname(sdk),
         sdkAssembly: path.basename(sdk),
         cacheRoot: cache.toLowerCase(),
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
         serviceProfile: {
           userId: user,
           evidence: 'Invented local file lifecycle regression',
@@ -218,8 +211,10 @@ test(
     try {
       await assert.rejects(store.create('widget', { title: 'timeout' }, { admin: true }), (error) => {
         assert.equal(error.code, 'LocalPluginTimeout');
-        assert.equal(error.status, 504);
-        return /timeout|deadline/i.test(error.message);
+        // The platform's unhandled timeout fault, as for a custom API (Learn: 2-minute plug-in limit, 0x80040224).
+        assert.equal(error.status, 400);
+        assert.equal(error.details?.innerCode, '0x80040224');
+        return /System\.TimeoutException: .* within the [\d.]+-second limit/.test(error.message);
       });
       assert.equal(store.snapshot().tables.widget.length, 1);
     } finally {
@@ -270,8 +265,11 @@ test(
     // Cleanup failure is finite and reported without replacing the original plugin fault.
     t.diagnostic('CLR file subcase: bounded cleanup failure preserves original exception');
     const unlink = syncFs.unlinkSync;
+    let busyMs = Date.now();
+    const busyClock = t.mock.method(Date, 'now', () => busyMs);
     syncFs.unlinkSync = function (file) {
       if (path.basename(path.dirname(file)).startsWith('clr-run-')) {
+        busyMs += 5000;
         const error = new Error('Invented busy fixture');
         error.code = 'EBUSY';
         error.syscall = 'unlink';
@@ -283,6 +281,7 @@ test(
       await assert.rejects(store.create('widget', { title: 'fault' }, { admin: true }), /ordinary owned fault/);
     } finally {
       syncFs.unlinkSync = unlink;
+      busyClock.mock.restore();
     }
     assert.ok(
       notes.some(
@@ -298,6 +297,36 @@ test(
     const allStops = notes.filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(allStops.length, 7);
     assert.ok(allStops.every((n) => n.absenceVerified));
+    // A snapshot file another process holds for two seconds after its host exited is still removed.
+    t.diagnostic('CLR file subcase: a snapshot file held for two seconds after its host exited is still removed');
+    const unlinkBeforeHold = syncFs.unlinkSync;
+    let heldMs = Date.now(),
+      heldCount = 0;
+    const heldClock = t.mock.method(Date, 'now', () => heldMs);
+    syncFs.unlinkSync = function (file) {
+      if (path.basename(path.dirname(file)).startsWith('clr-run-') && heldCount < 4) {
+        heldCount++;
+        heldMs += 500;
+        const error = new Error('Invented held fixture');
+        error.code = 'EBUSY';
+        error.syscall = 'unlink';
+        throw error;
+      }
+      return unlinkBeforeHold(file);
+    };
+    const heldNotesStart = notes.length;
+    try {
+      await assert.rejects(store.create('widget', { title: 'fault' }, { admin: true }), /ordinary owned fault/);
+    } finally {
+      syncFs.unlinkSync = unlinkBeforeHold;
+      heldClock.mock.restore();
+    }
+    assert.ok(!(await fs.readdir(cache)).some((n) => n.startsWith('clr-run-')));
+    assert.deepEqual(
+      notes.slice(heldNotesStart).filter((n) => n.code === 'PLUGIN_CLR_CLEANUP'),
+      [],
+    );
+    assert.equal(heldCount, 4, 'the stub held the snapshot for four removals');
     await fs.writeFile(assembly, 'changed original');
     await assert.rejects(store.create('widget', { title: 'ordinary' }, { admin: true }), /Trusted CLR bytes changed/);
     assert.ok(!(await fs.readdir(cache)).some((n) => n.startsWith('clr-run-')));

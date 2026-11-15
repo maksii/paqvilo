@@ -1,11 +1,12 @@
+// @test-kind contract: mirage preflight reports placeholder flows, blocks only under strict or scenario use, and exits 2 on invocation errors.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../mirage/cli.mjs', import.meta.url));
 const FLOW = '77777777-7777-4777-8777-777777777777';
@@ -19,7 +20,7 @@ async function write(root, files) {
 }
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-preflight-'));
+  const root = await tempDir('mirage-preflight-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');
@@ -59,8 +60,8 @@ const runIn = ({ root, stateDir }, command, ...args) =>
       new Promise((resolve) => {
         execFile(
           process.execPath,
-          [cli, command, ...args, '--state-dir', stateDir],
-          { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 },
+          [cli, command, ...args, ...(command === 'preflight' ? [] : ['--state-dir', stateDir])],
+          { cwd: root, encoding: 'utf8', windowsHide: true, env: env() },
           (error, stdout, stderr) =>
             resolve({
               status: error ? error.code : 0,
@@ -131,7 +132,8 @@ test('mirage preflight exits 2 on an invocation error', async (t) => {
     runIn({ root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag'),
   ]);
   assert.equal(result.status, 2, result.stdout + result.stderr);
-  assert.match(result.stderr, /scenario\.id/);
+  assert.match(JSON.parse(result.stdout).error.message, /scenario\.id/);
+  assert.equal(result.stderr, '');
   assert.equal(sourceForApi.status, 2, sourceForApi.stdout + sourceForApi.stderr);
   // Only the preflight command answers 2; the word as another command's option value does not.
   assert.equal(serve.status, 1, serve.stdout + serve.stderr);

@@ -10,16 +10,7 @@ export async function collectFetchXmlPages({ readPage, idColumn, pageSize = 5000
     // Dataverse omits @Microsoft.Dynamics.CRM.morerecords (and the cookie) on
     // the final page (fetchxml/page-results), so an absent flag means false.
     if (result && result.more_records === undefined) result.more_records = false;
-    if (!Array.isArray(result?.entities) || typeof result.more_records !== 'boolean')
-      throw new Error('FetchXML page requires entities and an explicit more-records boolean.');
-    if (result.entities.length > pageSize) throw new Error('FetchXML page exceeds requested count.');
-    for (const record of result.entities) {
-      const id = record?.[idColumn];
-      if (typeof id !== 'string' || !id) throw new Error('FetchXML page omits the requested primary identifier.');
-      if (ids.has(id.toLowerCase())) throw new Error('FetchXML continuation repeats a primary identifier.');
-      ids.add(id.toLowerCase());
-      records.push(record);
-    }
+    appendPageRecords(result, pageSize, idColumn, ids, records);
     pages.push({
       page,
       count: result.entities.length,
@@ -28,14 +19,32 @@ export async function collectFetchXmlPages({ readPage, idColumn, pageSize = 5000
       moreRecords: result.more_records,
     });
     if (!result.more_records) return { records, pages, complete: true };
-    if (!result.entities.length) throw new Error('FetchXML continuation returned an empty page.');
-    cookie = result.paging_cookie;
-    if (typeof cookie !== 'string' || !cookie || cookies.has(cookie))
-      throw new Error('FetchXML continuation cookie is missing or repeated.');
-    cookies.add(cookie);
+    cookie = continuationCookie(result, cookies);
   }
   throw new Error('FetchXML continuation exceeded the bounded page limit.');
 }
 
+function appendPageRecords(result, pageSize, idColumn, ids, records) {
+  if (!Array.isArray(result?.entities) || typeof result.more_records !== 'boolean')
+    throw new Error('FetchXML page requires entities and an explicit more-records boolean.');
+  if (result.entities.length > pageSize) throw new Error('FetchXML page exceeds requested count.');
+  for (const record of result.entities) {
+    const id = record?.[idColumn];
+    if (typeof id !== 'string' || !id) throw new Error('FetchXML page omits the requested primary identifier.');
+    if (ids.has(id.toLowerCase())) throw new Error('FetchXML continuation repeats a primary identifier.');
+    ids.add(id.toLowerCase());
+    records.push(record);
+  }
+}
+
+function continuationCookie(result, cookies) {
+  if (!result.entities.length) throw new Error('FetchXML continuation returned an empty page.');
+  const cookie = result.paging_cookie;
+  if (typeof cookie !== 'string' || !cookie || cookies.has(cookie))
+    throw new Error('FetchXML continuation cookie is missing or repeated.');
+  cookies.add(cookie);
+  return cookie;
+}
+
 export const escapeXmlAttribute = (value) =>
-  String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');

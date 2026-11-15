@@ -1,6 +1,7 @@
 // Custom connector policy templates applied in order (set host URL, route request with method, set header/query,
 // set property, convert array to object and object to array) and the OAuth authorization code flow with a loopback redirect
 // listener, PKCE and refresh, against a loopback fake authorization server.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -137,7 +138,7 @@ test('policy templates apply in order to the request and the response', () => {
 async function listen(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   return `http://127.0.0.1:${server.address().port}`;
 }
 const form = (req) =>

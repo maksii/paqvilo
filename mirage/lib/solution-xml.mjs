@@ -10,48 +10,62 @@ export function parseSolutionXml(source, { recover = false, locations = false } 
   const root = { name: '#document', attrs: {}, children: [], text: '' };
   const stack = [root];
   let recovered = 0;
-  let offset = 0,
-    line = 1,
-    column = 1;
+  let offset = 0;
+  const position = { line: 1, column: 1 };
   for (const token of xmlTokens(source)) {
-    const region = { start: offset, end: offset + token.length, line, column };
+    const region = { start: offset, end: offset + token.length, line: position.line, column: position.column };
     offset += token.length;
-    if (locations) {
-      const last = token.lastIndexOf('\n');
-      if (last < 0) column += token.length;
-      else {
-        for (let cursor = token.indexOf('\n'); cursor >= 0; cursor = token.indexOf('\n', cursor + 1)) line++;
-        column = token.length - last;
-      }
-    }
-    if (token.startsWith('<!--') || token.startsWith('<?')) continue;
-    if (token.startsWith('<![CDATA[')) {
-      stack.at(-1).text += token.slice(9, -3);
-      continue;
-    }
-    if (token.startsWith('</')) {
-      const name = token.slice(2, -1).trim();
-      if (stack.length > 1 && stack.at(-1).name === name) {
-        if (locations) stack.at(-1).region.end = region.end;
-        stack.pop();
-        continue;
-      }
-      // Recovery (metadata reads only): close unclosed children up to the matching
-      // element, or ignore a stray closing tag. Callers report the recovery.
-      const depth = stack.findLastIndex((node, index) => index > 0 && node.name === name);
-      if (!recover) throw new Error('Malformed XML closing element');
-      recovered++;
-      if (depth > 0) stack.length = depth;
-      continue;
-    }
-    if (token.startsWith('<')) {
-      const { name, attrs, selfClosing } = readElement(token);
-      const node = { name, attrs, children: [], text: '' };
-      if (locations) node.region = region;
-      stack.at(-1).children.push(node);
-      if (!selfClosing) stack.push(node);
-    } else stack.at(-1).text += decodeXml(token);
+    updateXmlPosition(token, position, locations);
+    recovered += consumeXmlToken(token, region, stack, { recover, locations });
   }
+  return finishParsedXml(root, stack, recover, recovered);
+}
+
+function consumeClosingToken(token, region, stack, recover, locations) {
+  const name = token.slice(2, -1).trim();
+  if (stack.length > 1 && stack.at(-1).name === name) {
+    if (locations) stack.at(-1).region.end = region.end;
+    stack.pop();
+    return 0;
+  }
+  // Recovery (metadata reads only): close unclosed children up to the matching
+  // element, or ignore a stray closing tag. Callers report the recovery.
+  const depth = stack.findLastIndex((node, index) => index > 0 && node.name === name);
+  if (!recover) throw new Error('Malformed XML closing element');
+  if (depth > 0) stack.length = depth;
+  return 1;
+}
+
+function consumeXmlToken(token, region, stack, { recover, locations }) {
+  if (token.startsWith('<!--') || token.startsWith('<?')) return 0;
+  if (token.startsWith('<![CDATA[')) {
+    stack.at(-1).text += token.slice(9, -3);
+    return 0;
+  }
+  if (token.startsWith('</')) return consumeClosingToken(token, region, stack, recover, locations);
+  if (!token.startsWith('<')) {
+    stack.at(-1).text += decodeXml(token);
+    return 0;
+  }
+  const { name, attrs, selfClosing } = readElement(token);
+  const node = { name, attrs, children: [], text: '' };
+  if (locations) node.region = region;
+  stack.at(-1).children.push(node);
+  if (!selfClosing) stack.push(node);
+  return 0;
+}
+
+function updateXmlPosition(token, position, locations) {
+  if (!locations) return;
+  const last = token.lastIndexOf('\n');
+  if (last < 0) position.column += token.length;
+  else {
+    for (let cursor = token.indexOf('\n'); cursor >= 0; cursor = token.indexOf('\n', cursor + 1)) position.line++;
+    position.column = token.length - last;
+  }
+}
+
+function finishParsedXml(root, stack, recover, recovered) {
   if (recover && stack.length > 1) {
     recovered += stack.length - 1;
     stack.length = 1;
@@ -62,92 +76,118 @@ export function parseSolutionXml(source, { recover = false, locations = false } 
   return element;
 }
 
+function findXmlTerminator(source, cursor, terminator) {
+  let terminatorOffset = 2;
+  if (terminator === ']]>') terminatorOffset = 9;
+  else if (terminator === '-->') terminatorOffset = 4;
+  const end = source.indexOf(terminator, cursor + terminatorOffset);
+  if (end < 0) throw new Error('Malformed XML: unterminated declaration or CDATA');
+  return end + terminator.length;
+}
+
+function scanXmlElementEnd(source, cursor) {
+  let quote = null;
+  for (cursor++; cursor < source.length; cursor++) {
+    const character = source[cursor];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '>') break;
+    else if (character === '<') throw new Error('Malformed XML element');
+  }
+  if (cursor === source.length) throw new Error('Malformed XML: unterminated element');
+  return cursor + 1;
+}
+
 /** Scan once, without retrying a missing delimiter at every '<' in malformed input. */
-function* xmlTokens(source) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function* xmlTokens(source) {
   for (let cursor = 0; cursor < source.length;) {
     const start = cursor;
     if (source[cursor] !== '<') {
       const next = source.indexOf('<', cursor);
       cursor = next < 0 ? source.length : next;
     } else {
-      const terminator = source.startsWith('<!--', cursor)
-        ? '-->'
-        : source.startsWith('<![CDATA[', cursor)
-          ? ']]>'
-          : source.startsWith('<?', cursor)
-            ? '?>'
-            : null;
+      let terminator = null;
+      if (source.startsWith('<!--', cursor)) terminator = '-->';
+      else if (source.startsWith('<![CDATA[', cursor)) terminator = ']]>';
+      else if (source.startsWith('<?', cursor)) terminator = '?>';
       if (terminator) {
-        const end = source.indexOf(terminator, cursor + (terminator === ']]>' ? 9 : terminator === '-->' ? 4 : 2));
-        if (end < 0) throw new Error('Malformed XML: unterminated declaration or CDATA');
-        cursor = end + terminator.length;
+        cursor = findXmlTerminator(source, cursor, terminator);
       } else {
-        let quote = null;
-        for (cursor++; cursor < source.length; cursor++) {
-          const character = source[cursor];
-          if (quote) {
-            if (character === quote) quote = null;
-          } else if (character === '"' || character === "'") quote = character;
-          else if (character === '>') break;
-          else if (character === '<') throw new Error('Malformed XML element');
-        }
-        if (cursor === source.length) throw new Error('Malformed XML: unterminated element');
-        cursor++;
+        cursor = scanXmlElementEnd(source, cursor);
       }
     }
     yield source.slice(start, cursor);
   }
 }
 
+const xmlNameCharacter = (character) => character !== undefined && /[\w:.-]/.test(character);
+
+function skipXmlWhitespace(scanner) {
+  while (scanner.cursor < scanner.token.length && /\s/.test(scanner.token[scanner.cursor])) scanner.cursor++;
+}
+
+function readXmlName(scanner) {
+  const start = scanner.cursor;
+  while (xmlNameCharacter(scanner.token[scanner.cursor])) scanner.cursor++;
+  return scanner.token.slice(start, scanner.cursor);
+}
+
+function readXmlAttribute(scanner, attrs) {
+  const key = readXmlName(scanner);
+  skipXmlWhitespace(scanner);
+  if (!key || scanner.token[scanner.cursor++] !== '=') throw new Error('Malformed XML attributes');
+  skipXmlWhitespace(scanner);
+  const quote = scanner.token[scanner.cursor++];
+  if (quote !== '"' && quote !== "'") throw new Error('Malformed XML attributes');
+  const end = scanner.token.indexOf(quote, scanner.cursor);
+  if (end < 0) throw new Error('Malformed XML attributes');
+  if (Object.hasOwn(attrs, key)) throw new Error('Duplicate XML attribute');
+  Object.defineProperty(attrs, key, {
+    value: decodeXml(scanner.token.slice(scanner.cursor, end)),
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  scanner.cursor = end + 1;
+}
+
+function readXmlSelfClosing(scanner) {
+  if (scanner.token[scanner.cursor] !== '/') return false;
+  scanner.cursor++;
+  skipXmlWhitespace(scanner);
+  if (scanner.token[scanner.cursor] !== '>') throw new Error('Malformed XML attributes');
+  return true;
+}
+
 /** Attribute names and quoted values are consumed in order, including long invalid names. */
 function readElement(token) {
-  let cursor = 1;
-  const nameCharacter = (character) => character !== undefined && /[\w:.-]/.test(character);
-  const skipWhitespace = () => {
-    while (cursor < token.length && /\s/.test(token[cursor])) cursor++;
-  };
-  const readName = () => {
-    const start = cursor;
-    while (nameCharacter(token[cursor])) cursor++;
-    return token.slice(start, cursor);
-  };
-  const name = readName();
+  const scanner = { token, cursor: 1 },
+    name = readXmlName(scanner);
   if (!name) throw new Error('Malformed XML element');
   const attrs = {};
-  while (cursor < token.length - 1) {
-    skipWhitespace();
-    if (token[cursor] === '>') break;
-    if (token[cursor] === '/') {
-      cursor++;
-      skipWhitespace();
-      if (token[cursor] !== '>') throw new Error('Malformed XML attributes');
-      return { name, attrs, selfClosing: true };
-    }
-    const key = readName();
-    skipWhitespace();
-    if (!key || token[cursor++] !== '=') throw new Error('Malformed XML attributes');
-    skipWhitespace();
-    const quote = token[cursor++];
-    if (quote !== '"' && quote !== "'") throw new Error('Malformed XML attributes');
-    const end = token.indexOf(quote, cursor);
-    if (end < 0) throw new Error('Malformed XML attributes');
-    if (Object.hasOwn(attrs, key)) throw new Error('Duplicate XML attribute');
-    Object.defineProperty(attrs, key, {
-      value: decodeXml(token.slice(cursor, end)),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-    cursor = end + 1;
+  while (scanner.cursor < token.length - 1) {
+    skipXmlWhitespace(scanner);
+    if (token[scanner.cursor] === '>') break;
+    if (readXmlSelfClosing(scanner)) return { name, attrs, selfClosing: true };
+    readXmlAttribute(scanner, attrs);
   }
   return { name, attrs, selfClosing: false };
 }
 
+// Pushes items so that the first of them is popped first: the stack walks siblings in document order.
+const pushInOrder = (stack, items) => {
+  for (let index = items.length - 1; index >= 0; index--) stack.push(items[index]);
+};
+// Pre-order over an explicit stack, so neither the node count nor the depth can exhaust the call stack.
 export const descendants = (node, name) => {
-  const result = [];
-  for (const item of node?.children ?? []) {
+  const result = [],
+    stack = [];
+  pushInOrder(stack, node?.children ?? []);
+  while (stack.length) {
+    const item = stack.pop();
     if (item.name === name) result.push(item);
-    result.push(...descendants(item, name));
+    pushInOrder(stack, item.children ?? []);
   }
   return result;
 };
@@ -181,12 +221,29 @@ export function label(node, lcid = 1033) {
 
 export const pickLabel = (labels, lcid = 1033) => labels?.[String(lcid)] ?? Object.values(labels ?? {})[0];
 
-export const serializeXml = (node) =>
-  `<${node.name}${Object.entries(node.attrs)
+const attributeText = (attrs) =>
+  Object.entries(attrs)
     .map(
       ([k, v]) =>
-        ` ${k}="${String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}"`,
+        ` ${k}="${String(v).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}"`,
     )
-    .join(
-      '',
-    )}>${node.text.replace(/&/g, '&amp;').replace(/</g, '&lt;')}${node.children.map(serializeXml).join('')}</${node.name}>`;
+    .join('');
+// Output strings and nodes share one stack: a node opens its tag, then its children, then a queued closing tag.
+export const serializeXml = (root) => {
+  const output = [],
+    stack = [root];
+  while (stack.length) {
+    const item = stack.pop();
+    if (typeof item === 'string') {
+      output.push(item);
+      continue;
+    }
+    output.push(
+      `<${item.name}${attributeText(item.attrs)}>`,
+      item.text.replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
+    );
+    stack.push(`</${item.name}>`);
+    pushInOrder(stack, item.children);
+  }
+  return output.join('');
+};

@@ -1,6 +1,8 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nativeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,6 +17,8 @@ import { createSolutionMetadataOverlay } from '../mirage/lib/dataverse-solution-
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const guid = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+// 205 items and 1105 details exceed the former global inspection caps (200 items per kind, 1000 details), which
+// once dropped the active form, view or command when it came late in the catalogue.
 test('cold native command selectors prioritize full scoped exported declarations beyond catalogue caps', () => {
   const identifier = 'fixture_item|NoRelationship|Form|fixture.review';
   const commands = Array.from({ length: 1105 }, (_, index) => ({
@@ -50,8 +54,42 @@ test('cold native command selectors prioritize full scoped exported declarations
   });
   assert.ok(wrongTable.unavailable.some((item) => item.key === selector));
 });
+
+test('lazy FormXml labels follow the source LCID while form, field and structural identities stay unchanged', () => {
+  const labels = (english, french) =>
+    `<labels><label languagecode="1033" description="${english}"/><label languagecode="1036" description="${french}"/></labels>`;
+  const form = {
+    id: guid(7),
+    entity: 'fixture_item',
+    name: 'Invented form',
+    xml: `<form><tabs><tab name="general">${labels('General EN', 'General FR')}<columns><column><sections><section name="details">${labels('Details EN', 'Details FR')}<rows><row><cell>${labels('Title EN', 'Titre FR')}<control id="title_editor" datafieldname="fixture_title"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>`,
+  };
+  const fields = { fixture_title: { name: 'fixture_title', type: 'text' } };
+  const query = (lcid) =>
+    createModelDrivenMetadataIndex({ metadata: { lcid, entities: { fixture_item: { fields } }, forms: [form] } }).query(
+      { active: { formId: form.id } },
+    ).catalogue.forms[0];
+  const english = query(1033),
+    french = query(1036),
+    compiled = compileForm(form, fields, 1036);
+  assert.deepEqual(
+    [compiled.tabs[0].label, compiled.tabs[0].sections[0].label, compiled.tabs[0].sections[0].fields[0].label],
+    ['General FR', 'Details FR', 'Titre FR'],
+  );
+  assert.equal(english.controls[0].label, 'Title EN');
+  assert.equal(french.controls[0].label, 'Titre FR');
+  assert.equal(french.id, form.id);
+  assert.deepEqual(french.structure, english.structure);
+  assert.deepEqual(
+    french.controls.map(({ key, id, name, tab, section }) => ({ key, id, name, tab, section })),
+    english.controls.map(({ key, id, name, tab, section }) => ({ key, id, name, tab, section })),
+  );
+  assert.equal(french.controls[0].name, 'fixture_title');
+  assert.equal(french.controls[0].id, 'title_editor');
+});
+
 async function fixture(t, count = 3) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-metadata-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-model-metadata-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const formFile = path.join(directory, 'form.xml'),
     entityFile = path.join(directory, 'Entity.xml');
@@ -88,6 +126,41 @@ async function fixture(t, count = 3) {
   };
   return { imported, xml, fields, formFile, entityFile };
 }
+
+test('source projections admit each shared file once and recheck edits and replacements on the next operation', async (t) => {
+  const source = await fixture(t, 256);
+  const index = createModelDrivenMetadataIndex(source.imported);
+  const open = nativeFs.openSync;
+  let opens = 0;
+  t.mock.method(nativeFs, 'openSync', (...args) => {
+    opens++;
+    return open(...args);
+  });
+  const keys = [
+    'table:fixture_item',
+    ...Object.keys(source.fields).map((name) => 'column:fixture_item:' + name),
+    ...Object.keys(source.fields).map((_, n) => modelDrivenControlKey(guid(1), { uniqueId: guid(n + 1000) })),
+  ];
+  const refs = index.sourceRefsFor(keys);
+  assert.equal(refs.length, keys.length);
+  assert.equal(opens, 2, '256 fields and 256 controls share two admitted files');
+  opens = 0;
+  const response = index.query({ active: { formId: guid(1) }, budget: { items: 1000, bytes: 2 * 1024 * 1024 } });
+  assert.equal(response.catalogue.forms[0].controlsComplete, true);
+  assert.equal(opens, 1, 'a new query admits its form file once');
+  const ref = refs.find((item) => item.componentKey === keys.at(-1));
+  await fs.writeFile(source.formFile, source.xml.replace('fixture_field_255', 'changed_field_255'));
+  assert.equal(
+    index.resolveOpen({ sourceKey: ref.id, sourceRevision: ref.sourceRevision, contentRevision: ref.contentRevision })
+      .ok,
+    false,
+    'Open source independently rejects a file changed after projection',
+  );
+  assert.ok(index.sourceRefsFor([keys.at(-1)])[0].currentContentRevision);
+  await fs.unlink(source.formFile);
+  await fs.mkdir(source.formFile);
+  assert.deepEqual(index.sourceRefsFor([keys.at(-1)]), [], 'a directory replacement cannot reuse admitted bytes');
+});
 
 test('active form/control lookup passes old global caps without serializing arbitrary prefix details', async (t) => {
   const source = await fixture(t, 1105);

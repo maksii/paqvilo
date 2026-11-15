@@ -18,6 +18,18 @@ Install the Playwright MCP browser extension in the intended signed-in profile a
 the project's bridge command. Keep its token in the project's ignored environment file.
 Let the operator complete credential or MFA challenges in that browser.
 
+In the matrix's `live` block, `cdpUrl` names the loopback debugging endpoint of the live browser, for a bridge started
+with `--cdp-endpoint`. With it, the suite holds a browser-level write net around every live run: writes from every page
+the capture drives, including popups and frames, are stopped from their first request, also when another debugging
+client is attached to that browser. Without `live.cdpUrl`, writes are guarded per page by the capture runner only.
+
+An unreachable `live.cdpUrl`, or one that is not a loopback address without credentials, makes every live run fail.
+A tab opened in that browser during a capture counts as the capture's own: its portal writes are refused and listed.
+A write whose page cannot be established is refused. A live capture stops with `live.cdpUrl is not the bridge browser:
+the capture page did not open there, so the browser-level write net did not cover it.` when the browser-level write net
+adopted no capture page, and its evidence is not merged: point `live.cdpUrl` at the browser where the bridge opens its
+pages.
+
 Provisioning, uploads, resets and write scenarios change the selected live environment.
 Use an explicitly authorized disposable fixture. Inspect plans before applying them and
 keep cleanup receipts. Merely opening Lense or Mirage grants no permission for these actions.
@@ -57,14 +69,22 @@ For a checkout, use `node <toolkit>/bin/paqvilo.mjs`.
 
 ```sh
 paqvilo mirage baseline-suite --help
-paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side live --label live --ids matrix/ids.json
+paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side live --label live --only @matrix/subset.txt
 paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side mirage --config paqvilo.config.yml --site baseline --label mirage --ids matrix/ids.json
 paqvilo mirage baseline-suite compare --matrix matrix/full.json --out .paqvilo/parity --allowlist allowlist.json
 ```
 
+A live capture must name its scenarios: `--only <ids>` or `--only @matrix/subset.txt`, or
+`--all-scenarios` to capture every scenario of the matrix (the run record notes the choice).
+Without either option the run is refused before the browser bridge starts. `--ids` holds
+record alias values only, so it never selects scenarios. An unknown `--only` id is refused
+before anything is written.
+
 Live capture denies writes by default. Add `--allow-writes` only after reviewing the
 matrix's fixture table/page scope and obtaining authorization. Keep authentication,
-persona selection and cleanup within the intended browser identity.
+persona selection and cleanup within the intended browser identity. The matrix's live
+cache-refresh and clear-cache steps write to the portal too, so a matrix that configures
+them is refused at set-up unless the run has `--allow-writes`.
 
 Use `--only <ids>` or `--only @matrix/subset.txt` for focused reruns. A list file takes
 the first whitespace-delimited token of each nonblank, noncomment line. Reset only the

@@ -1,6 +1,25 @@
 import { performance } from 'node:perf_hooks';
 
 const integer = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+async function runMatrixCell(plan, session, { signal, index, failFast, controller }) {
+  let row;
+  try {
+    const value = await plan.run(session, { signal, index, sessionId: session.id, caseId: plan.id });
+    row = { index, sessionId: session.id, caseId: plan.id, state: 'completed', value };
+  } catch (error) {
+    row = {
+      index,
+      sessionId: session.id,
+      caseId: plan.id,
+      state: signal.aborted ? 'cancelled' : 'failed',
+      errorCode: /^[a-z\d_.-]{1,160}$/i.test(String(error?.code ?? error?.name ?? ''))
+        ? String(error.code ?? error.name)
+        : 'MatrixCellFailed',
+    };
+    if (failFast) controller.abort();
+  }
+  return row;
+}
 /** Run cases against independent visitors with bounded in-flight work.
  * The runtime/store is shared; isolate fixtures for concurrent writes. Calls
  * execute once. Cancellation drains started work and reports unstarted cells.
@@ -68,19 +87,7 @@ export async function runSessionMatrix({
       }
       let row;
       try {
-        const value = await plan.run(session, { signal: combined, index, sessionId: session.id, caseId: plan.id });
-        row = { index, sessionId: session.id, caseId: plan.id, state: 'completed', value };
-      } catch (error) {
-        row = {
-          index,
-          sessionId: session.id,
-          caseId: plan.id,
-          state: combined.aborted ? 'cancelled' : 'failed',
-          errorCode: /^[a-z\d_.-]{1,160}$/i.test(String(error?.code ?? error?.name ?? ''))
-            ? String(error.code ?? error.name)
-            : 'MatrixCellFailed',
-        };
-        if (failFast) controller.abort();
+        row = await runMatrixCell(plan, session, { signal: combined, index, failFast, controller });
       } finally {
         active--;
       }

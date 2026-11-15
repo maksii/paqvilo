@@ -2,6 +2,7 @@
 // a Dataverse Function (custom API with fxexpressionid) reading and writing tables as the caller inside its transaction,
 // automated low-code plug-ins (Set on ThisRecord, Error refusing the write), delegation push-down against the in-memory
 // read with the delegation warning.
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -246,7 +247,7 @@ async function organization(t) {
     }),
   });
   const transport = await startDataverseApi({ organization: runtime });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await transport.close();
     await runtime.close();
   });

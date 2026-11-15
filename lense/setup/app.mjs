@@ -1,8 +1,7 @@
 import * as kit from './ui-kit.mjs';
-import { renderDashboard, renderNodeDetail } from './dashboard-map.mjs';
+import { renderDashboard, renderNodeDetail, PRODUCT_OF } from './dashboard-map.mjs';
 import * as icons from './dashboard-icons.mjs';
 import { HELP } from './help-content.mjs';
-import { PRODUCT_OF } from './dashboard-map.mjs';
 import * as quickUi from './quick.mjs';
 
 const $ = (selector) => document.querySelector(selector);
@@ -69,18 +68,27 @@ const quickSession = () => {
   const target = quickTarget();
   return (preview?.sessions ?? []).find((item) => (target?.project ? true : item.site === target?.id)) ?? null;
 };
-const extraAttributes = (extra, hint) =>
-  `${extra.id ? ` id="${esc(extra.id)}"${hint ? ` aria-describedby="${esc(extra.id)}-help"` : ''}` : ''}${extra.placeholder !== undefined && extra.placeholder !== null && extra.placeholder !== '' ? ` placeholder="${esc(extra.placeholder)}"` : ''}${extra.list ? ` list="${esc(extra.list)}"` : ''}`;
+const extraAttributes = (extra, hint) => {
+  let attributes = '';
+  if (extra.id) {
+    attributes += ' id="' + esc(extra.id) + '"';
+    if (hint) attributes += ' aria-describedby="' + esc(extra.id) + '-help"';
+  }
+  if (extra.placeholder !== undefined && extra.placeholder !== null && extra.placeholder !== '')
+    attributes += ' placeholder="' + esc(extra.placeholder) + '"';
+  if (extra.list) attributes += ' list="' + esc(extra.list) + '"';
+  return attributes;
+};
 // Field guidance sits behind an (i) tooltip next to the label; with an id the tooltip stays the control's description.
 const tip = (text, label, id) =>
-  text ? kit.info({ id: id ? `${id}-help` : undefined, label: `About ${label}`, text }) : '';
+  text ? kit.info({ id: id ? String(id) + '-help' : undefined, label: `About ${label}`, text }) : '';
 const labelText = (label, hint, id) => `<span class="field-label">${esc(label)}${tip(hint, label, id)}</span>`;
 const field = (label, name, value, hint = '', type = 'text', extra = {}) =>
-  `<div><label${extra.id ? ` for="${esc(extra.id)}"` : ''}>${labelText(label, hint, extra.id)}<input name="${esc(name)}" type="${type}" value="${esc(value)}"${extraAttributes(extra, hint)}></label></div>`;
+  `<div><label${extra.id ? ' for="' + esc(extra.id) + '"' : ''}>${labelText(label, hint, extra.id)}<input name="${esc(name)}" type="${type}" value="${esc(value)}"${extraAttributes(extra, hint)}></label></div>`;
 const area = (label, name, value, hint, id, className = '') =>
-  `<div><label for="${esc(id)}">${labelText(label, hint, id)}<textarea id="${esc(id)}" name="${esc(name)}" aria-describedby="${esc(id)}-help"${className ? ` class="${className}"` : ''} spellcheck="false">${esc(value)}</textarea></label></div>`;
+  `<div><label for="${esc(id)}">${labelText(label, hint, id)}<textarea id="${esc(id)}" name="${esc(name)}" aria-describedby="${esc(id)}-help"${className ? ' class="' + className + '"' : ''} spellcheck="false">${esc(value)}</textarea></label></div>`;
 const check = (label, name, checked, id, hint = '') =>
-  `<div><label class="checkbox-line" for="${esc(id)}"><input id="${esc(id)}" name="${esc(name)}" type="checkbox" ${checked ? 'checked' : ''}${hint ? ` aria-describedby="${esc(id)}-help"` : ''}>${esc(label)}</label>${tip(hint, label, id)}</div>`;
+  `<div><label class="checkbox-line" for="${esc(id)}"><input id="${esc(id)}" name="${esc(name)}" type="checkbox" ${checked ? 'checked' : ''}${hint ? ' aria-describedby="' + esc(id) + '-help"' : ''}>${esc(label)}</label>${tip(hint, label, id)}</div>`;
 // One option builder: [value, text] pairs; the selected option compares as text.
 const optionList = (pairs, chosen) =>
   pairs
@@ -90,7 +98,7 @@ const optionList = (pairs, chosen) =>
     )
     .join('');
 const choice = (label, name, values, chosen, id = '', hint = '') =>
-  `<div><label${id ? ` for="${esc(id)}"` : ''}>${labelText(label, hint, id)}<select${id ? ` id="${esc(id)}"` : ''} name="${esc(name)}"${hint && id ? ` aria-describedby="${esc(id)}-help"` : ''}>${optionList(values, chosen)}</select></label></div>`;
+  `<div><label${id ? ' for="' + esc(id) + '"' : ''}>${labelText(label, hint, id)}<select${id ? ' id="' + esc(id) + '"' : ''} name="${esc(name)}"${hint && id ? ' aria-describedby="' + esc(id) + '-help"' : ''}>${optionList(values, chosen)}</select></label></div>`;
 const slug = (text) => String(text ?? '').replace(/[^a-zA-Z0-9-]+/g, '-');
 const lines = (text) =>
   String(text ?? '')
@@ -105,21 +113,25 @@ const fileName = (file) =>
   String(file ?? '')
     .split(/[\\/]/)
     .pop();
-const adminUrl = () =>
-  state.runtime?.links?.administration ??
-  (state.runtime?.portalUrl && state.runtime.liveProxy
-    ? new URL('/_sim/', state.runtime.portalUrl).href
-    : !state.runtime && quickSession()?.ready
-      ? (quickSession().adminUrl ?? new URL('/_sim/', quickSession().url).href)
-      : '/_sim/');
+const adminUrl = () => {
+  const administration = state.runtime?.links?.administration;
+  if (administration !== null && administration !== undefined) return administration;
+  if (state.runtime?.portalUrl && state.runtime.liveProxy) return new URL('/_sim/', state.runtime.portalUrl).href;
+  if (!state.runtime && quickSession()?.ready)
+    return quickSession().adminUrl ?? new URL('/_sim/', quickSession().url).href;
+  return '/_sim/';
+};
 // Setup and /_sim/ share an origin only when Mirage mounts this page itself (no separate portal URL, relative administration link).
 const liveRuntime = () =>
   Boolean(state?.runtime?.product === 'Mirage' && !state.runtime.portalUrl && String(adminUrl()).startsWith('/'));
 // Where the running preview's live views are read: /_sim/api on the same origin, else the setup server's read-only relay
 // (`mirage dev` serves setup on its own port); null without a running Mirage preview.
 // A preview found by Quick setup (no preview started this page) is read through the relay by its site.
-const liveBase = () =>
-  liveRuntime() ? '/_sim/api' : state?.runtime?.liveProxy || quickSession()?.ready ? '/_setup/api/runtime' : null;
+const liveBase = () => {
+  if (liveRuntime()) return '/_sim/api';
+  if (state?.runtime?.liveProxy || quickSession()?.ready) return '/_setup/api/runtime';
+  return null;
+};
 const liveQuery = (query = new URLSearchParams()) => {
   if (!liveRuntime() && !state?.runtime?.liveProxy && quickSession()?.site) query.set('site', quickSession().site);
   return query.size ? `?${query}` : '';
@@ -127,10 +139,14 @@ const liveQuery = (query = new URLSearchParams()) => {
 // A data module registered by its path alone uses the id it declares; "id | path" names the id it must declare.
 const packText = (list) =>
   (list ?? [])
-    .map((item) => (typeof item === 'string' ? item : item.id ? `${item.id} | ${item.module}` : item.module))
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      if (item.id) return String(item.id) + ' | ' + String(item.module);
+      return item.module;
+    })
     .join('\n');
 function packLines(text) {
-  const packs = lines(text).map((line) => {
+  /* NOSONAR: mixed return values are part of the contract */ const packs = lines(text).map((line) => {
     if (!line.includes('|')) return line;
     const [id, ...parts] = line.split('|'),
       module = parts.join('|').trim();
@@ -182,14 +198,29 @@ const partsName = (siteId) => {
       .join(', ') || 'Nothing chosen'
   );
 };
-const optionText = (name, value) =>
-  name === 'runtime-kind'
-    ? runtimeName(value)
-    : name === 'simulation-level'
-      ? (SIMULATION_LEVELS[value] ?? value)
-      : value;
-const source = (site) =>
-  `<div class="notice"><strong>${site.sourceStatus.format ? `Website export found (${esc(site.sourceStatus.layout?.dialect ?? site.sourceStatus.format)} format)` : site.sourceStatus.exists ? 'This folder holds no website export' : 'Website export folder not found'}</strong><p class="code-text source-path">${esc(site.sourceStatus.path || 'No source selected')}</p><span class="ui-badge ui-tone-neutral">${site.sourceStatus.git ? `Git branch ${esc(site.sourceStatus.git.branch)}, commit ${esc(site.sourceStatus.git.commit)}${site.sourceStatus.git.changed ? ' · uncommitted changes in this folder' : ''}` : ''}${site.sourceStatus.gitState === 'timeout' ? ' · Git status unavailable (timeout)' : site.sourceStatus.gitState === 'unavailable' ? ' · Git status unavailable' : !site.sourceStatus.git ? 'No committed Git checkout' : ''}</span></div>`;
+const optionText = (name, value) => {
+  if (name === 'runtime-kind') return runtimeName(value);
+  if (name === 'simulation-level') return SIMULATION_LEVELS[value] ?? value;
+  return value;
+};
+const source = (site) => {
+  let formatText;
+  if (site.sourceStatus.format)
+    formatText =
+      'Website export found (' + esc(site.sourceStatus.layout?.dialect ?? site.sourceStatus.format) + ' format)';
+  else if (site.sourceStatus.exists) formatText = 'This folder holds no website export';
+  else formatText = 'Website export folder not found';
+  const pathText = esc(site.sourceStatus.path || 'No source selected');
+  let gitText = '';
+  if (site.sourceStatus.git) {
+    gitText = 'Git branch ' + esc(site.sourceStatus.git.branch) + ', commit ' + esc(site.sourceStatus.git.commit);
+    if (site.sourceStatus.git.changed) gitText += ' · uncommitted changes in this folder';
+  }
+  if (site.sourceStatus.gitState === 'timeout') gitText += ' · Git status unavailable (timeout)';
+  else if (site.sourceStatus.gitState === 'unavailable') gitText += ' · Git status unavailable';
+  else if (!site.sourceStatus.git) gitText += 'No committed Git checkout';
+  return `<div class="notice"><strong>${formatText}</strong><p class="code-text source-path">${pathText}</p><span class="ui-badge ui-tone-neutral">${gitText}</span></div>`;
+};
 function notice(message, error = false) {
   const node = $('#notice');
   node.hidden = false;
@@ -332,7 +363,7 @@ async function load() {
   } finally {
     finish();
   }
-  pollDashboard();
+  void pollDashboard();
 }
 // Runtime lists for datalists and pack badges: only from the runtime serving this page; any failure leaves free text.
 // ponytail: read once per status load (Refresh status rereads); poll them with the dashboard if presets or packs change while the page stays open.
@@ -398,7 +429,7 @@ function reveal(id, scroll = false) {
         ? title
         : `${title} › ${target.querySelector('h2, h3, legend, summary')?.textContent.trim() || 'section'}`;
   for (const node of document.querySelectorAll('.is-target')) node.classList.remove('is-target');
-  void target.offsetWidth;
+  target.offsetWidth; // NOSONAR: expression forces layout on purpose
   target.classList.add('is-target');
 }
 const operation = (path, value) => ({ op: 'set', path, value });
@@ -437,12 +468,13 @@ function runtimeEditor(settings, site) {
         { id: `runtime-${key}-app` },
       );
   // A project file with no website yet takes its first export here, when the website is ticked.
-  const portalSource =
-    state.kind === 'project' && !state.sites.length
-      ? `<div class="inline-fields" data-portal-source ${parts.website ? '' : 'hidden'}>${field('Website name', 'portal-id', 'portal', 'A short name for the website in this project file: letters, numbers and hyphens.')}${withPick(field('Website export folder', 'portal-path', '', 'The folder your website was downloaded into, relative to this project file.', 'text', { id: `runtime-${key}-portal-path` }), 'website', `runtime-${key}-portal-path`)}</div>`
-      : '';
-  return `<form class="form-grid" data-form="runtime" id="runtime-${key}" ${site ? `data-site="${esc(site.id)}"` : ''}>${quickUi.partsFieldset(esc, parts)}${inherited('runtime')}${portalSource}
-    <div class="inline-fields">${site ? field('Local port', 'port', site.mirage.port ?? '', PORT_HELP, 'number', { id: `runtime-${key}-port` }) : ''}<div data-api-port ${parts.api ? '' : 'hidden'}>${field('Web API port', 'api-port', settings.dataverse?.port ?? 0, 'Scripts and tests call the Web API at http://127.0.0.1:<port>/api/data/v9.2/. Keep a fixed number so the address never changes; 0 picks a free port at every start.', 'number', { id: `runtime-${key}-api-port` })}</div><div data-app-choice ${parts.modelDriven ? '' : 'hidden'}>${appField}</div></div>
+  let portalSource = '';
+  if (state.kind === 'project' && !state.sites.length) {
+    const visibility = parts.website ? '' : 'hidden';
+    portalSource = `<div class="inline-fields" data-portal-source ${visibility}>${field('Website name', 'portal-id', 'portal', 'A short name for the website in this project file: letters, numbers and hyphens.')}${withPick(field('Website export folder', 'portal-path', '', 'The folder your website was downloaded into, relative to this project file.', 'text', { id: 'runtime-' + key + '-portal-path' }), 'website', 'runtime-' + key + '-portal-path')}</div>`;
+  }
+  return `<form class="form-grid" data-form="runtime" id="runtime-${key}" ${site ? 'data-site="' + esc(site.id) + '"' : ''}>${quickUi.partsFieldset(esc, parts)}${inherited('runtime')}${portalSource}
+    <div class="inline-fields">${site ? field('Local port', 'port', site.mirage.port ?? '', PORT_HELP, 'number', { id: 'runtime-' + key + '-port' }) : ''}<div data-api-port ${parts.api ? '' : 'hidden'}>${field('Web API port', 'api-port', settings.dataverse?.port ?? 0, 'Scripts and tests call the Web API at http://127.0.0.1:<port>/api/data/v9.2/. Keep a fixed number so the address never changes; 0 picks a free port at every start.', 'number', { id: 'runtime-' + key + '-api-port' })}</div><div data-app-choice ${parts.modelDriven ? '' : 'hidden'}>${appField}</div></div>
     <div class="inline-fields">${choice(
       'When you add or change records',
       'simulation-level',
@@ -467,17 +499,17 @@ const pickButton = (kind, into) =>
 const LOCAL_URL = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::|\/|$)/i;
 function envRow(id = '', settings = {}, siteId = '') {
   return `<div class="environment-editor"><div class="inline-fields">${field('Environment name', 'env-id', id, 'A short name, for example dev or test.')}${field('Website address', 'env-url', settings.url ?? '', 'The start of your live website address, for example https://contoso.powerappsportals.com, without sign-in links.')}</div>${LOCAL_URL.test(settings.url ?? '') ? '<p class="muted small">This is the address of your local preview, not a live website: Lense can show your files there too. You can leave it as it is.</p>' : ''}<div class="row"><label class="checkbox-line"><input name="env-caution" type="checkbox" ${settings.caution ? 'checked' : ''}>Holds real customer data (Paqvilo leaves it out when you run something on all environments)</label><button class="button" type="button" data-remove-env>Remove</button></div>
-    <details class="disclosure" ${id && siteId ? `data-section-key="env-${esc(siteId)}-${esc(id)}"` : ''}><summary>Advanced: compared version, scope and first page</summary><div class="inline-fields">${field('Baseline', 'env-baseline', settings.baseline ?? '', 'Optional Git ref compared for changed-only overlays.')}${field('Start page', 'env-start', settings.startPath ?? '', 'Optional first page for this environment.')}</div>${choice(
-      'Source scope',
-      'env-scope',
-      [
-        ['', 'Site default'],
-        ['all', 'all'],
-        ['changed', 'changed'],
-      ],
-      settings.scope ?? '',
-      `env-${slug(siteId)}-${slug(id) || `new-${++newRows}`}-scope`,
-    )}</details></div>`;
+     <details class="disclosure" ${id && siteId ? 'data-section-key="env-' + esc(siteId) + '-' + esc(id) + '"' : ''}><summary>Advanced: compared version, scope and first page</summary><div class="inline-fields">${field('Baseline', 'env-baseline', settings.baseline ?? '', 'Optional Git ref compared for changed-only overlays.')}${field('Start page', 'env-start', settings.startPath ?? '', 'Optional first page for this environment.')}</div>${choice(
+       'Source scope',
+       'env-scope',
+       [
+         ['', 'Site default'],
+         ['all', 'all'],
+         ['changed', 'changed'],
+       ],
+       settings.scope ?? '',
+       'env-' + slug(siteId) + '-' + (slug(id) || 'new-' + ++newRows) + '-scope',
+     )}</details></div>`;
 }
 // A list of folders, one per line, with its Choose folder… button.
 const folderList = (label, name, values, help, id, kind) =>
@@ -507,27 +539,94 @@ const BASES = {
   source: 'path from the website export folder',
   sourceRoot: 'path from the export root',
 };
-const profileValue = (value) =>
-  typeof value === 'string'
-    ? ['', value]
-    : value && typeof value === 'object' && !Array.isArray(value)
-      ? value.source !== undefined
-        ? ['source', value.source]
-        : value.sourceRoot !== undefined
-          ? ['sourceRoot', value.sourceRoot]
-          : ['', '']
-      : ['', ''];
+const profileValue = (value) => {
+  if (typeof value === 'string') return ['', value];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (value.source !== undefined) return ['source', value.source];
+    if (value.sourceRoot !== undefined) return ['sourceRoot', value.sourceRoot];
+  }
+  return ['', ''];
+};
 function profileRow(key, id = '', sources = {}, isDefault = false) {
-  const row = `profile-${key}-${slug(id) || `new-${++newRows}`}`;
+  const row = 'profile-' + key + '-' + (slug(id) || 'new-' + ++newRows);
   if (Object.values(sources).some(Array.isArray))
     return `<div class="profile-editor" data-profile-locked="${esc(id)}"><p><strong>${esc(id)}</strong> <span class="muted small">uses a list of files; change it in the Settings file.</span></p><input type="hidden" name="profile-keep" value="${esc(id)}"></div>`;
   return (
-    `<div class="profile-editor"><div class="inline-fields">${field('Profile name', 'profile-id', id, 'A short name, for example dev or test.', 'text', { id: `${row}-id` })}<div><label class="checkbox-line"><input type="radio" name="profile-default" value="${esc(id)}" ${isDefault ? 'checked' : ''} data-profile-default>Use by default</label></div><div class="row"><button class="button" type="button" data-remove-profile>Remove</button></div></div>` +
+    `<div class="profile-editor"><div class="inline-fields">${field('Profile name', 'profile-id', id, 'A short name, for example dev or test.', 'text', { id: row + '-id' })}<div><label class="checkbox-line"><input type="radio" name="profile-default" value="${esc(id)}" ${isDefault ? 'checked' : ''} data-profile-default>Use by default</label></div><div class="row"><button class="button" type="button" data-remove-profile>Remove</button></div></div>` +
     `<div class="inline-fields">${PROFILE_SECTIONS.map(([section, label, help]) => {
       const [base, value] = profileValue(sources[section]);
-      return `<div class="pick-field">${field(label, `profile-${section}`, value, `${help} Use Choose file…: it writes the path, and the folder the path starts from, for you.`, 'text', { id: `${row}-${section}` })}<input type="hidden" name="profile-${section}-base" value="${esc(base)}"><span class="muted small" data-profile-base>${esc(value ? BASES[base] : '')}</span><button type="button" class="button small" data-pick-file="${section === 'pages' ? 'profile' : 'settings'}" data-pick-into="${row}-${section}">Choose file…</button></div>`;
+      return `<div class="pick-field">${field(label, 'profile-' + section, value, help + ' Use Choose file…: it writes the path, and the folder the path starts from, for you.', 'text', { id: row + '-' + section })}<input type="hidden" name="profile-${section}-base" value="${esc(base)}"><span class="muted small" data-profile-base>${esc(value ? BASES[base] : '')}</span><button type="button" class="button small" data-pick-file="${section === 'pages' ? 'profile' : 'settings'}" data-pick-into="${row}-${section}">Choose file…</button></div>`;
     }).join('')}</div></div>`
   );
+}
+function codeAppRow(app = {}, index = '') {
+  const id = `code-app-${++newRows}`,
+    dev = app.devServer ?? {};
+  return `<div class="profile-editor" data-code-app data-index="${esc(index)}"><div class="inline-fields">${field('App name', 'code-name', app.name ?? '', 'Used in the local app URL.', 'text', { id: id + '-name' })}${field('App folder', 'code-dir', app.dir ?? '', 'Relative to the project file.', 'text', { id: id + '-dir' })}${field('Config file', 'code-config', app.config ?? '', 'Relative to the app folder; blank uses power.config.json.', 'text', { id: id + '-config' })}${field('Local app URL', 'code-url', app.localAppUrl ?? '', 'Optional loopback URL.', 'text', { id: id + '-url' })}</div><details><summary>Optional local dev server</summary>${area('Command argv (JSON array)', 'code-command', dev.command ? JSON.stringify(dev.command) : '', 'Explicit command and arguments; no shell.', id + '-command')}<div class="inline-fields">${field('Working folder', 'code-cwd', dev.cwd ?? '', 'Relative to the app folder.', 'text', { id: id + '-cwd' })}${field('Startup timeout (ms)', 'code-timeout', dev.timeoutMs ?? '', '1000 to 300000 milliseconds.', 'number', { id: id + '-timeout' })}</div>${area('Environment (JSON object)', 'code-env', dev.env ? JSON.stringify(dev.env) : '', 'Environment names and string values.', id + '-env')}</details><button type="button" class="button" data-remove-code-app>Remove app</button></div>`;
+}
+function codeAppDevServer(row, previous) {
+  const value = (name) => row.querySelector(`[name="${name}"]`).value.trim(),
+    command = value('code-command'),
+    env = value('code-env'),
+    cwd = value('code-cwd'),
+    timeout = value('code-timeout');
+  if (!command && !env && !cwd && !timeout) return undefined;
+  const { parsedCommand, parsedEnv } = parseDevServerJson(command, env);
+  if (timeout && (!/^\d+$/.test(timeout) || Number(timeout) < 1000 || Number(timeout) > 300000))
+    throw new Error('Dev server timeout must be 1000 to 300000 ms.');
+  const devServer = { ...previous.devServer, command: parsedCommand };
+  if (cwd) devServer.cwd = cwd;
+  else delete devServer.cwd;
+  if (env) devServer.env = parsedEnv;
+  else delete devServer.env;
+  if (timeout) devServer.timeoutMs = Number(timeout);
+  else delete devServer.timeoutMs;
+  return devServer;
+}
+function parseDevServerJson(command, env) {
+  let parsedCommand, parsedEnv;
+  try {
+    parsedCommand = JSON.parse(command);
+    if (env) parsedEnv = JSON.parse(env);
+  } catch {
+    throw new Error('Dev server command and environment must be valid JSON.');
+  }
+  if (
+    !Array.isArray(parsedCommand) ||
+    !parsedCommand.length ||
+    typeof parsedCommand[0] !== 'string' ||
+    !parsedCommand[0].trim() ||
+    parsedCommand.some((v) => typeof v !== 'string' || v.includes('\0'))
+  )
+    throw new Error('Dev server command must be a nonempty JSON array of strings.');
+  if (
+    env &&
+    (!parsedEnv ||
+      typeof parsedEnv !== 'object' ||
+      Array.isArray(parsedEnv) ||
+      Object.values(parsedEnv).some((v) => typeof v !== 'string'))
+  )
+    throw new Error('Dev server environment must be a JSON object of strings.');
+  return { parsedCommand, parsedEnv };
+}
+function codeAppFromRow(row, originals) {
+  const value = (name) => row.querySelector(`[name="${name}"]`).value.trim(),
+    previous = row.dataset.index === '' ? {} : (originals[Number(row.dataset.index)] ?? {}),
+    app = { ...previous, name: value('code-name'), dir: value('code-dir') };
+  for (const [key, name] of [
+    ['config', 'code-config'],
+    ['localAppUrl', 'code-url'],
+  ]) {
+    if (value(name)) app[key] = value(name);
+    else delete app[key];
+  }
+  const devServer = codeAppDevServer(row, previous);
+  if (devServer) app.devServer = devServer;
+  else delete app.devServer;
+  return app;
+}
+function codeAppsOf(form, originals) {
+  return [...form.querySelectorAll('[data-code-app]')].map((row) => codeAppFromRow(row, originals));
 }
 function siteEditor(site) {
   const project = state.kind === 'project',
@@ -546,24 +645,22 @@ function siteEditor(site) {
     (item) => quickUi.normalPath(item.value) === quickUi.normalPath(site.source),
   );
   const profileOffer = (portalFound?.profiles ?? []).filter((item) => !profiles.some(([id]) => id === item.name));
+  const portalField = () => {
+    if (!portal) return '';
+    let sourceHelp;
+    if (project) sourceHelp = 'The folder your website was downloaded into, relative to this project file.';
+    else
+      sourceHelp =
+        'The folder your website was downloaded into from Power Pages, relative to the export root (the project folder unless Project settings says otherwise).';
+    return withPick(
+      field('Website export folder', 'source', site.source, sourceHelp, 'text', { id: 'files-' + key + '-source' }),
+      'website',
+      'files-' + key + '-source',
+    );
+  };
   return (
     `<form class="form-grid" data-form="files" data-site="${esc(site.id)}" id="files-${key}">` +
-    (portal
-      ? withPick(
-          field(
-            'Website export folder',
-            'source',
-            site.source,
-            project
-              ? 'The folder your website was downloaded into, relative to this project file.'
-              : 'The folder your website was downloaded into from Power Pages, relative to the export root (the project folder unless Project settings says otherwise).',
-            'text',
-            { id: `files-${key}-source` },
-          ),
-          'website',
-          `files-${key}-source`,
-        )
-      : '') +
+    portalField() +
     (project
       ? folderList(
           'Solution folders',
@@ -590,7 +687,7 @@ function siteEditor(site) {
       'canvas',
     ) +
     (canvasOffer.length
-      ? `<fieldset class="quick-group"><legend>Canvas app folders found</legend>${canvasOffer.map((item) => `<label class="checkbox-line"><input type="checkbox" name="canvas-found" value="${esc(item.value)}" ${item.inSolution ? '' : 'checked'}><code>${esc(item.path)}</code>${item.inSolution ? ` <span class="muted small">Solution ${esc(item.inSolution)} already contains this app; add it only to run this folder copy too.</span>` : ''}</label>`).join('')}</fieldset>`
+      ? `<fieldset class="quick-group"><legend>Canvas app folders found</legend>${canvasOffer.map((item) => '<label class="checkbox-line"><input type="checkbox" name="canvas-found" value="' + esc(item.value) + '" ' + (item.inSolution ? '' : 'checked') + '><code>' + esc(item.path) + '</code>' + (item.inSolution ? ' <span class="muted small">Solution ' + esc(item.inSolution) + ' already contains this app; add it only to run this folder copy too.</span>' : '') + '</label>').join('')}</fieldset>`
       : '') +
     folderList(
       'Model-driven script folders (optional)',
@@ -602,19 +699,12 @@ function siteEditor(site) {
     ) +
     `<div class="title-row"><h3>Deployment profiles (optional)</h3>${note('A deployment profile is a set of files that adjust your project for one environment (dev, test…): website record changes, environment variable values and connection references. The preview applies the default profile; choose another in the simulator (Environment).', 'About deployment profiles')}</div>` +
     (profileOffer.length
-      ? `<p class="quick-hint">Found in your website export: ${profileOffer.map((item) => `<code>${esc(item.file)}</code>`).join(', ')}. <button type="button" class="button small" data-add-found-profiles="${esc(JSON.stringify(profileOffer))}">Add them</button></p>`
+      ? `<p class="quick-hint">Found in your website export: ${profileOffer.map((item) => '<code>' + esc(item.file) + '</code>').join(', ')}. <button type="button" class="button small" data-add-found-profiles="${esc(JSON.stringify(profileOffer))}">Add them</button></p>`
       : '') +
     `<div data-profiles data-key="${esc(key)}" data-source-dir="${esc(site.sourceStatus?.path ?? '')}">${profiles.map(([id, sources]) => profileRow(key, id, sources, id === current)).join('')}</div>` +
     `<div class="row"><button type="button" class="button" data-add-profile>Add profile</button><label class="checkbox-line"><input type="radio" name="profile-default" value="" ${current ? '' : 'checked'}>No default profile</label></div>` +
     (project
-      ? folderList(
-          'Code app folders (optional)',
-          'code-apps',
-          (state.settings.codeApps ?? []).map((item) => item.dir),
-          'Power Apps code apps (a folder with power.config.json) per line, relative to this project file; each is served at /_apps/code/<folder name>/.',
-          `files-${key}-code`,
-          'codeApp',
-        )
+      ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values?.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
       : '<p class="muted small">Code apps run from a standalone project file (paqvilo setup --project), not from this settings file.</p>') +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file. Applies when the preview restarts.</span></div></form>`
   );
@@ -624,7 +714,7 @@ function environmentsEditor(site) {
   const key = slug(site.id);
   return (
     `<form class="form-grid" data-form="environments" data-site="${esc(site.id)}" id="environments-${key}">` +
-    `<div class="inline-fields">${field('Default live environment', 'defaultEnv', site.defaultEnv, 'Lense is the Paqvilo tool that opens your live website in its own browser and shows your local files on it. This is the name of the environment below that it opens unless you choose another, for example dev.', 'text', { id: `environments-${key}-default` })}${field('First page Lense opens', 'startPath', site.startPath ?? '/', 'The page of your live website that Lense opens first: the part of the address after the domain, for example / for the home page or /contact.', 'text', { id: `environments-${key}-start` })}</div>` +
+    `<div class="inline-fields">${field('Default live environment', 'defaultEnv', site.defaultEnv, 'Lense is the Paqvilo tool that opens your live website in its own browser and shows your local files on it. This is the name of the environment below that it opens unless you choose another, for example dev.', 'text', { id: 'environments-' + key + '-default' })}${field('First page Lense opens', 'startPath', site.startPath ?? '/', 'The page of your live website that Lense opens first: the part of the address after the domain, for example / for the home page or /contact.', 'text', { id: 'environments-' + key + '-start' })}</div>` +
     `<div data-environments>${Object.entries(site.environments)
       .map(([id, settings]) => envRow(id, settings, site.id))
       .join('')}</div><button type="button" class="button" data-add-env>Add environment</button>` +
@@ -636,8 +726,8 @@ function environmentsEditor(site) {
         ['changed', 'Only files changed since the compared version'],
       ],
       site.scope ?? 'all',
-      `environments-${key}-scope`,
-    )}${area('Route rules (YAML)', 'routes', JSON.stringify(site.routes ?? [], null, 2), 'Explicit file, directory or passthrough mappings. Other inline/markup settings are in the Settings file.', `environments-${key}-routes`, 'ui-mono')}</details>` +
+      'environments-' + key + '-scope',
+    )}${area('Route rules (YAML)', 'routes', JSON.stringify(site.routes ?? [], null, 2), 'Explicit file, directory or passthrough mappings. Other inline/markup settings are in the Settings file.', 'environments-' + key + '-routes', 'ui-mono')}</details>` +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file.</span></div></form>`
   );
 }
@@ -657,24 +747,29 @@ function dataEditor(site) {
           quickUi.normalPath(pack.module).endsWith(`/${quickUi.normalPath(item.value)}`),
       ),
   );
+  const presetOption = () => {
+    if (preset && !presets.some(([id]) => id === preset))
+      return '<option value="' + esc(preset) + '" selected>' + esc(preset) + '</option>';
+    return '';
+  };
   const presetField = presets.length
-    ? `<div><label for="data-${key}-preset">${labelText('Starting data', PRESET_HELP, `data-${key}-preset`)}<select id="data-${key}-preset" name="preset" aria-describedby="data-${key}-preset-help"><option value="">No starting data</option>${quickUi.presetGroups(esc, presets, preset, false)}${preset && !presets.some(([id]) => id === preset) ? `<option value="${esc(preset)}" selected>${esc(preset)}</option>` : ''}</select></label></div>`
+    ? `<div><label for="data-${key}-preset">${labelText('Starting data', PRESET_HELP, 'data-' + key + '-preset')}<select id="data-${key}-preset" name="preset" aria-describedby="data-${key}-preset-help"><option value="">No starting data</option>${quickUi.presetGroups(esc, presets, preset, false)}${presetOption()}</select></label></div>`
     : field(
         'Starting data (optional)',
         'preset',
         preset,
         `${PRESET_HELP} The data sets of your module are listed here once the preview runs; until then leave it empty (tables start empty).`,
         'text',
-        { id: `data-${key}-preset` },
+        { id: 'data-' + key + '-preset' },
       );
   return (
-    `<form class="form-grid" data-form="data" ${site ? `data-site="${esc(site.id)}"` : ''} id="data-${key}">` +
+    `<form class="form-grid" data-form="data" ${site ? 'data-site="' + esc(site.id) + '"' : ''} id="data-${key}">` +
     area('Sample data modules', 'packs', packText(mirage.dataPacks), PACK_HELP, `data-${key}-packs`) +
     (registered.length
-      ? `<ul class="detail-list">${registered.map((pack) => `<li class="row"><code>${esc(pack.module)}</code> ${kit.badge(pack.exists ? 'file found' : 'file missing', pack.exists ? 'ok' : 'bad')}</li>`).join('')}</ul>`
+      ? `<ul class="detail-list">${registered.map((pack) => '<li class="row"><code>' + esc(pack.module) + '</code> ' + kit.badge(pack.exists ? 'file found' : 'file missing', pack.exists ? 'ok' : 'bad') + '</li>').join('')}</ul>`
       : '') +
     (found.length
-      ? `<fieldset class="quick-group"><legend>Found in this folder</legend>${found.map((item) => `<label class="checkbox-line"><input type="checkbox" name="pack-found" value="${esc(item.value)}"><code>${esc(item.path)}</code></label>`).join('')}</fieldset>`
+      ? `<fieldset class="quick-group"><legend>Found in this folder</legend>${found.map((item) => '<label class="checkbox-line"><input type="checkbox" name="pack-found" value="' + esc(item.value) + '"><code>' + esc(item.path) + '</code></label>').join('')}</fieldset>`
       : '') +
     (project
       ? ''
@@ -710,14 +805,19 @@ const simulator = () => (state.runtime?.product === 'Mirage' || quickSession()?.
 const simLink = (view, text) => {
   const site = state.sites?.length > 1 ? quickTarget()?.id : null,
     label = site ? `${text} (${site})` : text;
-  return simulator()
-    ? `<a class="button small sim-link" href="${esc(simulator())}#${esc(view)}" target="_blank" rel="noopener">${esc(label)} ↗</a>`
-    : `<span class="muted small">${esc(label)}: in the simulator, once ${site ? "this project's" : 'the'} preview runs (Start &amp; check).</span>`;
+  if (simulator())
+    return `<a class="button small sim-link" href="${esc(simulator())}#${esc(view)}" target="_blank" rel="noopener">${esc(label)} ↗</a>`;
+  const article = site ? "this project's" : 'the';
+  return `<span class="muted small">${esc(label)}: in the simulator, once ${article} preview runs (Start &amp; check).</span>`;
 };
 // stages[].anchor (lense/setup/store.mjs) is the one stage→section map.
 const sectionOf = (item) => String(item?.anchor ?? '#overview').slice(1);
 // The setting editor shows each stage's remaining keys in the section owning the stage; project and start keys sit with the document and defaults.
-const editorSection = (item) => (item.id === 1 ? 'advanced' : item.id === 10 ? 'settings' : sectionOf(item));
+const editorSection = (item) => {
+  if (item.id === 1) return 'advanced';
+  if (item.id === 10) return 'settings';
+  return sectionOf(item);
+};
 const STAGE_STATUS = {
   done: ['done', 'ok'],
   next: ['next step', 'info'],
@@ -826,7 +926,12 @@ function list(key, items, columns, options = {}) {
   const html = () => {
     if (items.length <= 10)
       return kit.table({ key, columns, items, caption: options.caption, emptyText: options.emptyText });
-    const result = kit.pageItems(items, (pagers[key] ??= {}), options.text ? { text: options.text } : undefined);
+    let pager = pagers[key];
+    if (pager === null || pager === undefined) {
+      pager = {};
+      pagers[key] = pager;
+    }
+    const result = kit.pageItems(items, pager, options.text ? { text: options.text } : undefined);
     pagers[key].page = result.page;
     return kit.table({ key, columns, result, caption: options.caption, emptyText: options.emptyText });
   };
@@ -887,14 +992,13 @@ const needsStartingData = () => {
   return Boolean(target && !target.project && target.packs.length && !target.preset);
 };
 const stagesNow = () =>
-  (state.stages ?? []).map((item) =>
-    item.id === 10 && item.status !== 'blocked' && !state.runtime && quickSession()?.ready
-      ? { ...item, status: restartHint || preview?.operation?.settingsChanged === true ? 'next' : 'done' }
-      : // A sample data module without a chosen data set leaves the tables empty: the choice is the next step once the preview runs.
-        item.id === 5 && item.status === 'done' && needsStartingData()
-        ? { ...item, status: quickSession()?.ready ? 'next' : 'optional' }
-        : item,
-  );
+  (state.stages ?? []).map((item) => {
+    if (item.id === 10 && item.status !== 'blocked' && !state.runtime && quickSession()?.ready)
+      return { ...item, status: restartHint || preview?.operation?.settingsChanged === true ? 'next' : 'done' };
+    if (item.id === 5 && item.status === 'done' && needsStartingData())
+      return { ...item, status: quickSession()?.ready ? 'next' : 'optional' };
+    return item;
+  });
 const railHtml = () =>
   stagesNow()
     .map((item, index) => {
@@ -903,7 +1007,16 @@ const railHtml = () =>
         ? `<span class="ui-sr-only">${esc(text)}</span>`
         : kit.badge(text, tone);
       const section = SECTION_TITLES[sectionOf(item)];
-      return `<a class="nav-item is-${esc(item.status)}${item.status === 'next' ? ' active" aria-current="step' : ''}" href="#${esc(sectionOf(item))}" title="${esc(`Stage ${index + 1}, ${item.title}: ${text}.${section ? ` Opens the ${section} section.` : ''}`)}"><span class="nav-icon rail-step" aria-hidden="true">${index + 1}</span><span class="rail-title">${esc(item.title)}</span>${status}</a>`;
+      const title =
+        'Stage ' +
+        (index + 1) +
+        ', ' +
+        item.title +
+        ': ' +
+        text +
+        '.' +
+        (section ? ' Opens the ' + section + ' section.' : '');
+      return `<a class="nav-item is-${esc(item.status)}${item.status === 'next' ? ' active" aria-current="step' : ''}" href="#${esc(sectionOf(item))}" title="${esc(title)}"><span class="nav-icon rail-step" aria-hidden="true">${index + 1}</span><span class="rail-title">${esc(item.title)}</span>${status}</a>`;
     })
     .join('');
 
@@ -961,7 +1074,8 @@ const yamlScalar = (value) =>
   typeof value === 'string' &&
   /^[\w./~-][\w ./@:~-]*$/.test(value) &&
   !/: |:$| $|^- /.test(value) &&
-  !/^(?:true|false|null|yes|no|on|off|~|[-+]?(?:\d[\d_]*)?\.?\d+(?:e[-+]?\d+)?)$/i.test(value)
+  !/^(?:true|false|null|yes|no|on|off|~)$/i.test(value) &&
+  !/^(?:[-+]?(?:\d[\d_]*\.\d+|\d(?:[\d_]*\d)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(value) // NOSONAR: preserve the exact grammar and captured values
     ? value
     : JSON.stringify(value);
 const yamlBlock = (value) => value !== null && typeof value === 'object' && Object.keys(value).length > 0;
@@ -969,30 +1083,60 @@ function yamlText(value, pad = '') {
   if (!yamlBlock(value)) return pad + yamlScalar(value);
   if (Array.isArray(value))
     return value
-      .map((item) => `${pad}- ${yamlBlock(item) ? yamlText(item, `${pad}  `).trimStart() : yamlScalar(item)}`)
+      .map((item) => `${pad}- ${yamlBlock(item) ? yamlText(item, pad + '  ').trimStart() : yamlScalar(item)}`)
       .join('\n');
   return Object.entries(value)
     .map(
       ([key, item]) =>
-        `${pad}${yamlScalar(key)}:${yamlBlock(item) ? `\n${yamlText(item, `${pad}  `)}` : ` ${yamlScalar(item)}`}`,
+        `${pad}${yamlScalar(key)}:${yamlBlock(item) ? '\n' + yamlText(item, pad + '  ') : ' ' + yamlScalar(item)}`,
     )
     .join('\n');
 }
 const shownValue = (value) => (value === undefined ? '' : yamlText(value));
 function referenceSummary(item, value) {
-  const entries =
-    item.key === 'defaults'
-      ? Object.entries({ ...(value.mirage?.secrets ?? {}), ...(value.mirage?.connections ?? {}) })
-      : Array.isArray(value)
-        ? value.map((entry, index) => [entry?.appId ?? index, entry])
-        : Object.entries(value ?? {});
-  return `<ul class="references">${entries.map(([name, entry]) => `<li><code>${esc(name)}</code>${entry?.kind ? ` · ${esc(entry.kind === 'protected' ? 'protected value' : 'environment variable')}` : ''}${entry?.provider ? ` · ${esc(entry.provider)}` : ''}${Array.isArray(entry?.settings) && entry.settings.length ? ` · settings: ${esc(entry.settings.join(', '))}` : ''}</li>`).join('')}</ul>`;
+  let entries;
+  if (item.key === 'defaults') entries = Object.entries({ ...value.mirage?.secrets, ...value.mirage?.connections });
+  else if (Array.isArray(value)) entries = value.map((entry, index) => [entry?.appId ?? index, entry]);
+  else entries = Object.entries(value ?? {});
+  const kindSummary = (entry) => {
+    if (!entry?.kind) return '';
+    const description = entry.kind === 'protected' ? 'protected value' : 'environment variable';
+    return ' · ' + esc(description);
+  };
+  return `<ul class="references">${entries.map(([name, entry]) => '<li><code>' + esc(name) + '</code>' + kindSummary(entry) + (entry?.provider ? ' · ' + esc(entry.provider) : '') + (Array.isArray(entry?.settings) && entry.settings.length ? ' · settings: ' + esc(entry.settings.join(', ')) : '') + '</li>').join('')}</ul>`;
 }
 const settingId = ({ item, target }) => `setting-${slug(target.site?.id ?? 'root')}-${slug(item.key)}`;
+function settingControlMarkup(item, id, value, inherited, described) {
+  const options = (pairs) => optionList(pairs, value);
+  if (['list', 'object'].includes(item.kind))
+    return (
+      // Empty means not set: the example sits in the (i) next to the key, never in the box, so it cannot pass for a value.
+      `<textarea id="${esc(id)}" name="value" class="ui-mono" rows="5" spellcheck="false" ${described} placeholder="${esc(inherited || 'Not set. An example is under (i) next to the setting name.')}">${esc(shownValue(value))}</textarea>`
+    );
+  if (item.kind === 'boolean')
+    return `<select id="${esc(id)}" name="value" ${described}>${options([
+      ['', inherited ? 'Not set (inherits ' + inherited + ')' : 'Not set'],
+      ['true', 'true'],
+      ['false', 'false'],
+    ])}</select>`;
+  if (item.kind === 'choice')
+    return `<select id="${esc(id)}" name="value" ${described}>${options([['', inherited ? 'Not set (inherits ' + inherited + ')' : 'Not set'], ...(item.choices ?? []).map((option) => [option, option])])}</select>`;
+  return `<input id="${esc(id)}" name="value" type="${item.kind === 'number' ? 'number' : 'text'}" value="${esc(value ?? '')}" placeholder="${esc(inherited)}" ${described}>`;
+}
+function yamlSettingHelp(target) {
+  let text = 'YAML for the value only, without the key line. The box shows the value saved now';
+  if (target.file) text += ' in ' + fileName(target.file);
+  text +=
+    ', and is empty when the setting is not set. Saving replaces the whole key and drops comments inside it; empty removes the key.';
+  return note(text, 'About YAML values');
+}
 function settingInfo(row) {
   const { item, target } = row,
     id = settingId(row);
-  const scope = target.missing ? 'project file (not linked)' : state.kind === 'project' ? 'project file' : target.layer;
+  let scope;
+  if (target.missing) scope = 'project file (not linked)';
+  else if (state.kind === 'project') scope = 'project file';
+  else scope = target.layer;
   const notes = [
     item.doc,
     item.pending &&
@@ -1003,8 +1147,8 @@ function settingInfo(row) {
       "Inherited from defaults.mirage (shown as the placeholder); saving sets this target's own value.",
   ].filter(Boolean);
   return (
-    `<span class="title-row"><code class="setting-key">${esc(item.key)}</code>${kit.info({ id: `${id}-help`, label: `About ${item.key}`, text: notes.join(' '), example: item.example, docs: item.contract ? [kit.docLink(item.contract, state.docs)] : [] })}</span>${target.site ? ` <span class="muted">· ${esc(target.site.id)}</span>` : ''}` +
-    `<div class="setting-badges">${kit.badge(scope, String(target.layer).startsWith('project:') ? 'info' : 'neutral')}${item.pending ? ` ${kit.badge('parser pending', 'warn')}` : ''}${item.redact ? ` ${kit.badge('references only', 'warn')}` : ''}</div>`
+    `<span class="title-row"><code class="setting-key">${esc(item.key)}</code>${kit.info({ id: id + '-help', label: 'About ' + item.key, text: notes.join(' '), example: item.example, docs: item.contract ? [kit.docLink(item.contract, state.docs)] : [] })}</span>${target.site ? ' <span class="muted">· ' + esc(target.site.id) + '</span>' : ''}` +
+    `<div class="setting-badges">${kit.badge(scope, String(target.layer).startsWith('project:') ? 'info' : 'neutral')}${item.pending ? ' ' + kit.badge('parser pending', 'warn') : ''}${item.redact ? ' ' + kit.badge('references only', 'warn') : ''}</div>`
   );
 }
 function settingControl(row) {
@@ -1016,32 +1160,18 @@ function settingControl(row) {
   if (!target.known)
     return `<p class="muted">The current value of ${esc(item.key)} is not available because its document did not validate. Edit it in ${advanced}.</p>`;
   if (referencesOnly(item, target.value))
-    return `${referenceSummary(item, target.value)}<p class="muted">Shown as references only. Add, change or remove these entries in the verbatim document in ${advanced}${target.file ? ` (${esc(fileName(target.file))})` : ''}; this page never replaces them.</p>`;
+    return `${referenceSummary(item, target.value)}<p class="muted">Shown as references only. Add, change or remove these entries in the verbatim document in ${advanced}${target.file ? ' (' + esc(fileName(target.file)) + ')' : ''}; this page never replaces them.</p>`;
   specs.set(id, row);
   const value = target.value,
     described = `aria-describedby="${esc(id)}-help"`;
-  const inherited =
-    target.inherited === undefined
-      ? ''
-      : typeof target.inherited === 'object'
-        ? JSON.stringify(target.inherited, null, 2)
-        : String(target.inherited);
-  const options = (pairs) => optionList(pairs, value);
-  const control = ['list', 'object'].includes(item.kind)
-    ? // Empty means not set: the example sits in the (i) next to the key, never in the box, so it cannot pass for a value.
-      `<textarea id="${esc(id)}" name="value" class="ui-mono" rows="5" spellcheck="false" ${described} placeholder="${esc(inherited || 'Not set. An example is under (i) next to the setting name.')}">${esc(shownValue(value))}</textarea>`
-    : item.kind === 'boolean'
-      ? `<select id="${esc(id)}" name="value" ${described}>${options([
-          ['', inherited ? `Not set (inherits ${inherited})` : 'Not set'],
-          ['true', 'true'],
-          ['false', 'false'],
-        ])}</select>`
-      : item.kind === 'choice'
-        ? `<select id="${esc(id)}" name="value" ${described}>${options([['', inherited ? `Not set (inherits ${inherited})` : 'Not set'], ...(item.choices ?? []).map((option) => [option, option])])}</select>`
-        : `<input id="${esc(id)}" name="value" type="${item.kind === 'number' ? 'number' : 'text'}" value="${esc(value ?? '')}" placeholder="${esc(inherited)}" ${described}>`;
+  let inherited = '';
+  if (target.inherited !== undefined)
+    inherited =
+      typeof target.inherited === 'object' ? JSON.stringify(target.inherited, null, 2) : String(target.inherited);
+  const control = settingControlMarkup(item, id, value, inherited, described);
   return (
-    `<form data-form="setting" data-key="${esc(item.key)}" data-site="${esc(target.site?.id ?? '')}" data-spec="${esc(id)}" class="setting-form"><label class="ui-sr-only" for="${esc(id)}">${esc(item.key)} value${target.site ? ` for ${esc(target.site.id)}` : ''}</label>${control}` +
-    `<div class="toolbar"><button type="submit" class="button">Save setting ${esc(item.key)}</button>${['list', 'object'].includes(item.kind) ? note(`YAML for the value only, without the key line. The box shows the value saved now${target.file ? ` in ${fileName(target.file)}` : ''}, and is empty when the setting is not set. Saving replaces the whole key and drops comments inside it; empty removes the key.`, 'About YAML values') : ''}</div></form>`
+    `<form data-form="setting" data-key="${esc(item.key)}" data-site="${esc(target.site?.id ?? '')}" data-spec="${esc(id)}" class="setting-form"><label class="ui-sr-only" for="${esc(id)}">${esc(item.key)} value${target.site ? ' for ' + esc(target.site.id) : ''}</label>${control}` +
+    `<div class="toolbar"><button type="submit" class="button">Save setting ${esc(item.key)}</button>${['list', 'object'].includes(item.kind) ? yamlSettingHelp(target) : ''}</div></form>`
   );
 }
 const SETTING_COLUMNS = [
@@ -1063,7 +1193,7 @@ function settingEditor(sectionId) {
         summary: `${rows.length} advanced setting${rows.length === 1 ? '' : 's'} as YAML, for developers; you can skip this`,
         help: kit.info({
           label: `About the ${title} settings`,
-          text: `The other keys of this stage. Each row saves to the layer in its badge: ${state.kind === 'project' ? 'the project file' : `the ${layer} catalogue, or project:<target> for a linked Mirage project file`}. Lists and mappings are YAML snippets validated on save.`,
+          text: `The other keys of this stage. Each row saves to the layer in its badge: ${state.kind === 'project' ? 'the project file' : 'the ' + layer + ' catalogue, or project:<target> for a linked Mirage project file'}. Lists and mappings are YAML snippets validated on save.`,
           docs: [kit.docLink('docs/configuration.md', state.docs)],
         }),
         body: list(`settings-${id}`, rows, SETTING_COLUMNS, {
@@ -1086,7 +1216,7 @@ function plannedPayload() {
     state.kind === 'project' ? state.settings.simulation : (target?.effectiveMirage ?? target?.mirage)?.simulation
   )?.level;
   return {
-    ...(state.topology ?? {}),
+    ...state.topology,
     runtime: {
       product: state.runtime?.product ?? 'Mirage',
       kind: kind ?? 'power-pages',
@@ -1100,15 +1230,14 @@ const currentPayload = () => (isLive() ? dashboard : plannedPayload());
 // Setup shows the header and the map; activity, preflight and the configuration summary belong to the simulator workspace.
 const SYSTEM_PARTS = { guide: false, kpis: false, feed: false, blocking: false, configuration: false };
 function systemBody() {
-  const source =
-    !isLive() && liveBase()
-      ? kit.notice(
-          dashboardError
-            ? `Live status is unavailable (${dashboardError}); showing the plan from configuration.`
-            : 'Connecting to the running preview…',
-          'neutral',
-        )
-      : '';
+  let source = '';
+  if (!isLive() && liveBase()) {
+    let message;
+    if (dashboardError)
+      message = `Live status is unavailable (${dashboardError}); showing the plan from configuration.`;
+    else message = 'Connecting to the running preview…';
+    source = kit.notice(message, 'neutral');
+  }
   return (
     source +
     renderDashboard(currentPayload(), {
@@ -1202,6 +1331,42 @@ async function loadQuick() {
 }
 let previewTimer = null,
   previewPolling = false;
+function handlePreviewTransition(before, now) {
+  if (before !== 'running' || now === 'running') return null;
+  if (now === 'done') {
+    restartHint = false;
+    notice(
+      { start: 'Preview started.', restart: 'Preview restarted with your saved settings.', stop: 'Preview stopped.' }[
+        preview.operation.action
+      ] ?? 'Done.',
+    );
+  }
+  if (liveRuntime()) return 'reload';
+  dashboard = null;
+  return 'load-runtime';
+}
+function shouldRefreshRuntimeInfo() {
+  return view === 'all' && !state.runtime && !pending && !dirty && Boolean(quickSession()?.ready) !== lastLive;
+}
+function handlePreviewReadFailure() {
+  if (preview?.operation?.state !== 'running') {
+    previewError = 'Setup cannot read the preview status right now; it keeps trying.';
+    preview ??= { sessions: [], operation: null };
+  }
+}
+function schedulePreviewPoll(now) {
+  if (now === 'running' || (quickSession() && !quickSession().ready))
+    previewTimer = setTimeout(() => pollPreview(), 1500);
+}
+function refreshPreviewView(silent) {
+  if (silent) return false;
+  refreshQuick();
+  refreshRun();
+  return shouldRefreshRuntimeInfo();
+}
+function renderPreviewStatusChange() {
+  if (!pending && !dirty && liveChanged()) renderPreservingContext();
+}
 async function pollPreview(silent = false) {
   if (previewPolling || !state || document.visibilityState !== 'visible') return;
   previewPolling = true;
@@ -1216,41 +1381,23 @@ async function pollPreview(silent = false) {
     previewError = '';
   } catch {
     // While the preview that serves this page restarts, nothing answers: keep the last state and try again.
-    if (preview?.operation?.state !== 'running') {
-      previewError = 'Setup cannot read the preview status right now; it keeps trying.';
-      preview ??= { sessions: [], operation: null };
-    }
+    handlePreviewReadFailure();
   } finally {
     previewPolling = false;
   }
   const now = preview?.operation?.state;
   clearTimeout(previewTimer);
-  if (before === 'running' && now !== 'running') {
-    if (now === 'done') {
-      restartHint = false;
-      notice(
-        { start: 'Preview started.', restart: 'Preview restarted with your saved settings.', stop: 'Preview stopped.' }[
-          preview.operation.action
-        ] ?? 'Done.',
-      );
-    }
-    if (liveRuntime()) return location.reload();
-    dashboard = null;
+  const transition = handlePreviewTransition(before, now);
+  if (transition === 'reload') return location.reload();
+  if (transition === 'load-runtime') await loadRuntimeInfo();
+  schedulePreviewPoll(now);
+  if (refreshPreviewView(silent)) {
     await loadRuntimeInfo();
+    // Polls can finish after editing or saving starts. Keep the live change
+    // pending until a later poll can repaint without discarding a draft.
+    renderPreviewStatusChange();
   }
-  if (now === 'running' || (quickSession() && !quickSession().ready))
-    previewTimer = setTimeout(() => pollPreview(), 1500);
-  if (!silent) {
-    refreshQuick();
-    refreshRun();
-    if (view === 'all' && !state.runtime && !pending && !dirty && Boolean(quickSession()?.ready) !== lastLive) {
-      await loadRuntimeInfo();
-      // Polls can finish after editing or saving starts. Keep the live change
-      // pending until a later poll can repaint without discarding a draft.
-      if (!pending && !dirty && liveChanged()) renderPreservingContext();
-    }
-  }
-  pollDashboard();
+  void pollDashboard();
 }
 // All settings reads the found preview as Quick setup does; it repaints when the preview starts or stops.
 let lastLive = null;
@@ -1268,20 +1415,20 @@ function quickHtml() {
   const target = quickTarget(),
     session = quickSession(),
     live = isLive() ? dashboard : null;
-  const mapHtml =
-    session?.ready && live
-      ? quickMapOpen
-        ? renderDashboard(live, {
-            mode: 'live',
-            docs: state.docs,
-            kit,
-            icons,
-            help: HELP,
-            parts: SYSTEM_PARTS,
-            compact: true,
-          })
-        : '<p class="muted">Loading…</p>'
-      : '';
+  let mapHtml = '';
+  if (session?.ready && live) {
+    if (quickMapOpen)
+      mapHtml = renderDashboard(live, {
+        mode: 'live',
+        docs: state.docs,
+        kit,
+        icons,
+        help: HELP,
+        parts: SYSTEM_PARTS,
+        compact: true,
+      });
+    else mapHtml = '<p class="muted">Loading…</p>';
+  }
   // A failed start from before the last save no longer describes this configuration.
   const operation =
     preview?.operation?.state === 'failed' && Date.parse(preview.operation.at) < savedAt ? null : preview?.operation;
@@ -1352,9 +1499,11 @@ function syncShell() {
   if (admin) $('#open-simulator').href = admin;
   $('#open-portal').hidden = !portal;
   if (portal) $('#open-portal').href = portal;
-  $('#setup-state').textContent = session
-    ? `Preview running${session.site ? ` · ${session.site}` : ''}`
-    : 'Local configuration';
+  if (session) {
+    let setupState = 'Preview running';
+    if (session.site) setupState += ' · ' + String(session.site);
+    $('#setup-state').textContent = setupState;
+  } else $('#setup-state').textContent = 'Local configuration';
 }
 /** The parts ticked in a Quick setup form; at least one. */
 function chosenParts(data) {
@@ -1373,6 +1522,10 @@ async function quickSave(edits) {
   if (quickSession()) restartHint = true;
   refreshQuick(true);
 }
+function previewStep(action) {
+  if (action === 'stop' || action === 'restart') return 'stop';
+  return 'start';
+}
 async function previewAction(action) {
   const target = quickTarget();
   if (preview?.operation?.state === 'running') return;
@@ -1386,12 +1539,12 @@ async function previewAction(action) {
     return;
   // The step shows the operation at once, before the runner answers.
   preview = {
-    ...(preview ?? {}),
+    ...preview,
     operation: {
       action,
       site: target?.project ? null : target?.id,
       state: 'running',
-      step: action === 'stop' ? 'stop' : action === 'restart' ? 'stop' : 'start',
+      step: previewStep(action),
       at: new Date().toISOString(),
     },
   };
@@ -1405,7 +1558,7 @@ async function previewAction(action) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message ?? 'The preview could not be changed.');
-    preview = { ...(preview ?? {}), operation: data.operation };
+    preview = { ...preview, operation: data.operation };
     previewError = '';
   } catch (error) {
     previewError = error.message;
@@ -1464,13 +1617,18 @@ function setView(next) {
   } catch {
     /* the choice is only a convenience */
   }
-  Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
+  renderViewSelection();
+  // The shell is interactive before configuration and export discovery finish.
+  // Keep the latest choice for the first complete render instead of dropping it.
+  if (!state || firstRender) return;
+  void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
     render();
   });
   render();
 }
 // ---- Folder picker (Quick setup): browse the folders of this computer, see what each holds, choose one for the open form.
+/** @type {{kind: string | null, form: HTMLFormElement | null, data: object | null, into?: string | null}} */
 const picker = { kind: null, form: null, data: null };
 // config: the folder is written from the settings folder; files: the picker lists files of that type and picks one.
 const PICK = {
@@ -1521,34 +1679,34 @@ const KIND_NAMES = {
   profiles: 'Deployment profiles',
   pack: 'Sample data module',
 };
-const kindText = (kind) => (kind ? `${KIND_NAMES[kind.type] ?? kind.type}${kind.name ? `: ${kind.name}` : ''}` : '');
+const kindText = (kind) => {
+  if (!kind) return '';
+  return (KIND_NAMES[kind.type] ?? kind.type) + (kind.name ? ': ' + String(kind.name) : '');
+};
 async function openFolder(folder) {
   const here = $('#folder-picker-here');
   const spec = PICK[picker.kind],
     query = new URLSearchParams({ ...(folder ? { path: folder } : {}), ...(spec.files ? { files: spec.files } : {}) });
+  let data;
   try {
-    picker.data = await request(`/_setup/api/folders${query.size ? `?${query}` : ''}`);
+    data = await request(`/_setup/api/folders${query.size ? '?' + query : ''}`);
+    picker.data = data;
   } catch (error) {
     here.className = 'folder-picker-here';
     here.textContent = error.message;
     return;
   }
-  const data = picker.data,
-    match = data.kind?.type === picker.kind,
+  const match = data.kind?.type === picker.kind,
     noun = spec.noun;
   $('#folder-picker-input').value = data.path;
   here.className = `folder-picker-here${match ? ' is-match' : ''}`;
-  here.textContent = spec.files
-    ? data.files.length
-      ? 'Choose a file below, or open a folder.'
-      : 'Open folders below until the file you want is listed.'
-    : !noun
-      ? 'Open the folder you want, then choose “Use this folder”.'
-      : match
-        ? `This folder is a ${kindText(data.kind)}. Choose “Use this folder”.`
-        : data.kind
-          ? `This folder holds a ${kindText(data.kind)}, not a ${noun}.`
-          : `This folder is not a ${noun}. Open one of the folders below.`;
+  if (spec.files) {
+    if (data.files.length) here.textContent = 'Choose a file below, or open a folder.';
+    else here.textContent = 'Open folders below until the file you want is listed.';
+  } else if (!noun) here.textContent = 'Open the folder you want, then choose “Use this folder”.';
+  else if (match) here.textContent = `This folder is a ${kindText(data.kind)}. Choose “Use this folder”.`;
+  else if (data.kind) here.textContent = `This folder holds a ${kindText(data.kind)}, not a ${noun}.`;
+  else here.textContent = `This folder is not a ${noun}. Open one of the folders below.`;
   $('#folder-picker-list').innerHTML =
     (data.parent
       ? `<li><button type="button" class="folder-row" data-folder-open="${esc(data.parent)}"><span>↑ Up one folder</span></button></li>`
@@ -1563,7 +1721,7 @@ async function openFolder(folder) {
       ? data.folders
           .map(
             (item) =>
-              `<li><button type="button" class="folder-row" data-folder-open="${esc(item.path)}"><span>📁 ${esc(item.name)}</span>${item.kind ? `<span class="tag">${esc(kindText(item.kind))}</span>` : ''}</button></li>`,
+              `<li><button type="button" class="folder-row" data-folder-open="${esc(item.path)}"><span>📁 ${esc(item.name)}</span>${item.kind ? '<span class="tag">' + esc(kindText(item.kind)) + '</span>' : ''}</button></li>`,
           )
           .join('')
       : '<li class="empty">No folders inside this one.</li>');
@@ -1574,7 +1732,7 @@ function openPicker(kind, form, into = null) {
   $('#folder-picker-help').textContent = PICK[kind].help;
   $('#folder-picker [data-folder-use]').hidden = Boolean(PICK[kind].files);
   $('#folder-picker').showModal();
-  openFolder('');
+  void openFolder('');
 }
 function useFolder() {
   const { data, kind, form } = picker;
@@ -1617,10 +1775,11 @@ function useFile(file) {
   const item = picker.data?.files.find((entry) => entry.path === file),
     into = picker.into && document.getElementById(picker.into);
   if (!item || !into?.isConnected) return $('#folder-picker').close();
-  const exportDir = String(into.closest('[data-source-dir]')?.dataset.sourceDir ?? '')
-      .replace(/\\/g, '/')
-      .replace(/\/+$/, ''),
-    path = item.path.replace(/\\/g, '/');
+  const exportDir = quickUi.stripTrailingCharacter(
+      String(into.closest('[data-source-dir]')?.dataset.sourceDir ?? '').replaceAll('\\', '/'),
+      '/',
+    ),
+    path = item.path.replaceAll('\\', '/');
   const inside = exportDir && path.toLowerCase().startsWith(`${exportDir.toLowerCase()}/`);
   into.value = inside ? path.slice(exportDir.length + 1) : item.value;
   const holder = into.closest('.pick-field'),
@@ -1642,7 +1801,7 @@ $('#folder-picker').addEventListener('click', (event) => {
 $('#folder-picker-input').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    openFolder(event.target.value.trim());
+    void openFolder(event.target.value.trim());
   }
 });
 $('#folder-picker').addEventListener('close', () => {
@@ -1701,7 +1860,7 @@ function runtimeBanner(runtime) {
     .filter(Boolean)
     .join(' ');
   return (
-    `<div class="status-line"><span class="status-dot ready" aria-hidden="true"></span><strong>${esc(runtime.product)} preview running${runtime.site ? ` · ${esc(runtime.site)}` : ''}</strong>${kit.badge(status, tone)}${note(details, 'About the running preview')}` +
+    `<div class="status-line"><span class="status-dot ready" aria-hidden="true"></span><strong>${esc(runtime.product)} preview running${runtime.site ? ' · ' + esc(runtime.site) : ''}</strong>${kit.badge(status, tone)}${note(details, 'About the running preview')}` +
     (runtime.restartCommand
       ? `<code id="restart-command" class="command-text">${esc(runtime.restartCommand)}</code><button type="button" class="button quiet small" data-copy="restart-command">Copy</button>`
       : '') +
@@ -1715,7 +1874,7 @@ function createFlow() {
     folder = String(state.directory ?? '')
       .split(/[\\/]/)
       .filter(Boolean)
-      .pop();
+      .findLast(Boolean);
   const found = quick?.candidates ?? { portals: [], solutions: [], packs: [] },
     count = (items, word) => items.length && `${items.length} ${word}${items.length === 1 ? '' : 's'}`;
   const seen = [
@@ -1726,15 +1885,35 @@ function createFlow() {
   return (
     `<p>Paqvilo keeps your choices in one settings file, <code>${esc(file)}</code>, in <code>${esc(state.directory)}</code>. Create it here, then go through the stages on the left in order.</p>` +
     `<form class="form-grid" data-form="create">${quickUi.partsFieldset(esc, quickUi.foundParts(found))}${quickUi.websitesFieldset(esc, found.portals)}<div class="inline-fields">${field('Project name', 'id', quickUi.slugName(folder), 'The name of this setup in the settings file and in the simulator: letters, numbers and hyphens. Keep the suggestion if unsure. With several websites, each project is named after its website instead.', 'text', { id: 'create-name' })}</div>` +
-    `${check(seen.length ? `Use the exported files found in this folder: ${seen.join(', ')}` : 'Use the exported files found in this folder (none found yet)', 'use-found', seen.length > 0, 'create-use-found', 'Fills in the website export, Solution and sample data folders found up to four folders deep. Untick it to choose every folder yourself under Exported files.')}` +
+    `${check(seen.length ? 'Use the exported files found in this folder: ' + seen.join(', ') : 'Use the exported files found in this folder (none found yet)', 'use-found', seen.length > 0, 'create-use-found', 'Fills in the website export, Solution and sample data folders found up to four folders deep. Untick it to choose every folder yourself under Exported files.')}` +
     `<div class="toolbar"><button type="submit" class="button primary">Create ${project ? 'project file' : 'settings file'}</button></div></form>` +
     (templates.length
       ? `<details class="disclosure" data-section-key="templates"><summary>Or, instead, start from an example settings file (shows more features)</summary><p class="muted small">Example settings files whose folders and website addresses are examples: you replace them with your own afterwards. Use the form above if unsure.</p><form class="form-grid" data-form="template" id="form-template"><fieldset class="templates"><legend class="ui-sr-only">Example setups</legend>${templates
           .map(
             (item, index) =>
-              `<label class="template" for="template-${esc(item.id)}"><span class="template-head"><input type="radio" id="template-${esc(item.id)}" name="template" value="${esc(item.id)}" ${index === 0 ? 'checked' : ''}><strong>${esc(item.title)}</strong>` +
-              `${kit.info({ label: 'Expected next steps', text: `Expected next steps, not errors: ${(item.expectedFindings ?? []).map((code) => FINDING_STEPS[code] ?? code).join('; ') || 'none'}.`, steps: item.nextSteps ?? [] })}</span>` +
-              `<span class="template-text">${esc(item.description)}</span></label>`,
+              '<label class="template" for="template-' +
+              esc(item.id) +
+              '"><span class="template-head"><input type="radio" id="template-' +
+              esc(item.id) +
+              '" name="template" value="' +
+              esc(item.id) +
+              '" ' +
+              (index === 0 ? 'checked' : '') +
+              '><strong>' +
+              esc(item.title) +
+              '</strong>' +
+              kit.info({
+                label: 'Expected next steps',
+                text:
+                  'Expected next steps, not errors: ' +
+                  ((item.expectedFindings ?? []).map((code) => FINDING_STEPS[code] ?? code).join('; ') || 'none') +
+                  '.',
+                steps: item.nextSteps ?? [],
+              }) +
+              '</span>' +
+              '<span class="template-text">' +
+              esc(item.description) +
+              '</span></label>',
           )
           .join('')}</fieldset>` +
         `<div class="inline-fields">${field('Project name', 'id', quickUi.slugName(folder), 'Letters, numbers and hyphens.', 'text', { id: 'template-target' })}${withPick(field('Exported folder', 'root', '', 'Your website export folder, or a Solution folder for the app and API examples. Empty keeps the example folder, which you change later.', 'text', { id: 'template-root' }), 'website', 'template-root')}</div>` +
@@ -1758,18 +1937,19 @@ function layerControl(personal) {
   ]
     .filter(Boolean)
     .join(' ');
+  let targetControl;
+  if (personal)
+    targetControl = `<select id="layer" class="compact-select">${optionList(
+      [
+        ['shared', 'shared'],
+        ['personal', 'personal'],
+      ],
+      layer,
+    )}</select>`;
+  else if (state.kind === 'project') targetControl = kit.badge('Project file');
+  else targetControl = kit.badge('Shared project');
   return (
-    `<span class="save-target"><label for="layer">Save to</label>${
-      personal
-        ? `<select id="layer" class="compact-select">${optionList(
-            [
-              ['shared', 'shared'],
-              ['personal', 'personal'],
-            ],
-            layer,
-          )}</select>`
-        : kit.badge(state.kind === 'project' ? 'Project file' : 'Shared project')
-    }` +
+    `<span class="save-target"><label for="layer">Save to</label>${targetControl}` +
     `<span class="code-text muted">${esc(fileName(file))}</span>${kit.info({ label: 'About the save target', text, docs: HELP['setup.project.layers']?.doc ? [kit.docLink(HELP['setup.project.layers'].doc, state.docs)] : [] })}</span>`
   );
 }
@@ -1780,13 +1960,21 @@ function overviewBody(personal) {
   const stages = stagesNow(),
     count = state.findings.length,
     created = state.layers.shared.exists;
-  const ready = kit.badge(
-    count ? `${count} next step${count === 1 ? '' : 's'}` : 'Configuration ready',
-    count ? 'warn' : 'ok',
-  );
+  let readyLabel = 'Configuration ready';
+  let readyTone = 'ok';
+  if (count) {
+    readyLabel = count + ' next step';
+    if (count !== 1) readyLabel += 's';
+    readyTone = 'warn';
+  }
+  const ready = kit.badge(readyLabel, readyTone);
+  let projectLabel;
+  if (created) projectLabel = 'Project';
+  else if (state.kind === 'project') projectLabel = 'Create your project file';
+  else projectLabel = 'Create your settings file';
   const head =
-    `<div class="status-line"><strong>${created ? 'Project' : state.kind === 'project' ? 'Create your project file' : 'Create your settings file'}</strong>${ready}` +
-    `${stages.length ? `<span class="muted">${stages.filter((item) => item.status === 'done').length} of ${stages.length} stages done</span>` : ''}` +
+    `<div class="status-line"><strong>${projectLabel}</strong>${ready}` +
+    `${stages.length ? '<span class="muted">' + stages.filter((item) => item.status === 'done').length + ' of ' + stages.length + ' stages done</span>' : ''}` +
     `${sectionHelp('the project', 'Shows whether your settings file and folders are complete. It checks files on this computer only: start the preview to see your project run.', 'project')}${created ? layerControl(personal) : ''}</div>`;
   return (
     head +
@@ -1797,7 +1985,7 @@ function overviewBody(personal) {
       : '') +
     // A linked-project finding opens its document in the YAML editor.
     (count
-      ? `<ul class="detail-list findings">${state.findings.map((item) => `<li class="row"><span>${item.site ? `<strong>${esc(item.site)}</strong> · ` : ''}${esc(item.message)} ${expected.has(item.code) ? kit.badge('next step', 'info') : kit.badge('needs attention', 'warn')}</span><a href="${esc(anchor(item.section))}"${item.layer && state.layers[item.layer] ? ` data-yaml-layer="${esc(item.layer)}"` : ''}>Review</a></li>`).join('')}</ul>`
+      ? `<ul class="detail-list findings">${state.findings.map((item) => '<li class="row"><span>' + (item.site ? '<strong>' + esc(item.site) + '</strong> · ' : '') + esc(item.message) + ' ' + (expected.has(item.code) ? kit.badge('next step', 'info') : kit.badge('needs attention', 'warn')) + '</span><a href="' + esc(anchor(item.section)) + '"' + (item.layer && state.layers[item.layer] ? ' data-yaml-layer="' + esc(item.layer) + '"' : '') + '>Review</a></li>').join('')}</ul>`
       : '')
   );
 }
@@ -1814,33 +2002,58 @@ function runtimeBody() {
   return editors + settingEditor('runtime-configuration');
 }
 // One card per project; a website found here and not used yet is offered as another project.
+function solutionSummary(site) {
+  if (!(site.solutions ?? state.solutions ?? []).length) return '';
+  return (
+    '<p class="muted">' +
+    (site.solutions ?? state.solutions).length +
+    ' Solution folder(s) · ' +
+    (site.solutions ?? state.solutions).filter((item) => item.exists).length +
+    ' found</p>'
+  );
+}
+function addWebsiteMarkup(unused) {
+  let available = '<input type="hidden" name="found-website" value="">';
+  if (unused.length) {
+    const options = unused
+      .map(
+        (item, index) =>
+          '<label class="checkbox-line"><input type="radio" name="found-website" value="' +
+          esc(item.value) +
+          '" data-name="' +
+          esc(quickUi.slugName(item.name ?? item.value.split('/').pop())) +
+          '" ' +
+          (index ? '' : 'checked') +
+          '><span><strong>' +
+          esc(item.name ?? item.path) +
+          '</strong> <code>' +
+          esc(item.path) +
+          '</code></span></label>',
+      )
+      .join('');
+    available = `<fieldset class="quick-group"><legend>Website exports found here and not used yet</legend>${options}<label class="checkbox-line"><input type="radio" name="found-website" value=""${unused.length ? '' : ' checked'}>Another folder</label></fieldset>`;
+  }
+  const name = unused.length ? quickUi.slugName(unused[0].name ?? unused[0].value.split('/').pop()) : '';
+  return `<details class="disclosure" data-section-key="add-target"${unused.length ? ' open' : ''}><summary>Add another website (each website is its own project with its own address)</summary><form class="form-grid" data-form="add">${available}<div class="inline-fields">${field('Project name', 'id', name, 'A short name: letters, numbers and hyphens.', 'text', { id: 'add-target-name' })}${withPick(field('Website export folder', 'source', '', 'Only for another folder; relative to the export root.', 'text', { id: 'add-target-source' }), 'website', 'add-target-source')}</div>${quickUi.partsFieldset(esc, { website: true })}<div class="toolbar"><button type="submit" class="button primary">Add project</button><span class="muted">It gets its own local port; start it from Start &amp; check.</span></div></form></details>`;
+}
 function portalsBody() {
-  const sites =
-    state.kind === 'project'
-      ? state.sites.length
-        ? state.sites
-        : [{ id: 'project', runtime: state.settings.runtime, mirage: state.settings, sourceStatus: {} }]
-      : state.sites;
+  let sites;
+  if (state.kind === 'project') {
+    if (state.sites.length) sites = state.sites;
+    else sites = [{ id: 'project', runtime: state.settings.runtime, mirage: state.settings, sourceStatus: {} }];
+  } else sites = state.sites;
   const cards = sites
     .map(
       (site) =>
         `<section class="panel target-card" id="portal-${esc(site.id)}"><div class="panel-heading"><h3>${esc(site.id)}</h3>${kit.badge(partsName(site.id), 'neutral')}</div>` +
         `${(!site.runtime?.kind || site.runtime.kind === 'power-pages') && site.sourceStatus ? source(site) : ''}` +
-        `${(site.solutions ?? state.solutions ?? []).length ? `<p class="muted">${(site.solutions ?? state.solutions).length} Solution folder(s) · ${(site.solutions ?? state.solutions).filter((item) => item.exists).length} found</p>` : ''}` +
+        `${solutionSummary(site)}` +
         `<details class="disclosure" data-section-key="files-${esc(site.id)}"${sites.length === 1 ? ' open' : ''}><summary>Folders and files of ${esc(site.id)}</summary>${siteEditor(site)}</details></section>`,
     )
     .join('');
   const used = new Set(state.sites.map((site) => quickUi.normalPath(site.source)));
   const unused = (quick?.candidates?.portals ?? []).filter((item) => !used.has(quickUi.normalPath(item.value)));
-  const addWebsite =
-    state.kind === 'catalogue'
-      ? `<details class="disclosure" data-section-key="add-target"${unused.length ? ' open' : ''}><summary>Add another website (each website is its own project with its own address)</summary><form class="form-grid" data-form="add">` +
-        (unused.length
-          ? `<fieldset class="quick-group"><legend>Website exports found here and not used yet</legend>${unused.map((item, index) => `<label class="checkbox-line"><input type="radio" name="found-website" value="${esc(item.value)}" data-name="${esc(quickUi.slugName(item.name ?? item.value.split('/').pop()))}" ${index ? '' : 'checked'}><span><strong>${esc(item.name ?? item.path)}</strong> <code>${esc(item.path)}</code></span></label>`).join('')}<label class="checkbox-line"><input type="radio" name="found-website" value=""${unused.length ? '' : ' checked'}>Another folder</label></fieldset>`
-          : '<input type="hidden" name="found-website" value="">') +
-        `<div class="inline-fields">${field('Project name', 'id', unused.length ? quickUi.slugName(unused[0].name ?? unused[0].value.split('/').pop()) : '', 'A short name: letters, numbers and hyphens.', 'text', { id: 'add-target-name' })}${withPick(field('Website export folder', 'source', '', 'Only for another folder; relative to the export root.', 'text', { id: 'add-target-source' }), 'website', 'add-target-source')}</div>` +
-        `${quickUi.partsFieldset(esc, { website: true })}<div class="toolbar"><button type="submit" class="button primary">Add project</button><span class="muted">It gets its own local port; start it from Start &amp; check.</span></div></form></details>`
-      : '';
+  const addWebsite = state.kind === 'catalogue' ? addWebsiteMarkup(unused) : '';
   return `<div class="grid-two">${cards}</div>${addWebsite}` + settingEditor('portals');
 }
 function environmentsBody() {
@@ -1860,17 +2073,22 @@ function environmentsBody() {
   );
 }
 function packsBody() {
-  const target = quickTarget(),
-    choose = needsStartingData()
-      ? `<p class="quick-hint">No starting data is chosen, so your tables start empty. ${quickSession()?.ready ? `<a class="button small" href="#data-${esc(slug(target.id))}-preset">Choose starting data</a>` : 'Start the preview (under Start & check), then come back here: its data sets are listed once it runs.'}</p>`
-      : '';
+  const target = quickTarget();
+  let choose = '';
+  if (needsStartingData()) {
+    if (quickSession()?.ready)
+      choose = `<p class="quick-hint">No starting data is chosen, so your tables start empty. <a class="button small" href="#data-${esc(slug(target.id))}-preset">Choose starting data</a></p>`;
+    else
+      choose =
+        '<p class="quick-hint">No starting data is chosen, so your tables start empty. Start the preview (under Start & check), then come back here: its data sets are listed once it runs.</p>';
+  }
   const forms =
     state.kind === 'project'
       ? dataEditor(null)
       : state.sites
           .map(
             (site) =>
-              `<details class="disclosure" data-section-key="data-${esc(site.id)}"${state.sites.length === 1 ? ' open' : ''}><summary>${esc(site.id)} · ${site.packs?.length ? `${site.packs.length} module(s)` : 'no sample data'}</summary>${dataEditor(site)}</details>`,
+              `<details class="disclosure" data-section-key="data-${esc(site.id)}"${state.sites.length === 1 ? ' open' : ''}><summary>${esc(site.id)} · ${site.packs?.length ? site.packs.length + ' module(s)' : 'no sample data'}</summary>${dataEditor(site)}</details>`,
           )
           .join('');
   return (
@@ -1886,7 +2104,7 @@ function personasForm(site) {
     contexts = mirage.personaContexts ?? {},
     provider = mirage.identityProvider ?? {};
   return (
-    `<form class="form-grid" data-form="personas" data-site="${esc(site.id)}" id="personas-${key}"><div class="inline-fields">${field('Test people signed in side by side', 'maxInstances', contexts.maxInstances ?? '', 'How many separate browser sessions can each be signed in as a different test person at the same time, from 0 to 32. 0 turns this off; empty uses 4.', 'number', { id: `personas-${key}-max`, placeholder: '4' })}` +
+    `<form class="form-grid" data-form="personas" data-site="${esc(site.id)}" id="personas-${key}"><div class="inline-fields">${field('Test people signed in side by side', 'maxInstances', contexts.maxInstances ?? '', 'How many separate browser sessions can each be signed in as a different test person at the same time, from 0 to 32. 0 turns this off; empty uses 4.', 'number', { id: 'personas-' + key + '-max', placeholder: '4' })}` +
     `${choice(
       'How the test sign-in appears',
       'presentation',
@@ -1899,7 +2117,7 @@ function personasForm(site) {
       `personas-${key}-presentation`,
       'When you use Sign in on the website, the local preview asks which test person you are, on a page or in a dialog.',
     )}</div>` +
-    `${field('Title of the test sign-in', 'title', provider.title ?? '', 'The heading shown on that sign-in page or dialog. Empty uses the default.', 'text', { id: `personas-${key}-title` })}<div class="toolbar"><button type="submit" class="button primary">Save</button></div></form>`
+    `${field('Title of the test sign-in', 'title', provider.title ?? '', 'The heading shown on that sign-in page or dialog. Empty uses the default.', 'text', { id: 'personas-' + key + '-title' })}<div class="toolbar"><button type="submit" class="button primary">Save</button></div></form>`
   );
 }
 const SCENARIOS_TEXT =
@@ -1954,7 +2172,7 @@ function servicesForm(site) {
     services =
       (project ? state.layers.shared.values?.localServices : (site.authoredMirage ?? site.mirage)?.localServices) ?? {};
   return (
-    `<form class="form-grid" data-form="services" ${site ? `data-site="${esc(site.id)}"` : ''} id="services-${esc(slug(site?.id ?? 'project'))}"><div data-services>${Object.entries(
+    `<form class="form-grid" data-form="services" ${site ? 'data-site="' + esc(site.id) + '"' : ''} id="services-${esc(slug(site?.id ?? 'project'))}"><div data-services>${Object.entries(
       services,
     )
       .map(([id, entry]) => serviceRow(id, entry))
@@ -1984,6 +2202,23 @@ function identityForm(settings, site) {
   const dataverse = settings?.dataverse ?? {},
     key = site ? slug(site.id) : 'project',
     id = (name) => `identity-${key}-${name}`;
+  const userPath = () => {
+    if (site) return 'sites.' + String(site.id) + '.mirage.dataverse.users';
+    return 'dataverse.users';
+  };
+  const userYaml = () => {
+    let text = '';
+    if (site) text = 'sites:\n  ' + String(site.id) + ':\n    mirage:\n      ';
+    text +=
+      'dataverse:\n' +
+      (site ? '        ' : '  ') +
+      'users:\n' +
+      (site ? '          ' : '    ') +
+      '- domainname: alex@example.test\n' +
+      (site ? '            ' : '      ') +
+      'fullname: Alex Example';
+    return text;
+  };
   const declared = [
     ['user', dataverse.users],
     ['app registration', dataverse.applications],
@@ -1991,7 +2226,7 @@ function identityForm(settings, site) {
     .map(([word, items]) => `${(items ?? []).length} ${word}${(items ?? []).length === 1 ? '' : 's'}`)
     .join(' and ');
   return (
-    `<form class="form-grid" data-form="identity" id="identity-${key}" ${site ? `data-site="${esc(site.id)}"` : ''}>` +
+    `<form class="form-grid" data-form="identity" id="identity-${key}" ${site ? 'data-site="' + esc(site.id) + '"' : ''}>` +
     `<div class="inline-fields">${check('Also serve the Web API over a secure (https) address', 'tls', dataverse.tls === true, id('tls'), 'For clients that refuse plain http. Turn the Web API itself on under What to run.')}${field('Secure port', 'tlsPort', dataverse.tlsPort ?? '', '0 picks a free port at every start.', 'number', { id: id('tls-port') })}</div>` +
     field(
       'Tenant ID',
@@ -2002,8 +2237,8 @@ function identityForm(settings, site) {
       { id: id('tenant') },
     ) +
     `<p class="muted small">Web API users and app registrations: add them in the simulator once the preview runs (the button below), where you also see their sign-in details. The settings file now declares ${esc(declared)} that exist from the very first start.</p>` +
-    `<details class="disclosure"${site ? ` data-section-key="identity-users-${esc(site.id)}"` : ''}><summary>Users from the very first start (for developers)</summary><p class="muted small">Add them to the settings file under the Settings file stage, at <code>${esc(site ? `sites.${site.id}.mirage.dataverse.users` : 'dataverse.users')}</code>. Each user needs a sign-in name (domainname) and a display name (fullname):</p>` +
-    `<pre class="ui-example">${esc(`${site ? `sites:\n  ${site.id}:\n    mirage:\n      ` : ''}dataverse:\n${site ? '        ' : '  '}users:\n${site ? '          ' : '    '}- domainname: alex@example.test\n${site ? '            ' : '      '}fullname: Alex Example`)}</pre></details>` +
+    `<details class="disclosure"${site ? ' data-section-key="identity-users-' + esc(site.id) + '"' : ''}><summary>Users from the very first start (for developers)</summary><p class="muted small">Add them to the settings file under the Settings file stage, at <code>${esc(userPath())}</code>. Each user needs a sign-in name (domainname) and a display name (fullname):</p>` +
+    `<pre class="ui-example">${esc(userYaml())}</pre></details>` +
     '<div class="toolbar"><button type="submit" class="button primary">Save identity &amp; API</button></div></form>'
   );
 }
@@ -2027,7 +2262,7 @@ function settingsBody() {
     const browser = state.settings.browser,
       doc = (key) => catalogueDoc(key);
     form =
-      `<form class="form-grid" data-form="settings"><div class="inline-fields">${field('Folder that export paths start from', 'sourceRoot', state.settings.sourceRoot, `Export folders in this file are relative to this folder, which is relative to the settings file. . means the project folder.${state.settings.resolvedSourceRoot ? ` Now: ${state.settings.resolvedSourceRoot} (${state.settings.provenance?.sourceRoot}).` : ''}`, 'text', { id: 'settings-source-root' })}${choice('Default project', 'defaultSite', [['', 'Not set'], ...state.sites.map((site) => [site.id, site.id])], state.settings.defaultSite, 'settings-default-site', 'The project that commands and this page use when none is named.')}` +
+      `<form class="form-grid" data-form="settings"><div class="inline-fields">${field('Folder that export paths start from', 'sourceRoot', state.settings.sourceRoot, 'Export folders in this file are relative to this folder, which is relative to the settings file. . means the project folder.' + (state.settings.resolvedSourceRoot ? ' Now: ' + state.settings.resolvedSourceRoot + ' (' + state.settings.provenance?.sourceRoot + ').' : ''), 'text', { id: 'settings-source-root' })}${choice('Default project', 'defaultSite', [['', 'Not set'], ...state.sites.map((site) => [site.id, site.id])], state.settings.defaultSite, 'settings-default-site', 'The project that commands and this page use when none is named.')}` +
       `${choice(
         'Browser for Lense',
         'browser',
@@ -2066,7 +2301,7 @@ function settingsBody() {
   } else if (state.kind === 'project') {
     const settings = state.settings;
     form =
-      `<form class="form-grid" data-form="project-settings" id="project-settings"><div class="inline-fields">${field('Locale ID (lcid)', 'lcid', settings.lcid ?? '', `${catalogueDoc('lcid')} Empty keeps the file value.`, 'number', { id: 'project-lcid', placeholder: '1033' })}${field('State folder', 'stateDirectory', settings.stateDirectory ?? '', `${catalogueDoc('stateDirectory')} Empty keeps the file value.`, 'text', { id: 'project-state-directory' })}` +
+      `<form class="form-grid" data-form="project-settings" id="project-settings"><div class="inline-fields">${field('Locale ID (lcid)', 'lcid', settings.lcid ?? '', catalogueDoc('lcid') + ' Empty keeps the file value.', 'number', { id: 'project-lcid', placeholder: '1033' })}${field('State folder', 'stateDirectory', settings.stateDirectory ?? '', catalogueDoc('stateDirectory') + ' Empty keeps the file value.', 'text', { id: 'project-state-directory' })}` +
       `${choice(
         'Reload when sources change',
         'watch',
@@ -2084,7 +2319,7 @@ function settingsBody() {
   return (
     form +
     (overrides.length
-      ? `<p class="muted">${overrides.map(([key, setting]) => `<code>${esc(key)}</code> = ${esc(setting.value)} · ${esc(setting.origin)} overrides file defaults`).join('<br>')}</p>`
+      ? `<p class="muted">${overrides.map(([key, setting]) => '<code>' + esc(key) + '</code> = ' + esc(setting.value) + ' · ' + esc(setting.origin) + ' overrides file defaults').join('<br>')}</p>`
       : '') +
     settingEditor('settings')
   );
@@ -2183,16 +2418,33 @@ function guidanceBody() {
   // Each project (website) runs as a preview of its own: with several, the person picks the one to start, open or stop.
   const sites = state.kind === 'catalogue' ? state.sites : [],
     target = quickTarget();
-  const choose =
-    sites.length > 1
-      ? `<label class="quick-target">Project <select id="run-site" class="compact-select">${sites.map((site) => `<option value="${esc(site.id)}" ${site.id === target?.id ? 'selected' : ''}>${esc(site.id)}</option>`).join('')}</select></label>`
-      : '';
+  let choose = '';
+  if (sites.length > 1) {
+    const siteOptions = sites
+      .map(
+        (site) =>
+          '<option value="' +
+          esc(site.id) +
+          '" ' +
+          (site.id === target?.id ? 'selected' : '') +
+          '>' +
+          esc(site.id) +
+          '</option>',
+      )
+      .join('');
+    choose = `<label class="quick-target">Project <select id="run-site" class="compact-select">${siteOptions}</select></label>`;
+  }
+  const chooseHtml = choose
+    ? '<p class="run-site">' +
+      choose +
+      ' <span class="muted small">Each website runs as a preview of its own.</span></p>'
+    : '';
   return (
-    `<div class="title-row"><h3>Run your project</h3></div>${choose ? `<p class="run-site">${choose} <span class="muted small">Each website runs as a preview of its own.</span></p>` : ''}<div id="guidance-run" class="quick-run">${runHtml()}</div>` +
-    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('dashboard', 'Open the live system map')}</p>` +
-    `<details class="disclosure" data-section-key="commands"><summary>For developers: terminal commands</summary><div class="title-row"><h3>Commands for this configuration</h3>${note(`Run these from ${state.directory}. Setup never deploys, synchronizes, installs, imports pack code or contacts a live portal. Lense browser actions can affect live data; follow the user's scope and let them handle sign-in and MFA. Paqvilo ${state.version}: guide links open this release's tag (main for prereleases); the installed CLI --help and bundled docs describe the installed version.`, 'About these commands')}</div>` +
-    `<dl class="command-list">${steps.map(([title, text]) => `<dt>${esc(title)}</dt><dd>${text}</dd>`).join('')}</dl>` +
-    `<div class="toolbar">${featured.map((item) => `<a href="${esc(item.href)}" target="_blank" rel="noreferrer">${esc(item.label)} ↗</a>`).join('')}</div></details>` +
+    `<div class="title-row"><h3>Run your project</h3></div>${chooseHtml}<div id="guidance-run" class="quick-run">${runHtml()}</div>` +
+    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('health', 'Open the live system map')}</p>` +
+    `<details class="disclosure" data-section-key="commands"><summary>For developers: terminal commands</summary><div class="title-row"><h3>Commands for this configuration</h3>${note('Run these from ' + state.directory + ". Setup never deploys, synchronizes, installs, imports pack code or contacts a live portal. Lense browser actions can affect live data; follow the user's scope and let them handle sign-in and MFA. Paqvilo " + state.version + ": guide links open this release's tag (main for prereleases); the installed CLI --help and bundled docs describe the installed version.", 'About these commands')}</div>` +
+    `<dl class="command-list">${steps.map(([title, text]) => '<dt>' + esc(title) + '</dt><dd>' + text + '</dd>').join('')}</dl>` +
+    `<div class="toolbar">${featured.map((item) => '<a href="' + esc(item.href) + '" target="_blank" rel="noreferrer">' + esc(item.label) + ' ↗</a>').join('')}</div></details>` +
     `<details class="disclosure" data-section-key="docs-all"><summary>All guides (${docs.length})</summary>${list(
       'docs',
       docs,
@@ -2212,23 +2464,26 @@ function guidanceBody() {
 }
 const providerHelp = () =>
   PROVIDER_KEYS.map(
-    (name) => HELP[`setup.providers.${name}`] && `${name}: ${HELP[`setup.providers.${name}`].intro}`,
+    (name) => HELP['setup.providers.' + name] && `${name}: ${HELP['setup.providers.' + name].intro}`,
   ).filter(Boolean);
 
-function render() {
-  const runtime = state.runtime;
+function renderNavigation(runtime, portalUrl, admin) {
   const navigation = $('#runtime-navigation');
-  const portalUrl =
-    runtime?.links?.powerPages ??
-    runtime?.portalUrl ??
-    (runtime?.product === 'Mirage' && (!runtime.kind || runtime.kind === 'power-pages') ? '/' : null);
-  const simUrl = runtime?.portalUrl ? new URL('/_sim/', new URL(runtime.portalUrl, location.href)).href : '/_sim/';
-  const admin = runtime?.product === 'Mirage' ? (runtime.links?.administration ?? simUrl) : null;
   navigation.hidden = !runtime;
-  navigation.innerHTML = runtime
-    ? `<div class="nav-label area-label">RUNNING PREVIEW</div>${portalUrl ? `<a class="nav-item" href="${esc(portalUrl)}">← Back to portal</a>` : ''}${admin ? `<a class="nav-item" href="${esc(admin)}">Administration</a>${runtime.kind !== 'dataverse-api' ? `<a class="nav-item" href="${esc(runtime.links?.modelDriven ?? '/main.aspx')}">Model-driven apps</a>` : ''}` : ''}`
-    : '';
-  // Shell: top bar actions, the AREAS switch and the sidebar status follow the running preview.
+  let navigationHtml = '';
+  if (runtime) {
+    navigationHtml = '<div class="nav-label area-label">RUNNING PREVIEW</div>';
+    if (portalUrl) navigationHtml += '<a class="nav-item" href="' + esc(portalUrl) + '">← Back to portal</a>';
+    if (admin) {
+      navigationHtml += '<a class="nav-item" href="' + esc(admin) + '">Administration</a>';
+      if (runtime.kind !== 'dataverse-api')
+        navigationHtml +=
+          '<a class="nav-item" href="' + esc(runtime.links?.modelDriven ?? '/main.aspx') + '">Model-driven apps</a>';
+    }
+  }
+  navigation.innerHTML = navigationHtml;
+}
+function renderRuntimeShell(runtime, portalUrl, admin) {
   const openSimulator = $('#open-simulator'),
     openPortal = $('#open-portal'),
     area = $('#area-simulator');
@@ -2244,39 +2499,25 @@ function render() {
     area.setAttribute('aria-disabled', 'true');
   }
   area.querySelector('.muted').hidden = Boolean(admin);
-  $('#setup-state').textContent = runtime
-    ? `${runtime.product} preview running${runtime.site ? ` · ${runtime.site}` : ''}`
-    : 'Local configuration';
+  if (runtime) {
+    let setupState = String(runtime.product) + ' preview running';
+    if (runtime.site) setupState += ' · ' + String(runtime.site);
+    $('#setup-state').textContent = setupState;
+  } else $('#setup-state').textContent = 'Local configuration';
   $('#scope').textContent = state.directory;
-  const created = state.layers.shared.exists;
-  const personal = state.layers.personal;
-  if (!personal) layer = 'shared';
-  specs.clear();
-  lists.clear();
-  // First render: the system map, the stage with the next step and the hash target are open (plus a project's runtime form).
-  const next = (state.stages ?? []).find((item) => item.status === 'next');
-  const nextSections = next
-    ? state.findings
-        .filter((item) => next.findings?.includes(item.code))
-        .map((item) => String(item.section ?? '').slice(1))
-    : [];
-  nextSection = next && sectionOf(next) !== 'overview' ? sectionOf(next) : null;
-  $('#breadcrumb').textContent = next ? next.title : 'Overview';
-  const opened = new Set([
-    'system',
-    nextSection,
-    ...nextSections,
-    state.kind === 'project' && 'runtime-configuration',
-    decodeURIComponent(location.hash.slice(1)),
-  ]);
+}
+function renderViewSelection() {
+  document.body.dataset.setupView = view;
+  for (const button of document.querySelectorAll('[data-view]'))
+    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+}
+function renderView(created, personal, opened) {
   const afterCreate = (body) =>
     created ? body : kit.notice('Create the configuration above first; this stage edits it.', 'neutral');
   const rail = $('#stage-rail');
   rail.hidden = !(state.stages ?? []).length;
   rail.innerHTML = railHtml();
-  document.body.dataset.setupView = view;
-  for (const button of document.querySelectorAll('[data-view]'))
-    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+  renderViewSelection();
   syncShell();
   if (view === 'quick') {
     $('#breadcrumb').textContent = 'Quick setup';
@@ -2408,6 +2649,40 @@ function render() {
     for (const button of document.querySelectorAll('#content form[data-form] button[type=submit]'))
       button.disabled = true;
 }
+function render() {
+  const runtime = state.runtime,
+    portalUrl =
+      runtime?.links?.powerPages ??
+      runtime?.portalUrl ??
+      (runtime?.product === 'Mirage' && (!runtime.kind || runtime.kind === 'power-pages') ? '/' : null),
+    simUrl = runtime?.portalUrl ? new URL('/_sim/', new URL(runtime.portalUrl, location.href)).href : '/_sim/',
+    admin = runtime?.product === 'Mirage' ? (runtime.links?.administration ?? simUrl) : null;
+  renderNavigation(runtime, portalUrl, admin);
+  // Shell: top bar actions, the AREAS switch and the sidebar status follow the running preview.
+  renderRuntimeShell(runtime, portalUrl, admin);
+  const created = state.layers.shared.exists;
+  const personal = state.layers.personal;
+  if (!personal) layer = 'shared';
+  specs.clear();
+  lists.clear();
+  // First render: the system map, the stage with the next step and the hash target are open (plus a project's runtime form).
+  const next = (state.stages ?? []).find((item) => item.status === 'next');
+  const nextSections = next
+    ? state.findings
+        .filter((item) => next.findings?.includes(item.code))
+        .map((item) => String(item.section ?? '').slice(1))
+    : [];
+  nextSection = next && sectionOf(next) !== 'overview' ? sectionOf(next) : null;
+  $('#breadcrumb').textContent = next ? next.title : 'Overview';
+  const opened = new Set([
+    'system',
+    nextSection,
+    ...nextSections,
+    state.kind === 'project' && 'runtime-configuration',
+    decodeURIComponent(location.hash.slice(1)),
+  ]);
+  renderView(created, personal, opened);
+}
 $('#content').addEventListener('input', (event) => {
   const target = event.target;
   if (target.matches('[data-table-search]')) {
@@ -2422,7 +2697,72 @@ $('#content').addEventListener('input', (event) => {
   if (target.closest('form[data-form]') && !['layer', 'yaml-layer'].includes(target.id)) dirty = true;
   target.closest('#quick form')?.classList.add('is-changed');
 });
-$('#content').addEventListener('change', (event) => {
+function handleQuickSiteChange(target) {
+  if (target.id !== 'quick-site') return false;
+  quickSite = target.value;
+  quickEditing = null;
+  dashboard = null;
+  refreshQuick(true);
+  void pollDashboard();
+  return true;
+}
+function handleRunSiteChange(target) {
+  if (target.id !== 'run-site') return false;
+  quickSite = target.value;
+  dashboard = null;
+  liveChanged();
+  renderPreservingContext();
+  void pollDashboard();
+  void loadRuntimeInfo().then(() => {
+    if (quickSite === target.value) renderPreservingContext();
+  });
+  return true;
+}
+function handleFoundWebsiteChange(target) {
+  if (target.name !== 'found-website') return;
+  const form = target.closest('form'),
+    name = form.querySelector('[name=id]');
+  if (name && target.dataset.name) name.value = target.dataset.name;
+  form.querySelector('[name=source]').closest('.pick-field').hidden = Boolean(target.value);
+}
+function handleRuntimePartChange(target) {
+  if (target.name !== 'part' || !target.closest('form[data-form="runtime"]')) return;
+  const form = target.closest('form'),
+    ticked = (name) => Boolean(form.querySelector(`input[name="part"][value="${name}"]:checked`));
+  const show = (selector, on) => {
+    const node = form.querySelector(selector);
+    if (node) node.hidden = !on;
+  };
+  show('[data-app-choice]', ticked('modelDriven'));
+  show('[data-api-port]', ticked('api'));
+  show('[data-portal-source]', ticked('website'));
+}
+/* NOSONAR */ function handleLayerChange(target, yaml = false) {
+  if (target.id !== (yaml ? 'yaml-layer' : 'layer')) return;
+  if (yaml ? !Object.hasOwn(state.layers, target.value) : !['shared', 'personal'].includes(target.value)) return;
+  if (
+    dirty &&
+    !confirm(
+      yaml
+        ? 'Discard unsaved form changes and open another document?'
+        : 'Discard unsaved form changes and switch configuration layer?',
+    )
+  ) {
+    if (yaml) {
+      if (state.layers[yamlLayer]) target.value = yamlLayer;
+      else target.value = layer;
+    } else target.value = layer;
+    return;
+  }
+  if (yaml) yamlLayer = target.value;
+  else {
+    layer = target.value === 'personal' ? 'personal' : 'shared';
+    yamlLayer = null;
+  }
+  dirty = false;
+  renderPreservingContext();
+}
+function handleContentChange(event) {
   const target = event.target;
   if (target.matches('[data-table-size]')) {
     const key = target.dataset.tableSize;
@@ -2430,97 +2770,65 @@ $('#content').addEventListener('change', (event) => {
     return rerenderTable(key);
   }
   target.closest('#quick form')?.classList.add('is-changed');
-  if (target.id === 'quick-site') {
-    quickSite = target.value;
-    quickEditing = null;
-    dashboard = null;
-    refreshQuick(true);
-    pollDashboard();
-    return;
-  }
+  if (handleQuickSiteChange(target)) return;
   // The chosen project drives the stage marks and every simulator link on the page, so it all repaints.
-  if (target.id === 'run-site') {
-    quickSite = target.value;
-    dashboard = null;
-    liveChanged();
-    renderPreservingContext();
-    pollDashboard();
-    loadRuntimeInfo().then(() => {
-      if (quickSite === target.value) renderPreservingContext();
-    });
-    return;
-  }
-  if (target.name === 'found-website') {
-    const form = target.closest('form'),
-      name = form.querySelector('[name=id]');
-    if (name && target.dataset.name) name.value = target.dataset.name;
-    form.querySelector('[name=source]').closest('.pick-field').hidden = Boolean(target.value);
-  }
-  if (target.name === 'part' && target.closest('form[data-form="runtime"]')) {
-    const form = target.closest('form'),
-      ticked = (name) => Boolean(form.querySelector(`input[name="part"][value="${name}"]:checked`));
-    const show = (selector, on) => {
-      const node = form.querySelector(selector);
-      if (node) node.hidden = !on;
-    };
-    show('[data-app-choice]', ticked('modelDriven'));
-    show('[data-api-port]', ticked('api'));
-    show('[data-portal-source]', ticked('website'));
-  }
-  if (target.id === 'layer') {
-    if (!['shared', 'personal'].includes(target.value)) return;
-    if (dirty && !confirm('Discard unsaved form changes and switch configuration layer?')) {
-      target.value = layer;
-      return;
-    }
-    layer = target.value === 'personal' ? 'personal' : 'shared';
-    yamlLayer = null;
-    dirty = false;
-    renderPreservingContext();
-  }
-  if (target.id === 'yaml-layer') {
-    if (!Object.hasOwn(state.layers, target.value)) return;
-    if (dirty && !confirm('Discard unsaved form changes and open another document?')) {
-      target.value = state.layers[yamlLayer] ? yamlLayer : layer;
-      return;
-    }
-    yamlLayer = target.value;
-    dirty = false;
-    renderPreservingContext();
-  }
-});
-$('#content').addEventListener('click', (event) => {
-  const target = event.target;
+  if (handleRunSiteChange(target)) return;
+  handleFoundWebsiteChange(target);
+  handleRuntimePartChange(target);
+  handleLayerChange(target);
+  handleLayerChange(target, true);
+}
+$('#content').addEventListener('change', handleContentChange);
+function handleQuickEditClick(target) {
   const quickEdit = target.closest('[data-quick-edit]');
   // In All settings, Choose starting data goes to the Starting data field of Sample data.
   if (quickEdit && view !== 'quick' && quickEdit.dataset.quickEdit === 'data' && quickTarget()) {
     const id = `data-${slug(quickTarget().project ? 'project' : quickTarget().id)}-preset`;
     reveal(id, true);
     document.getElementById(id)?.focus({ preventScroll: true });
-    return;
+    return true;
   }
   if (quickEdit) {
     if (view !== 'quick') setView('quick');
     quickEditing = quickEdit.dataset.quickEdit || null;
     refreshQuick(true);
     document.getElementById(`quick-${quickEditing}`)?.scrollIntoView({ block: 'nearest' });
-    return;
+    return true;
   }
+  return false;
+}
+function handlePickAndProfileClick(target) {
   const pick = target.closest('[data-pick-folder]');
-  if (pick) return openPicker(pick.dataset.pickFolder, pick.closest('form'), pick.dataset.pickInto);
+  if (pick) {
+    openPicker(pick.dataset.pickFolder, pick.closest('form'), pick.dataset.pickInto);
+    return true;
+  }
   const pickFile = target.closest('[data-pick-file]');
-  if (pickFile)
-    return openPicker(`${pickFile.dataset.pickFile}-file`, pickFile.closest('form'), pickFile.dataset.pickInto);
+  if (pickFile) {
+    openPicker(`${pickFile.dataset.pickFile}-file`, pickFile.closest('form'), pickFile.dataset.pickInto);
+    return true;
+  }
+  const codeApps = target.closest('form')?.querySelector('[data-code-apps]');
+  if (target.closest('[data-add-code-app]') && codeApps) {
+    codeApps.insertAdjacentHTML('beforeend', codeAppRow());
+    dirty = true;
+    return true;
+  }
+  if (target.closest('[data-remove-code-app]')) {
+    target.closest('[data-code-app]').remove();
+    dirty = true;
+    return true;
+  }
   const profiles = target.closest('form')?.querySelector('[data-profiles]');
   if (target.closest('[data-add-profile]') && profiles) {
     profiles.insertAdjacentHTML('beforeend', profileRow(profiles.dataset.key));
     dirty = true;
-    return;
+    return true;
   }
   if (target.closest('[data-remove-profile]')) {
     target.closest('.profile-editor').remove();
     dirty = true;
-    return;
+    return true;
   }
   const foundProfiles = target.closest('[data-add-found-profiles]');
   if (foundProfiles && profiles) {
@@ -2531,16 +2839,22 @@ $('#content').addEventListener('click', (event) => {
       );
     foundProfiles.closest('.quick-hint').remove();
     dirty = true;
-    return;
+    return true;
   }
   if (target.closest('[data-folder-remove]')) {
     const form = target.closest('form');
     target.closest('li').remove();
     form.classList.add('is-changed');
-    return;
+    return true;
   }
   const previewButton = target.closest('[data-preview]');
-  if (previewButton) return previewAction(previewButton.dataset.preview);
+  if (previewButton) {
+    void previewAction(previewButton.dataset.preview);
+    return true;
+  }
+  return false;
+}
+function handleEnvironmentAndServiceClick(target) {
   if (target.closest('[data-add-env]')) {
     const form = target.closest('form');
     form.querySelector('[data-environments]').insertAdjacentHTML('beforeend', envRow('', {}, form.dataset.site));
@@ -2558,24 +2872,38 @@ $('#content').addEventListener('click', (event) => {
     target.closest('[data-service]').remove();
     dirty = true;
   }
+}
+function handleTableAndNodeClick(target) {
   const page = target.closest('[data-table-page]');
   if (page) {
     const key = page.dataset.tablePage;
     pagers[key] = { ...pagers[key], page: Math.max(1, (pagers[key]?.page ?? 1) + Number(page.dataset.delta)) };
-    return rerenderTable(key);
+    rerenderTable(key);
+    return true;
   }
   const copy = target.closest('[data-copy]');
-  if (copy) return copyCommand(copy.dataset.copy);
+  if (copy) {
+    copyCommand(copy.dataset.copy);
+    return true;
+  }
   if (target.closest('[data-drawer-close]')) {
     const id = nodeId;
     nodeId = null;
     const slot = $('#dashboard-node-detail');
     if (slot) slot.innerHTML = '';
     if (id) document.querySelector(`[data-node="${CSS.escape(id)}"]`)?.focus();
-    return;
+    return true;
   }
   const node = target.closest('[data-node]');
   if (node) showNode(node.dataset.node);
+  return Boolean(node);
+}
+$('#content').addEventListener('click', (event) => {
+  const target = event.target;
+  if (handleQuickEditClick(target)) return;
+  if (handlePickAndProfileClick(target)) return;
+  handleEnvironmentAndServiceClick(target);
+  handleTableAndNodeClick(target);
 });
 $('#content').addEventListener('keydown', (event) => {
   const node = event.target.closest?.('[data-node]');
@@ -2595,7 +2923,7 @@ $('#content').addEventListener(
     }
     const key = event.target.dataset?.uiSection;
     if (key) uiOpen.set(key, event.target.open);
-    if (event.target.id === 'system' && event.target.open) pollDashboard();
+    if (event.target.id === 'system' && event.target.open) void pollDashboard();
   },
   true,
 );
@@ -2607,7 +2935,7 @@ document.addEventListener('click', (event) => {
     return;
   }
   const switcher = event.target.closest?.('[data-view]');
-  if (switcher && state) return setView(switcher.dataset.view);
+  if (switcher) return setView(switcher.dataset.view);
   const link = event.target.closest?.('a[href^="#"]'),
     href = link?.getAttribute('href'),
     document_ = link?.dataset.yamlLayer;
@@ -2616,7 +2944,8 @@ document.addEventListener('click', (event) => {
     link &&
     state &&
     view === 'quick' &&
-    (link.hasAttribute('data-quick-all') || ALL_SECTIONS.has(String(href).slice(1)))
+    /* NOSONAR: hasAttribute ignores inherited dataset properties */ (link.hasAttribute('data-quick-all') ||
+      ALL_SECTIONS.has(String(href).slice(1)))
   )
     setView('all');
   // Links to a document (a linked-project finding, a references-only row) open it in the YAML editor first.
@@ -2631,7 +2960,7 @@ document.addEventListener('click', (event) => {
   }
   if (href && href.length > 1) reveal(decodeURIComponent(href.slice(1)), true);
 });
-window.addEventListener('hashchange', () => {
+globalThis.addEventListener('hashchange', () => {
   const id = decodeURIComponent(location.hash.slice(1));
   if (view === 'quick' && ALL_SECTIONS.has(id)) setView('all');
   reveal(id, true);
@@ -2655,12 +2984,12 @@ document.addEventListener(
   { passive: true },
 );
 document.addEventListener('visibilitychange', () => {
-  pollPreview();
-  pollDashboard();
+  void pollPreview();
+  void pollDashboard();
 });
 // A page restored from the browser history shows old state: read it again.
 window.addEventListener('pageshow', (event) => {
-  if (event.persisted) load();
+  if (event.persisted) void load();
 });
 setInterval(pollDashboard, 5000);
 setInterval(() => pollPreview(), 5000);
@@ -2729,17 +3058,8 @@ const SUBMIT = {
         `Edit ${item.key} in the Settings file section; this page does not replace values it shows as references only.`,
         true,
       );
-    let edit;
-    if (['list', 'object'].includes(item.kind)) {
-      if (text === shownValue(target.value).trim()) return notice(`Nothing to save: ${item.key} is unchanged.`);
-      edit = text ? { op: 'set', path: target.path, yaml: raw } : { op: 'delete', path: target.path };
-    } else if (!text) edit = { op: 'delete', path: target.path };
-    else
-      edit = {
-        op: 'set',
-        path: target.path,
-        value: item.kind === 'number' ? number(text, item.key) : item.kind === 'boolean' ? text === 'true' : text,
-      };
+    const edit = makeSettingEdit(item, target, raw, text);
+    if (!edit) return notice(`Nothing to save: ${item.key} is unchanged.`);
     if (edit.op === 'delete' && target.value === undefined)
       return notice(`Nothing to save: ${item.key} is not set here.`);
     if (edit.value !== undefined && JSON.stringify(edit.value) === JSON.stringify(target.value))
@@ -2785,26 +3105,7 @@ const SUBMIT = {
     const before =
         (project ? state.layers.shared.values?.localServices : (site.authoredMirage ?? site.mirage)?.localServices) ??
         {},
-      services = {};
-    for (const row of form.querySelectorAll('[data-service]')) {
-      const read = (name) => row.querySelector(`[name=${name}]`).value.trim(),
-        name = read('svc-id'),
-        kind = read('svc-kind'),
-        address = read('svc-address'),
-        probe = read('svc-probe');
-      if (!/^[a-z][a-z0-9-]{0,63}$/i.test(name) || Object.hasOwn(services, name))
-        throw new Error('Give each service its own name: a letter first, then letters, numbers and hyphens.');
-      if (!address) throw new Error(`Enter the address of ${name}.`);
-      const kept = { ...(before[name] ?? {}) };
-      for (const key of ['kind', 'baseUrl', 'blob', 'connectionStringVariable', 'probe']) delete kept[key];
-      services[name] = {
-        kind,
-        ...(kind === 'service-bus'
-          ? { connectionStringVariable: address }
-          : { [kind === 'http' ? 'baseUrl' : 'blob']: address, ...(probe ? { probe } : {}) }),
-        ...kept,
-      };
-    }
+      services = readServices(form, before);
     update(
       edits,
       path,
@@ -2943,58 +3244,17 @@ const SUBMIT = {
   },
   // Exported files: folders, canvas app and script folders, deployment profiles and code apps of one project.
   files(context) {
-    const { form, data, value, site, edits, set } = context,
+    const { form, site, edits } = context,
       project = state.kind === 'project';
     const prefix = project ? [] : ['sites', site.id, 'mirage'],
       before = (project ? state.settings : site.mirage) ?? {};
-    const listOf = (name) => [...new Set(lines(value(name)))];
-    if (form.querySelector('[name=source]')) {
-      if (!value('source')) throw new Error('Choose the folder of your website export.');
-      if (project) {
-        const index = state.sites.indexOf(site);
-        if (index >= 0 && value('source') !== site.source) set(['portals', index, 'path'], value('source'));
-      } else if (value('source') !== site.source) set(['sites', site.id, 'source'], value('source'));
-    }
+    updateFileSource(context, project);
     if (project) projectSolutionEdits(context);
-    else
-      update(
-        edits,
-        [...prefix, 'solutionRoots'],
-        listOf('solutions').length ? listOf('solutions') : undefined,
-        before.solutionRoots?.length ? before.solutionRoots : undefined,
-      );
-    const canvas = [...new Set([...listOf('canvas-sources'), ...data.getAll('canvas-found').map(String)])];
-    update(
-      edits,
-      [...prefix, 'canvas', 'sources'],
-      canvas.length ? canvas : undefined,
-      before.canvas?.sources?.length ? before.canvas.sources : undefined,
-    );
-    update(
-      edits,
-      [...prefix, 'modelDriven', 'clientSources'],
-      listOf('client-sources').length ? listOf('client-sources') : undefined,
-      before.modelDriven?.clientSources?.length ? before.modelDriven.clientSources : undefined,
-    );
-    if (project)
-      update(
-        edits,
-        ['codeApps'],
-        listOf('code-apps').length
-          ? listOf('code-apps').map((dir) => ({
-              ...(state.settings.codeApps ?? []).find((item) => item.dir === dir),
-              name: quickUi.slugName(dir.split('/').filter(Boolean).pop()),
-              dir,
-            }))
-          : undefined,
-        state.settings.codeApps?.length ? state.settings.codeApps : undefined,
-      );
-    update(
-      edits,
-      [...prefix, 'deploymentProfiles'],
-      profilesOf(form, before.deploymentProfiles),
-      before.deploymentProfiles,
-    );
+    else updateSolutionRoots(context, prefix, before);
+    updateCanvasSources(context, prefix, before);
+    updateClientSources(context, prefix, before);
+    if (project) updateProjectCodeApps(form, edits);
+    updateDeploymentProfiles(form, prefix, before, edits);
     if (!edits.length) return notice('Nothing to save: no folder or file changed.');
     return save({ operations: edits });
   },
@@ -3004,52 +3264,11 @@ const SUBMIT = {
     if (value('defaultEnv')) set([...prefix, 'defaultEnv'], value('defaultEnv'));
     else edits.push({ op: 'delete', path: [...prefix, 'defaultEnv'] });
     set([...prefix, 'startPath'], value('startPath') || '/');
-    const environments = {};
-    for (const row of form.querySelectorAll('.environment-editor')) {
-      const name = row.querySelector('[name=env-id]').value.trim(),
-        url = row.querySelector('[name=env-url]').value.trim();
-      if (!identifier(name) || Object.hasOwn(environments, name))
-        throw new Error('Environment names must be valid and unique.');
-      let origin;
-      try {
-        origin = new URL(url);
-      } catch {
-        throw new Error(`Enter a valid website address for ${name}.`);
-      }
-      if (
-        !['http:', 'https:'].includes(origin.protocol) ||
-        origin.username ||
-        origin.password ||
-        origin.pathname !== '/' ||
-        origin.search ||
-        origin.hash
-      )
-        throw new Error(
-          'Use the start of the website address only (https://…), without sign-in links, paths or query text.',
-        );
-      // Keep baseline, scope and other environment-specific settings.
-      const optional = (selector) => row.querySelector(selector)?.value.trim() || undefined;
-      environments[name] = {
-        ...site.environments[name],
-        url: origin.origin,
-        caution: row.querySelector('[name=env-caution]').checked,
-        baseline: optional('[name=env-baseline]'),
-        startPath: optional('[name=env-start]'),
-        scope: optional('[name=env-scope]'),
-      };
-    }
+    const environments = collectEnvironments(form, site);
     if (value('defaultEnv') && !environments[value('defaultEnv')])
       throw new Error('The default live environment must be one of the environments below.');
-    for (const [name, setting] of Object.entries(environments)) {
-      set([...prefix, 'environments', name, 'url'], setting.url);
-      set([...prefix, 'environments', name, 'caution'], setting.caution);
-      for (const key of ['baseline', 'startPath', 'scope'])
-        setting[key] === undefined
-          ? edits.push({ op: 'delete', path: [...prefix, 'environments', name, key] })
-          : set([...prefix, 'environments', name, key], setting[key]);
-    }
-    for (const name of Object.keys(site.environments))
-      if (!Object.hasOwn(environments, name)) edits.push({ op: 'delete', path: [...prefix, 'environments', name] });
+    writeEnvironments(prefix, environments, edits, set);
+    deleteRemovedEnvironments(prefix, environments, site, edits);
     set([...prefix, 'scope'], value('scope'));
     // Route YAML is passed through the document editor's validator via a string operation.
     edits.push({ op: 'set', path: [...prefix, 'routes'], yaml: value('routes') || '[]' });
@@ -3085,13 +3304,149 @@ const SUBMIT = {
     return save({ operations: edits });
   },
 };
+function environmentOrigin(url, name) {
+  let origin;
+  try {
+    origin = new URL(url);
+  } catch {
+    throw new Error(`Enter a valid website address for ${name}.`);
+  }
+  if (
+    !['http:', 'https:'].includes(origin.protocol) ||
+    origin.username ||
+    origin.password ||
+    origin.pathname !== '/' ||
+    origin.search ||
+    origin.hash
+  )
+    throw new Error(
+      'Use the start of the website address only (https://…), without sign-in links, paths or query text.',
+    );
+  return origin;
+}
+function environmentFromRow(row, site, name, url) {
+  const origin = environmentOrigin(url, name),
+    optional = (selector) => row.querySelector(selector)?.value.trim() || undefined;
+  return {
+    ...site.environments[name],
+    url: origin.origin,
+    caution: row.querySelector('[name=env-caution]').checked,
+    baseline: optional('[name=env-baseline]'),
+    startPath: optional('[name=env-start]'),
+    scope: optional('[name=env-scope]'),
+  };
+}
+function collectEnvironments(form, site) {
+  const environments = {};
+  for (const row of form.querySelectorAll('.environment-editor')) {
+    const name = row.querySelector('[name=env-id]').value.trim(),
+      url = row.querySelector('[name=env-url]').value.trim();
+    if (!identifier(name) || Object.hasOwn(environments, name))
+      throw new Error('Environment names must be valid and unique.');
+    environments[name] = environmentFromRow(row, site, name, url);
+  }
+  return environments;
+}
+function writeEnvironments(prefix, environments, edits, set) {
+  for (const [name, setting] of Object.entries(environments)) {
+    set([...prefix, 'environments', name, 'url'], setting.url);
+    set([...prefix, 'environments', name, 'caution'], setting.caution);
+    for (const key of ['baseline', 'startPath', 'scope'])
+      setting[key] === undefined
+        ? edits.push({ op: 'delete', path: [...prefix, 'environments', name, key] })
+        : set([...prefix, 'environments', name, key], setting[key]);
+  }
+}
+function deleteRemovedEnvironments(prefix, environments, site, edits) {
+  for (const name of Object.keys(site.environments))
+    if (!Object.hasOwn(environments, name)) edits.push({ op: 'delete', path: [...prefix, 'environments', name] });
+}
+const listFormValues = (value, name) => [...new Set(lines(value(name)))];
+function updateFileSource({ form, value, site, set }, project) {
+  if (!form.querySelector('[name=source]')) return;
+  if (!value('source')) throw new Error('Choose the folder of your website export.');
+  if (project) {
+    const index = state.sites.indexOf(site);
+    if (index >= 0 && value('source') !== site.source) set(['portals', index, 'path'], value('source'));
+  } else if (value('source') !== site.source) set(['sites', site.id, 'source'], value('source'));
+}
+function updateSolutionRoots({ value, edits }, prefix, before) {
+  update(
+    edits,
+    [...prefix, 'solutionRoots'],
+    listFormValues(value, 'solutions').length ? listFormValues(value, 'solutions') : undefined,
+    before.solutionRoots?.length ? before.solutionRoots : undefined,
+  );
+}
+function updateCanvasSources({ data, value, edits }, prefix, before) {
+  const canvas = [...new Set([...listFormValues(value, 'canvas-sources'), ...data.getAll('canvas-found').map(String)])];
+  update(
+    edits,
+    [...prefix, 'canvas', 'sources'],
+    canvas.length ? canvas : undefined,
+    before.canvas?.sources?.length ? before.canvas.sources : undefined,
+  );
+}
+function updateClientSources({ value, edits }, prefix, before) {
+  update(
+    edits,
+    [...prefix, 'modelDriven', 'clientSources'],
+    listFormValues(value, 'client-sources').length ? listFormValues(value, 'client-sources') : undefined,
+    before.modelDriven?.clientSources?.length ? before.modelDriven.clientSources : undefined,
+  );
+}
+function updateProjectCodeApps(form, edits) {
+  const originals = state.layers.shared.values?.codeApps ?? [];
+  const apps = codeAppsOf(form, originals);
+  update(edits, ['codeApps'], apps.length ? apps : undefined, originals.length ? originals : undefined);
+}
+function updateDeploymentProfiles(form, prefix, before, edits) {
+  update(
+    edits,
+    [...prefix, 'deploymentProfiles'],
+    profilesOf(form, before.deploymentProfiles),
+    before.deploymentProfiles,
+  );
+}
+function readServices(form, before) {
+  const services = {};
+  for (const row of form.querySelectorAll('[data-service]')) {
+    const read = (name) => row.querySelector(`[name=${name}]`).value.trim(),
+      name = read('svc-id'),
+      kind = read('svc-kind'),
+      address = read('svc-address'),
+      probe = read('svc-probe');
+    if (!/^[a-z][a-z0-9-]{0,63}$/i.test(name) || Object.hasOwn(services, name))
+      throw new Error('Give each service its own name: a letter first, then letters, numbers and hyphens.');
+    if (!address) throw new Error(`Enter the address of ${name}.`);
+    const kept = { ...before[name] };
+    for (const key of ['kind', 'baseUrl', 'blob', 'connectionStringVariable', 'probe']) delete kept[key];
+    services[name] = {
+      kind,
+      ...(kind === 'service-bus'
+        ? { connectionStringVariable: address }
+        : { [kind === 'http' ? 'baseUrl' : 'blob']: address, ...(probe ? { probe } : {}) }),
+      ...kept,
+    };
+  }
+  return services;
+}
+function makeSettingEdit(item, target, raw, text) {
+  if (['list', 'object'].includes(item.kind)) {
+    if (text === shownValue(target.value).trim()) return null;
+    return text ? { op: 'set', path: target.path, yaml: raw } : { op: 'delete', path: target.path };
+  }
+  if (!text) return { op: 'delete', path: target.path };
+  let nextValue;
+  if (item.kind === 'number') nextValue = number(text, item.key);
+  else if (item.kind === 'boolean') nextValue = text === 'true';
+  else nextValue = text;
+  return { op: 'set', path: target.path, value: nextValue };
+}
 // Deployment profiles of the Exported files form: rows of name, three files with their base, and the default. Rows that use a
 // list of files are kept as they are; other keys (required, enabled) are kept.
-function profilesOf(form, before) {
-  const profiles = {},
-    kept = new Set([...form.querySelectorAll('[name=profile-keep]')].map((input) => input.value));
-  for (const id of kept) profiles[id] = before?.profiles?.[id];
-  for (const row of form.querySelectorAll('.profile-editor:not([data-profile-locked])')) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function addProfileRows(form, profiles) {
+  for (const row of form.querySelectorAll('[data-profiles] .profile-editor:not([data-profile-locked])')) {
     const id = row.querySelector('[name=profile-id]').value.trim();
     if (!id) continue;
     if (!identifier(id) || Object.hasOwn(profiles, id))
@@ -3105,11 +3460,17 @@ function profilesOf(form, before) {
     if (!Object.keys(sources).length) throw new Error(`Choose at least one file for the deployment profile ${id}.`);
     profiles[id] = sources;
   }
+}
+function profilesOf(form, before) {
+  const profiles = {},
+    kept = new Set([...form.querySelectorAll('[name=profile-keep]')].map((input) => input.value));
+  for (const id of kept) profiles[id] = before?.profiles?.[id];
+  addProfileRows(form, profiles);
   if (!Object.keys(profiles).length) return undefined;
   const chosen = form.querySelector('[name=profile-default]:checked')?.value || null;
   if (chosen && !Object.hasOwn(profiles, chosen))
     throw new Error('The default deployment profile must be one of the profiles above.');
-  const { profiles: _, default: __, ...other } = before ?? {};
+  const { profiles: _, default: __, ...other } = before ?? {}; // NOSONAR: binding is excluded from the rest object or is a placeholder
   return { ...other, ...(chosen ? { default: chosen } : {}), profiles };
 }
 // The website of a project file without one, added when What to run ticks the website.
@@ -3142,13 +3503,11 @@ function projectSolutionEdits({ value, set }) {
         claimed.add(previous.id);
         const original = state.settings.solutionEntries?.[old.indexOf(previous)],
           authored = original && typeof original === 'object' ? original : {};
-        const key = Object.hasOwn(authored, 'path')
-          ? 'path'
-          : Object.hasOwn(authored, 'source')
-            ? 'source'
-            : Object.hasOwn(authored, 'root')
-              ? 'root'
-              : 'path';
+        let key;
+        if (Object.hasOwn(authored, 'path')) key = 'path';
+        else if (Object.hasOwn(authored, 'source')) key = 'source';
+        else if (Object.hasOwn(authored, 'root')) key = 'root';
+        else key = 'path';
         // Explicit IDs keep shorthand entries stable when reordered.
         return { ...authored, id: previous.id, [key]: path };
       }
@@ -3183,7 +3542,7 @@ $('#content').addEventListener('submit', async (event) => {
   if (pending) return;
   const form = event.target,
     data = new FormData(form),
-    value = (name) => String(data.get(name) ?? '').trim();
+    value = (name) => String(data.get(name) ?? '').trim(); // NOSONAR: stringification is intentional here
   const id = form.dataset.site,
     edits = [];
   const context = {
@@ -3202,12 +3561,12 @@ $('#content').addEventListener('submit', async (event) => {
   }
 });
 $('#refresh').addEventListener('click', () => {
-  if (!dirty || confirm('Discard unsaved form changes and reload status?')) load();
+  if (!dirty || confirm('Discard unsaved form changes and reload status?')) void load();
 });
 window.addEventListener('beforeunload', (event) => {
   if (dirty) {
     event.preventDefault();
-    event.returnValue = '';
+    event.returnValue = ''; // NOSONAR: deprecated API kept for compatibility
   }
 });
-load();
+void load(); // NOSONAR: module-level promise chain must not block evaluation

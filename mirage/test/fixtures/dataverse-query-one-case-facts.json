@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "scope": "One exact original query and role-adapted 7.20 package result, with two independent native error responses. No store nonmutation or broader claim.",
+  "source": {
+    "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+    "baselineSha256": "6846b32690ec29526fa42a130d20ccca651fa8ea096298b047b70ace0354822a",
+    "currentSha256": "17e1ab8097926063f3c83708fc6ad400b3208971a8cf998267b04802c1778346",
+    "casesAstSha256": "e8e0ef1779cf6b749f1bfe0a76d17a7985d85431ac229abdfbfb8318a4083c15",
+    "certificateSha256": "173a7e94ba46076421ca71ecaa125a11e3fa3d308a3eb794d78ab0c671879bba",
+    "reviewSha256": "a726dd4f9b8633f0556930379d91556698611b216f902d8e47218b156d4a9f18",
+    "planSha256": "bd5660cf12cbade78fa0471206d56715b838eb082151c6918082db631d60ce3b",
+    "originalSdkSha256": "9449cbf4f3b2bff1658c0e9648c0293ca279ec5525eb553baed2e26f4d3f9396",
+    "adaptedSdkSha256": "b641bcc0034a6766f6fd7c8bb4e02fac803ab53c60451fb0760e4a22997c49dc",
+    "comparisonSha256": "a8dc4e2d7aeb5d29a8f25680fefcd819c1f52080325c329d2ea41120dd56a24b",
+    "supervisorSha256": "8480cda542b2255d01ea10f1941df2a0d9cac99e249fd87d81dbed8c3a2a212b"
+  },
+  "captures": [
+    {
+      "runSha256": "43249d7c319229300be567391cc4f843fe6126dd33c3f19c9c6cd800589e2123",
+      "provenanceSha256": "2027abe0f80269829a6a2e3b266fe33f30cfe6bd8ad17f1b9fb0ee332aea4ae5",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "caseIndex": 56,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq - -1",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq - -1",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 16,
+                "nativeLength": 20,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "eacdd34af9a01dffdc6379c0c162eba86d118b9020042a4721c73494e3ec508f",
+          "responseBodySha256": "af6e571fa9c024cf83028a14d3df9326c0f391c054348b545b9164c31590519f",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'.",
+            "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'.",
+            "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+        }
+      ]
+    },
+    {
+      "runSha256": "5fdbcf7ffc31b54d684a5473f6cc0ca555faedd366b340881952c03c2162ea87",
+      "provenanceSha256": "74d79bd73d05c59a435ae92dc10060cfc5b72fc546838d52517b8a610aeabe13",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "caseIndex": 56,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq - -1",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq - -1",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 16,
+                "nativeLength": 20,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "eacdd34af9a01dffdc6379c0c162eba86d118b9020042a4721c73494e3ec508f",
+          "responseBodySha256": "af6e571fa9c024cf83028a14d3df9326c0f391c054348b545b9164c31590519f",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'.",
+            "Unrecognized 'Edm.Int32' literal '--1' at '12' in 'quantity eq - -1'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'.",
+            "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Int32' literal '--1' at '16' in 'pqwp_integer eq - -1'."
+        }
+      ]
+    }
+  ]
+}

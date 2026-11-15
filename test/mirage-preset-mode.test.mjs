@@ -1,17 +1,21 @@
+// @test-kind contract: catalogue bootstrap presets preserve Mirage state and print the startup decision they make.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync, withoutToolkitEnvironment } from './fixture.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+// A start may use the whole default Mirage startup budget (120 s, lense/commands/mirage.mjs); the guard only ends a hung
+// command. The test has no overall deadline: its commands run in sequence, each bounded by this guard.
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
-test('catalogue bootstrap presets preserve state and print their startup decision', { timeout: 150000 }, async () => {
+test('catalogue bootstrap presets preserve state and print their startup decision', async (t) => {
+  withoutToolkitEnvironment(t);
   const fixture = createFixture(),
-    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-preset-mode-'))),
+    root = tempDirSync('paqvilo-preset-mode-'),
     config = path.join(root, 'catalogue.json');
   const portal = path.join(root, 'portal');
   fs.cpSync(fixture.dir, portal, { recursive: true });
@@ -24,7 +28,7 @@ test('catalogue bootstrap presets preserve state and print their startup decisio
       ),
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 120000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   const catalog = {
     defaults: { mirage: { presetMode: 'bootstrap', presetConfiguration: 'apply' } },
@@ -81,7 +85,6 @@ test('catalogue bootstrap presets preserve state and print their startup decisio
     fs.writeFileSync(config, JSON.stringify(catalog));
     const stop = run('stop', '--site', 'fixture', '--json');
     assert.equal(stop.status, 0, stop.stdout + stop.stderr);
-    fixture.cleanup();
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

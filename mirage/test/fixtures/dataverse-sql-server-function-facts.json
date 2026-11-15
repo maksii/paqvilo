@@ -1,0 +1,298 @@
+{
+  "scope": "Microsoft SQL Server engine results only; not Dataverse TDS transport or function availability.",
+  "server": {
+    "productVersion": "16.0.4305.5",
+    "edition": "Developer Edition",
+    "collation": "SQL_Latin1_General_CP1_CI_AS",
+    "language": "us_english",
+    "image": "mcr.microsoft.com/mssql/server@sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "binarySha256": "35299486743d9f126940617b5152d9a584861879811357fabec74202154fbd4d"
+  },
+  "capture": {
+    "independentProcesses": 2,
+    "independentConnections": 2,
+    "roundSha256": [
+      "cb00ae31b30f5e2222c93af22286103f28d27ffc3deea9d05b84d568a8dfd076",
+      "289d70ad718dbc12f590b7522ac771311f087ab46269de9b6ab514aeceedea2c"
+    ],
+    "original174RoundSha256": [
+      "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c"
+    ]
+  },
+  "results": [
+    {
+      "case": "concat-untyped",
+      "query": "SELECT CONCAT_WS(NULL, CAST(N'a' AS nvarchar(1)), CAST(N'b' AS nvarchar(1))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "nvarchar",
+          "clrType": "System.String",
+          "precision": 255,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "string",
+            "value": "ab"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "concat-nvarchar",
+      "query": "SELECT CONCAT_WS(CAST(NULL AS nvarchar(1)), CAST(N'a' AS nvarchar(1)), CAST(N'b' AS nvarchar(1))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "nvarchar",
+          "clrType": "System.String",
+          "precision": 255,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "string",
+            "value": "ab"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "concat-varchar",
+      "query": "SELECT CONCAT_WS(CAST(NULL AS varchar(1)), CAST(N'a' AS nvarchar(1)), CAST(N'b' AS nvarchar(1))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "nvarchar",
+          "clrType": "System.String",
+          "precision": 255,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "string",
+            "value": "ab"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "concat-empty-nvarchar",
+      "query": "SELECT CONCAT_WS(CAST(N'' AS nvarchar(1)), CAST(N'a' AS nvarchar(1)), CAST(N'b' AS nvarchar(1))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "nvarchar",
+          "clrType": "System.String",
+          "precision": 255,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "string",
+            "value": "ab"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "concat-empty-varchar",
+      "query": "SELECT CONCAT_WS(CAST('' AS varchar(1)), CAST(N'a' AS nvarchar(1)), CAST(N'b' AS nvarchar(1))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "nvarchar",
+          "clrType": "System.String",
+          "precision": 255,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "string",
+            "value": "ab"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-original",
+      "query": "SELECT PATINDEX(CAST(N'a_c' AS nvarchar(3)), CAST(N'zabc' AS nvarchar(4))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "0"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-leading-percent",
+      "query": "SELECT PATINDEX(CAST(N'%a_c' AS nvarchar(4)), CAST(N'zabc' AS nvarchar(4))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "2"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-trailing-percent",
+      "query": "SELECT PATINDEX(CAST(N'a_c%' AS nvarchar(4)), CAST(N'zabc' AS nvarchar(4))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "0"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-both-percent",
+      "query": "SELECT PATINDEX(CAST(N'%a_c%' AS nvarchar(5)), CAST(N'zabc' AS nvarchar(4))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "2"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-full",
+      "query": "SELECT PATINDEX(CAST(N'a_c' AS nvarchar(3)), CAST(N'abc' AS nvarchar(3))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "1"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-inside",
+      "query": "SELECT PATINDEX(CAST(N'a_c' AS nvarchar(3)), CAST(N'zabcz' AS nvarchar(5))) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "0"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-case-ci",
+      "query": "SELECT PATINDEX(CAST(N'%A_C%' AS nvarchar(5)) COLLATE Latin1_General_100_CI_AS, CAST(N'zabc' AS nvarchar(4)) COLLATE Latin1_General_100_CI_AS) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "2"
+          }
+        ]
+      ]
+    },
+    {
+      "case": "patindex-case-cs",
+      "query": "SELECT PATINDEX(CAST(N'%A_C%' AS nvarchar(5)) COLLATE Latin1_General_100_CS_AS, CAST(N'zabc' AS nvarchar(4)) COLLATE Latin1_General_100_CS_AS) AS [value]",
+      "columns": [
+        {
+          "name": "value",
+          "sqlType": "int",
+          "clrType": "System.Int32",
+          "precision": 10,
+          "scale": 255
+        }
+      ],
+      "rows": [
+        [
+          {
+            "kind": "System.Int32",
+            "exact": "0"
+          }
+        ]
+      ]
+    }
+  ]
+}

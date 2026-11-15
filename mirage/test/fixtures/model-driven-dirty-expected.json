@@ -1,0 +1,346 @@
+[
+  {
+    "id": "entity.baseline",
+    "value": false
+  },
+  {
+    "id": "data.baseline",
+    "value": false
+  },
+  {
+    "id": "text.baseline",
+    "value": false
+  },
+  {
+    "id": "text.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "text.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "text.idempotent.entity",
+    "value": false
+  },
+  {
+    "id": "text.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "text.edited.entity",
+    "value": true
+  },
+  {
+    "id": "text.edited.data",
+    "value": true
+  },
+  {
+    "id": "text.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "text.restored.entity",
+    "value": true
+  },
+  {
+    "id": "text.restored.data",
+    "value": true
+  },
+  {
+    "id": "memo.baseline",
+    "value": false
+  },
+  {
+    "id": "memo.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "memo.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "memo.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "memo.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "memo.edited.entity",
+    "value": true
+  },
+  {
+    "id": "memo.edited.data",
+    "value": true
+  },
+  {
+    "id": "memo.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "memo.restored.entity",
+    "value": true
+  },
+  {
+    "id": "memo.restored.data",
+    "value": true
+  },
+  {
+    "id": "number.baseline",
+    "value": false
+  },
+  {
+    "id": "number.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "number.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "number.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "number.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "number.edited.entity",
+    "value": true
+  },
+  {
+    "id": "number.edited.data",
+    "value": true
+  },
+  {
+    "id": "number.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "number.restored.entity",
+    "value": true
+  },
+  {
+    "id": "number.restored.data",
+    "value": true
+  },
+  {
+    "id": "choice.baseline",
+    "value": false
+  },
+  {
+    "id": "choice.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "choice.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "choice.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "choice.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "choice.edited.entity",
+    "value": true
+  },
+  {
+    "id": "choice.edited.data",
+    "value": true
+  },
+  {
+    "id": "choice.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "choice.restored.entity",
+    "value": true
+  },
+  {
+    "id": "choice.restored.data",
+    "value": true
+  },
+  {
+    "id": "multi.baseline",
+    "value": false
+  },
+  {
+    "id": "multi.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "multi.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "multi.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "multi.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "multi.edited.entity",
+    "value": true
+  },
+  {
+    "id": "multi.edited.data",
+    "value": true
+  },
+  {
+    "id": "multi.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "multi.restored.entity",
+    "value": true
+  },
+  {
+    "id": "multi.restored.data",
+    "value": true
+  },
+  {
+    "id": "boolean.baseline",
+    "value": true
+  },
+  {
+    "id": "boolean.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "boolean.idempotent.attribute",
+    "value": true
+  },
+  {
+    "id": "boolean.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "boolean.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "boolean.edited.entity",
+    "value": true
+  },
+  {
+    "id": "boolean.edited.data",
+    "value": true
+  },
+  {
+    "id": "boolean.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "boolean.restored.entity",
+    "value": true
+  },
+  {
+    "id": "boolean.restored.data",
+    "value": true
+  },
+  {
+    "id": "date.baseline",
+    "value": false
+  },
+  {
+    "id": "date.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "date.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "date.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "date.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "date.edited.entity",
+    "value": true
+  },
+  {
+    "id": "date.edited.data",
+    "value": true
+  },
+  {
+    "id": "date.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "date.restored.entity",
+    "value": true
+  },
+  {
+    "id": "date.restored.data",
+    "value": true
+  },
+  {
+    "id": "lookup.baseline",
+    "value": false
+  },
+  {
+    "id": "lookup.idempotent.return",
+    "value": {
+      "undefined": true
+    }
+  },
+  {
+    "id": "lookup.idempotent.attribute",
+    "value": false
+  },
+  {
+    "id": "lookup.idempotent.entity",
+    "value": true
+  },
+  {
+    "id": "lookup.edited.attribute",
+    "value": true
+  },
+  {
+    "id": "lookup.edited.entity",
+    "value": true
+  },
+  {
+    "id": "lookup.edited.data",
+    "value": true
+  },
+  {
+    "id": "lookup.restored.attribute",
+    "value": false
+  },
+  {
+    "id": "lookup.restored.entity",
+    "value": true
+  },
+  {
+    "id": "lookup.restored.data",
+    "value": true
+  }
+]

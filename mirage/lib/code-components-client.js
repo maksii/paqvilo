@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  if (window.__paqviloPcf) return;
+  if (globalThis.__paqviloPcf) return;
   const constructors = new Map(),
     loaded = new Map(),
     instances = new Map(),
@@ -31,6 +31,11 @@
     } catch {
       return '[snapshot unavailable]';
     }
+  };
+  const valuesOf = (value) => {
+    if (value == null) return [];
+    if (Array.isArray(value)) return value;
+    return [value];
   };
   const debugSnapshot = (entry) => {
     try {
@@ -75,7 +80,7 @@
       };
     }
   };
-  const framework = (window.ComponentFramework = window.ComponentFramework || {});
+  const framework = (globalThis.ComponentFramework = globalThis.ComponentFramework || {});
   const prior = framework.registerControl;
   framework.registerControl = function (name, constructor) {
     constructors.set(name, constructor);
@@ -100,49 +105,54 @@
     loaded.set(item.url, promise);
     return promise;
   }
+  function typedTwoOptions(value) {
+    if ([true, 'true', 1, '1'].includes(value)) return true;
+    if ([false, 'false', 0, '0'].includes(value)) return false;
+    throw new Error('PCF TwoOptions requires a Boolean value');
+  }
+  function typedNumber(value, type) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error('PCF ' + type + ' requires a finite number');
+    if (/^(Whole|Enum|OptionSet)/.test(type) && !Number.isInteger(number))
+      throw new Error('PCF ' + type + ' requires an integer');
+    return number;
+  }
+  function typedDate(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) throw new Error('PCF date parameter is invalid');
+    return date;
+  }
+  function typedMultiSelect(value) {
+    const values = Array.isArray(value) ? value : String(value).split(',');
+    return values.map((item) => {
+      if (item === '' || !Number.isInteger(Number(item)))
+        throw new Error('PCF MultiSelectOptionSet requires integer option values');
+      return Number(item);
+    });
+  }
+  function typedLookup(value) {
+    let values = value;
+    if (typeof values === 'string') {
+      try {
+        values = JSON.parse(values);
+      } catch {
+        throw new Error('PCF lookup parameters require lookup objects, not display text');
+      }
+    }
+    if (!Array.isArray(values)) values = [values];
+    return values.map((item) => {
+      if (!item || typeof item !== 'object' || !item.id || !item.entityType)
+        throw new Error('PCF lookup objects require id and entityType');
+      return { id: String(item.id), entityType: String(item.entityType), name: String(item.name ?? '') };
+    });
+  }
   function typed(value, type) {
     if (value == null || value === '') return null;
-    if (type === 'TwoOptions') {
-      if ([true, 'true', 1, '1'].includes(value)) return true;
-      if ([false, 'false', 0, '0'].includes(value)) return false;
-      throw new Error('PCF TwoOptions requires a Boolean value');
-    }
-    if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/.test(type)) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) throw new Error('PCF ' + type + ' requires a finite number');
-      if (/^(Whole|Enum|OptionSet)/.test(type) && !Number.isInteger(number))
-        throw new Error('PCF ' + type + ' requires an integer');
-      return number;
-    }
-    if (/^DateAndTime/.test(type)) {
-      const date = new Date(value);
-      if (!Number.isFinite(date.getTime())) throw new Error('PCF date parameter is invalid');
-      return date;
-    }
-    if (type === 'MultiSelectOptionSet') {
-      const values = Array.isArray(value) ? value : String(value).split(',');
-      return values.map((item) => {
-        if (item === '' || !Number.isInteger(Number(item)))
-          throw new Error('PCF MultiSelectOptionSet requires integer option values');
-        return Number(item);
-      });
-    }
-    if (/^Lookup\./.test(type)) {
-      let values = value;
-      if (typeof values === 'string') {
-        try {
-          values = JSON.parse(values);
-        } catch {
-          throw new Error('PCF lookup parameters require lookup objects, not display text');
-        }
-      }
-      if (!Array.isArray(values)) values = [values];
-      return values.map((item) => {
-        if (!item || typeof item !== 'object' || !item.id || !item.entityType)
-          throw new Error('PCF lookup objects require id and entityType');
-        return { id: String(item.id), entityType: String(item.entityType), name: String(item.name ?? '') };
-      });
-    }
+    if (type === 'TwoOptions') return typedTwoOptions(value);
+    if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/.test(type)) return typedNumber(value, type);
+    if (type.startsWith('DateAndTime')) return typedDate(value);
+    if (type === 'MultiSelectOptionSet') return typedMultiSelect(value);
+    if (type.startsWith('Lookup.')) return typedLookup(value);
     return value;
   }
   function groupType(types, boundType) {
@@ -200,6 +210,112 @@
     if (field.matches('select[multiple]')) return Array.from(field.selectedOptions, (option) => option.value);
     return field.value;
   }
+  function writeNativeLookup(binding, raw, field, byId, write) {
+    const item = Array.isArray(raw) ? raw[0] : raw;
+    if (item != null && (typeof item !== 'object' || !item.id || !(item.entityType || item.etn)))
+      throw new Error('PCF native lookup output requires a record reference');
+    write(field, item ? recordId(item.id.guid ?? item.id) : '');
+    write(byId(binding.id + '_name'), item?.name ?? '', true);
+    write(byId(binding.id + '_entityname'), item?.entityType ?? item?.etn ?? '', true);
+  }
+  function writeNativeRadios(radios, raw, events) {
+    for (const radio of radios)
+      if (!radio.disabled) {
+        radio.checked = String(radio.value) === String(raw);
+        events.add(radio);
+      }
+  }
+  function writeNativeMultiSelect(field, raw, events) {
+    const values = new Set(valuesOf(raw).map(String));
+    for (const option of field.options) option.selected = values.has(option.value);
+    events.add(field);
+  }
+  function nativeDateValue(raw, field) {
+    if (raw == null) return '';
+    if (!(raw instanceof Date)) return String(raw);
+    let value = raw.toISOString();
+    const date = new Date(raw.getTime()), // NOSONAR: Date subclass may override getTime
+      pad = (item, size = 2) => String(item).padStart(size, '0');
+    if (field.dataset.type === 'date' || field.type === 'date') date.setHours(0, 0, 0, 0);
+    const local = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    if (field.dataset.ui === 'datetimepicker')
+      value =
+        field.dataset.behavior === 'UserLocal'
+          ? date.toISOString().replace(/\.(\d{3})Z$/, (match) => match.slice(0, 4) + '0000Z')
+          : local + '.' + pad(date.getMilliseconds(), 3) + '0000';
+    else if (field.type === 'date') value = local.slice(0, 10);
+    else if (field.type === 'datetime-local') value = local;
+    return value;
+  }
+  function nativeSelectedOptions(list) {
+    return Array.from(list.querySelectorAll('.msos-selection .msos-option'), (item) => {
+      const box = item.querySelector('input[type="checkbox"]');
+      item.classList.toggle('msos-option-selected', box.checked);
+      if (box.checked) item.setAttribute('aria-selected', 'true');
+      else item.removeAttribute('aria-selected');
+      return box.checked
+        ? {
+            value: box.value,
+            label: box.getAttribute('aria-label') ?? box.value,
+            index: item.parentElement ? Array.prototype.indexOf.call(item.parentElement.children, item) + 1 : 0,
+          }
+        : null;
+    }).filter(Boolean);
+  }
+  function renderNativeSelectedOptions(binding, selected, chosen) {
+    if (!selected) return;
+    selected.replaceChildren(
+      ...chosen.map((option) => {
+        const item = document.createElement('li');
+        item.className = 'msos-selected-display-item msos-visible';
+        item.setAttribute('name', binding.id + '-selected-item-' + option.index);
+        item.id = binding.id + '-selected-item-' + option.index;
+        item.tabIndex = -1;
+        item.title = '';
+        item.dataset.value = option.value;
+        const text = document.createElement('span');
+        text.className = 'msos-selected-display-item-text';
+        text.textContent = option.label;
+        item.append(text);
+        return item;
+      }),
+    );
+  }
+  function updateNativeMultiselectDisplay(list, values, chosen) {
+    const text = chosen.map((option) => option.label).join(', ');
+    const view = list.querySelector('.msos-viewmode-text');
+    if (view) {
+      view.textContent = text || '---';
+      view.title = text || '---';
+    }
+    list.classList.toggle('msos-none-selected', !list.classList.contains('msos-disabled') && values.size === 0);
+  }
+  function updateNativeMultiselect(binding, raw, byId, events) {
+    const values = new Set(valuesOf(raw).map(String));
+    const selection = byId(binding.id + '_0');
+    if (selection) {
+      for (const option of selection.options) option.selected = values.has(option.value);
+      events.add(selection);
+    }
+    const list = byId(binding.id + '_i');
+    if (!list) return;
+    for (const checkbox of list.querySelectorAll('.msos-selection input[type="checkbox"]'))
+      checkbox.checked = values.has(checkbox.value);
+    const chosen = nativeSelectedOptions(list);
+    renderNativeSelectedOptions(binding, list.querySelector('.msos-selecteditems'), chosen);
+    updateNativeMultiselectDisplay(list, values, chosen);
+  }
+  function writeNativeText(binding, raw, field, byId, write, events) {
+    const value = nativeDateValue(raw, field);
+    write(field, value);
+    if (binding.control === 'multiselect') updateNativeMultiselect(binding, raw, byId, events);
+    if (binding.control === 'datetime') {
+      const display = byId(binding.id + '_datepicker_description');
+      if (display?.type === 'date' || display?.type === 'datetime-local')
+        write(display, value.slice(0, display.type === 'date' ? 10 : 16), true);
+      // The captured/local DateTimePicker listens to the underlying change event below.
+    }
+  }
   function nativeOutput(spec, container, outputs) {
     const binding = spec.nativeBinding;
     if (!binding || spec.args.disabled === true || spec.args.disabled === 'true') return;
@@ -223,112 +339,28 @@
       ? [field]
       : Array.from(field.querySelectorAll('input[type="radio"]'));
     if (binding.control === 'lookup') {
-      const item = Array.isArray(raw) ? raw[0] : raw;
-      if (item != null && (typeof item !== 'object' || !item.id || !(item.entityType || item.etn)))
-        throw new Error('PCF native lookup output requires a record reference');
-      write(field, item ? recordId(item.id.guid ?? item.id) : '');
-      write(byId(binding.id + '_name'), item?.name ?? '', true);
-      write(byId(binding.id + '_entityname'), item?.entityType ?? item?.etn ?? '', true);
+      writeNativeLookup(binding, raw, field, byId, write);
     } else if (field.matches('input[type="checkbox"]')) {
       field.checked = raw === true || raw === 1;
       events.add(field);
     } else if (radios.length) {
-      for (const radio of radios) {
-        if (!radio.disabled) {
-          radio.checked = String(radio.value) === String(raw);
-          events.add(radio);
-        }
-      }
+      writeNativeRadios(radios, raw, events);
     } else if (field.matches('select[multiple]')) {
-      const values = new Set((raw == null ? [] : Array.isArray(raw) ? raw : [raw]).map(String));
-      for (const option of field.options) option.selected = values.has(option.value);
-      events.add(field);
+      writeNativeMultiSelect(field, raw, events);
     } else if (field.matches('input,select,textarea')) {
-      let value = raw == null ? '' : raw instanceof Date ? raw.toISOString() : String(raw);
-      if (raw instanceof Date) {
-        const date = new Date(raw.getTime()),
-          pad = (item, size = 2) => String(item).padStart(size, '0');
-        if (field.dataset.type === 'date' || field.type === 'date') date.setHours(0, 0, 0, 0);
-        const local = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-        if (field.dataset.ui === 'datetimepicker')
-          value =
-            field.dataset.behavior === 'UserLocal'
-              ? date.toISOString().replace(/\.(\d{3})Z$/, '.$10000Z')
-              : local + '.' + pad(date.getMilliseconds(), 3) + '0000';
-        else if (field.type === 'date') value = local.slice(0, 10);
-        else if (field.type === 'datetime-local') value = local;
-      }
-      write(field, value);
-      if (binding.control === 'multiselect') {
-        const values = new Set((raw == null ? [] : Array.isArray(raw) ? raw : [raw]).map(String));
-        const selection = byId(binding.id + '_0');
-        if (selection) {
-          for (const option of selection.options) option.selected = values.has(option.value);
-          events.add(selection);
-        }
-        const list = byId(binding.id + '_i');
-        if (list) {
-          for (const checkbox of list.querySelectorAll('.msos-selection input[type="checkbox"]'))
-            checkbox.checked = values.has(checkbox.value);
-          const chosen = Array.from(list.querySelectorAll('.msos-selection .msos-option'), (item) => {
-            const box = item.querySelector('input[type="checkbox"]');
-            item.classList.toggle('msos-option-selected', box.checked);
-            if (box.checked) item.setAttribute('aria-selected', 'true');
-            else item.removeAttribute('aria-selected');
-            return box.checked
-              ? {
-                  value: box.value,
-                  label: box.getAttribute('aria-label') ?? box.value,
-                  index: item.parentElement ? Array.prototype.indexOf.call(item.parentElement.children, item) + 1 : 0,
-                }
-              : null;
-          }).filter(Boolean);
-          const selected = list.querySelector('.msos-selecteditems');
-          if (selected) {
-            selected.replaceChildren(
-              ...chosen.map((option) => {
-                const item = document.createElement('li');
-                item.className = 'msos-selected-display-item msos-visible';
-                item.setAttribute('name', binding.id + '-selected-item-' + option.index);
-                item.id = binding.id + '-selected-item-' + option.index;
-                item.tabIndex = -1;
-                item.title = '';
-                item.dataset.value = option.value;
-                const text = document.createElement('span');
-                text.className = 'msos-selected-display-item-text';
-                text.textContent = option.label;
-                item.append(text);
-                return item;
-              }),
-            );
-          }
-          const text = chosen.map((option) => option.label).join(', ');
-          const view = list.querySelector('.msos-viewmode-text');
-          if (view) {
-            view.textContent = text || '---';
-            view.title = text || '---';
-          }
-          list.classList.toggle('msos-none-selected', !list.classList.contains('msos-disabled') && values.size === 0);
-        }
-      }
-      if (binding.control === 'datetime') {
-        const display = byId(binding.id + '_datepicker_description');
-        if (display?.type === 'date' || display?.type === 'datetime-local')
-          write(display, value.slice(0, display.type === 'date' ? 10 : 16), true);
-        // The captured/local DateTimePicker listens to the underlying change event below.
-      }
+      writeNativeText(binding, raw, field, byId, write, events);
     } else throw new Error('PCF native binding has an unsupported input structure: ' + binding.id);
     for (const node of events) {
       node.dispatchEvent(new Event('input', { bubbles: true }));
       node.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    if (events.size && typeof window.setIsDirty === 'function') window.setIsDirty(true);
+    if (events.size && typeof globalThis.setIsDirty === 'function') globalThis.setIsDirty(true);
   }
   function token() {
     return new Promise((resolve, reject) => {
-      if (!window.shell?.getTokenDeferred)
+      if (!globalThis.shell?.getTokenDeferred)
         return reject(new Error('PCF Web API requires the local portal CSRF token provider'));
-      window.shell.getTokenDeferred().done(resolve).fail(reject);
+      globalThis.shell.getTokenDeferred().done(resolve).fail(reject);
     });
   }
   function options(value) {
@@ -344,6 +376,54 @@
     if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id))
       throw new Error('PCF Web API requires a record GUID');
     return id;
+  }
+  function datasetFilterCondition(xml, dataset, condition, conditions) {
+    if (++conditions.count > 500) throw new Error('PCF dataset filter exceeds 500 conditions');
+    const operators = {
+      0: 'eq',
+      1: 'ne',
+      2: 'gt',
+      3: 'lt',
+      4: 'ge',
+      5: 'le',
+      6: 'like',
+      8: 'in',
+      12: 'null',
+      13: 'not-null',
+      25: 'on',
+      26: 'on-or-before',
+      27: 'on-or-after',
+    };
+    const operator = operators[condition.conditionOperator];
+    if (
+      !operator ||
+      !dataset.columns.some((column) => column.name === condition.attributeName) ||
+      condition.entityAliasName
+    )
+      throw new Error('PCF dataset filter operator/column/alias is unsupported');
+    const child = xml.createElement('condition');
+    child.setAttribute('attribute', condition.attributeName);
+    child.setAttribute('operator', operator);
+    if (operator === 'in') {
+      if (!Array.isArray(condition.value)) throw new Error('PCF dataset In filters require an array');
+      for (const value of condition.value) {
+        const item = xml.createElement('value');
+        item.textContent = String(value);
+        child.append(item);
+      }
+    } else if (!['null', 'not-null'].includes(operator)) child.setAttribute('value', String(condition.value ?? ''));
+    return child;
+  }
+  function datasetFilterNode(xml, dataset, expression, depth, conditions) {
+    if (depth > 16 || !expression || ![0, 1].includes(expression.filterOperator))
+      throw new Error('PCF dataset filter has an unsupported structure');
+    const node = xml.createElement('filter');
+    node.setAttribute('type', expression.filterOperator === 1 ? 'or' : 'and');
+    for (const condition of expression.conditions ?? [])
+      node.append(datasetFilterCondition(xml, dataset, condition, conditions));
+    for (const child of expression.filters ?? [])
+      node.append(datasetFilterNode(xml, dataset, child, depth + 1, conditions));
+    return node;
   }
   // Dataset bindings come from selected solution views/table metadata, never from table-name guessing.
   function datasetAdapter(binding, api, updated) {
@@ -374,7 +454,7 @@
         updated(binding.name);
       },
       filtering: {
-        getFilter: () => (filter == null ? null : JSON.parse(JSON.stringify(filter))),
+        getFilter: () => (filter == null ? null : JSON.parse(JSON.stringify(filter))), // NOSONAR: JSON round trip semantics differ from structuredClone
         setFilter(value) {
           const serialized = JSON.stringify(value);
           if (serialized.length > 65536) throw new Error('PCF dataset filter exceeds 64 KiB');
@@ -480,54 +560,7 @@
           entity.append(node);
         }
       }
-      let conditions = 0;
-      function filterNode(expression, depth) {
-        if (depth > 16 || !expression || ![0, 1].includes(expression.filterOperator))
-          throw new Error('PCF dataset filter has an unsupported structure');
-        const node = xml.createElement('filter');
-        node.setAttribute('type', expression.filterOperator === 1 ? 'or' : 'and');
-        for (const condition of expression.conditions ?? []) {
-          if (++conditions > 500) throw new Error('PCF dataset filter exceeds 500 conditions');
-          const operators = {
-            0: 'eq',
-            1: 'ne',
-            2: 'gt',
-            3: 'lt',
-            4: 'ge',
-            5: 'le',
-            6: 'like',
-            8: 'in',
-            12: 'null',
-            13: 'not-null',
-            25: 'on',
-            26: 'on-or-before',
-            27: 'on-or-after',
-          };
-          const operator = operators[condition.conditionOperator];
-          if (
-            !operator ||
-            !dataset.columns.some((column) => column.name === condition.attributeName) ||
-            condition.entityAliasName
-          )
-            throw new Error('PCF dataset filter operator/column/alias is unsupported');
-          const child = xml.createElement('condition');
-          child.setAttribute('attribute', condition.attributeName);
-          child.setAttribute('operator', operator);
-          if (operator === 'in') {
-            if (!Array.isArray(condition.value)) throw new Error('PCF dataset In filters require an array');
-            for (const value of condition.value) {
-              const item = xml.createElement('value');
-              item.textContent = String(value);
-              child.append(item);
-            }
-          } else if (!['null', 'not-null'].includes(operator))
-            child.setAttribute('value', String(condition.value ?? ''));
-          node.append(child);
-        }
-        for (const child of expression.filters ?? []) node.append(filterNode(child, depth + 1));
-        return node;
-      }
-      if (filter != null) entity.append(filterNode(filter, 0));
+      if (filter != null) entity.append(datasetFilterNode(xml, dataset, filter, 0, { count: 0 }));
       return '?fetchXml=' + encodeURIComponent(new XMLSerializer().serializeToString(xml));
     }
     async function load() {
@@ -550,7 +583,7 @@
             const raw = value(name),
               field = binding.fields[name];
             if (raw == null || !field?.dataType) return raw;
-            if (/^Lookup\./.test(field.dataType)) {
+            if (field.dataType.startsWith('Lookup.')) {
               const target =
                 row['_' + name + '_value@Microsoft.Dynamics.CRM.lookuplogicalname'] ??
                 (field.targets?.length === 1 ? field.targets[0] : null);
@@ -621,6 +654,138 @@
     }
     return { dataset, load };
   }
+  function controlConstructor(spec) {
+    let Constructor =
+      constructors.get(spec.constructor) ||
+      spec.constructor.split('.').reduce((value, key) => value?.[key], globalThis);
+    if (!Constructor) {
+      const exportName = spec.constructor.split('.').at(-1);
+      const candidates = [
+        ...new Set(
+          spec.resources
+            .filter((item) => item.kind === 'code' && item.exportGlobal)
+            .map((item) => Object.getOwnPropertyDescriptor(globalThis, item.exportGlobal)?.value?.[exportName])
+            .filter((item) => typeof item === 'function'),
+        ),
+      ];
+      if (candidates.length > 1)
+        throw new Error('The declared PCF resources expose ambiguous constructor exports: ' + spec.constructor);
+      Constructor = candidates[0];
+    }
+    if (typeof Constructor !== 'function') throw new Error('The PCF bundle did not register ' + spec.constructor);
+    return Constructor;
+  }
+  function controlParameters(spec, debug) {
+    const parameters = {},
+      writable = new Set();
+    debug.parameters = parameters;
+    debug.editableParameters = spec.properties
+      .filter((property) => property.usage !== 'output')
+      .map((property) => property.name);
+    for (const property of spec.properties) {
+      const type = property['of-type'] || groupType(property.types, spec.nativeBinding?.propertyTypes?.[property.name]);
+      if (!type) throw new Error('PCF property ' + property.name + ' has an ambiguous type-group binding');
+      const raw = typed(
+        spec.args[property.name] ?? spec.args[property.name.toLowerCase()] ?? property['default-value'] ?? null,
+        type,
+      );
+      const attributes =
+        spec.nativeBinding?.properties?.includes(property.name) && spec.nativeBinding.attributes
+          ? spec.nativeBinding.attributes
+          : {
+              DisplayName: spec.strings[property['display-name-key']] ?? property['display-name-key'] ?? property.name,
+              LogicalName: property.name,
+              RequiredLevel: property.required === 'true' ? 1 : 0,
+              Options: [],
+            };
+      parameters[property.name] = {
+        raw,
+        formatted: raw == null ? '' : String(raw),
+        type,
+        attributes: { ...attributes },
+        error: false,
+        errorMessage: '',
+      };
+      if (property.usage === 'bound' || property.usage === 'output') writable.add(property.name);
+    }
+    return { parameters, writable };
+  }
+  function synchronizeNativeParameter(spec, container, property) {
+    try {
+      const raw = typed(nativeValue(spec, container), property.type);
+      const changed = JSON.stringify(raw) !== JSON.stringify(property.raw) || property.error;
+      property.raw = raw;
+      property.formatted = raw == null ? '' : String(raw);
+      property.error = false;
+      property.errorMessage = '';
+      return changed;
+    } catch (error) {
+      const changed = !property.error || property.errorMessage !== error.message;
+      property.error = true;
+      property.errorMessage = error.message;
+      return changed;
+    }
+  }
+  function pcfEntitySet(spec, name) {
+    const mapping = spec.mappings[String(name).toLowerCase()];
+    if (!mapping || !/^[a-z_][a-z\d_]*$/i.test(mapping.entitySet))
+      throw new Error('PCF Web API table has no imported mapping: ' + name);
+    return mapping.entitySet;
+  }
+  async function pcfApi(spec, name, suffix, method, body, maxPageSize) {
+    const headers = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      __RequestVerificationToken: await token(),
+    };
+    if (maxPageSize !== undefined) {
+      if (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)
+        throw new Error('PCF Web API maxPageSize must be between 1 and 5000');
+      headers.Prefer = 'odata.maxpagesize=' + maxPageSize;
+    }
+    const response = await fetch('/_api/' + pcfEntitySet(spec, name) + suffix, {
+      method,
+      credentials: 'same-origin',
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    let result;
+    try {
+      result = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error('PCF Web API returned a non-JSON response');
+    }
+    if (!response.ok) {
+      const error = new Error(result.error?.message || 'PCF Web API HTTP ' + response.status);
+      error.errorCode = result.error?.code;
+      throw error;
+    }
+    return {
+      result,
+      id:
+        response.headers.get('entityid') || /\(([0-9a-f-]+)\)/i.exec(response.headers.get('OData-EntityId') || '')?.[1],
+    };
+  }
+  function loadPcfResource(spec, name, success, failure) {
+    const item = spec.resources.find((resource) =>
+      resource.path ? resource.path === name : decodeURIComponent(resource.url).endsWith('/' + name),
+    );
+    if (!item) return failure?.();
+    fetch(item.url)
+      .then((response) => {
+        if (!response.ok) throw new Error('PCF resource HTTP ' + response.status);
+        return response.arrayBuffer();
+      })
+      .then((bytes) => {
+        let binary = '';
+        const values = new Uint8Array(bytes);
+        for (let index = 0; index < values.length; index += 8192)
+          binary += String.fromCodePoint(...values.subarray(index, index + 8192));
+        success(btoa(binary));
+      })
+      .catch(failure);
+  }
   async function mount(spec, target) {
     const container = target || document.getElementById(spec.id);
     if (!container || instances.has(container)) return;
@@ -679,99 +844,9 @@
         cleanup();
         return;
       }
-      let Constructor =
-        constructors.get(spec.constructor) || spec.constructor.split('.').reduce((value, key) => value?.[key], window);
-      if (!Constructor) {
-        const exportName = spec.constructor.split('.').at(-1);
-        const candidates = [
-          ...new Set(
-            spec.resources
-              .filter((item) => item.kind === 'code' && item.exportGlobal)
-              .map((item) => Object.getOwnPropertyDescriptor(window, item.exportGlobal)?.value?.[exportName])
-              .filter((item) => typeof item === 'function'),
-          ),
-        ];
-        if (candidates.length > 1)
-          throw new Error('The declared PCF resources expose ambiguous constructor exports: ' + spec.constructor);
-        Constructor = candidates[0];
-      }
-      if (typeof Constructor !== 'function') throw new Error('The PCF bundle did not register ' + spec.constructor);
-      const parameters = {},
-        writable = new Set();
-      debug.parameters = parameters;
-      debug.editableParameters = spec.properties
-        .filter((property) => property.usage !== 'output')
-        .map((property) => property.name);
-      for (const property of spec.properties) {
-        const type =
-          property['of-type'] || groupType(property.types, spec.nativeBinding?.propertyTypes?.[property.name]);
-        if (!type) throw new Error('PCF property ' + property.name + ' has an ambiguous type-group binding');
-        const raw = typed(
-          spec.args[property.name] ?? spec.args[property.name.toLowerCase()] ?? property['default-value'] ?? null,
-          type,
-        );
-        const attributes =
-          spec.nativeBinding?.properties?.includes(property.name) && spec.nativeBinding.attributes
-            ? spec.nativeBinding.attributes
-            : {
-                DisplayName:
-                  spec.strings[property['display-name-key']] ?? property['display-name-key'] ?? property.name,
-                LogicalName: property.name,
-                RequiredLevel: property.required === 'true' ? 1 : 0,
-                Options: [],
-              };
-        parameters[property.name] = {
-          raw,
-          formatted: raw == null ? '' : String(raw),
-          type,
-          attributes: { ...attributes },
-          error: false,
-          errorMessage: '',
-        };
-        if (property.usage === 'bound' || property.usage === 'output') writable.add(property.name);
-      }
-      const entitySet = (name) => {
-        const mapping = spec.mappings[String(name).toLowerCase()];
-        if (!mapping || !/^[a-z_][a-z\d_]*$/i.test(mapping.entitySet))
-          throw new Error('PCF Web API table has no imported mapping: ' + name);
-        return mapping.entitySet;
-      };
-      async function api(name, suffix, method, body, maxPageSize) {
-        const headers = {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          __RequestVerificationToken: await token(),
-        };
-        if (maxPageSize !== undefined) {
-          if (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)
-            throw new Error('PCF Web API maxPageSize must be between 1 and 5000');
-          headers.Prefer = 'odata.maxpagesize=' + maxPageSize;
-        }
-        const response = await fetch('/_api/' + entitySet(name) + suffix, {
-          method,
-          credentials: 'same-origin',
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-        });
-        const text = await response.text();
-        let result;
-        try {
-          result = text ? JSON.parse(text) : {};
-        } catch {
-          throw new Error('PCF Web API returned a non-JSON response');
-        }
-        if (!response.ok) {
-          const error = new Error(result.error?.message || 'PCF Web API HTTP ' + response.status);
-          error.errorCode = result.error?.code;
-          throw error;
-        }
-        return {
-          result,
-          id:
-            response.headers.get('entityid') ||
-            /\(([0-9a-f-]+)\)/i.exec(response.headers.get('OData-EntityId') || '')?.[1],
-        };
-      }
+      const Constructor = controlConstructor(spec);
+      const { parameters, writable } = controlParameters(spec, debug);
+      const api = (name, suffix, method, body, maxPageSize) => pcfApi(spec, name, suffix, method, body, maxPageSize);
       const stateKey = 'paqvilo-pcf:' + container.id;
       const locale = spec.language?.code || document.documentElement.lang || undefined;
       const numberFormat = (value, precision) =>
@@ -802,25 +877,7 @@
         },
         resources: {
           getString: (key) => spec.strings[key] ?? key,
-          getResource: (name, success, failure) => {
-            const item = spec.resources.find((item) =>
-              item.path ? item.path === name : decodeURIComponent(item.url).endsWith('/' + name),
-            );
-            if (!item) return failure?.();
-            fetch(item.url)
-              .then((response) => {
-                if (!response.ok) throw new Error('PCF resource HTTP ' + response.status);
-                return response.arrayBuffer();
-              })
-              .then((bytes) => {
-                let binary = '';
-                const values = new Uint8Array(bytes);
-                for (let index = 0; index < values.length; index += 8192)
-                  binary += String.fromCharCode(...values.subarray(index, index + 8192));
-                success(btoa(binary));
-              })
-              .catch(failure);
-          },
+          getResource: (name, success, failure) => loadPcfResource(spec, name, success, failure),
         },
         formatting: {
           formatCurrency: (value, precision) => numberFormat(value, precision),
@@ -847,9 +904,9 @@
         },
         navigation: {
           openAlertDialog: async (options) => {
-            window.alert(options.text);
+            globalThis.alert(options.text);
           },
-          openConfirmDialog: async (options) => ({ confirmed: window.confirm(options.text) }),
+          openConfirmDialog: async (options) => ({ confirmed: globalThis.confirm(options.text) }),
         },
       };
       const datasetHosts = (spec.datasets ?? []).map((binding) => {
@@ -983,18 +1040,7 @@
           for (const name of binding.properties ?? []) {
             const property = parameters[name];
             if (!property || !writable.has(name)) continue;
-            try {
-              const raw = typed(nativeValue(spec, container), property.type);
-              if (JSON.stringify(raw) !== JSON.stringify(property.raw) || property.error) updates.push(name);
-              property.raw = raw;
-              property.formatted = raw == null ? '' : String(raw);
-              property.error = false;
-              property.errorMessage = '';
-            } catch (error) {
-              if (!property.error || property.errorMessage !== error.message) updates.push(name);
-              property.error = true;
-              property.errorMessage = error.message;
-            }
+            if (synchronizeNativeParameter(spec, container, property)) updates.push(name);
           }
           if (updates.length) {
             try {
@@ -1062,7 +1108,7 @@
     },
     { once: true },
   );
-  window.__paqviloPcf = {
+  globalThis.__paqviloPcf = {
     mount,
     inspect(id) {
       const current = [...instances.values()].map((instance) => debugSnapshot(instance.debug));
@@ -1080,7 +1126,7 @@
         return existing;
       }
       const dialog = document.createElement('dialog');
-      dialog.setAttribute('data-paqvilo-pcf-debugger', '');
+      dialog.dataset.paqviloPcfDebugger = '';
       dialog.setAttribute('aria-label', 'Code component debugger');
       dialog.style.cssText =
         'max-width:760px;width:90%;max-height:85vh;padding:20px;border:1px solid #777;border-radius:8px;overflow:auto';
@@ -1106,7 +1152,7 @@
         refresh = button('Refresh state'),
         close = button('Close');
       const render = () => {
-        const entry = window.__paqviloPcf.inspect(select.value)[0];
+        const entry = globalThis.__paqviloPcf.inspect(select.value)[0];
         apply.disabled = entry?.state !== 'ready';
         details.textContent = JSON.stringify(entry ?? {}, null, 2);
         const instance = [...instances.values()].find((item) => item.debug.id === select.value);
@@ -1122,7 +1168,7 @@
       const inventory = () => {
         const id = select.value;
         select.replaceChildren();
-        for (const entry of window.__paqviloPcf.inspect()) {
+        for (const entry of globalThis.__paqviloPcf.inspect()) {
           const option = document.createElement('option');
           option.value = entry.id;
           option.textContent = `${entry.id} · ${entry.state}`;
@@ -1135,12 +1181,12 @@
       refresh.addEventListener('click', inventory);
       apply.addEventListener('click', () => {
         try {
-          window.__paqviloPcf.updateParameters(select.value, JSON.parse(editor.value));
+          globalThis.__paqviloPcf.updateParameters(select.value, JSON.parse(editor.value));
           status.textContent = 'Parameters applied.';
           render();
         } catch (error) {
           status.textContent = errorText(error);
-          details.textContent = JSON.stringify(window.__paqviloPcf.inspect(select.value)[0] ?? {}, null, 2);
+          details.textContent = JSON.stringify(globalThis.__paqviloPcf.inspect(select.value)[0] ?? {}, null, 2);
         }
       });
       close.addEventListener('click', () => dialog.close());

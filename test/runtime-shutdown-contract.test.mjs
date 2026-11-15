@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import { registerRuntimeShutdown } from '../mirage/lib/runtime-shutdown.mjs';
 
 test('detached runtime survives stdin EOF and explicit stop closes once and removes owned discovery', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-contract-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-contract-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const discovery = path.join(directory, 'owned.json');
   await fs.writeFile(discovery, '{}');

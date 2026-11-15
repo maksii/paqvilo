@@ -75,7 +75,7 @@ test('query fingerprints preserve access predicates, hints, join type and genera
     xml
       .replaceAll('generated_alias_contact_0', 'generated_alias_contact_41')
       .replace('distinct="true"', "distinct='true'")
-      .replace(/></g, '>\n<'),
+      .replaceAll('><', '>\n<'),
   );
   assert.equal(base.structuralHash, formatting.structuralHash);
   assert.notEqual(base.exactHash, formatting.exactHash);
@@ -139,7 +139,8 @@ test('recorded backend parts must have valid checksums, order, count and stage b
     pqvd_partcount: 2,
     pqvd_payloadtext: text,
   }));
-  assert.equal(capturedQueries(chunks.reverse()).queries.length, 1);
+  chunks.reverse();
+  assert.equal(capturedQueries(chunks).queries.length, 1);
   assert.equal(capturedQueries([chunks[0], chunks[0]]).errors[0].kind, 'parts');
   const corrupted = structuredClone(chunks);
   corrupted[0].pqvd_payloadtext += ' ';
@@ -176,7 +177,9 @@ test('same-configuration comparison validates all actor, source, dataset and cas
   assert.equal(compareRuns(baseline, same).verdict, 'equal');
   for (const field of ['contactId', 'datasetVersion', 'manifestHash', 'sourceHash', 'configuration', 'roles']) {
     const other = run();
-    other[field] = field === 'configuration' ? { permissionHash: 'other' } : field === 'roles' ? ['IT'] : 'other';
+    if (field === 'configuration') other[field] = { permissionHash: 'other' };
+    else if (field === 'roles') other[field] = ['IT'];
+    else other[field] = 'other';
     assert.equal(compareRuns(baseline, other).verdict, 'unqualified');
     assert.ok(compareRuns(baseline, other).prerequisiteFailures.includes(field));
   }

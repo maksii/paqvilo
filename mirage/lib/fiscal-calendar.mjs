@@ -72,8 +72,8 @@ function startDate(value, setting) {
   const text = String(value).trim();
   // YYYY-MM-DD (any time part is ignored) or MM-DD; only the month and day are used.
   const match = /^(?:\d{4}-)?(\d{2})-(\d{2})(?:[T ].*)?$/.exec(text);
-  const month = match ? Number(match[1]) - 1 : NaN,
-    day = match ? Number(match[2]) : NaN;
+  const month = match ? Number(match[1]) - 1 : Number.NaN,
+    day = match ? Number(match[2]) : Number.NaN;
   if (!(month >= 0 && month <= 11 && day >= 1 && day <= daysIn(2000, month)))
     invalid(`${setting} must be a date (YYYY-MM-DD or MM-DD), not '${value}'.`);
   return { month, day };

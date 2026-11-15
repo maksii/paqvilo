@@ -1,3 +1,4 @@
+// @test-kind contract: the Power Pages document control answers the documented operations, permissions and verification token checks as the designed local runtime does.
 // Power Pages document control at contract: the documented operations under
 // the local /_apps/portal-documents/ route, the parent and Document Location table permissions, the SharePoint upload size
 // settings and the 501 answer without storage.
@@ -12,7 +13,7 @@ import { portalDocumentAccess } from '../lib/permissions.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { createStorageRouter, storageSettings } from '../lib/storage-provider.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CASE = '77777777-7777-4777-8777-777777777760';
 const SITE = '77777777-7777-4777-8777-777777777761';
@@ -52,20 +53,20 @@ const child = (operations) => ({
 });
 
 async function documents(t, { permissions, settings = {}, withStorage = true } = {}) {
-  let storage;
+  const owner = ownedFixture(t);
+  let storage, local;
   if (withStorage) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-documents-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-    const local = createLocalDiskStorage({ root });
-    ownedFixture(t).add(() => local.close());
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-documents-'));
+    owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+    local = createLocalDiskStorage({ root });
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
   }
-  const { api, store } = await contractModuleFixture(t, {
-    mappings,
-    tables,
-    extension: EXTENSION,
-    options: { storage },
-  });
+  // The organization and its API close before the storage they write to, and that storage before its directory goes.
+  const { api, store } = await contractModuleFixture(
+    { after: (callback) => owner.add(callback) },
+    { mappings, tables, extension: EXTENSION, options: { storage } },
+  );
+  if (local) owner.add(() => local.close());
   store.state.permissions = permissions;
   store.state.settings = { ...store.state.settings, permissionMode: 'enforce' };
   const service = createPortalDocumentService({
@@ -83,7 +84,7 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  owner.add(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}${PORTAL_DOCUMENTS_ROUTE}x_case/${CASE}`;
   const call = (method, suffix = '', body, headers = {}) =>
     fetch(base + suffix, {
@@ -94,6 +95,7 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
   return { call, store };
 }
 
+// @test-kind security: a visitor without the Document Location permission cannot list documents
 test('without the child Document Location permission the list is denied', async (t) => {
   const { call } = await documents(t, { permissions: [parent(['read', 'appendTo'])] });
   const response = await call('GET');
@@ -101,6 +103,7 @@ test('without the child Document Location permission the list is denied', async 
   assert.equal((await response.json()).error.code, 'PermissionDenied');
 });
 
+// @test-kind security: a read-only visitor cannot upload
 test('read-only permissions list documents but refuse an upload with 403', async (t) => {
   const { call } = await documents(t, { permissions: [parent(['read', 'appendTo']), child(['read'])] });
   const listed = await (await call('GET')).json();
@@ -180,6 +183,7 @@ test('New folder, navigation, upload, download and delete inside subfolders (Lea
   assert.equal((await call('GET', '?folder=Contracts/2026')).status, 404, 'a deleted folder takes its subfolders');
 });
 
+// @test-kind security: each document operation requires its permission and an upload is capped by the size setting
 test('upload, list, download and delete follow the documented permissions; the size setting bounds an upload', async (t) => {
   const all = [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append', 'delete'])];
   const { call, store } = await documents(t, { permissions: all });
@@ -225,4 +229,16 @@ test('without storage the service answers 501, never an empty list', async (t) =
   const response = await call('GET');
   assert.equal(response.status, 501);
   assert.equal((await response.json()).error.code, 'SharePointStorageNotConfigured');
+});
+
+// @test-kind security: a near-miss verification token is refused
+test('a write whose verification token is a near miss of the portal token is refused, and the exact token is accepted', async (t) => {
+  const { call } = await documents(t, {
+    permissions: [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append', 'delete'])],
+  });
+  const nearMiss = CSRF.slice(0, -1) + (CSRF.endsWith('x') ? 'y' : 'x');
+  assert.equal(nearMiss.length, CSRF.length);
+  assert.equal((await call('POST', '?name=x.txt', 'x', { __RequestVerificationToken: nearMiss })).status, 403);
+  assert.equal((await call('POST', '?name=x.txt', 'x', { __RequestVerificationToken: 'short' })).status, 403);
+  assert.equal((await call('POST', '?name=x.txt', 'x')).status, 201);
 });

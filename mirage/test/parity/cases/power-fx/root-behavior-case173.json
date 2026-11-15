@@ -1,0 +1,86 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-behavior-case173",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "Case173 exact original expression; genuine official PowerFx REPL behavior host, not native Canvas. Remaining eight unchanged expressions fail official checking."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "454679f7fd5b69b72f0073b2a12f84563ce4eb03370603606a227af115157542",
+      "capturedAt": "2026-11-09"
+    },
+    {
+      "id": "run-2",
+      "sha256": "a6ce51d77b4d537e559cba276c243bc5f73b7a46bc8ede307d97cd780f7844cc",
+      "capturedAt": "2026-11-09"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-173",
+      "input": {
+        "expression": "Set(x, 5); x * 2",
+        "host": {
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false,
+          "allowsSideEffects": true,
+          "mutationFunctions": "official EnableMutationFunctions",
+          "setDefinitions": "official PowerFxREPL AllowSetDefinitions",
+          "freshEnginePerCase": true,
+          "explicitPredeclaredVariables": 0
+        },
+        "result": {
+          "fields": [
+            "index",
+            "expression",
+            "phase",
+            "kind",
+            "type",
+            "value",
+            "errors",
+            "diagnostics",
+            "output",
+            "beforeSymbols",
+            "afterSymbols",
+            "xAfter",
+            "declared"
+          ],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "index": 173,
+        "expression": "Set(x, 5); x * 2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 10,
+        "errors": null,
+        "diagnostics": [],
+        "output": [],
+        "beforeSymbols": {
+          "x": false,
+          "c": false,
+          "n": false
+        },
+        "afterSymbols": {
+          "x": true,
+          "c": false,
+          "n": false
+        },
+        "xAfter": 5,
+        "declared": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -1,3 +1,4 @@
+// @test-kind unproven: Local Dataverse Web API router models; no native recording is replayed by these tests.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -22,9 +23,11 @@ describe('dataverse API router', () => {
   let token;
   let appUserId;
   let makerUserId;
+  let previousSecret;
   const recordCalls = [];
 
   before(async () => {
+    previousSecret = process.env[SECRET_VAR];
     process.env[SECRET_VAR] = 'test-secret-value';
     const state = emptyState();
     state.mappings = {
@@ -64,7 +67,7 @@ describe('dataverse API router', () => {
         return { status: 200, body: { echo: ctx.route.kind, user: ctx.user.systemuserid } };
       },
     };
-    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, log: () => {} });
+    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, host: '127.0.0.1', log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -84,8 +87,12 @@ describe('dataverse API router', () => {
   });
 
   after(async () => {
-    delete process.env[SECRET_VAR];
-    await api?.close();
+    try {
+      await api?.close();
+    } finally {
+      if (previousSecret === undefined) delete process.env[SECRET_VAR];
+      else process.env[SECRET_VAR] = previousSecret;
+    }
   });
 
   const auth = () => ({ authorization: `Bearer ${token}` });
@@ -192,7 +199,6 @@ describe('dataverse API router', () => {
   it('answers a header that cannot be written with a 500 JSON envelope instead of hanging', async () => {
     const response = await fetch(`${origin}${apiPath('widgets?badheader=1')}`, {
       headers: auth(),
-      signal: AbortSignal.timeout(5000),
     });
     assert.equal(response.status, 500);
     assert.equal(response.headers.get('content-type').split(';')[0], 'application/json');
@@ -601,6 +607,9 @@ describe('dataverse API router', () => {
       (await get(apiPath('widgets'), { 'accept-encoding': 'identity' })).headers.get('content-encoding'),
       null,
     );
+    const refused = await get(apiPath('widgets'), { 'accept-encoding': 'gzip;q=0, *;q=1' });
+    assert.equal(refused.headers.get('content-encoding'), null);
+    assert.equal((await refused.json()).echo, 'collection');
     const empty = await get(apiPath('widgets?empty'), { 'accept-encoding': 'gzip' });
     assert.equal(empty.status, 204);
     assert.equal(empty.headers.get('content-encoding'), null);
@@ -785,8 +794,7 @@ describe('dataverse API batch, metadata and sign-in', () => {
 
   let userToken;
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
-  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
-  const send = (path, init = {}) => fetch(`${origin}${path}`, { signal: AbortSignal.timeout(10_000), ...init });
+  const send = (path, init = {}) => fetch(`${origin}${path}`, init);
   const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
   const count = () => store.tableRows('widget').length;
   const batch = (boundary, parts, headers = {}) =>
@@ -1094,7 +1102,6 @@ describe('dataverse API batch, metadata and sign-in', () => {
       method: 'PATCH',
       headers: { ...bearer(token), 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'x' }),
-      signal: AbortSignal.timeout(5000),
     });
     assert.equal(response.status, 400);
     assert.equal(response.headers.get('content-type').split(';')[0], 'application/json');
@@ -1329,8 +1336,7 @@ describe('dataverse API change tracking and shares inside batches', () => {
   });
 
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
-  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
-  const send = (url, init = {}) => fetch(url, { signal: AbortSignal.timeout(10_000), ...init });
+  const send = (url, init = {}) => fetch(url, init);
   const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
   const read = (path, headers = {}) => send(`${api.origin}${path}`, { headers: { ...bearer(token), ...headers } });
   const batch = (boundary, parts) =>

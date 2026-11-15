@@ -1,3 +1,4 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,7 +13,7 @@ after(() => browser?.close());
 
 test('footer spacing ignores clipped and modal controls, repairs visible occlusion and restores source styles', async (t) => {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  t.after(() => page.close());
+  ownedFixture(t).add(() => page.close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setContent(`<!doctype html><body style="position:relative;min-height:600px;margin:0;padding-bottom:120px;box-sizing:border-box">
@@ -52,7 +53,7 @@ test('footer spacing ignores clipped and modal controls, repairs visible occlusi
 
 test('structural form fallback provides full-width fields and input groups without a capture', async (t) => {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  t.after(() => page.close());
+  ownedFixture(t).add(() => page.close());
   await page.setContent(
     '<div class="crmEntityFormView"><table class="section"><tr><td class="cell"><div class="info"><label>Name</label></div><div class="control"><input class="form-control"></div></td><td class="cell"><div class="info"><label>Date</label></div><div class="control input-group"><input class="form-control"><span class="input-group-addon">Date</span></div></td></tr></table></div>',
   );
@@ -77,7 +78,7 @@ test('structural form fallback provides full-width fields and input groups witho
 
 test('fixed footer repair rechecks viewport overlap on scroll and preserves root styles', async (t) => {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  t.after(() => page.close());
+  ownedFixture(t).add(() => page.close());
   await page.setContent(
     '<html style="--test-marker: 1"><body style="height:1600px;margin:0"><div style="height:540px"></div><button id="action">Action</button><footer style="position:fixed;bottom:0;left:0;right:0;height:120px;background:white;z-index:1">Footer</footer></body></html>',
   );

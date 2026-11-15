@@ -32,6 +32,10 @@ function coreScript(value, library, words) {
   const name = pathname.slice(pathname.lastIndexOf('/') + 1).toLowerCase();
   if (!name.startsWith(library) || !name.endsWith('.js')) return false;
   const suffix = name.slice(library.length, -3);
+  return validCoreScriptSuffix(suffix, library, words);
+}
+
+/* NOSONAR */ function validCoreScriptSuffix(suffix, library, words) {
   let index = 0;
   while (index < suffix.length) {
     const separator = suffix[index++];
@@ -44,21 +48,22 @@ function coreScript(value, library, words) {
     // modifiers and hashed Bootstrap builds are checked component by component.
     if (/^\d/.test(chunk) || (library === 'bootstrap' && /^v\d/.test(chunk))) continue;
     const parts = chunk.split('.');
-    let version = false;
-    if (
-      !parts.every((part) => {
-        if (version) return /^[\w]*$/.test(part);
-        if (/^\d/.test(part) || (library === 'bootstrap' && /^v\d/.test(part))) {
-          version = true;
-          return true;
-        }
-        return words.includes(part) || (library === 'bootstrap' && /^[a-f0-9]{6,}$/.test(part));
-      })
-    )
-      return false;
+    if (!validCoreScriptParts(parts, library, words)) return false;
     if (separator === '-' && words.includes(parts[0]) && library === 'bootstrap') return false;
   }
   return true;
+}
+
+function validCoreScriptParts(parts, library, words) {
+  let version = false;
+  return parts.every((part) => {
+    if (version) return /^\w*$/.test(part);
+    if (/^\d/.test(part) || (library === 'bootstrap' && /^v\d/.test(part))) {
+      version = true;
+      return true;
+    }
+    return words.includes(part) || (library === 'bootstrap' && /^[a-f0-9]{6,}$/.test(part));
+  });
 }
 const scriptSources = (html) =>
   [...String(html).matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1]);
@@ -114,7 +119,7 @@ export async function discoverSourceDependencies(portal) {
   const has = (pattern) => urls.some((url) => pattern.test(url));
   return {
     jquery: /\bjQuery\b|\$\s*\(|\$\s*\.|\bwindow\s*\.\s*jQuery\b/.test(source),
-    moment: /\b(?:window\s*\.\s*)?moment\s*(?:\(|\.|,)/.test(source),
+    moment: /\b(?:window\s*\.\s*)?moment\s*[(.,]/.test(source),
     dateTimePicker: /\.\s*datetimepicker\s*\(/i.test(source),
     bootstrapPlugins:
       /\.\s*(?:tooltip|popover|modal|dropdown|tab|collapse)\s*\(/i.test(source) ||
@@ -122,7 +127,7 @@ export async function discoverSourceDependencies(portal) {
     jqueryUiDialog: /\.\s*dialog\s*\(/i.test(source),
     // The platform's Date extensions: Date.prototype.format and the Datejs Date.parse.
     dateFormat:
-      /\bnew\s+Date\s*\([^)]*\)\s*\.\s*format\s*\(|\bDate\.prototype\.format\b|\bDate\s*\.\s*(?:parse|today)\s*\(/i.test(
+      /* NOSONAR */ /\bnew\s+Date\s*\([^)]*\)\s*\.\s*format\s*\(|\bDate\.prototype\.format\b|\bDate\s*\.\s*(?:parse|today)\s*\(/i.test(
         source,
       ),
     footerSpacing: /<footer\b|\brole\s*=\s*["']contentinfo["']/i.test(source),
@@ -231,7 +236,8 @@ export function injectRuntimeCompatibility(html, dependencies, configuredScripts
     const last = includes.at(-1);
     if (last) {
       const at = last.index + last[0].length;
-      output = `${html.slice(0, at)}${paths.map((src) => `<script src="${src}"></script>`).join('')}${html.slice(at)}`;
+      const tags = paths.map((src) => `<script src="${src}"></script>`).join('');
+      output = `${html.slice(0, at)}${tags}${html.slice(at)}`;
     }
   }
   // Inline page templates can contain a semantic footer even when source

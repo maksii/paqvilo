@@ -32,11 +32,118 @@ const list = async (relative, filter = () => true) =>
 
 // ---- small XML helpers (the export is machine-written, one element per line)
 const tag = (xml, name) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
-const attrsOf = (open) => Object.fromEntries([...open.matchAll(/([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+const attrsOf = (open) =>
+  Object.fromEntries([...open.matchAll(/(?<![\w:])([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
 const bare = (id) =>
   String(id ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+
+function loadEntityExport(table, entity) {
+  const attributes = [];
+  const keys = [];
+  for (const [, body] of entity.matchAll(/<attribute PhysicalName="[^"]+">([\s\S]*?)\n {8}<\/attribute>/g)) {
+    const get = (name) => tag(body, name);
+    attributes.push({
+      table,
+      name: get('LogicalName'),
+      type: get('Type'),
+      format: get('Format') ?? '',
+      required: get('RequiredLevel'),
+      maxLength: get('MaxLength'),
+      min: get('MinValue'),
+      max: get('MaxValue'),
+      accuracy: get('Accuracy'),
+      default: get('AppDefaultValue'),
+      update: get('ValidForUpdateApi'),
+      create: get('ValidForCreateApi'),
+      secured: get('IsSecured') === '1',
+      source: get('SourceType'),
+      behavior: get('Behavior'),
+      autoNumber: get('AutoNumberFormat') || '',
+      custom: get('IsCustomField') === '1',
+      optionSet: get('OptionSetName'),
+      lookupStyle: get('LookupStyle'),
+      display: /<displayname description="([^"]*)"/.exec(body)?.[1],
+      searchable: get('IsSearchable') === '1',
+      sortable: get('IsSortableEnabled') === '1',
+      formula: /<(FormulaDefinitionFileName|CalculationOf)>/.test(body),
+      canModifyRequired: get('CanModifyRequirementLevelSettings'),
+      stateOptions: [...body.matchAll(/<state value="(\d+)" defaultstatus="(\d+)"/g)].map((m) => ({
+        value: m[1],
+        defaultStatus: m[2],
+      })),
+      statusOptions: [
+        ...body.matchAll(/<status value="(\d+)" state="(\d+)"[^>]*>\s*<labels>\s*<label description="([^"]*)"/g),
+      ].map((m) => ({ value: m[1], state: m[2], label: m[3] })),
+    });
+  }
+  for (const [, body] of entity.matchAll(/<EntityKey>([\s\S]*?)<\/EntityKey>/g))
+    keys.push({
+      table,
+      name: tag(body, 'LogicalName'),
+      columns: [...body.matchAll(/<AttributeName>([^<]+)</g)].map((m) => m[1]),
+    });
+  return { attributes, keys };
+}
+
+function formExportEntry(table, folder, file, kindOf, xml) {
+  const base = `${EXPORT}/Entities/${table}`;
+  return {
+    table,
+    folder,
+    file: `${base}/FormXml/${folder}/${file}`,
+    id: bare(tag(xml, 'formid')),
+    name: /<LocalizedName description="([^"]*)"/.exec(xml)?.[1],
+    activation: tag(xml, 'FormActivationState'),
+    ...parseForm(xml, kindOf),
+  };
+}
+
+function viewExportEntry(table, file, xml) {
+  const base = `${EXPORT}/Entities/${table}`;
+  return {
+    table,
+    file: `${base}/SavedQueries/${file}`,
+    id: bare(tag(xml, 'savedqueryid')),
+    name: /<LocalizedName description="([^"]*)"/.exec(xml)?.[1],
+    queryType: Number(tag(xml, 'querytype')),
+    isDefault: tag(xml, 'isdefault') === '1',
+    isQuickFind: tag(xml, 'isquickfindquery') === '1',
+    cells: [...xml.matchAll(/<cell ([^>]*?)\/>/g)].map((m) => attrsOf(m[1])),
+    orders: [...xml.matchAll(/<order ([^>]*?)\/>/g)].map((m) => attrsOf(m[1])),
+    links: (xml.match(/<link-entity /g) ?? []).length,
+    filters: (xml.match(/<condition /g) ?? []).length,
+    quickFindFields: [
+      ...(/<filter [^>]*isquickfindfields="1"[^>]*>([\s\S]*?)<\/filter>/
+        .exec(xml)?.[1]
+        ?.matchAll(/<condition attribute="([^"]+)"/g) ?? []),
+    ].map((m) => m[1]),
+  };
+}
+
+function appendRelationshipExports(relationships, xml, file, tables) {
+  for (const [, name, body] of xml.matchAll(/<EntityRelationship Name="([^"]+)">([\s\S]*?)<\/EntityRelationship>/g)) {
+    const get = (key) => tag(body, key);
+    const relationship = {
+      file: `${EXPORT}/Other/Relationships/${file}`,
+      name,
+      type: get('EntityRelationshipType'),
+      referenced: get('ReferencedEntityName'),
+      referencing: get('ReferencingEntityName'),
+      attribute: get('ReferencingAttributeName'),
+      hierarchical: get('IsHierarchical') === '1',
+      cascade: Object.fromEntries(
+        ['Assign', 'Delete', 'Archive', 'Reparent', 'Share', 'Unshare'].map((action) => [
+          action,
+          get(`Cascade${action}`),
+        ]),
+      ),
+    };
+    if (tables.includes(relationship.referencing) || tables.includes(relationship.referenced))
+      relationships.push(relationship);
+  }
+}
 
 async function loadExport(tables, classids) {
   const kindOf = Object.fromEntries(Object.entries(classids).map(([kind, id]) => [id.toUpperCase(), kind]));
@@ -47,81 +154,17 @@ async function loadExport(tables, classids) {
   for (const table of tables) {
     const base = `${EXPORT}/Entities/${table}`;
     const entity = await text(`${base}/Entity.xml`);
-    for (const [, body] of entity.matchAll(/<attribute PhysicalName="[^"]+">([\s\S]*?)\n {8}<\/attribute>/g)) {
-      const get = (name) => tag(body, name);
-      attributes.push({
-        table,
-        name: get('LogicalName'),
-        type: get('Type'),
-        format: get('Format') ?? '',
-        required: get('RequiredLevel'),
-        maxLength: get('MaxLength'),
-        min: get('MinValue'),
-        max: get('MaxValue'),
-        accuracy: get('Accuracy'),
-        default: get('AppDefaultValue'),
-        update: get('ValidForUpdateApi'),
-        create: get('ValidForCreateApi'),
-        secured: get('IsSecured') === '1',
-        source: get('SourceType'),
-        behavior: get('Behavior'),
-        autoNumber: get('AutoNumberFormat') || '',
-        custom: get('IsCustomField') === '1',
-        optionSet: get('OptionSetName'),
-        lookupStyle: get('LookupStyle'),
-        display: /<displayname description="([^"]*)"/.exec(body)?.[1],
-        searchable: get('IsSearchable') === '1',
-        sortable: get('IsSortableEnabled') === '1',
-        formula: /<(FormulaDefinitionFileName|CalculationOf)>/.test(body),
-        canModifyRequired: get('CanModifyRequirementLevelSettings'),
-        stateOptions: [...body.matchAll(/<state value="(\d+)" defaultstatus="(\d+)"/g)].map((m) => ({
-          value: m[1],
-          defaultStatus: m[2],
-        })),
-        statusOptions: [
-          ...body.matchAll(/<status value="(\d+)" state="(\d+)"[^>]*>\s*<labels>\s*<label description="([^"]*)"/g),
-        ].map((m) => ({ value: m[1], state: m[2], label: m[3] })),
-      });
-    }
-    for (const [, body] of entity.matchAll(/<EntityKey>([\s\S]*?)<\/EntityKey>/g))
-      keys.push({
-        table,
-        name: tag(body, 'LogicalName'),
-        columns: [...body.matchAll(/<AttributeName>([^<]+)</g)].map((m) => m[1]),
-      });
+    const loaded = loadEntityExport(table, entity);
+    attributes.push(...loaded.attributes);
+    keys.push(...loaded.keys);
     for (const folder of await list(`${base}/FormXml`))
-      for (const file of await list(`${base}/FormXml/${folder}`, (f) => f.endsWith('.xml'))) {
+      for (const file of await list(`${base}/FormXml/${folder}`, (name) => name.endsWith('.xml'))) {
         const xml = await text(`${base}/FormXml/${folder}/${file}`);
-        forms.push({
-          table,
-          folder,
-          file: `${base}/FormXml/${folder}/${file}`,
-          id: bare(tag(xml, 'formid')),
-          name: /<LocalizedName description="([^"]*)"/.exec(xml)?.[1],
-          activation: tag(xml, 'FormActivationState'),
-          ...parseForm(xml, kindOf),
-        });
+        forms.push(formExportEntry(table, folder, file, kindOf, xml));
       }
-    for (const file of await list(`${base}/SavedQueries`, (f) => f.endsWith('.xml'))) {
+    for (const file of await list(`${base}/SavedQueries`, (name) => name.endsWith('.xml'))) {
       const xml = await text(`${base}/SavedQueries/${file}`);
-      views.push({
-        table,
-        file: `${base}/SavedQueries/${file}`,
-        id: bare(tag(xml, 'savedqueryid')),
-        name: /<LocalizedName description="([^"]*)"/.exec(xml)?.[1],
-        queryType: Number(tag(xml, 'querytype')),
-        isDefault: tag(xml, 'isdefault') === '1',
-        isQuickFind: tag(xml, 'isquickfindquery') === '1',
-        cells: [...xml.matchAll(/<cell ([^>]*?)\/>/g)].map((m) => attrsOf(m[1])),
-        orders: [...xml.matchAll(/<order ([^>]*?)\/>/g)].map((m) => attrsOf(m[1])),
-        links: (xml.match(/<link-entity /g) ?? []).length,
-        filters: (xml.match(/<condition /g) ?? []).length,
-        quickFindFields: [
-          ...(/<filter [^>]*isquickfindfields="1"[^>]*>([\s\S]*?)<\/filter>/
-            .exec(xml)?.[1]
-            ?.matchAll(/<condition attribute="([^"]+)"/g) ?? []),
-        ].map((m) => m[1]),
-      });
+      views.push(viewExportEntry(table, file, xml));
     }
   }
   const workflows = [];
@@ -138,7 +181,7 @@ async function loadExport(tables, classids) {
       state: tag(data, 'StateCode'),
       triggerScope: tag(data, 'ProcessTriggerScope'),
       triggerForm: bare(tag(data, 'ProcessTriggerFormId')),
-      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(),
+      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(), // NOSONAR: preserve default coercion and UTF-16 sort order
       clears: /Value="\[Nothing\]"/.test(xaml),
     });
   }
@@ -155,26 +198,7 @@ async function loadExport(tables, classids) {
   const relationships = [];
   for (const file of await list(`${EXPORT}/Other/Relationships`, (f) => f.endsWith('.xml'))) {
     const xml = await text(`${EXPORT}/Other/Relationships/${file}`);
-    for (const [, name, body] of xml.matchAll(/<EntityRelationship Name="([^"]+)">([\s\S]*?)<\/EntityRelationship>/g)) {
-      const get = (key) => tag(body, key);
-      const relationship = {
-        file: `${EXPORT}/Other/Relationships/${file}`,
-        name,
-        type: get('EntityRelationshipType'),
-        referenced: get('ReferencedEntityName'),
-        referencing: get('ReferencingEntityName'),
-        attribute: get('ReferencingAttributeName'),
-        hierarchical: get('IsHierarchical') === '1',
-        cascade: Object.fromEntries(
-          ['Assign', 'Delete', 'Archive', 'Reparent', 'Share', 'Unshare'].map((action) => [
-            action,
-            get(`Cascade${action}`),
-          ]),
-        ),
-      };
-      if (tables.includes(relationship.referencing) || tables.includes(relationship.referenced))
-        relationships.push(relationship);
-    }
+    appendRelationshipExports(relationships, xml, file, tables);
   }
   const solution = await text(`${EXPORT}/Other/Solution.xml`);
   const allMissing = [...solution.matchAll(/<MissingDependency>([\s\S]*?)<\/MissingDependency>/g)].map((m) => ({
@@ -182,7 +206,7 @@ async function loadExport(tables, classids) {
     dependent: attrsOf(/<Dependent ([^>]*)\/>/.exec(m[1])?.[1] ?? ''),
   }));
   // System-layer requirements (unmodified platform columns the solution lists itself) are present on every import; provision.mjs applies the same rule.
-  const missing = allMissing.filter((m) => !/^System \(/.test(m.required.solution ?? ''));
+  const missing = allMissing.filter((m) => !(m.required.solution ?? '').startsWith('System ('));
   const systemMissing = allMissing.length - missing.length;
   const roots = [...solution.matchAll(/<RootComponent ([^>]*)\/>/g)].map((m) => attrsOf(m[1]));
   const security = await text(`${EXPORT}/Other/FieldSecurityProfiles.xml`);
@@ -211,6 +235,56 @@ async function loadExport(tables, classids) {
 }
 
 // Walks tabs → columns → sections → cells → controls of one exported FormXml.
+function closeFormElement(name, state) {
+  if (name === 'tab') state.tab = null;
+  if (name === 'section') state.section = null;
+  if (name === 'cell') state.cell = null;
+}
+
+function addFormControl(out, raw, selfClose, xml, re, state, kindOf) {
+  let params = '';
+  if (!selfClose) {
+    const end = xml.indexOf('</control>', re.lastIndex);
+    params = xml.slice(re.lastIndex, end);
+    re.lastIndex = end + 10;
+  }
+  const attrs = attrsOf(raw);
+  const control = {
+    attrs,
+    params,
+    kind: kindOf[(attrs.classid ?? '').toUpperCase()],
+    cell: state.cell,
+    section: state.section,
+    tab: state.tab,
+  };
+  out.controls.push(control);
+  if (state.cell) state.cell.control = control;
+}
+
+function addFormElement(out, name, { raw, selfClose, xml, re, state, kindOf }) {
+  const attrs = attrsOf(raw);
+  if (name === 'tab') {
+    state.tab = { attrs };
+    out.tabs.push(state.tab);
+  } else if (name === 'column') out.columns.push({ attrs, tab: state.tab });
+  else if (name === 'section') {
+    state.section = { attrs, tab: state.tab };
+    out.sections.push(state.section);
+  } else if (name === 'cell') {
+    state.cell = {
+      attrs,
+      section: state.section,
+      tab: state.tab,
+      control: null,
+      label: selfClose
+        ? null
+        : /^\s*<labels>\s*<label description="([^"]*)"/.exec(xml.slice(re.lastIndex, re.lastIndex + 300))?.[1],
+    };
+    out.cells.push(state.cell);
+    if (selfClose) state.cell = null;
+  } else addFormControl(out, raw, selfClose, xml, re, state, kindOf);
+}
+
 function parseForm(xml, kindOf) {
   const out = {
     formAttrs: attrsOf(/<form\b([^>]*)>/.exec(xml)?.[1] ?? ''),
@@ -220,50 +294,51 @@ function parseForm(xml, kindOf) {
     cells: [],
     controls: [],
   };
-  let tab = null,
-    section = null,
-    cell = null;
+  const state = { tab: null, section: null, cell: null };
   const re = /<(\/?)(tab|column|section|cell|control)\b([^>]*?)(\/?)>/g;
   for (let m = re.exec(xml); m; m = re.exec(xml)) {
     const [, close, name, raw, selfClose] = m;
     if (close) {
-      if (name === 'tab') tab = null;
-      if (name === 'section') section = null;
-      if (name === 'cell') cell = null;
+      closeFormElement(name, state);
       continue;
     }
-    const attrs = attrsOf(raw);
-    if (name === 'tab') out.tabs.push((tab = { attrs }));
-    else if (name === 'column') out.columns.push({ attrs, tab });
-    else if (name === 'section') out.sections.push((section = { attrs, tab }));
-    else if (name === 'cell') {
-      out.cells.push(
-        (cell = {
-          attrs,
-          section,
-          tab,
-          control: null,
-          label: selfClose
-            ? null
-            : /^\s*<labels>\s*<label description="([^"]*)"/.exec(xml.slice(re.lastIndex, re.lastIndex + 300))?.[1],
-        }),
-      );
-      if (selfClose) cell = null;
-    } else {
-      let params = '';
-      if (!selfClose) {
-        const end = xml.indexOf('</control>', re.lastIndex);
-        params = xml.slice(re.lastIndex, end);
-        re.lastIndex = end + 10;
-      }
-      const control = { attrs, params, kind: kindOf[(attrs.classid ?? '').toUpperCase()], cell, section, tab };
-      out.controls.push(control);
-      if (cell) cell.control = control;
-    }
+    addFormElement(out, name, { raw, selfClose, xml, re, state, kindOf });
   }
   return out;
 }
 const param = (control, name) => tag(control.params, name);
+
+function ownFolderLoader(folders) {
+  return async (dir, suffix, idKey) => {
+    const files = await list(dir, (f) => f.endsWith('.yml'));
+    const own = files.find((f) => f.endsWith(suffix));
+    if (!own) return;
+    const yml = await text(`${dir}/${own}`);
+    folders.push({
+      id: new RegExp(String.raw`${idKey}: (\S+)`).exec(yml)?.[1],
+      formName: /adx_formname: (.+)/.exec(yml)?.[1]?.trim(),
+      all: (await Promise.all(files.map((f) => text(`${dir}/${f}`)))).join('\n'),
+    });
+  };
+}
+
+function fixtureFormPages(folders, site) {
+  const formPages = new Map();
+  const addPage = (form, page) => (formPages.get(form) ?? formPages.set(form, new Set()).get(form)).add(page);
+  // Each basic form and multistep step folder holds the record yml and its metadata yml; the record yml
+  // names the Dataverse form (adx_formname). A basic form without a page of its own is a dialog opened
+  // from the folders whose yml reference its id (subgrid/lookup metadata, action buttons).
+  const records = new Map(site.records.map((record) => [record.id, record]));
+  for (const folder of folders) {
+    const record = records.get(folder.id);
+    if (!record || !folder.formName) continue;
+    if (record.path) addPage(folder.formName, record.path);
+    else
+      for (const opener of folders.filter((other) => other !== folder && other.all.includes(folder.id)))
+        if (records.get(opener.id)?.path) addPage(folder.formName, `${records.get(opener.id).path} (dialog)`);
+  }
+  return formPages;
+}
 
 async function loadFixture() {
   const generate = await import(pathToFileURL(abs(GEN)).href);
@@ -274,24 +349,8 @@ async function loadFixture() {
   const site = await read(`${FIXTURE}/site-manifest.json`);
   const tables = manifest.tables.filter((table) => !table.existing).map((table) => table.name);
   const exported = await loadExport(tables, generate.CLASSIDS);
-  // Which fixture pages render which Dataverse form (basic forms and multistep steps name forms).
-  const formPages = new Map();
-  const addPage = (form, page) => (formPages.get(form) ?? formPages.set(form, new Set()).get(form)).add(page);
-  // Each basic form and multistep step folder holds the record yml and its metadata yml; the record yml
-  // names the Dataverse form (adx_formname). A basic form without a page of its own is a dialog opened
-  // from the folders whose yml reference its id (subgrid/lookup metadata, action buttons).
   const folders = [];
-  const ownFolder = async (dir, suffix, idKey) => {
-    const files = await list(dir, (f) => f.endsWith('.yml'));
-    const own = files.find((f) => f.endsWith(suffix));
-    if (!own) return;
-    const yml = await text(`${dir}/${own}`);
-    folders.push({
-      id: new RegExp(`${idKey}: (\\S+)`).exec(yml)?.[1],
-      formName: /adx_formname: (.+)/.exec(yml)?.[1]?.trim(),
-      all: (await Promise.all(files.map((f) => text(`${dir}/${f}`)))).join('\n'),
-    });
-  };
+  const ownFolder = ownFolderLoader(folders);
   for (const dir of await list(`${FIXTURE}/site/basic-forms`))
     await ownFolder(`${FIXTURE}/site/basic-forms/${dir}`, '.basicform.yml', 'adx_entityformid');
   for (const form of await list(`${FIXTURE}/site/advanced-forms`))
@@ -301,38 +360,29 @@ async function loadFixture() {
         '.advancedformstep.yml',
         'adx_webformstepid',
       );
-  const records = new Map(site.records.map((record) => [record.id, record]));
-  for (const folder of folders) {
-    const record = records.get(folder.id);
-    if (!record || !folder.formName) continue;
-    if (record.path) addPage(folder.formName, record.path);
-    else
-      for (const opener of folders.filter((other) => other !== folder && other.all.includes(folder.id)))
-        if (records.get(opener.id)?.path) addPage(folder.formName, `${records.get(opener.id).path} (dialog)`);
-  }
+  const formPages = fixtureFormPages(folders, site);
   return { generate, extras, manifest, plugins, readback, site, tables, exported, formPages };
 }
 
 const pagesFor = (formPages, ...names) =>
-  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort();
+  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const brief = (names, limit = 6) =>
   names.length > limit ? `${names.slice(0, limit).join(', ')} … (${names.length} in all)` : names.join(', ');
 const unique = (values) => [...new Set(values)];
 
 // ---- column type of an exported attribute
-function columnItem(a) {
-  if (a.type === 'primarykey') return 'dv.column.uniqueidentifier';
-  if (a.type === 'state') return 'dv.column.state';
-  if (a.type === 'status') return 'dv.column.status';
-  if (a.type === 'owner') return 'dv.column.lookup.owner';
-  if (!a.custom || a.name.endsWith('_base')) return null; // other platform columns; *_base are platform-generated currency columns
+function stringColumnItem(a) {
+  if (a.source === '1') return 'dv.column.calculated';
+  if (a.source === '2') return 'dv.column.rollup';
+  if (a.source === '3') return 'dv.column.formula';
+  if (a.autoNumber) return 'dv.column.string.autonumber';
+  return `dv.column.string.${a.format}`;
+}
+
+function customColumnItem(a) {
   switch (a.type) {
     case 'nvarchar':
-      if (a.source === '1') return 'dv.column.calculated';
-      if (a.source === '2') return 'dv.column.rollup';
-      if (a.source === '3') return 'dv.column.formula';
-      if (a.autoNumber) return 'dv.column.string.autonumber';
-      return `dv.column.string.${a.format}`;
+      return stringColumnItem(a);
     case 'ntext':
       return a.format === 'richtext' ? 'dv.column.string.richtext' : 'dv.column.memo';
     case 'int':
@@ -369,31 +419,229 @@ function columnItem(a) {
       return null;
   }
 }
+
+function columnItem(a) {
+  if (a.type === 'primarykey') return 'dv.column.uniqueidentifier';
+  if (a.type === 'state') return 'dv.column.state';
+  if (a.type === 'status') return 'dv.column.status';
+  if (a.type === 'owner') return 'dv.column.lookup.owner';
+  if (!a.custom || a.name.endsWith('_base')) return null; // other platform columns; *_base are platform-generated currency columns
+  return customColumnItem(a);
+}
 const NUMERIC = new Set(['int', 'decimal', 'float', 'money']);
 // File and image values are written through the upload messages, never Create/Update, so every such column is
 // exported ValidForCreateApi 0 / ValidForUpdateApi 0; that is not a read-only setting.
 const UPLOADED = new Set(['file', 'image']);
 const REQUIRED = { none: 'optional', required: 'required', systemrequired: 'required', recommended: 'recommended' };
-function attributeFacts(a) {
-  const facts = [`${a.type}${a.format ? `/${a.format}` : ''}`, `RequiredLevel ${a.required}`];
+function appendAttributeRangeFacts(a, facts) {
   if (a.maxLength && !['image', 'file'].includes(a.type)) facts.push(`MaxLength ${a.maxLength}`);
   if (a.min !== undefined && NUMERIC.has(a.type)) facts.push(`${a.min}..${a.max}`);
   if (['image', 'file'].includes(a.type) && a.max) facts.push(`max ${a.max} KB`);
-  if (a.accuracy) facts.push(`Accuracy ${a.accuracy}`);
+}
+
+function appendAttributeSettingFacts(a, facts) {
   if (a.default) facts.push(`AppDefaultValue ${a.default}`);
   if (a.update === '0') facts.push(`ValidForUpdateApi 0${a.create === '0' ? ', ValidForCreateApi 0' : ''}`);
   if (a.source && a.source !== '0') facts.push(`SourceType ${a.source}`);
   if (a.behavior) facts.push(`Behavior ${a.behavior}`);
   if (a.autoNumber) facts.push(`AutoNumberFormat ${a.autoNumber}`);
   if (a.secured) facts.push('IsSecured 1');
-  if (a.stateOptions.length)
-    facts.push(`defaultstatus per state ${a.stateOptions.map((s) => `${s.value}→${s.defaultStatus}`).join(', ')}`);
-  if (a.statusOptions.length)
-    facts.push(`status reasons ${a.statusOptions.map((s) => `${s.value} "${s.label}" (state ${s.state})`).join(', ')}`);
+}
+
+function appendAttributeChoiceFacts(a, facts) {
+  if (a.stateOptions.length) {
+    const defaults = a.stateOptions.map((s) => `${s.value}→${s.defaultStatus}`).join(', ');
+    facts.push(`defaultstatus per state ${defaults}`);
+  }
+  if (a.statusOptions.length) {
+    const reasons = a.statusOptions.map((s) => `${s.value} "${s.label}" (state ${s.state})`).join(', ');
+    facts.push(`status reasons ${reasons}`);
+  }
+}
+
+function attributeFacts(a) {
+  const format = a.format ? `/${a.format}` : '';
+  const facts = [`${a.type}${format}`, `RequiredLevel ${a.required}`];
+  appendAttributeRangeFacts(a, facts);
+  if (a.accuracy) facts.push(`Accuracy ${a.accuracy}`);
+  appendAttributeSettingFacts(a, facts);
+  appendAttributeChoiceFacts(a, facts);
   return facts.join(', ');
 }
 
-function dataverseRows(data, catalog) {
+function controlDateState(attribute) {
+  if (attribute.type !== 'datetime') return null;
+  return attribute.format === 'date' ? 'date-only' : 'date-and-time';
+}
+
+function controlAttributeStates(attributes) {
+  return attributes.flatMap((attribute) =>
+    [
+      attribute.maxLength && ['nvarchar', 'ntext'].includes(attribute.type) ? 'max-length' : null,
+      NUMERIC.has(attribute.type) && attribute.min !== undefined ? 'min' : null,
+      NUMERIC.has(attribute.type) && attribute.max !== undefined ? 'max' : null,
+      attribute.accuracy ? 'precision' : null,
+      attribute.default ? 'default-value' : null,
+      controlDateState(attribute),
+    ].filter(Boolean),
+  );
+}
+
+function controlUseStates(uses, param) {
+  return uses.flatMap((control) =>
+    [
+      param(control, 'DefaultViewId') ? 'default-view' : null,
+      param(control, 'FilterRelationshipName') ? 'related-filter' : null,
+    ].filter(Boolean),
+  );
+}
+
+function addControlKindRows({
+  generate,
+  catalog,
+  itemMain,
+  exported,
+  ITEM,
+  add,
+  itemPages,
+  keep,
+  brief,
+  unique,
+  param,
+}) {
+  for (const [kind, classid] of Object.entries(generate.CLASSIDS)) {
+    const id = `dv.control.${kind}`;
+    if (!catalog.has(id)) continue;
+    const uses = itemMain.controls.filter((c) => c.kind === kind);
+    if (!uses.length) continue;
+    const attributes = uses
+      .map((c) => exported.attributes.find((a) => a.table === ITEM && a.name === c.attrs.datafieldname))
+      .filter(Boolean);
+    const states = ['classid', ...controlAttributeStates(attributes), ...controlUseStates(uses, param)];
+    add(
+      id,
+      `classid ${classid} on ${brief(unique(uses.map((c) => c.attrs.id)), 8)}`,
+      itemMain.file,
+      classid,
+      keep(id, states),
+      itemPages,
+    );
+  }
+}
+
+function subgridViewPickerStates(control, param) {
+  if (param(control, 'EnableViewPicker') !== 'true') return null;
+  return param(control, 'ViewIds') ? 'selected-views' : 'all-views';
+}
+
+function subgridStatesOf(subgrids, param) {
+  return subgrids.flatMap((control) =>
+    [
+      param(control, 'RelationshipName') ? 'related-only' : null,
+      param(control, 'ViewId') ? 'default-view' : null,
+      subgridViewPickerStates(control, param),
+      param(control, 'EnableViewPicker') === 'true' ? 'view-picker' : null,
+      param(control, 'EnableQuickFind') === 'false' ? 'search-box-hidden' : null,
+      param(control, 'ChartGridMode') === 'Chart' ? 'chart-only' : null,
+      param(control, 'RecordsPerPage') ? 'max-rows' : null,
+    ].filter(Boolean),
+  );
+}
+
+function addSpecialControlRows({ controls, cells, exported, F, add, itemPages, itemPagesParent, unique, param }) {
+  const subgrids = controls.filter((control) => control.kind === 'subgrid');
+  const subgridStates = subgridStatesOf(subgrids, param);
+  add(
+    'dv.formxml.subgrid',
+    subgrids
+      .map(
+        (control) =>
+          `${control.attrs.id} on ${control.form.name} (RelationshipName ${param(control, 'RelationshipName')}, EnableViewPicker ${param(control, 'EnableViewPicker')}, EnableQuickFind ${param(control, 'EnableQuickFind')}, RecordsPerPage ${param(control, 'RecordsPerPage')})`,
+      )
+      .join('; '),
+    F,
+    'subgrid_children',
+    subgridStates,
+    unique([...itemPages, ...itemPagesParent]),
+  );
+  const quickViews = controls.filter((control) => control.kind === 'quickview');
+  add(
+    'dv.formxml.quick-view',
+    quickViews
+      .map(
+        (control) =>
+          `${control.attrs.id} bound to ${control.attrs.datafieldname} (ControlMode ${param(control, 'ControlMode')})`,
+      )
+      .join('; '),
+    F,
+    'quickview_parent',
+    [
+      ...(quickViews.length ? ['read-only'] : []),
+      ...(quickViews.some((control) => control.cell?.attrs.showlabel === 'false') ? ['label-hidden'] : []),
+    ],
+    itemPages,
+  );
+  const iframes = controls.filter((control) => control.kind === 'iframe');
+  add(
+    'dv.formxml.iframe',
+    iframes
+      .map(
+        (control) =>
+          `${control.attrs.id} (Url ${param(control, 'Url')}, PassParameters ${param(control, 'PassParameters')}, Security ${param(control, 'Security')})`,
+      )
+      .join('; '),
+    F,
+    'IFRAME_baseline',
+    iframes.flatMap((control) =>
+      [
+        param(control, 'Url') ? 'url' : null,
+        param(control, 'PassParameters') === 'true' ? 'pass-parameters' : null,
+        param(control, 'Security') === 'true' ? 'cross-frame-restricted' : null,
+      ].filter(Boolean),
+    ),
+    itemPages,
+  );
+  const webResources = controls.filter((control) => control.kind === 'webresource');
+  const ownResource = exported.roots.some(
+    (root) => root.type === '61' && webResources.some((control) => param(control, 'Url') === root.schemaName),
+  );
+  add(
+    'dv.formxml.web-resource',
+    webResources
+      .map(
+        (control) =>
+          `${control.attrs.id} (Url ${param(control, 'Url')}${ownResource ? ', a web resource root component of the fixture solution' : ''})`,
+      )
+      .join('; '),
+    F,
+    'WebResource_baseline',
+    [],
+    itemPages,
+  );
+  const spacers = cells.filter(({ attrs }) => attrs.userspacer === 'true');
+  if (spacers.length)
+    add(
+      'dv.formxml.spacer',
+      `${spacers.length} cell(s) with userspacer="true" and no control`,
+      F,
+      'userspacer',
+      [],
+      itemPages,
+    );
+  const notes = controls.filter((control) => control.kind === 'notes');
+  if (notes.length)
+    add(
+      'dv.formxml.timeline-notes',
+      `${notes.map((control) => control.attrs.id).join(', ')} (no parameters)`,
+      F,
+      'notescontrol',
+      [],
+      itemPages,
+    );
+  return subgrids;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function dataverseRows(data, catalog) {
   const { generate, extras, plugins, readback, exported, formPages, tables } = data;
   const tableOf = (file) => generate.FORMS.find((form) => form.file === file).table;
   const [ITEM, PARENT, CHILD] = [tableOf('item-main'), tableOf('parent-main'), tableOf('child-main')];
@@ -473,7 +721,7 @@ function dataverseRows(data, catalog) {
     const key = `${id}|${states.join(',')}`;
     (groups.get(key) ?? groups.set(key, { id, states, attributes: [] }).get(key)).attributes.push(a);
   }
-  for (const { id, states, attributes } of [...groups.values()]) {
+  for (const { id, states, attributes } of groups.values()) {
     const notes = attributes.map((a) => {
       const requested = extrasColumn(a)?.maxLength;
       const control = bound(a)
@@ -482,7 +730,26 @@ function dataverseRows(data, catalog) {
             `${control.attrs.disabled === 'true' ? 'disabled ' : ''}${control.cell?.attrs.visible === 'false' ? 'hidden ' : ''}`,
         )
         .find(Boolean);
-      return `${a.table}.${a.name} (${attributeFacts(a)}${requested && a.maxLength && String(requested) !== a.maxLength ? `; extras.json requested maxLength ${requested}, the API ignored it and the export records ${a.maxLength}` : ''}${control ? `; form control ${control.trim()}${/disabled/.test(control) && a.format === 'text' ? ' (the seed list\'s "locked" state: a form-level disabled control)' : ''}` : ''}${defaultedByRule.has(`${a.table}.${a.name}`) ? '; default set by the business rule Set Default Value' : ''}${UPLOADED.has(a.type) && a.update === '0' ? '; ValidFor 0 is the upload-only API shape of every file/image column (learn-file-column-data), not counted as read-only' : ''}; ${formsOf(a)})`;
+      const maxLengthNote =
+        requested && a.maxLength && String(requested) !== a.maxLength
+          ? `; extras.json requested maxLength ${requested}, the API ignored it and the export records ${a.maxLength}`
+          : '';
+      let controlNote = '';
+      if (control) {
+        const lockedNote =
+          /disabled/.test(control) && a.format === 'text'
+            ? ' (the seed list\'s "locked" state: a form-level disabled control)'
+            : '';
+        controlNote = `; form control ${control.trim()}${lockedNote}`;
+      }
+      const ruleNote = defaultedByRule.has(`${a.table}.${a.name}`)
+        ? '; default set by the business rule Set Default Value'
+        : '';
+      const uploadNote =
+        UPLOADED.has(a.type) && a.update === '0'
+          ? '; ValidFor 0 is the upload-only API shape of every file/image column (learn-file-column-data), not counted as read-only'
+          : '';
+      return `${a.table}.${a.name} (${attributeFacts(a)}${maxLengthNote}${controlNote}${ruleNote}${uploadNote}; ${formsOf(a)})`;
     });
     const pending = attributes.every((a) => extrasColumn(a)?.manual && !a.formula);
     add(
@@ -524,7 +791,7 @@ function dataverseRows(data, catalog) {
 
   // Column states, read from the export.
   const custom = exported.attributes.filter((a) => a.custom && !a.name.endsWith('_base'));
-  const names = (list) => brief(list.map((a) => `${a.table === ITEM ? '' : `${a.table}.`}${a.name}`));
+  const names = (list) => brief(list.map((a) => (a.table === ITEM ? a.name : `${a.table}.${a.name}`)));
   const byRequired = (level) => exported.attributes.filter((a) => a.required === level);
   add(
     'dv.state.required.none',
@@ -568,10 +835,13 @@ function dataverseRows(data, catalog) {
   add(
     'dv.state.valid-for',
     notUpdatable
-      .map(
-        (a) =>
-          `${a.name} (${a.type}${a.source && a.source !== '0' ? ` SourceType ${a.source}` : ''}, ValidForUpdateApi 0, ValidForCreateApi ${a.create}${UPLOADED.has(a.type) ? '; not counted: file/image values are written through InitializeFileBlocksUpload/UploadBlock/CommitFileBlocksUpload, never Create/Update, so every such column carries these flags (learn-file-column-data)' : ''})`,
-      )
+      .map((a) => {
+        const source = a.source && a.source !== '0' ? ` SourceType ${a.source}` : '';
+        const upload = UPLOADED.has(a.type)
+          ? '; not counted: file/image values are written through InitializeFileBlocksUpload/UploadBlock/CommitFileBlocksUpload, never Create/Update, so every such column carries these flags (learn-file-column-data)'
+          : '';
+        return `${a.name} (${a.type}${source}, ValidForUpdateApi 0, ValidForCreateApi ${a.create}${upload})`;
+      })
       .join('; '),
     entityFile(ITEM),
     'pqvd_notupdatable',
@@ -672,9 +942,10 @@ function dataverseRows(data, catalog) {
     itemPages,
   );
   const searchable = exported.attributes.filter((a) => a.searchable);
+  const searchableText = searchable.map((a) => `${a.table}.${a.name}`).join(', ');
   add(
     'dv.state.searchable-sortable',
-    `IsSearchable 1 on ${searchable.map((a) => `${a.table}.${a.name}`).join(', ')}; IsSortableEnabled 1 on ${exported.attributes.filter((a) => a.sortable).length} columns`,
+    `IsSearchable 1 on ${searchableText}; IsSortableEnabled 1 on ${exported.attributes.filter((a) => a.sortable).length} columns`,
     entityFile(ITEM),
     'IsSearchable',
     [
@@ -722,9 +993,12 @@ function dataverseRows(data, catalog) {
   const duplicates = cards.filter((card) =>
     formsIn('main').some((main) => main.table === card.table && main.name === card.name),
   );
+  const duplicateNote = duplicates.length
+    ? `; same name as a main form: ${duplicates.map((form) => form.name).join(', ')}`
+    : '';
   add(
     'dv.form-type.card',
-    `${formText(cards)}${duplicates.length ? `; same name as a main form: ${duplicates.map((form) => form.name).join(', ')}` : ''}`,
+    `${formText(cards)}${duplicateNote}`,
     cards.find((card) => fixtureFormIds.has(card.id))?.file,
     'formid',
     [],
@@ -769,9 +1043,15 @@ function dataverseRows(data, catalog) {
       attrs.locklevel && attrs.locklevel !== '0' ? 'locked' : null,
     ].filter(Boolean),
   );
+  const tabNote = ({ attrs, form }) => {
+    const expanded = attrs.expanded === 'false' ? ' expanded=false' : '';
+    const visible = attrs.visible === 'false' ? ' visible=false' : '';
+    const showlabel = attrs.showlabel === 'false' ? ' showlabel=false' : '';
+    return `${attrs.name}${expanded}${visible}${showlabel} (${form.name})`;
+  };
   add(
     'dv.formxml.tab',
-    `${tabs.length} tabs; ${brief(unique(tabs.filter(({ attrs }) => attrs.expanded === 'false' || attrs.visible === 'false' || attrs.showlabel === 'false').map(({ attrs, form }) => `${attrs.name}${attrs.expanded === 'false' ? ' expanded=false' : ''}${attrs.visible === 'false' ? ' visible=false' : ''}${attrs.showlabel === 'false' ? ' showlabel=false' : ''} (${form.name})`)))}`,
+    `${tabs.length} tabs; ${brief(unique(tabs.filter(({ attrs }) => attrs.expanded === 'false' || attrs.visible === 'false' || attrs.showlabel === 'false').map(tabNote)))}`,
     F,
     'tab',
     tabStates,
@@ -847,9 +1127,10 @@ function dataverseRows(data, catalog) {
       exported.attributes.find((x) => x.table === form.table && x.name === control.attrs.datafieldname);
     return a && label && label !== a.display;
   });
+  const relabelledText = brief(unique(relabelled.map(({ control, label }) => `${control.attrs.id} "${label}"`)), 5);
   add(
     'dv.formxml.label',
-    `${cells.filter(({ label }) => label).length} cells carry <labels>; label differs from the column display name on ${brief(unique(relabelled.map(({ control, label }) => `${control.attrs.id} "${label}"`)), 5)}`,
+    `${cells.filter(({ label }) => label).length} cells carry <labels>; label differs from the column display name on ${relabelledText}`,
     F,
     'pqvd_relabelled',
     cells.some(({ label }) => label) ? ['label'] : [],
@@ -869,139 +1150,19 @@ function dataverseRows(data, catalog) {
     ],
     itemPages,
   );
-  const subgrids = controls.filter((c) => c.kind === 'subgrid');
-  const subgridStates = subgrids.flatMap((c) =>
-    [
-      param(c, 'RelationshipName') ? 'related-only' : null,
-      param(c, 'ViewId') ? 'default-view' : null,
-      param(c, 'EnableViewPicker') === 'true' ? (param(c, 'ViewIds') ? 'selected-views' : 'all-views') : null,
-      param(c, 'EnableViewPicker') === 'true' ? 'view-picker' : null,
-      param(c, 'EnableQuickFind') === 'false' ? 'search-box-hidden' : null,
-      param(c, 'ChartGridMode') === 'Chart' ? 'chart-only' : null,
-      param(c, 'RecordsPerPage') ? 'max-rows' : null,
-    ].filter(Boolean),
-  );
-  add(
-    'dv.formxml.subgrid',
-    subgrids
-      .map(
-        (c) =>
-          `${c.attrs.id} on ${c.form.name} (RelationshipName ${param(c, 'RelationshipName')}, EnableViewPicker ${param(c, 'EnableViewPicker')}, EnableQuickFind ${param(c, 'EnableQuickFind')}, RecordsPerPage ${param(c, 'RecordsPerPage')})`,
-      )
-      .join('; '),
+  const subgrids = addSpecialControlRows({
+    controls,
+    cells,
+    exported,
     F,
-    'subgrid_children',
-    subgridStates,
-    unique([...itemPages, ...pages[PARENT]]),
-  );
-  const quickViews = controls.filter((c) => c.kind === 'quickview');
-  add(
-    'dv.formxml.quick-view',
-    quickViews
-      .map((c) => `${c.attrs.id} bound to ${c.attrs.datafieldname} (ControlMode ${param(c, 'ControlMode')})`)
-      .join('; '),
-    F,
-    'quickview_parent',
-    [
-      ...(quickViews.length ? ['read-only'] : []),
-      ...(quickViews.some((c) => c.cell?.attrs.showlabel === 'false') ? ['label-hidden'] : []),
-    ],
+    add,
     itemPages,
-  );
-  const iframes = controls.filter((c) => c.kind === 'iframe');
-  add(
-    'dv.formxml.iframe',
-    iframes
-      .map(
-        (c) =>
-          `${c.attrs.id} (Url ${param(c, 'Url')}, PassParameters ${param(c, 'PassParameters')}, Security ${param(c, 'Security')})`,
-      )
-      .join('; '),
-    F,
-    'IFRAME_baseline',
-    iframes.flatMap((c) =>
-      [
-        param(c, 'Url') ? 'url' : null,
-        param(c, 'PassParameters') === 'true' ? 'pass-parameters' : null,
-        param(c, 'Security') === 'true' ? 'cross-frame-restricted' : null,
-      ].filter(Boolean),
-    ),
-    itemPages,
-  );
-  const webResources = controls.filter((c) => c.kind === 'webresource');
-  const ownResource = exported.roots.some(
-    (r) => r.type === '61' && webResources.some((c) => param(c, 'Url') === r.schemaName),
-  );
-  add(
-    'dv.formxml.web-resource',
-    webResources
-      .map(
-        (c) =>
-          `${c.attrs.id} (Url ${param(c, 'Url')}${ownResource ? ', a web resource root component of the fixture solution' : ''})`,
-      )
-      .join('; '),
-    F,
-    'WebResource_baseline',
-    [],
-    itemPages,
-  );
-  const spacers = cells.filter(({ attrs }) => attrs.userspacer === 'true');
-  if (spacers.length)
-    add(
-      'dv.formxml.spacer',
-      `${spacers.length} cell(s) with userspacer="true" and no control`,
-      F,
-      'userspacer',
-      [],
-      itemPages,
-    );
-  const notes = controls.filter((c) => c.kind === 'notes');
-  if (notes.length)
-    add(
-      'dv.formxml.timeline-notes',
-      `${notes.map((c) => c.attrs.id).join(', ')} (no parameters)`,
-      F,
-      'notescontrol',
-      [],
-      itemPages,
-    );
+    itemPagesParent: pages[PARENT],
+    unique,
+    param,
+  });
   // Control kinds: every CLASSIDS kind with a catalog item, as used by the exported item main form.
-  for (const [kind, classid] of Object.entries(generate.CLASSIDS)) {
-    const id = `dv.control.${kind}`;
-    if (!catalog.has(id)) continue;
-    const uses = itemMain.controls.filter((c) => c.kind === kind);
-    if (!uses.length) continue;
-    const attributes = uses
-      .map((c) => exported.attributes.find((a) => a.table === ITEM && a.name === c.attrs.datafieldname))
-      .filter(Boolean);
-    const states = [
-      'classid',
-      ...attributes.flatMap((a) =>
-        [
-          a.maxLength && ['nvarchar', 'ntext'].includes(a.type) ? 'max-length' : null,
-          NUMERIC.has(a.type) && a.min !== undefined ? 'min' : null,
-          NUMERIC.has(a.type) && a.max !== undefined ? 'max' : null,
-          a.accuracy ? 'precision' : null,
-          a.default ? 'default-value' : null,
-          a.type === 'datetime' ? (a.format === 'date' ? 'date-only' : 'date-and-time') : null,
-        ].filter(Boolean),
-      ),
-      ...uses.flatMap((c) =>
-        [
-          param(c, 'DefaultViewId') ? 'default-view' : null,
-          param(c, 'FilterRelationshipName') ? 'related-filter' : null,
-        ].filter(Boolean),
-      ),
-    ];
-    add(
-      id,
-      `classid ${classid} on ${brief(unique(uses.map((c) => c.attrs.id)), 8)}`,
-      itemMain.file,
-      classid,
-      keep(id, states),
-      itemPages,
-    );
-  }
+  addControlKindRows({ generate, catalog, itemMain, exported, ITEM, add, itemPages, keep, brief, unique, param });
 
   // Views: every exported SavedQuery of the fixture tables, by query type.
   const fixtureViewIds = new Set(generate.VIEWS.map((view) => view.id));
@@ -1035,10 +1196,14 @@ function dataverseRows(data, catalog) {
       unmapped.push(...views);
       continue;
     }
-    const quickFind =
-      type === 4
-        ? `. The exported Quick Find views are the platform defaults, unadjusted: search fields ${views.map((view) => `${view.table} ${view.quickFindFields.join('+') || 'none'}`).join(', ')}; columns ${unique(views.flatMap((view) => view.cells.map((cell) => `${cell.name} ${cell.width}`))).join(', ')}. generate.mjs writes no Quick Find definition (extras.json marks the platform view retainDefault; provision.mjs records platform-default-retained), so no other view row counts these views`
-        : '';
+    let quickFind = '';
+    if (type === 4) {
+      const searchFields = views.map((view) => `${view.table} ${view.quickFindFields.join('+') || 'none'}`).join(', ');
+      const columns = unique(views.flatMap((view) => view.cells.map((cell) => `${cell.name} ${cell.width}`))).join(
+        ', ',
+      );
+      quickFind = `. The exported Quick Find views are the platform defaults, unadjusted: search fields ${searchFields}; columns ${columns}. generate.mjs writes no Quick Find definition (extras.json marks the platform view retainDefault; provision.mjs records platform-default-retained), so no other view row counts these views`;
+    }
     add(
       typeItems.get(type),
       `${viewText(views)}${quickFind}`,
@@ -1050,9 +1215,12 @@ function dataverseRows(data, catalog) {
   }
   const defaultViews = exported.views.filter((view) => view.isDefault && view.queryType === 0);
   const twoDefaults = tables.filter((table) => defaultViews.filter((view) => view.table === table).length > 1);
+  const twoDefaultsNote = twoDefaults.length
+    ? `. The export carries more than one isdefault public view on ${twoDefaults.join(', ')} (Learn customize-entity-views: only one active public view can be default; view state is not exported, so which one is active is OPEN until a savedquery read-back)`
+    : '';
   add(
     'dv.view.isdefault',
-    `${viewText(defaultViews)}${twoDefaults.length ? `. The export carries more than one isdefault public view on ${twoDefaults.join(', ')} (Learn customize-entity-views: only one active public view can be default; view state is not exported, so which one is active is OPEN until a savedquery read-back)` : ''}`,
+    `${viewText(defaultViews)}${twoDefaultsNote}`,
     defaultViews[0]?.file,
     'isdefault',
     defaultViews.length ? ['default'] : [],
@@ -1110,10 +1278,12 @@ function dataverseRows(data, catalog) {
     unique(
       fixtureViews
         .filter((view) => view.orders.length)
-        .map(
-          (view) =>
-            `${view.name}: ${view.orders.map((o) => `${o.attribute} ${o.descending === 'true' ? 'desc' : 'asc'}`).join(', ')}`,
-        ),
+        .map((view) => {
+          const orders = view.orders
+            .map((o) => `${o.attribute} ${o.descending === 'true' ? 'desc' : 'asc'}`)
+            .join(', ');
+          return `${view.name}: ${orders}`;
+        }),
     ).join('; '),
     fixtureViews[0]?.file,
     'order',
@@ -1154,7 +1324,7 @@ function dataverseRows(data, catalog) {
   );
   add(
     'dv.view.powerpages.subgrid',
-    `${subgrids.map((c) => `${c.attrs.id} (ViewId ${param(c, 'ViewId')})`).join('; ')}`,
+    subgrids.map((c) => `${c.attrs.id} (ViewId ${param(c, 'ViewId')})`).join('; '),
     F,
     'subgrid_children',
     [],
@@ -1193,10 +1363,10 @@ function dataverseRows(data, catalog) {
   });
   const ruleText = (list) =>
     list
-      .map(
-        (rule) =>
-          `${rule.name} (${rule.id.slice(0, 8)}, ProcessTriggerScope ${rule.workflow?.triggerScope}${rule.workflow?.triggerForm ? `, form ${rule.workflow.triggerForm.slice(0, 8)}` : ''}, StateCode ${rule.workflow?.state})`,
-      )
+      .map((rule) => {
+        const form = rule.workflow?.triggerForm ? `, form ${rule.workflow.triggerForm.slice(0, 8)}` : '';
+        return `${rule.name} (${rule.id.slice(0, 8)}, ProcessTriggerScope ${rule.workflow?.triggerScope}${form}, StateCode ${rule.workflow?.state})`;
+      })
       .join('; ');
   const ruleFile = (list) => list[0]?.workflow?.file ?? EXTRAS;
   const sideStates = (list) =>
@@ -1242,10 +1412,16 @@ function dataverseRows(data, catalog) {
       rules.filter((rule) => [...rule.actions, ...(rule.otherwise ?? [])].some((action) => action.field === field)),
     ])
     .filter(([, list]) => list.length > 1);
+  const touchedText = touched
+    .map(([field, list]) => {
+      const changers = list.map((rule) => `${rule.name} (${rule.scope} scope)`).join(' and ');
+      return `${field} is changed by ${changers}`;
+    })
+    .join('; ');
   if (touched.length)
     add(
       'dv.br.execution-order',
-      `${touched.map(([field, list]) => `${field} is changed by ${list.map((rule) => `${rule.name} (${rule.scope} scope)`).join(' and ')}`).join('; ')}. Learn gives no ordering contract between rules; ordering requires native observations and is not asserted by this metadata inventory`,
+      `${touchedText}. Learn gives no ordering contract between rules; ordering requires native observations and is not asserted by this metadata inventory`,
       EXTRAS,
       'businessRules',
       [],
@@ -1369,10 +1545,10 @@ function dataverseRows(data, catalog) {
   add(
     'dv.plugin.images',
     imaged
-      .map(
-        (step) =>
-          `${step.message} ${step.read.stage}: ${step.read.images.map((image) => `${image.type} ${image.name} (${image.attributes})`).join(', ')}`,
-      )
+      .map((step) => {
+        const images = step.read.images.map((image) => `${image.type} ${image.name} (${image.attributes})`).join(', ');
+        return `${step.message} ${step.read.stage}: ${images}`;
+      })
       .join('; '),
     RB,
     'images',
@@ -1407,15 +1583,22 @@ function dataverseRows(data, catalog) {
     itemPages,
   );
   const disabledSteps = readSteps.filter((step) => step.read.statecode === 1);
+  const disabledText =
+    disabledSteps
+      .map(
+        (step) =>
+          `${step.message} ${step.read.stage}/rank ${step.read.rank} statecode ${step.read.statecode} statuscode ${step.read.statuscode}`,
+      )
+      .join('; ') || 'none disabled';
   add(
     'dv.plugin.state',
-    `read back: ${readSteps.filter((step) => step.read.statecode === 0).length} steps statecode 0; ${disabledSteps.map((step) => `${step.message} ${step.read.stage}/rank ${step.read.rank} statecode ${step.read.statecode} statuscode ${step.read.statuscode}`).join('; ') || 'none disabled'}${exported.steps.some((s) => s.stateInExport) ? '' : ' (the solution export carries no StateCode for steps)'}`,
+    `read back: ${readSteps.filter((step) => step.read.statecode === 0).length} steps statecode 0; ${disabledText}${exported.steps.some((s) => s.stateInExport) ? '' : ' (the solution export carries no StateCode for steps)'}`,
     RB,
     'statecode',
     unique(readSteps.map((step) => (step.read.statecode === 1 ? 'disabled' : 'enabled'))),
     itemPages,
   );
-  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort();
+  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const exportAgrees = readSteps.every((step) => step.exported?.invocationSource === step.read.invocationSource);
   add(
     'dv.plugin.invocation-source',
@@ -1440,21 +1623,25 @@ function dataverseRows(data, catalog) {
   );
   const ownRelationships = exported.relationships.filter((r) => lookups.has(`${r.referencing}.${r.attribute}`));
   const platformRelationships = exported.relationships.filter((r) => !ownRelationships.includes(r));
-  const kindOf = (r) =>
-    r.referenced === r.referencing
-      ? 'self-referential'
-      : lookups.get(`${r.referencing}.${r.attribute}`).type === 'customer'
-        ? 'customer'
-        : lookups.get(`${r.referencing}.${r.attribute}`).lookupStyle === 'polymorphic'
-          ? 'multi-table'
-          : 'simple';
+  const kindOf = (r) => {
+    if (r.referenced === r.referencing) return 'self-referential';
+    const lookup = lookups.get(`${r.referencing}.${r.attribute}`);
+    if (lookup.type === 'customer') return 'customer';
+    return lookup.lookupStyle === 'polymorphic' ? 'multi-table' : 'simple';
+  };
   const relationshipPages = (list) =>
-    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort();
+    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const oneToMany = ownRelationships.filter((r) => r.type === 'OneToMany');
+  const oneToManyText = oneToMany
+    .map((r) => {
+      const hierarchy = r.hierarchical ? ', IsHierarchical 1' : '';
+      return `${r.name}: ${r.referenced} 1:N ${r.referencing}.${r.attribute} (${kindOf(r)}${hierarchy})`;
+    })
+    .join('; ');
   if (oneToMany.length)
     add(
       'dv.relationship.one-to-many',
-      `${oneToMany.map((r) => `${r.name}: ${r.referenced} 1:N ${r.referencing}.${r.attribute} (${kindOf(r)}${r.hierarchical ? ', IsHierarchical 1' : ''})`).join('; ')}; ${platformRelationships.length} platform relationships come with the tables and are not counted`,
+      `${oneToManyText}; ${platformRelationships.length} platform relationships come with the tables and are not counted`,
       oneToMany[0].file,
       oneToMany[0].name,
       oneToMany.map(kindOf),
@@ -1472,10 +1659,16 @@ function dataverseRows(data, catalog) {
     );
   const DELETE = { Cascade: 'cascade', RemoveLink: 'remove-link', Restrict: 'restrict' };
   const platformRestrict = platformRelationships.filter((r) => r.cascade.Delete === 'Restrict').map((r) => r.name);
+  const cascadeText = oneToMany
+    .map((r) => `${r.name} CascadeDelete ${r.cascade.Delete} (CascadeArchive ${r.cascade.Archive})`)
+    .join('; ');
+  const restrictNote = platformRestrict.length
+    ? `; platform relationships with Restrict, not counted: ${platformRestrict.join(', ')}`
+    : '';
   if (oneToMany.length)
     add(
       'dv.relationship.cascade.delete',
-      `${oneToMany.map((r) => `${r.name} CascadeDelete ${r.cascade.Delete} (CascadeArchive ${r.cascade.Archive})`).join('; ')}${platformRestrict.length ? `; platform relationships with Restrict, not counted: ${platformRestrict.join(', ')}` : ''}`,
+      `${cascadeText}${restrictNote}`,
       oneToMany[0].file,
       'CascadeDelete',
       oneToMany.map((r) => DELETE[r.cascade.Delete]).filter(Boolean),
@@ -1506,14 +1699,19 @@ function dataverseRows(data, catalog) {
 
   // Solution dependencies, from Solution.xml.
   const tableRoots = exported.roots.filter((r) => r.type === '1' && tables.includes(r.schemaName));
+  const missingList = exported.missing
+    .map(
+      (m) =>
+        `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution}) required by ${m.dependent.schemaName ?? m.dependent.displayName}`,
+    )
+    .join('; ');
+  const missingNote = exported.missing.length ? `; missing: ${missingList}` : '';
   add(
     'dv.solution.dependencies',
     `${exported.missing.length} MissingDependency entries outside the System layer (${exported.systemMissing} System-layer entries, present on every import); fixture tables as root components with behavior ${unique(tableRoots.map((r) => r.behavior)).join('/')} (all subcomponents, so statecode/statuscode/createdon/modifiedon/ownerid/primary keys travel with the tables); web resource root ${exported.roots
       .filter((r) => r.type === '61')
       .map((r) => r.schemaName)
-      .join(
-        ', ',
-      )}${exported.missing.length ? `; missing: ${exported.missing.map((m) => `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution}) required by ${m.dependent.schemaName ?? m.dependent.displayName}`).join('; ')}` : ''}`,
+      .join(', ')}${missingNote}`,
     `${EXPORT}/Other/Solution.xml`,
     'MissingDependencies',
     exported.missing.length ? ['missing-dependency'] : ['self-contained'],
@@ -1566,15 +1764,20 @@ function dataverseRows(data, catalog) {
     );
   const localChoices = exported.attributes.filter((a) => columnItem(a) === 'dv.column.choice.local');
   const globalDefaults = exported.attributes.filter((a) => columnItem(a) === 'dv.column.choice.global' && a.default);
+  const ownerModifiers = unique(owners.map((a) => `${a.canModifyRequired} on ${a.table}`)).join(', ');
+  const stateOptionTags = (a) =>
+    a.stateOptions.map((o) => `<state value="${o.value}" defaultstatus="${o.defaultStatus}">`).join(' ');
+  const stateDefaults = statecodes.map((a) => `${a.table}: ${stateOptionTags(a)}`).join('; ');
+  const globalDefaultText = globalDefaults.map((a) => `${a.name} carries AppDefaultValue ${a.default}`).join(', ');
   const dynamicReasons = {
     'dv.column.lookup.owner': {
-      recommended: `not varied: ownerid is exported RequiredLevel systemrequired with CanModifyRequirementLevelSettings ${unique(owners.map((a) => `${a.canModifyRequired} on ${a.table}`)).join(', ')}, so the managed property would allow a change; the fixture keeps the platform level because every user/team-owned row has an owner (the platform assigns the calling user when none is given, see default-value), so a recommended owner would not change what a portal form can save. OPEN: a recommended owner marker is not exercised by this fixture and requires separate native qualification`,
+      recommended: `not varied: ownerid is exported RequiredLevel systemrequired with CanModifyRequirementLevelSettings ${ownerModifiers}, so the managed property would allow a change; the fixture keeps the platform level because every user/team-owned row has an owner (the platform assigns the calling user when none is given, see default-value), so a recommended owner would not change what a portal form can save. OPEN: a recommended owner marker is not exercised by this fixture and requires separate native qualification`,
     },
     'dv.column.status': {
-      'default-value': `not varied: the export carries the default status reason per state on statecode (${statecodes.map((a) => `${a.table}: ${a.stateOptions.map((o) => `<state value="${o.value}" defaultstatus="${o.defaultStatus}">`).join(' ')}`).join('; ')}; StateOptionMetadata.DefaultStatus, learn-stateoption-defaultstatus). These are the platform defaults; the custom reasons ${customReasons.join(', ') || '(none)'} are not defaults. OPEN: make a custom reason the default of its state (UpdateStateValue with DefaultStatusCode) in provision.mjs and re-export`,
+      'default-value': `not varied: the export carries the default status reason per state on statecode (${stateDefaults}; StateOptionMetadata.DefaultStatus, learn-stateoption-defaultstatus). These are the platform defaults; the custom reasons ${customReasons.join(', ') || '(none)'} are not defaults. OPEN: make a custom reason the default of its state (UpdateStateValue with DefaultStatusCode) in provision.mjs and re-export`,
     },
     'dv.column.choice.local': {
-      'default-value': `OPEN: ${localChoices.map((a) => a.name).join(', ')} is exported without AppDefaultValue, while ${globalDefaults.map((a) => `${a.name} carries AppDefaultValue ${a.default}`).join(', ')} (row dv.column.choice.global), so a metadata default on a choice is exercised only on the global-option-set column. A local choice differs only in owning its options (OptionSetMetadata IsGlobal false); PicklistAttributeMetadata.DefaultFormValue applies to both. Resolve: add a default to the pqvd_localchoice extras in generate.mjs and pass DefaultFormValue in the provision.mjs localchoice case (lense/dataverse/manifest.mjs already does for global choices), then re-provision`,
+      'default-value': `OPEN: ${localChoices.map((a) => a.name).join(', ')} is exported without AppDefaultValue, while ${globalDefaultText} (row dv.column.choice.global), so a metadata default on a choice is exercised only on the global-option-set column. A local choice differs only in owning its options (OptionSetMetadata IsGlobal false); PicklistAttributeMetadata.DefaultFormValue applies to both. Resolve: add a default to the pqvd_localchoice extras in generate.mjs and pass DefaultFormValue in the provision.mjs localchoice case (lense/dataverse/manifest.mjs already does for global choices), then re-provision`,
     },
   };
   return { rows, problems, unmapped, dynamicReasons };
@@ -1583,8 +1786,13 @@ function dataverseRows(data, catalog) {
 // Reasons for catalog states a row set does not exercise. Keys: "<item id>" → { state: reason } or
 // "*<area>" → { state: reason } as a fallback for every item of that area. Reasons are specific: platform-
 // enforced, not expressible by API, covered elsewhere (with the row id), or OPEN with what resolves it.
-const SAME_FAMILY = (state) =>
-  `covered elsewhere: ${state} is a form/metadata property independent of the column format (see dv.state.${state === 'hidden' ? 'form.hidden' : state === 'read-only' ? 'form.disabled' : state === 'required' ? 'required.applicationrequired' : 'required.recommended'} on text columns)`;
+const SAME_FAMILY = (state) => {
+  let row = 'required.recommended';
+  if (state === 'hidden') row = 'form.hidden';
+  else if (state === 'read-only') row = 'form.disabled';
+  else if (state === 'required') row = 'required.applicationrequired';
+  return `covered elsewhere: ${state} is a form/metadata property independent of the column format (see dv.state.${row} on text columns)`;
+};
 const STRING_DEFAULT =
   'covered elsewhere: this column type has no metadata default (AppDefaultValue exists only on Yes/No and Choice columns, learn-column-definitions); a default comes from a business rule Set Default Value or column mapping (catalog dv.state.default-value), which the fixture exercises once, on the text column pqvd_defaultbyrule (rows dv.column.string.text and dv.br.action.set-default)';
 const STATE_REASONS = {
@@ -1824,15 +2032,121 @@ function reasonFor(item, state) {
 
 const escapeCell = (value) =>
   String(value ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|')
-    .replace(/\n/g, ' ');
+    .replaceAll('\\', '\\\\')
+    .replaceAll('|', String.raw`\|`)
+    .replaceAll('\n', ' ');
 
 function powerPagesRows({ site }) {
   const rows = new Map();
   for (const record of site.records)
     for (const id of record.catalog ?? []) (rows.get(id) ?? rows.set(id, []).get(id)).push(record);
   return rows;
+}
+
+/* NOSONAR */ function dataverseAreaLines(area, items, covered, problems, dynamicReasons) {
+  const lines = [
+    `## ${area}`,
+    '',
+    '| Catalog item | Catalog states | Fixture | Where (file#anchor) | States exercised | Visible on |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  let stateGaps = 0;
+  for (const item of items) {
+    const rows = covered.get(item.id);
+    if (!rows) {
+      const reason =
+        ITEM_REASONS[item.id] ?? (/SavedQuery\.QueryType=/.test(item.where ?? '') ? VIEW_TYPE_REASON : null);
+      if (!reason) problems.push(`${item.id}: no fixture row and no reason`);
+      lines.push(
+        `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell((item.states ?? []).join(', '))} | — | — | — | ${escapeCell(reason ?? 'MISSING REASON')} |`,
+      );
+      continue;
+    }
+    for (const row of rows)
+      lines.push(
+        `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell((item.states ?? []).join(', '))} | ${escapeCell(row.fixture)} | \`${row.file}#${row.anchor}\` | ${escapeCell(row.states.join(', ') || '—')}${row.pending ? ' (pending the manual step)' : ''} | ${escapeCell(row.site.join(', ') || '—')} |`,
+      );
+    const declared = new Set(rows.flatMap((row) => row.states));
+    const missing = (item.states ?? []).filter((state) => !declared.has(state));
+    if (rows.every((row) => row.pending)) continue;
+    for (const state of missing) {
+      const reason = dynamicReasons[item.id]?.[state] ?? reasonFor(item, state);
+      if (!reason) problems.push(`${item.id}: state ${state} not exercised and no reason`);
+      stateGaps += 1;
+      lines.push(
+        `| ↳ \`${item.id}\` state not exercised | ${escapeCell(state)} | — | — | ${escapeCell(reason ?? 'MISSING REASON')} | — |`,
+      );
+    }
+  }
+  lines.push('');
+  return { lines, stateGaps };
+}
+
+function dataverseInventoryLines(items, covered, problems, dynamicReasons) {
+  const lines = [];
+  let stateGaps = 0;
+  for (const area of unique(items.map((item) => item.area))) {
+    const section = dataverseAreaLines(
+      area,
+      items.filter((item) => item.area === area),
+      covered,
+      problems,
+      dynamicReasons,
+    );
+    lines.push(...section.lines);
+    stateGaps += section.stateGaps;
+  }
+  return { lines, stateGaps };
+}
+
+function powerPagesComponentLines(component, items, rows, notExpressed, caveats) {
+  const lines = [
+    `## ${component}`,
+    '',
+    '| Catalog item | Field | Fixture records (kind: name, variation) | Visible on |',
+    '| --- | --- | --- | --- |',
+  ];
+  for (const item of items) {
+    const records = rows.get(item.id);
+    if (!records) {
+      const notExercised = notExpressed.get(item.id);
+      const status = notExercised ? `(${notExercised})` : 'OPEN: not exercised';
+      lines.push(
+        `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell(item.field ?? '')} | — ${escapeCell(status)} | — |`,
+      );
+      continue;
+    }
+    const recordText = records
+      .map((record) => {
+        const variation = record.variation ? ` (${record.variation})` : '';
+        return `${record.kind}: ${record.name}${variation}`;
+      })
+      .join('; ');
+    const recordPages = unique(records.map((record) => record.path).filter(Boolean))
+      .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
+      .join(', ');
+    const caveat = caveats.has(item.id) ? ` — caveat: ${escapeCell(caveats.get(item.id))}` : '';
+    lines.push(
+      `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell(item.field ?? '')} | ${escapeCell(recordText)} (\`${SITE}\`)${caveat} | ${escapeCell(recordPages || '—')} |`,
+    );
+  }
+  lines.push('');
+  return lines;
+}
+
+function powerPagesInventoryLines(powerPages, rows, notExpressed, caveats) {
+  const lines = [];
+  for (const component of unique(powerPages.items.map((item) => item.component)))
+    lines.push(
+      ...powerPagesComponentLines(
+        component,
+        powerPages.items.filter((item) => item.component === component),
+        rows,
+        notExpressed,
+        caveats,
+      ),
+    );
+  return lines;
 }
 
 async function main() {
@@ -1846,44 +2160,7 @@ async function main() {
   const exercisedIds = [...covered].filter(([, rows]) => rows.some((row) => !row.pending)).map(([id]) => id);
   const pendingIds = [...covered].filter(([, rows]) => rows.every((row) => row.pending)).map(([id]) => id);
   const notCovered = dataverse.items.filter((item) => !covered.has(item.id));
-  const lines = [];
-  let stateGaps = 0;
-  for (const area of unique(dataverse.items.map((item) => item.area))) {
-    lines.push(
-      `## ${area}`,
-      '',
-      '| Catalog item | Catalog states | Fixture | Where (file#anchor) | States exercised | Visible on |',
-      '| --- | --- | --- | --- | --- | --- |',
-    );
-    for (const item of dataverse.items.filter((entry) => entry.area === area)) {
-      const rows = covered.get(item.id);
-      if (!rows) {
-        const reason =
-          ITEM_REASONS[item.id] ?? (/SavedQuery\.QueryType=/.test(item.where ?? '') ? VIEW_TYPE_REASON : null);
-        if (!reason) problems.push(`${item.id}: no fixture row and no reason`);
-        lines.push(
-          `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell((item.states ?? []).join(', '))} | — | — | — | ${escapeCell(reason ?? 'MISSING REASON')} |`,
-        );
-        continue;
-      }
-      for (const row of rows)
-        lines.push(
-          `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell((item.states ?? []).join(', '))} | ${escapeCell(row.fixture)} | \`${row.file}#${row.anchor}\` | ${escapeCell(row.states.join(', ') || '—')}${row.pending ? ' (pending the manual step)' : ''} | ${escapeCell(row.site.join(', ') || '—')} |`,
-        );
-      const declared = new Set(rows.flatMap((row) => row.states));
-      const missing = (item.states ?? []).filter((state) => !declared.has(state));
-      if (rows.every((row) => row.pending)) continue;
-      for (const state of missing) {
-        const reason = dynamicReasons[item.id]?.[state] ?? reasonFor(item, state);
-        if (!reason) problems.push(`${item.id}: state ${state} not exercised and no reason`);
-        stateGaps += 1;
-        lines.push(
-          `| ↳ \`${item.id}\` state not exercised | ${escapeCell(state)} | — | — | ${escapeCell(reason ?? 'MISSING REASON')} | — |`,
-        );
-      }
-    }
-    lines.push('');
-  }
+  const { lines, stateGaps } = dataverseInventoryLines(dataverse.items, covered, problems, dynamicReasons);
   if (problems.length) {
     console.error(problems.join('\n'));
     process.exitCode = 1;
@@ -1891,6 +2168,19 @@ async function main() {
   }
   const { exported } = data;
   const fixtureViews = exported.views.length;
+  const missingList = exported.missing
+    .map(
+      (m) =>
+        `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution})`,
+    )
+    .join(', ');
+  const missingNote = exported.missing.length
+    ? `: ${missingList}`
+    : ' (the fixture tables are root components with behavior 0, so their platform columns such as statecode/createdon/ownerid travel with them; Learn dependency-tracking-solution-components: export warns about missing components and import fails without them)';
+  const unmappedList = unmapped.map((view) => `${view.name} (querytype ${view.queryType})`).join(', ');
+  const unmappedNote = unmapped.length
+    ? `; without a query-type catalog item: ${unmappedList}`
+    : ', every one listed under a view query-type row';
   const header = [
     '# Dataverse customization inventory',
     '',
@@ -1898,7 +2188,7 @@ async function main() {
     '',
     `Catalog items: ${dataverse.items.length}. Exercised: ${exercisedIds.length}. Pending a manual maker-portal step: ${pendingIds.length} (${pendingIds.join(', ')}). Without a fixture row: ${notCovered.length} (reason in each row's last column). States not exercised on exercised items: ${stateGaps} (one row each, with its reason).`,
     '',
-    `Solution export: ${exported.roots.length} root components, ${exported.missing.length} MissingDependency entries in \`${EXPORT}/Other/Solution.xml\`${exported.missing.length ? `: ${exported.missing.map((m) => `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution})`).join(', ')}` : ' (the fixture tables are root components with behavior 0, so their platform columns such as statecode/createdon/ownerid travel with them; Learn dependency-tracking-solution-components: export warns about missing components and import fails without them)'}. ${fixtureViews} exported views${unmapped.length ? `; without a query-type catalog item: ${unmapped.map((view) => `${view.name} (querytype ${view.queryType})`).join(', ')}` : ', every one listed under a view query-type row'}.`,
+    `Solution export: ${exported.roots.length} root components, ${exported.missing.length} MissingDependency entries in \`${EXPORT}/Other/Solution.xml\`${missingNote}. ${fixtureViews} exported views${unmappedNote}.`,
     '',
   ];
   const manual = [
@@ -1927,33 +2217,7 @@ async function main() {
     `Catalog items: ${powerPages.items.length}. Exercised: ${[...ppRows.keys()].filter((id) => powerPages.items.some((item) => item.id === id)).length}. Not exercised: ${powerPages.items.filter((item) => !ppRows.has(item.id)).length}.`,
     '',
   ];
-  for (const component of unique(powerPages.items.map((item) => item.component))) {
-    pp.push(
-      `## ${component}`,
-      '',
-      '| Catalog item | Field | Fixture records (kind: name, variation) | Visible on |',
-      '| --- | --- | --- | --- |',
-    );
-    for (const item of powerPages.items.filter((entry) => entry.component === component)) {
-      const records = ppRows.get(item.id);
-      if (!records) {
-        pp.push(
-          `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell(item.field ?? '')} | — ${escapeCell(notExpressed.get(item.id) ? `(${notExpressed.get(item.id)})` : 'OPEN: not exercised')} | — |`,
-        );
-        continue;
-      }
-      const recordText = records
-        .map((record) => `${record.kind}: ${record.name}${record.variation ? ` (${record.variation})` : ''}`)
-        .join('; ');
-      const recordPages = unique(records.map((record) => record.path).filter(Boolean))
-        .sort()
-        .join(', ');
-      pp.push(
-        `| \`${item.id}\` ${escapeCell(item.name)} | ${escapeCell(item.field ?? '')} | ${escapeCell(recordText)} (\`${SITE}\`)${caveats.has(item.id) ? ` — caveat: ${escapeCell(caveats.get(item.id))}` : ''} | ${escapeCell(recordPages || '—')} |`,
-      );
-    }
-    pp.push('');
-  }
+  pp.push(...powerPagesInventoryLines(powerPages, ppRows, notExpressed, caveats));
   await fs.writeFile(path.join(docs, 'power-pages-inventory.md'), pp.join('\n'));
   console.log(
     JSON.stringify({
@@ -1972,7 +2236,7 @@ async function main() {
   );
 }
 
-main().catch((error) => {
+/* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
   console.error(error.stack);
   process.exitCode = 1;
 });

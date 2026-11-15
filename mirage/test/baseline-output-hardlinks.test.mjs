@@ -1,3 +1,4 @@
+// @test-kind security: baseline output refuses hard-linked evidence files, and the CLI admits no output before the bridge starts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,9 +8,14 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination } from '../baseline-paths.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// Hang guard only: the runner cannot end a blocked synchronous child, so this stops a hung CLI (a stopped child fails
+// on its signal). It is the 170 s child-process guard the other unit tests use.
+const CLI_HANG_MS = 170_000;
 
 async function fixture(run) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));
+  const base = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));
   const outDir = path.join(base, 'out'),
     outside = path.join(base, 'outside');
   await fs.mkdir(outDir);
@@ -17,8 +23,8 @@ async function fixture(run) {
   try {
     await run({ base, outDir, outside });
   } finally {
-    assert.ok(path.resolve(base).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(base, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(base);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 
@@ -94,11 +100,13 @@ async function cliFixture({ base, outDir, outside }, kind) {
       outDir,
       '--side',
       'live',
+      '--all-scenarios',
       '--label',
       'native',
     ],
-    { encoding: 'utf8', timeout: 8000, windowsHide: true },
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
   );
+  assert.equal(result.signal, null, 'the CLI exits on its own rather than being stopped by the hang bound');
   assert.notEqual(result.status, 0);
   if (kind === 'ordinary')
     assert.equal(await fs.readFile(marker, 'utf8'), 'started', 'ordinary output must reach bridge initialization');

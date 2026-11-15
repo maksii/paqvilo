@@ -1,9 +1,10 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { eventLog, loopbackServer } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -33,7 +34,7 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
   const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
   const grid = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
   const posts = [];
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     if (req.url === '/page') return res.end(PAGE);
     if (req.url === '/jquery.js' || req.url === '/grid.js') {
       res.setHeader('content-type', 'text/javascript');
@@ -54,23 +55,24 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
     res.statusCode = 404;
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  // Wait for the expected grid requests (a slow runner can take longer than a fixed pause), then
-  // give a duplicate request a moment to show up before the exact count is asserted.
+  // Await the response to the expected grid request. Browser events arrive in order, so a duplicate
+  // request sent by the same click has been observed before that response, and the count is exact.
+  const sent = [],
+    answered = eventLog(t, { message: 'The grid request was not answered' });
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/grid-data') sent.push(request);
+  });
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/grid-data') answered.push(response);
+  });
   const postsReach = async (count) => {
-    for (const deadline = Date.now() + 10_000; posts.length < count && Date.now() < deadline;)
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await answered.until(() => answered.length >= count);
+    assert.equal(sent.length, count, 'one grid request per action');
   };
   await page.goto(`http://127.0.0.1:${server.address().port}/page`);
   await page.locator(".view-select [aria-label='Second']").waitFor({ state: 'attached' });
@@ -84,10 +86,7 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
   assert.equal(posts.length, 1);
   assert.equal(posts[0].base64SecureConfiguration, 'secure-2');
   await page.evaluate(() => window.jQuery('.view-grid table thead th a').first().trigger('click'));
-  await page.waitForFunction(
-    (_count) => window.__gridPosts === undefined && document.querySelectorAll('.view-grid table').length > 0,
-    posts.length,
-  );
+  await page.locator('.view-grid table').first().waitFor({ state: 'attached' });
   await postsReach(2);
   assert.equal(posts.length, 2);
   assert.equal(posts[1].sortExpression, 'name DESC');
@@ -137,7 +136,7 @@ test('create-form loading announcements end on load, cancellation and failed nav
 <div class="entity-grid" data-defer-loading="true" data-enable-actions="true" data-view-layouts='${JSON.stringify([layout])}'><div class="view-toolbar"></div><div class="view-grid"></div>
 <section class="modal modal-form modal-form-insert" aria-hidden="true" style="display:none"><div class="form-loading">Loading form</div><iframe data-page="/form"></iframe><button data-dismiss="modal">Cancel</button></section></div>
 <script src="/jquery.js"></script><script src="/bootstrap-modal.js"></script><script src="/grid.js"></script></body></html>`;
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     const scripts = { '/jquery.js': jquery, '/bootstrap-modal.js': BOOTSTRAP3_MODAL, '/grid.js': grid };
     if (scripts[req.url]) {
       res.setHeader('content-type', 'text/javascript');
@@ -146,13 +145,8 @@ test('create-form loading announcements end on load, cancellation and failed nav
     res.setHeader('content-type', 'text/html');
     res.end(markup);
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
   const errors = [],
     foreignRequests = [];
@@ -272,7 +266,7 @@ test('a grid confirmation dialog is exposed to assistive technology while shown,
 </div>
 <script src="/jquery.js"></script><script src="/bootstrap-modal.js"></script><script src="/grid.js"></script>
 </body></html>`;
-  const server = http.createServer((req, res) => {
+  const { server } = await loopbackServer(t, (req, res) => {
     if (req.url === '/page') return res.end(page);
     const scripts = { '/jquery.js': jquery, '/bootstrap-modal.js': BOOTSTRAP3_MODAL, '/grid.js': grid };
     if (scripts[req.url]) {
@@ -306,14 +300,8 @@ test('a grid confirmation dialog is exposed to assistive technology while shown,
     res.statusCode = 404;
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    // A preconnected socket that never sent a request would hold server.close open.
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const context = await browser.newContext();
-  t.after(() => context.close());
+  ownedFixture(t).add(() => context.close());
   const tab = await context.newPage();
   const errors = [];
   tab.on('pageerror', (error) => errors.push(error.message));
@@ -321,7 +309,7 @@ test('a grid confirmation dialog is exposed to assistive technology while shown,
   await tab.locator("tr[data-id] button[data-toggle='dropdown']").click();
   await tab.locator('tr[data-id] a.delete-link').click();
   const confirm = tab.getByRole('dialog').getByRole('button', { name: 'Delete' });
-  await confirm.waitFor({ timeout: 5000 });
+  await confirm.waitFor();
   assert.equal(await tab.locator('.modal-delete').getAttribute('aria-hidden'), 'false');
   await tab.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
   await tab.waitForFunction(() => document.querySelector('.modal-delete').getAttribute('aria-hidden') === 'true');

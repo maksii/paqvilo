@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSiteMap } from '../lib/model-driven/solution.mjs';
+import { parseSiteMap, parseRibbonCommands } from '../lib/model-driven/solution.mjs';
 import { appCatalogue, MODEL_DRIVEN_CAPABILITY_RECORDS } from '../lib/model-driven/catalogue.mjs';
 import { createFormClientRuntime, pageRequest } from '../lib/model-driven/client-runtime.mjs';
 
@@ -12,6 +12,117 @@ const siteMap = `<SiteMap><Area Id="main"><Group Id="pages">
   <SubArea Id="dashboard" DefaultDashboard="{77777777-7777-4777-8777-777777777777}"/>
   <SubArea Id="external" Url="https://example.test/"/>
 </Group></Area></SiteMap>`;
+
+test('record navigation honors known source forms and defers unavailable lazy metadata to the destination', () => {
+  const id = '77777777-7777-4777-8777-77777777777a';
+  const input = { pageType: 'entityrecord', entityName: 'x_item', formId: `{${id.toUpperCase()}}` };
+  const tables = { x_item: { forms: [{ id }] } };
+  assert.equal(pageRequest(input, {}, tables)[0].formId, id);
+  assert.deepEqual(pageRequest({ pageType: 'entityrecord', entityName: 'x_item' }, {}, tables)[0], {
+    pageType: 'entityrecord',
+    entityName: 'x_item',
+  });
+  for (const forms of [[], [{ id: 'another-form' }]])
+    assert.throws(() => pageRequest(input, {}, { x_item: { forms } }), { code: 'FormUnavailable' });
+  assert.equal(pageRequest(input, {}, { x_item: { metadata: 'lazy', forms: [] } })[0].formId, id);
+  assert.equal(pageRequest(input, {}, { x_item: {} })[0].formId, id);
+});
+
+test('record navigation leaves known source form eligibility to the destination app and keeps target-table scope', () => {
+  const allowed = '77777777-7777-4777-8777-77777777777a',
+    excluded = '77777777-7777-4777-8777-77777777777b',
+    foreign = '77777777-7777-4777-8777-77777777777c';
+  const tables = {
+    x_item: { forms: [{ id: allowed }, { id: excluded }] },
+    x_other: { forms: [{ id: foreign }] },
+  };
+  for (const id of [allowed, excluded])
+    assert.equal(
+      pageRequest({ pageType: 'entityrecord', entityName: 'x_item', formId: `{${id.toUpperCase()}}` }, {}, tables)[0]
+        .formId,
+      id,
+      'the source catalogue retains forms that an owning app may exclude',
+    );
+  assert.throws(
+    () => pageRequest({ pageType: 'entityrecord', entityName: 'x_item', formId: foreign }, {}, tables),
+    { code: 'FormUnavailable' },
+    'a form exported for another table does not prove target-table source availability',
+  );
+});
+
+test('selected-row ribbon parameters compose a native record-pane target without replacing current-record context', async () => {
+  const selected = ['77777777-7777-4777-8777-77777777777a'],
+    opened = [];
+  const tables = { x_item: { entity: 'x_item', idColumn: 'x_itemid', fields: {}, views: [{ id: 'source-view' }] } };
+  const runtime = createFormClientRuntime({
+    table: tables.x_item,
+    tables,
+    record: { x_itemid: '77777777-7777-4777-8777-77777777777b' },
+    form: {},
+    controlNames: () => [],
+    extensions: {
+      trusted: true,
+      resources: [{ name: 'x_selection.js', type: 'script', url: '/_apps/resources/selection-context-proof.js' }],
+    },
+    environment: {
+      location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' },
+      document: { createElement: () => ({ remove() {} }), head: { append: (node) => node.onload() } },
+    },
+    scope: {
+      Invented: {
+        open: (ids, entityName) =>
+          opened.push(
+            pageRequest(
+              { pageType: 'entityrecord', entityName, entityId: ids[0], formId: '{ITEM-FORM}', tabName: 'related' },
+              {},
+              tables,
+            )[0],
+          ),
+      },
+    },
+  });
+  const command = parseRibbonCommands(
+    '<RibbonDiffXml><Button Id="x.HomePageGrid.Context" Command="x.Context"/><CommandDefinition Id="x.Context"><Actions><JavaScriptFunction Library="$webresource:x_selection.js" FunctionName="Invented.open"><CrmParameter Value="SelectedControlSelectedItemIds"/><CrmParameter Value="SelectedEntityTypeName"/></JavaScriptFunction></Actions></CommandDefinition></RibbonDiffXml>',
+  )[0];
+  await runtime.command(command, selected);
+  assert.deepEqual(opened, [
+    { pageType: 'entityrecord', entityName: 'x_item', entityId: selected[0], formId: 'item-form', tabName: 'related' },
+  ]);
+  assert.equal(runtime.formContext.data.entity.getId(), '{77777777-7777-4777-8777-77777777777b}');
+  assert.deepEqual(selected, ['77777777-7777-4777-8777-77777777777a']);
+  for (const tabName of ['', 1, {}, 'x'.repeat(257)])
+    assert.throws(
+      () => pageRequest({ pageType: 'entityrecord', entityName: 'x_item', tabName }, {}, tables),
+      /tabName/,
+    );
+  assert.equal(
+    pageRequest(
+      { pageType: 'entitylist', entityName: 'x_item', viewId: '{SOURCE-VIEW}', viewType: 'savedquery' },
+      {},
+      tables,
+    )[0].viewId,
+    'source-view',
+  );
+  assert.throws(
+    () =>
+      pageRequest(
+        { pageType: 'entitylist', entityName: 'x_item', viewId: 'source-view', viewType: 'userquery' },
+        {},
+        tables,
+      ),
+    { code: 'PersonalViewUnsupported' },
+  );
+  assert.throws(
+    () =>
+      pageRequest(
+        { pageType: 'entitylist', entityName: 'x_item', viewId: 'absent', viewType: 'savedquery' },
+        {},
+        tables,
+      ),
+    { code: 'ViewUnavailable' },
+  );
+  runtime.destroy();
+});
 
 test("SiteMap destinations get distinct codes; custom pages wait for the app's components, unresolved dashboards and external URLs are not hosted", () => {
   const items = Object.fromEntries(parseSiteMap(siteMap)[0].groups[0].items.map((item) => [item.id, item]));

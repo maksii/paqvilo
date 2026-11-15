@@ -2,32 +2,38 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, cpSync } from 'node:fs';
 import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
+import { forwardTerminationSignals } from '../signal-forwarding.mjs';
+import { parseOptions } from '../cli-options.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const STARTER = path.join(ROOT, 'examples/project');
 const MARKER = '.paqvilo/demo.json';
+const TEXT_FILES = /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv)$/i;
+const MORE_TEXT_FILES = /\.(?:svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i;
 
 // A fresh Git checkout must serve the same bytes as the copied scaffold.
 // Normalize text at the boundary instead of inheriting the toolkit checkout's autocrlf.
+// Files are normalized 32 at a time: one at a time took about 16 s for the demo on a loaded Windows machine.
 async function normalizeText(directory) {
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) await normalizeText(file);
-    else if (
-      entry.isFile() &&
-      /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
-        entry.name,
-      )
-    ) {
-      const bytes = await fs.readFile(file);
-      if (!bytes.includes(0) && bytes.includes(13))
-        await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+  const files = [];
+  const walk = async (folder) => {
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) await walk(file);
+      else if (entry.isFile() && (TEXT_FILES.test(entry.name) || MORE_TEXT_FILES.test(entry.name))) files.push(file);
     }
-  }
+  };
+  await walk(directory);
+  const normalize = async (file) => {
+    const bytes = await fs.readFile(file);
+    if (!bytes.includes(0) && bytes.includes(13))
+      await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+  };
+  for (let index = 0; index < files.length; index += 32)
+    await Promise.all(files.slice(index, index + 32).map(normalize));
 }
 
 async function prepareEditorFiles(target) {
@@ -47,7 +53,30 @@ async function prepareEditorFiles(target) {
   }
 }
 
-export async function prepareDemo(directory) {
+// A virus scanner or indexer can hold a handle in the staging folder for a moment; Windows reports that as a failed rename.
+const RENAME_ATTEMPTS = 5;
+const RENAME_BACKOFF_MS = 200;
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function renameIntoPlace(staging, target, { rename, wait }) {
+  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
+    try {
+      await rename(staging, target);
+      return;
+    } catch (error) {
+      if (!TRANSIENT_RENAME_CODES.has(error.code)) throw error;
+      if (attempt === RENAME_ATTEMPTS)
+        throw new Error(
+          `Cannot move the demo from ${staging} to ${target} after ${RENAME_ATTEMPTS} attempts (${error.code}). Close programs that may use the staging folder and run the demo again.`,
+          { cause: error },
+        );
+      await wait(RENAME_BACKOFF_MS * attempt);
+    }
+  }
+}
+
+export async function prepareDemo(directory, { copy = cpSync, rename = fs.rename, wait = sleep } = {}) {
   const target = await assertScaffoldPath(directory, { directory: true });
   let existing = null;
   try {
@@ -56,32 +85,29 @@ export async function prepareDemo(directory) {
     if (error.code !== 'ENOENT') throw error;
   }
   if (existing) {
-    if (!existing.isDirectory() || existing.isSymbolicLink())
-      throw new Error(`Demo folder must be a regular directory: ${target}`);
-    let marker;
-    try {
-      marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8'));
-    } catch {
-      /* not an owned demo */
-    }
-    if (marker?.kind === 'paqvilo-example' && marker.version === 2) {
-      for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs'])
-        await fs.access(path.join(target, name));
-      await prepareEditorFiles(target);
-      return { directory: target, created: false };
-    }
-    // Never replace the user's project, including an incomplete earlier copy.
-    if ((await fs.readdir(target)).length)
-      throw new Error(
-        `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`,
-      );
+    const reused = await reuseExistingDemo(target, existing);
+    if (reused) return reused;
   }
-  await prepareScaffoldDirectory(target);
+  // The copy goes into a sibling staging folder, so an interrupted copy never leaves a partial target behind.
+  const staging = await prepareScaffoldDirectory(`${target}.partial-${process.pid}`);
+  try {
+    await copyStarter(staging, copy);
+    // An empty target from the user is replaced; reuseExistingDemo returned null, so it holds nothing.
+    if (existing) await fs.rmdir(target);
+    await renameIntoPlace(staging, target, { rename, wait });
+  } catch (error) {
+    await fs.rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+  return { directory: target, created: true };
+}
 
+async function copyStarter(target, copy) {
   for (const name of [
     'portal',
     'solution',
     'code-solution',
+    'code-app',
     'metadata',
     'pack',
     'test',
@@ -94,7 +120,8 @@ export async function prepareDemo(directory) {
     'README.md',
     'AGENTS.md',
   ]) {
-    await fs.cp(path.join(STARTER, name), path.join(target, name), {
+    // Synchronous on purpose: on Windows async fs.cp took 20-30 s for the ~2,000-file sample, cpSync under 2 s.
+    copy(path.join(STARTER, name), path.join(target, name), {
       recursive: true,
       errorOnExist: true,
       force: false,
@@ -112,6 +139,7 @@ export async function prepareDemo(directory) {
   await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
   await normalizeText(target);
   const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
+  const example = JSON.parse(await fs.readFile(path.join(STARTER, 'package.json'), 'utf8'));
   await fs.writeFile(
     path.join(target, 'package.json'),
     JSON.stringify(
@@ -124,12 +152,15 @@ export async function prepareDemo(directory) {
           dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
           'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
           lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
+          'code-app:mirage': example.scripts['code-app:mirage'],
+          'code-app:dev': example.scripts['code-app:dev'],
           test: 'node --test test/*.test.mjs',
         },
         devDependencies: {
           paqvilo: version,
           yaml: dependencies.yaml,
           'playwright-core': dependencies['playwright-core'],
+          '@microsoft/power-apps': example.devDependencies['@microsoft/power-apps'],
         },
       },
       null,
@@ -141,20 +172,82 @@ export async function prepareDemo(directory) {
   await fs.writeFile(path.join(target, MARKER), JSON.stringify({ kind: 'paqvilo-example', version: 2 }) + '\n', {
     flag: 'wx',
   });
-  return { directory: target, created: true };
 }
 
-async function runDemo() {
-  const { values, positionals } = parseArgs({
+async function interruptedCopies(target) {
+  const parent = path.dirname(target);
+  const prefix = `${path.basename(target)}.partial-`;
+  return (await fs.readdir(parent)).filter((name) => name.startsWith(prefix)).map((name) => path.join(parent, name));
+}
+
+function interruptedCopyNote(leftovers) {
+  return leftovers.length ? ` An interrupted copy left ${leftovers.join(', ')}. It can be deleted.` : '';
+}
+
+async function reuseExistingDemo(target, existing) {
+  if (!existing) return null;
+  if (!existing.isDirectory() || existing.isSymbolicLink())
+    throw new Error(`Demo folder must be a regular directory: ${target}`);
+  let marker;
+  try {
+    marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8'));
+  } catch {
+    /* not an owned demo */
+  }
+  if (marker?.kind === 'paqvilo-example' && marker.version === 2) {
+    for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs'])
+      await fs.access(path.join(target, name));
+    await prepareEditorFiles(target);
+    return { directory: target, created: false };
+  }
+  // Never replace the user's project, including an incomplete earlier copy.
+  if ((await fs.readdir(target)).length) {
+    const leftovers = await interruptedCopies(target);
+    throw new Error(
+      `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.${interruptedCopyNote(leftovers)}`,
+    );
+  }
+  return null;
+}
+
+function validateDemoOptions(values) {
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
+  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
+    throw new Error('--browser must be msedge, chrome or chromium');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer between 0 and 65535');
+  if (values.scaffold && (values.browser !== undefined || values.headless || values['debug-port'] !== undefined))
+    throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
+}
+
+// Repeated string options keep their last value. parseOptions refuses repeats unless an option is `multiple`.
+const lastValue = (value) => (Array.isArray(value) ? value.at(-1) : value);
+
+export function parseDemoOptions(args) {
+  const { values, positionals } = parseOptions({
+    args,
     options: {
-      dir: { type: 'string', default: './paqvilo-example' },
-      browser: { type: 'string' },
+      dir: { type: 'string', multiple: true },
+      browser: { type: 'string', multiple: true },
       headless: { type: 'boolean' },
-      'debug-port': { type: 'string' },
+      'debug-port': { type: 'string', multiple: true },
       scaffold: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
+  const chosen = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, lastValue(value)]));
+  return { values: { dir: './paqvilo-example', ...chosen }, positionals };
+}
+
+async function runDemo() {
+  const { values, positionals } = parseDemoOptions(process.argv.slice(2));
   if (positionals.length) throw new Error('demo accepts options only; use --dir <path> to choose its folder');
   if (values.help) {
     console.log(`Usage: paqvilo mirage demo [--dir ./paqvilo-example] [--browser msedge|chrome|chromium]
@@ -165,9 +258,7 @@ Close the browser or press Ctrl+C to stop. --headless and --debug-port are also 
 Use --scaffold to prepare the project and VS Code workspace without starting a browser.`);
     return;
   }
-  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
-    throw new Error('--browser must be msedge, chrome or chromium');
-  if (values['debug-port'] && !/^\d+$/.test(values['debug-port'])) throw new Error('--debug-port must be an integer');
+  validateDemoOptions(values);
   const demo = await prepareDemo(values.dir);
   if (values.scaffold) {
     console.log(
@@ -210,23 +301,19 @@ Close the browser or press Ctrl+C to stop.\n`);
   if (values.headless) args.push('--headless');
   if (values['debug-port']) args.push('--debug-port', values['debug-port']);
   const child = spawn(process.execPath, args, { cwd: demo.directory, stdio: 'inherit', windowsHide: true });
-  const interrupt = () => child.kill('SIGINT');
-  const terminate = () => child.kill('SIGTERM');
-  process.on('SIGINT', interrupt);
-  process.on('SIGTERM', terminate);
+  const stopForwarding = forwardTerminationSignals(child);
   try {
     process.exitCode = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', (code) => resolve(code ?? 1));
     });
   } finally {
-    process.off('SIGINT', interrupt);
-    process.off('SIGTERM', terminate);
+    stopForwarding();
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runDemo().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ runDemo().catch((error) => {
     console.error(`Mirage demo: ${error.message}`);
     process.exitCode = 1;
   });

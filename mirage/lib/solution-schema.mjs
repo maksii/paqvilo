@@ -1,14 +1,21 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { recordSourceOf, materializeRecordSource } from './record-sources.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
-import { inflateRawSync } from 'node:zlib';
-import { crc32 } from './dataverse-solution-assets.mjs';
+import { solutionContentFingerprint, solutionSideFileHashes } from './solution-content-fingerprint.mjs';
+import {
+  inflateSolutionZipMember,
+  SCAN_ARCHIVE_BYTES,
+  validateSolutionZipDirectory,
+} from './dataverse-solution-assets.mjs';
 import { metadataNumeric } from './exact-numeric.mjs';
 import { parseSolutionXml, descendants, child, childText, labelsOf, pickLabel, serializeXml } from './solution-xml.mjs';
 import { classifyYamlPath, yamlNode, yamlEntityNode, yamlComponentNode, YAML_ROOTS } from './solution-yaml.mjs';
 import { SolutionFileCache, fileStamp, mapLimit } from './solution-cache.mjs';
 import { parsePluginDocument } from './exported-plugins.mjs';
+import { hasStepConstructorSettings, copyStepConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { DataError } from './data-error.mjs';
 import { parseAppDefinitions, embeddedAppComponents, parseDashboards } from './model-driven/solution.mjs';
 import { solutionDocumentComponents } from './dataverse-solution-components.mjs';
@@ -41,6 +48,29 @@ import {
 
 /** Bump when parsed facts change shape so cached results are never reused. */
 export const SCHEMA_PARSER_ID = 'schema@26';
+// Cache JSON and shared structuredClone results deliberately contain no
+// constructor text. Rehydrate just that execution input from the local source;
+// public facts and their cached metadata remain unchanged.
+const needsPluginConstructorSettings = (facts) =>
+  facts?.plugins?.steps?.some((step) => !hasStepConstructorSettings(step));
+const restorePluginConstructorSettings = (facts, text) => {
+  const parsed = new Map(parsePluginDocument(text).steps.map((step) => [step.id, step]));
+  for (const step of facts.plugins.steps) {
+    const source = parsed.get(step.id);
+    if (!source) throw new Error('Cached plug-in registration no longer matches its source.');
+    copyStepConstructorSettings(source, step);
+  }
+};
+const readPluginConstructorSource = async (file, expectedHash) => {
+  const bytes = await fs.readFile(file);
+  if (createHash('sha256').update(bytes).digest('hex') !== expectedHash)
+    throw new DataError(
+      'Solution source changed while restoring private plug-in constructor configuration.',
+      409,
+      'LocalPluginSourceChanged',
+    );
+  return bytes;
+};
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', '.paqvilo']);
@@ -58,11 +88,20 @@ const norm = (value) =>
   String(value ?? '')
     .trim()
     .toLowerCase();
-const valid = (name) => /^[a-z][\w]*$/i.test(String(name ?? ''));
-const bit = (value) => (value === '1' ? true : value === '0' ? false : undefined);
+const valid = (name) => /^[a-z]\w*$/i.test(String(name ?? ''));
+const bit = (value) => {
+  if (value === '1') return true;
+  if (value === '0') return false;
+  return undefined;
+};
 // Entity flags written as 1/0 or True/False (HasRelatedNotes).
-const flag = (value) =>
-  bit(value) ?? (/^true$/i.test(value ?? '') ? true : /^false$/i.test(value ?? '') ? false : undefined);
+const flag = (value) => {
+  const parsed = bit(value);
+  if (parsed !== undefined) return parsed;
+  if (/^true$/i.test(value ?? '')) return true;
+  if (/^false$/i.test(value ?? '')) return false;
+  return undefined;
+};
 const num = (value) => {
   if (value == null || value === '') return undefined;
   const n = Number(value);
@@ -72,16 +111,28 @@ const compact = (object) =>
   Object.fromEntries(
     Object.entries(object).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   );
-const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const compare = (a, b) => {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+};
 const deepText = (node, name) => childText(node, name) ?? descendants(node, name)[0]?.text.trim();
 
 /** Classify a path inside a solution tree (or loose metadata directory). */
 export function classifySolutionPath(relative) {
-  const parts = String(relative).replace(/\\/g, '/').split('/');
+  const parts = String(relative).replaceAll('\\', '/').split('/');
   const lower = parts.map((part) => part.toLowerCase());
   const file = lower.at(-1),
     parent = lower.at(-2);
   const xml = file.endsWith('.xml');
+  const { app, workflow, plugin, form, view } = inspectSolutionPath(parts, lower, file, xml);
+  if (app) return { kind: 'app' };
+  if (workflow) return { kind: 'workflow' };
+  if (plugin) return { kind: 'plugin' };
+  return classifyRemainingSolutionPath(parts, lower, file, parent, xml, form, view);
+}
+
+function inspectSolutionPath(parts, lower, file, xml) {
   let app = false,
     workflow = false,
     plugin = false,
@@ -92,42 +143,72 @@ export function classifySolutionPath(relative) {
   for (let index = 0; index < lower.length - 1; index++) {
     const folder = lower[index];
     const descendantXml = xml && (index < lower.length - 2 || file.length > 4);
-    if (descendantXml) {
-      if (folder === 'appmodules' || folder === 'appmodulesitemaps' || folder === 'sitemaps') app = true;
-      if (folder === 'workflows') workflow = true;
-      if (
-        folder === 'pluginassemblies' ||
-        folder === 'plugintypes' ||
-        folder === 'sdkmessageprocessingsteps' ||
-        folder === 'sdkmessages'
-      )
-        plugin = true;
-    }
-    if (
-      folder === 'entities' &&
-      parts[index + 1] &&
-      index + 3 < lower.length &&
-      xml &&
-      (index + 3 < lower.length - 1 || file.length > 4)
-    ) {
-      if (lower[index + 2] === 'formxml') form ??= parts[index + 1];
-      if (lower[index + 2] === 'savedqueries') view ??= parts[index + 1];
-    }
+    if (descendantXml) ({ app, workflow, plugin } = inspectXmlFolder(folder, { app, workflow, plugin }));
+    ({ form, view } = inspectEntityFolder(parts, lower, index, folder, file, xml, { form, view }));
   }
-  if (app) return { kind: 'app' };
-  if (workflow) return { kind: 'workflow' };
-  if (plugin) return { kind: 'plugin' };
+  return { app, workflow, plugin, form, view };
+}
+
+function inspectXmlFolder(folder, flags) {
+  if (folder === 'appmodules' || folder === 'appmodulesitemaps' || folder === 'sitemaps') flags.app = true;
+  if (folder === 'workflows') flags.workflow = true;
+  if (
+    folder === 'pluginassemblies' ||
+    folder === 'plugintypes' ||
+    folder === 'sdkmessageprocessingsteps' ||
+    folder === 'sdkmessages'
+  )
+    flags.plugin = true;
+  return flags;
+}
+
+function inspectEntityFolder(parts, lower, index, folder, file, xml, names) {
+  if (
+    folder === 'entities' &&
+    parts[index + 1] &&
+    index + 3 < lower.length &&
+    xml &&
+    (index + 3 < lower.length - 1 || file.length > 4)
+  ) {
+    if (lower[index + 2] === 'formxml') names.form ??= parts[index + 1];
+    if (lower[index + 2] === 'savedqueries') names.view ??= parts[index + 1];
+  }
+  return names;
+}
+
+function classifyRemainingSolutionPath(parts, lower, file, parent, xml, form, view) {
+  return (
+    classifyMetadataPath(parts, lower, file, parent, xml, form, view) ??
+    classifyEnvironmentPath(parts, lower, file) ??
+    classifyInventoryPath(parts, lower)
+  );
+}
+
+function classifyMetadataPath(parts, lower, file, parent, xml, form, view) {
+  return (
+    classifyEntityMetadataPath(parts, lower, file, parent, xml, form, view) ??
+    classifyOtherMetadataPath(parts, file, parent, xml)
+  );
+}
+
+function classifyEntityMetadataPath(parts, lower, file, parent, xml, form, view) {
   if (parent === 'formulas' && /\.ya?ml$/i.test(file) && (parts.length === 2 || lower.at(-4) === 'entities'))
     return { kind: 'formula', formulaFile: parts.at(-1), ...(parts.length > 2 ? { entityDir: parts.at(-3) } : {}) };
   if (lower.at(-3) === 'entities' && parts.at(-2) && file === 'entity.xml')
     return { kind: 'entity', entityDir: parts.at(-2) };
   if (form !== undefined) return { kind: 'form', entityDir: form };
   if (view !== undefined) return { kind: 'view', entityDir: view };
+}
+
+function classifyOtherMetadataPath(parts, file, parent, xml) {
   if (parent === 'optionsets' && xml && file.length > 4) return { kind: 'optionset' };
   if ((parent === 'relationships' && xml && file.length > 4) || file === 'relationships.xml')
     return { kind: 'relationships' };
   if (file === 'customizations.xml') return { kind: 'customizations' };
   if ((parent === 'other' || parts.length === 1) && file === 'solution.xml') return { kind: 'solution' };
+}
+
+function classifyEnvironmentPath(parts, lower, file) {
   if (lower.at(-3) === 'environmentvariabledefinitions' && parts.at(-2)) {
     if (file === 'environmentvariabledefinition.xml') return { kind: 'envdef', envDir: parts.at(-2) };
     if (
@@ -144,7 +225,6 @@ export function classifySolutionPath(relative) {
   // https://learn.microsoft.com/power-platform/alm/solution-source-control-yaml-format#component-type-support
   if (file === 'environment_variable_values.json' && lower.length > 1)
     return { kind: 'envvalue', envDir: parts.at(-2) };
-  return classifyInventoryPath(parts, lower);
 }
 const SCHEMA_KINDS = new Set([
   'app',
@@ -171,11 +251,16 @@ async function manifestOf(dir) {
   } catch {
     return null;
   }
-  const other = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^other$/i.test(e.name));
+  // Sorted, so a case-sensitive file system with two spellings resolves the same one on every listing.
+  const other = entries
+    .sort((a, b) => compare(a.name, b.name))
+    .find((e) => e.isDirectory() && !e.isSymbolicLink() && /^other$/i.test(e.name));
   if (!other) return null;
   try {
     const files = await fs.readdir(path.join(dir, other.name), { withFileTypes: true });
-    const solution = files.find((e) => e.isFile() && /^solution\.xml$/i.test(e.name));
+    const solution = files
+      .sort((a, b) => compare(a.name, b.name))
+      .find((e) => e.isFile() && /^solution\.xml$/i.test(e.name));
     return solution ? path.join(dir, other.name, solution.name) : null;
   } catch {
     return null;
@@ -194,7 +279,9 @@ async function yamlManifestsOf(dir) {
   } catch {
     return [];
   }
-  const folder = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
+  const folder = entries
+    .sort((a, b) => compare(a.name, b.name))
+    .find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
   if (!folder) return [];
   const manifests = [];
   let solutions;
@@ -212,7 +299,9 @@ async function yamlManifestsOf(dir) {
     } catch {
       continue;
     }
-    const manifest = files.find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
+    const manifest = files
+      .sort((a, b) => compare(a.name, b.name))
+      .find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
     if (manifest)
       manifests.push({ name: solution.name, file: path.join(dir, folder.name, solution.name, manifest.name) });
   }
@@ -248,10 +337,15 @@ async function yamlSolutionFacts(manifest, diagnostics = []) {
     await read('rootcomponents.yml', 'RootComponents'),
     await read('missingdependencies.yml', 'MissingDependencies'),
   ].filter(Boolean);
+  const children = [];
+  if (document) {
+    if (document.name === 'SolutionManifest') children.push(...document.children);
+    else children.push(document);
+  }
   const node = {
     name: 'SolutionManifest',
     attrs: {},
-    children: [...(document ? (document.name === 'SolutionManifest' ? document.children : [document]) : []), ...extra],
+    children: [...children, ...extra],
     text: '',
   };
   const facts = solutionFacts(node);
@@ -279,12 +373,7 @@ async function yamlComponentPaths(manifest) {
     if (!value || typeof value !== 'object' || depth > 6) return;
     for (const [key, item] of Object.entries(value)) {
       if (key.toLowerCase() === 'path' && typeof item === 'string')
-        paths.push(
-          item
-            .replaceAll('\\', '/')
-            .replace(/^\/+|\/+$/g, '')
-            .toLowerCase(),
-        );
+        paths.push(stripTrailingCharacter(item.replaceAll('\\', '/').replace(/^\/+/, ''), '/').toLowerCase());
       else visit(item, depth + 1);
     }
   };
@@ -323,30 +412,38 @@ function yamlDocuments(documents, diagnostics) {
       return null;
     }
   };
-  for (const doc of documents) {
-    if (doc.kind !== 'yaml') kept.push(doc);
-    else if (doc.entityDir) {
-      const key = doc.entityDir.toLowerCase();
-      if (!tables.has(key)) tables.set(key, { dir: doc.entityDir, parts: [] });
-      tables.get(key).parts.push(doc);
-    } else {
-      const node = yamlComponentNode(doc.part, structuredClone(doc.node));
-      const result = node && parsed(doc.file, node, { kind: doc.part === 'optionset' ? 'optionset' : 'relationships' });
-      if (result) kept.push(result);
-      else if (!node) notImported(doc);
-    }
-  }
-  for (const { dir, parts } of tables.values()) {
-    const { node, unread } = yamlEntityNode(
-      dir,
-      parts.map((part) => ({ part: part.part, node: structuredClone(part.node), formType: part.formType })),
-    );
-    for (const { index } of unread) notImported(parts[index]);
-    const folder = parts[0].file.replace(/([\\/]entities[\\/][^\\/]+)[\\/].*$/i, '$1');
-    const result = parsed(folder, node, { kind: 'entity', entityDir: dir });
-    if (result) kept.push(result);
-  }
+  const state = { kept, tables, parsed, notImported };
+  for (const doc of documents) addYamlDocument(doc, state);
+  for (const table of tables.values()) addYamlTable(table, state);
   return kept;
+}
+
+function addYamlDocument(doc, { kept, tables, parsed, notImported }) {
+  if (doc.kind !== 'yaml') {
+    kept.push(doc);
+    return;
+  }
+  if (doc.entityDir) {
+    const key = doc.entityDir.toLowerCase();
+    if (!tables.has(key)) tables.set(key, { dir: doc.entityDir, parts: [] });
+    tables.get(key).parts.push(doc);
+    return;
+  }
+  const node = yamlComponentNode(doc.part, structuredClone(doc.node));
+  const result = node && parsed(doc.file, node, { kind: doc.part === 'optionset' ? 'optionset' : 'relationships' });
+  if (result) kept.push(result);
+  else if (!node) notImported(doc);
+}
+
+function addYamlTable({ dir, parts }, { kept, parsed, notImported }) {
+  const { node, unread } = yamlEntityNode(
+    dir,
+    parts.map((part) => ({ part: part.part, node: structuredClone(part.node), formType: part.formType })),
+  );
+  for (const { index } of unread) notImported(parts[index]);
+  const folder = parts[0].file.replace(/([\\/]entities[\\/][^\\/]+)[\\/].*$/i, '$1');
+  const result = parsed(folder, node, { kind: 'entity', entityDir: dir });
+  if (result) kept.push(result);
 }
 
 /**
@@ -524,9 +621,12 @@ function tableGridFacts(node) {
     if (!control.attrs.name || control.attrs.formFactor !== '0') continue;
     if (control.attrs.name !== 'Microsoft.PowerApps.PowerAppsOneGrid') return { control: control.attrs.name };
     const value = childText(child(control, 'parameters'), 'EnablePagination');
+    let pagination;
+    if (value === undefined || value === 'no') pagination = false;
+    else if (value === 'yes') pagination = true;
     return compact({
       control: control.attrs.name,
-      pagination: value === undefined || value === 'no' ? false : value === 'yes' ? true : undefined,
+      pagination,
     });
   }
 }
@@ -558,6 +658,11 @@ function entityFacts(node, info) {
   const names = new Set(attributes.map((a) => a.name));
   const primaryKey = attributes.find((a) => a.type === 'primarykey')?.name;
   const primaryName = attributes.find((a) => a.isPrimaryName)?.name;
+  const isVirtual = () => {
+    if (h('TableType')) return /^virtual$/i.test(h('TableType'));
+    if (h('DataSourceId')) return true;
+    return undefined;
+  };
   return compact({
     logicalName: logical,
     grid: tableGridFacts(node),
@@ -586,7 +691,7 @@ function entityFacts(node, info) {
     collectionLabels: labelsOf(child(header, 'LocalizedCollectionNames')),
     // Virtual tables (a data source, e.g. SharePoint through the virtual connector) have
     // no standard system columns: their definition is complete with the primary key.
-    isVirtual: h('TableType') ? /^virtual$/i.test(h('TableType')) : h('DataSourceId') ? true : undefined,
+    isVirtual: isVirtual(),
     // A table a solution includes unmodified exports no columns (<entity unmodified="1">).
     unmodified: header?.attrs?.unmodified === '1' && !attributes.length ? true : undefined,
     fullDefinition:
@@ -818,6 +923,10 @@ export function parseSchemaDocument(text, info = {}) {
     return facts;
   }
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('XML external declarations are not supported');
+  return parseXmlSchemaFacts(text, info, facts);
+}
+
+function parseXmlSchemaFacts(text, info, facts) {
   const root = parseSolutionXml(text, { recover: true });
   Object.assign(facts, parseAppDefinitions(root));
   facts.appComponents = embeddedAppComponents(root, { entity: info.entityDir });
@@ -841,6 +950,10 @@ export function parseSchemaDocument(text, info = {}) {
     facts.envDefinitions.push(envDefinitionFacts(root, info.envDir));
     return facts;
   }
+  return parseXmlDocumentCollections(root, info, facts);
+}
+
+function parseXmlDocumentCollections(root, info, facts) {
   const entityNodes = root.name === 'Entity' ? [root] : descendants(root, 'Entity');
   for (const node of entityNodes) {
     const entity = entityFacts(node, info);
@@ -860,84 +973,62 @@ export function parseSchemaDocument(text, info = {}) {
 
 // ---- ZIP (in memory; no archive path is written to disk)
 
+// The entries the scan keeps; the others are skipped unread, so only traversal and header checks apply to them.
+const isKeptZipEntry = (name) => {
+  const classified = classifySolutionPath(name);
+  return Boolean(classified && (SCHEMA_KINDS.has(classified.kind) || ['form', 'view'].includes(classified.kind)));
+};
+
+/**
+ * Walks the central directory through the shared asset-reader checks before any payload is inflated: entry count, declared
+ * sizes against the budget, offsets inside the archive and no shared local header. Refusals throw SolutionArchiveError.
+ * A local header whose content disagrees with its directory fails only the payload that needs it: an XML document throws,
+ * and a binary inventory payload reports its failure when it is read. The archive ceiling is SCAN_ARCHIVE_BYTES.
+ */
 export function readSolutionZip(buffer) {
-  if (buffer.length > 256 * 1024 * 1024) throw new Error('Solution archive exceeds the 256 MiB limit.');
-  let eocd = -1;
-  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 65557); i--)
-    if (buffer.readUInt32LE(i) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  if (eocd < 0) throw new Error('Solution ZIP end directory is missing.');
-  if (buffer.readUInt16LE(eocd + 4) || buffer.readUInt16LE(eocd + 6))
-    throw new Error('Multi-volume solution archives are not supported.');
-  const count = buffer.readUInt16LE(eocd + 10);
-  let offset = buffer.readUInt32LE(eocd + 16);
-  if (count === 0xffff || offset === 0xffffffff) throw new Error('ZIP64 solution archives are not supported.');
+  const { bytes, members } = validateSolutionZipDirectory(buffer, {
+    archiveBytes: SCAN_ARCHIVE_BYTES,
+    deferLocalHeaders: true,
+    strictNames: isKeptZipEntry,
+  });
   const documents = [];
-  for (let i = 0; i < count; i++) {
-    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50)
-      throw new Error('Invalid solution ZIP directory.');
-    const flags = buffer.readUInt16LE(offset + 8),
-      method = buffer.readUInt16LE(offset + 10),
-      crc = buffer.readUInt32LE(offset + 16),
-      size = buffer.readUInt32LE(offset + 20),
-      uncompressed = buffer.readUInt32LE(offset + 24),
-      nameLength = buffer.readUInt16LE(offset + 28),
-      extraLength = buffer.readUInt16LE(offset + 30),
-      commentLength = buffer.readUInt16LE(offset + 32),
-      localOffset = buffer.readUInt32LE(offset + 42);
-    const name = buffer
-      .subarray(offset + 46, offset + 46 + nameLength)
-      .toString('utf8')
-      .replaceAll('\\', '/');
-    offset += 46 + nameLength + extraLength + commentLength;
-    if (name.startsWith('/') || name.split('/').includes('..') || /^[a-z]:/i.test(name))
-      throw new Error('Solution ZIP contains a traversal path.');
-    const classified = classifySolutionPath(name);
-    if (!classified || (!SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind))) continue;
-    if (flags & 1) throw new Error('Encrypted solution XML entries are not supported.');
-    // Binary inventory payloads (.msapp) and oversized component files keep name and size; `read()` inflates on demand.
-    if (classified.kind === 'inventory' && (!/\.(?:xml|json|ya?ml)$/i.test(name) || uncompressed > XML_LIMIT)) {
-      const entryOffset = localOffset;
-      documents.push({
-        name,
-        size: uncompressed,
-        ...classified,
-        read: (limit = CANVAS_MSAPP_LIMIT) => {
-          if (uncompressed > limit) throw new Error('Solution archive entry exceeds its read limit.');
-          if (entryOffset + 30 > buffer.length || buffer.readUInt32LE(entryOffset) !== 0x04034b50)
-            throw new Error('Invalid solution archive entry header.');
-          const dataOffset =
-            entryOffset + 30 + buffer.readUInt16LE(entryOffset + 26) + buffer.readUInt16LE(entryOffset + 28);
-          const compressed = buffer.subarray(dataOffset, dataOffset + size);
-          const bytes =
-            method === 0 ? compressed : method === 8 ? inflateRawSync(compressed, { maxOutputLength: limit }) : null;
-          if (!bytes || bytes.length !== uncompressed || crc32(bytes) !== crc)
-            throw new Error('Invalid solution archive entry.');
-          return bytes;
-        },
-      });
-      continue;
-    }
-    if (
-      uncompressed > XML_LIMIT ||
-      size > XML_LIMIT ||
-      localOffset + 30 > buffer.length ||
-      buffer.readUInt32LE(localOffset) !== 0x04034b50
-    )
-      throw new Error('Invalid or oversized solution XML entry.');
-    const dataOffset = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
-    if (dataOffset + size > buffer.length) throw new Error('Truncated solution XML archive entry.');
-    const compressed = buffer.subarray(dataOffset, dataOffset + size);
-    let bytes;
-    if (method === 0) bytes = compressed;
-    else if (method === 8) bytes = inflateRawSync(compressed, { maxOutputLength: XML_LIMIT });
-    else throw new Error(`Unsupported ZIP XML compression method ${method}.`);
-    if (bytes.length !== uncompressed) throw new Error('Solution ZIP XML size mismatch.');
-    documents.push({ name, xml: bytes.toString('utf8'), ...classified });
+  for (const member of members) {
+    const document = readSolutionZipEntry(bytes, member);
+    if (document) documents.push(document);
   }
   return documents;
+}
+
+function readSolutionZipEntry(bytes, member) {
+  const classified = classifySolutionPath(member.name);
+  if (!classified || (!SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind))) return null;
+  if (
+    classified.kind === 'inventory' &&
+    (!/\.(?:xml|json|ya?ml)$/i.test(member.name) || member.info.unpacked > XML_LIMIT)
+  )
+    return inventoryZipEntry(bytes, member, classified);
+  if (member.error) throw member.error;
+  return xmlZipEntry(bytes, member, classified);
+}
+
+function inventoryZipEntry(bytes, member, classified) {
+  // Binary inventory payloads (.msapp) and oversized component files keep name and size; `read()` inflates on demand.
+  return {
+    name: member.name,
+    size: member.info.unpacked,
+    ...classified,
+    read: (limit = CANVAS_MSAPP_LIMIT) => {
+      if (member.info.unpacked > limit) throw new Error('Solution archive entry exceeds its read limit.');
+      if (member.error) throw member.error;
+      return inflateSolutionZipMember(bytes, member, { maxBytes: limit });
+    },
+  };
+}
+
+function xmlZipEntry(bytes, member, classified) {
+  if (member.info.unpacked > XML_LIMIT) throw new Error('Invalid or oversized solution XML entry.');
+  const xml = inflateSolutionZipMember(bytes, member, { maxBytes: XML_LIMIT, verifyCrc: false }).toString('utf8');
+  return { name: member.name, xml, ...classified };
 }
 
 // ---- Scan: inputs -> layers -> parsed schema documents (cached)
@@ -948,7 +1039,10 @@ export function readSolutionZip(buffer) {
  * root by definition-before-extension; `order: "derived"` applies that rule across
  * all roots (used for automatically discovered roots).
  */
-export async function scanSolutionSources(roots = [], { cache, cacheFile, order = 'explicit', previous } = {}) {
+/* NOSONAR */ export async function scanSolutionSources(
+  roots = [],
+  { cache, cacheFile, order = 'explicit', previous } = {},
+) {
   if (typeof roots === 'string') roots = [roots];
   cache ??= await SolutionFileCache.open(cacheFile ?? null);
   const diagnostics = [];
@@ -1031,7 +1125,9 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
           });
         }
       }
-    } else if (/\.zip$/i.test(absolute)) {
+      continue;
+    }
+    if (/\.zip$/i.test(absolute)) {
       inputs.push({ input: absolute, type: 'zip', trees: [layers.length] });
       layers.push({
         inputIndex,
@@ -1040,7 +1136,9 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
         type: 'zip',
         files: [{ path: absolute, kind: 'zip' }],
       });
-    } else if (/\.xml$/i.test(absolute)) {
+      continue;
+    }
+    if (/\.xml$/i.test(absolute)) {
       inputs.push({ input: absolute, type: 'xml', trees: [layers.length] });
       layers.push({
         inputIndex,
@@ -1049,15 +1147,15 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
         type: 'xml',
         files: [{ path: absolute, kind: classifySolutionPath(path.basename(absolute))?.kind ?? 'xml' }],
       });
-    } else {
-      inputs.push({ input: absolute, type: 'unsupported' });
-      diagnostics.push({
-        code: 'SOLUTION_ROOT_UNSUPPORTED',
-        severity: 'error',
-        source: absolute,
-        message: 'Use an unpacked solution directory, XML metadata or solution ZIP.',
-      });
+      continue;
     }
+    inputs.push({ input: absolute, type: 'unsupported' });
+    diagnostics.push({
+      code: 'SOLUTION_ROOT_UNSUPPORTED',
+      severity: 'error',
+      source: absolute,
+      message: 'Use an unpacked solution directory, XML metadata or solution ZIP.',
+    });
   }
   // Stat every candidate once; parsed results are reused for unchanged files.
   const allFiles = layers.flatMap((layer) => layer.files);
@@ -1085,8 +1183,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
     );
   // Inventory diagnostics describe listed components, not a read failure, so they do not prevent reuse.
   if (
-    previous &&
-    previous.order === order &&
+    previous?.order === order &&
     !diagnostics.length &&
     !previous.diagnostics.some((d) => !d.inventory) &&
     JSON.stringify(inputs) === JSON.stringify(previous.inputs) &&
@@ -1097,7 +1194,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
   layers.forEach((layer, discoveryIndex) => {
     layer.discoveryIndex = discoveryIndex;
   });
-  const parseFile = async (file) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const parseFile = async (file) => {
     if (file.error) {
       diagnostics.push({ code: 'SOLUTION_XML_READ_FAILED', severity: 'error', source: file.path, message: file.error });
       return [];
@@ -1169,7 +1266,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
         const { value, hash } = await cache.parse(
           file.path,
           SCHEMA_PARSER_ID + ':zip',
-          async (buffer) => {
+          /* NOSONAR: single-pass routine, splitting it would change shared state */ async (buffer) => {
             const parsed = [];
             for (const entry of readSolutionZip(buffer)) {
               if (entry.read) {
@@ -1183,22 +1280,25 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
                   failure = error;
                 }
                 // A corrupted payload stays listed by name and size; the cached record carries the read failure.
-                const facts = failure
-                  ? {
-                      inventory: [
-                        inventoryRecord({
-                          component: 'canvasapp',
-                          name: entry.componentName,
-                          msapp: { size: entry.size },
-                          diagnostics: [
-                            { code: 'SOLUTION_INVENTORY_READ_FAILED', severity: 'error', message: failure.message },
-                          ],
-                        }),
-                      ],
-                    }
-                  : msapp
-                    ? { inventory: [await canvasMsappRecord(bytes, { name: entry.componentName, size: entry.size })] }
-                    : parseSchemaDocument(null, entry);
+                let facts;
+                if (failure)
+                  facts = {
+                    inventory: [
+                      inventoryRecord({
+                        component: 'canvasapp',
+                        name: entry.componentName,
+                        msapp: { size: entry.size },
+                        diagnostics: [
+                          { code: 'SOLUTION_INVENTORY_READ_FAILED', severity: 'error', message: failure.message },
+                        ],
+                      }),
+                    ],
+                  };
+                else if (msapp)
+                  facts = {
+                    inventory: [await canvasMsappRecord(bytes, { name: entry.componentName, size: entry.size })],
+                  };
+                else facts = parseSchemaDocument(null, entry);
                 parsed.push({
                   name: entry.name,
                   kind: entry.kind,
@@ -1219,6 +1319,14 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
           { stamp: file.stamp },
           { binary: true },
         );
+        if (value.some((entry) => needsPluginConstructorSettings(entry.facts))) {
+          const entries = new Map(
+            readSolutionZip(await readPluginConstructorSource(file.path, hash)).map((entry) => [entry.name, entry]),
+          );
+          for (const entry of value)
+            if (needsPluginConstructorSettings(entry.facts))
+              restorePluginConstructorSettings(entry.facts, entries.get(entry.name)?.xml);
+        }
         return value.map((entry) => ({
           file: `${file.path}!/${entry.name}`,
           kind: entry.kind,
@@ -1232,17 +1340,13 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
         (text) => parseSchemaDocument(text, file),
         { stamp: file.stamp },
       );
+      if (needsPluginConstructorSettings(value))
+        restorePluginConstructorSettings(value, (await readPluginConstructorSource(file.path, hash)).toString('utf8'));
       return [{ file: file.path, kind: file.kind, facts: value, hash }];
     } catch (error) {
+      const errorCode = solutionReadErrorCode(file.kind);
       diagnostics.push({
-        code:
-          file.kind === 'formula'
-            ? 'SOLUTION_FORMULA_INVALID'
-            : file.kind === 'envvalue'
-              ? 'SOLUTION_ENVVAR_INVALID'
-              : file.kind === 'yaml'
-                ? 'SOLUTION_YAML_INVALID'
-                : 'SOLUTION_XML_INVALID',
+        code: errorCode,
         severity: 'error',
         source: file.path,
         // A YAML parser message quotes the offending lines: only its first line (position) is reported.
@@ -1280,15 +1384,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
   const canvas = effectiveInventory.filter((record) => record.component === 'canvasapp');
   // A metadata-only layer may rely on another selected layer's executable
   // payload. Diagnose the effective app rather than contradicting its host.
-  for (let index = diagnostics.length - 1; index >= 0; index--) {
-    const diagnostic = diagnostics[index];
-    if (diagnostic.code === 'SOLUTION_CANVAS_INVENTORY') diagnostics.splice(index, 1);
-    else if (
-      diagnostic.code === 'SOLUTION_CANVAS_MSAPP_MISSING' &&
-      canvas.some((record) => record.name === diagnostic.name && record.msapp)
-    )
-      diagnostics.splice(index, 1);
-  }
+  removeResolvedCanvasDiagnostics(diagnostics, canvas);
   for (const layer of ordered) {
     const records = canvas.filter((record) => record.layer === layer.index && record.level === 'inventory');
     if (records.length)
@@ -1312,6 +1408,25 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
   };
 }
 
+function removeResolvedCanvasDiagnostics(diagnostics, canvas) {
+  for (let index = diagnostics.length - 1; index >= 0; index--) {
+    const diagnostic = diagnostics[index];
+    if (
+      diagnostic.code === 'SOLUTION_CANVAS_INVENTORY' ||
+      (diagnostic.code === 'SOLUTION_CANVAS_MSAPP_MISSING' &&
+        canvas.some((record) => record.name === diagnostic.name && record.msapp))
+    )
+      diagnostics.splice(index, 1);
+  }
+}
+
+function solutionReadErrorCode(kind) {
+  if (kind === 'formula') return 'SOLUTION_FORMULA_INVALID';
+  if (kind === 'envvalue') return 'SOLUTION_ENVVAR_INVALID';
+  if (kind === 'yaml') return 'SOLUTION_YAML_INVALID';
+  return 'SOLUTION_XML_INVALID';
+}
+
 /**
  * The reload guard both hosts call before any state changes: a scan with an error-severity diagnostic the last accepted
  * scan did not have (a root renamed or unreadable mid-checkout, malformed XML) is rejected, so registrations, portal and
@@ -1324,7 +1439,7 @@ export function assertReloadableScan(previous, next) {
   const added = next.diagnostics.filter((d) => d.severity === 'error' && !known.has(key(d)));
   if (added.length)
     throw new DataError(
-      `Source reload rejected: ${added.map((d) => `${d.code} ${d.source ?? d.name ?? ''}`.trim()).join('; ')}`,
+      'Source reload rejected: ' + added.map((d) => (d.code + ' ' + (d.source ?? d.name ?? '')).trim()).join('; '),
       409,
       'SOURCE_RELOAD_REJECTED',
       { diagnostics: added.map(({ code, source, message }) => ({ code, source, message })) },
@@ -1358,6 +1473,13 @@ function layerInventory(layer, diagnostics) {
         ((key && record.id === key) || (schemaName && record.name.toLowerCase() === norm(schemaName))),
     );
   };
+  addLayerRootComponents(layer, records, find, format);
+  addMissingInventoryDependencies(layer, records, find);
+  reportLayerInventory(layer, records, diagnostics);
+  return records;
+}
+
+function addLayerRootComponents(layer, records, find, format) {
   for (const root of layer.solution?.rootComponents ?? []) {
     const component = COMPONENT_BY_TYPE[root.type];
     if (
@@ -1383,6 +1505,9 @@ function layerInventory(layer, diagnostics) {
         sourceMissing: true,
       });
   }
+}
+
+function addMissingInventoryDependencies(layer, records, find) {
   for (const { required, dependent } of layer.solution?.missingDependencies ?? []) {
     const record = dependent && find(dependent.type, dependent.schemaName, dependent.id);
     if (record)
@@ -1392,6 +1517,15 @@ function layerInventory(layer, diagnostics) {
         missing: true,
       });
   }
+}
+
+function reportLayerInventory(layer, records, diagnostics) {
+  reportEmptyYamlLayer(layer, records, diagnostics);
+  reportInventoryKinds(layer, records, diagnostics);
+  reportInventoryRecords(layer, records, diagnostics);
+}
+
+function reportEmptyYamlLayer(layer, records, diagnostics) {
   // A YAML solution whose component folders load nothing (no table, option set, relationship, environment variable,
   // connection reference, app or listed component) would run as an empty organization: it blocks strict preflight.
   const FACTS = [
@@ -1417,6 +1551,9 @@ function layerInventory(layer, diagnostics) {
       source: layer.manifestFile ?? layer.dir,
       message: `The YAML solution ${layer.name} loads no component from its folders; check solutioncomponents.yml and the component folders.`,
     });
+}
+
+function reportInventoryKinds(layer, records, diagnostics) {
   const kinds = new Map();
   for (const record of records)
     if (record.level === 'inventory')
@@ -1431,6 +1568,9 @@ function layerInventory(layer, diagnostics) {
       names: names.slice(0, 20),
       message: `${names.length} ${component} component(s) are listed as inventory; Paqvilo does not host or execute them.`,
     });
+}
+
+function reportInventoryRecords(layer, records, diagnostics) {
   for (const record of records) {
     if (record.component === 'canvasapp' && !record.msapp && !record.sourceMissing)
       diagnostics.push({
@@ -1443,7 +1583,6 @@ function layerInventory(layer, diagnostics) {
     for (const diagnostic of record.diagnostics ?? [])
       diagnostics.push({ ...diagnostic, inventory: true, layer: layer.name, name: record.name });
   }
-  return records;
 }
 
 /**
@@ -1549,6 +1688,7 @@ const SIMPLE_TYPES = {
   memo: 'textarea',
   ntext: 'textarea',
   bit: 'boolean',
+  boolean: 'boolean',
   picklist: 'number',
   state: 'number',
   status: 'number',
@@ -1563,7 +1703,72 @@ const SIMPLE_TYPES = {
 };
 
 /** Combine ordered layers: later layers replace earlier column definitions and table properties they export. */
-export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
+// The modules whose code builds a schema from scanned facts: a stored schema is reused only by the same code.
+const SCHEMA_BUILDERS = [
+  'solution-schema.mjs',
+  'solution-standard.mjs',
+  'solution-inventory.mjs',
+  'solution-formulas.mjs',
+  'solution-xml.mjs',
+  'exact-numeric.mjs',
+];
+let schemaBuilderDigest;
+const builderDigest = () => {
+  if (schemaBuilderDigest) return schemaBuilderDigest;
+  const hash = createHash('sha256').update(SCHEMA_PARSER_ID);
+  for (const name of SCHEMA_BUILDERS) hash.update('\0').update(readFileSync(new URL(name, import.meta.url)));
+  schemaBuilderDigest = hash.digest('hex');
+  return schemaBuilderDigest;
+};
+// Everything buildSolutionSchema reads besides the side files of contentFingerprint: the scan order, diagnostics and
+// inventory, each layer's identity, and each document's identity and content hash. Parsed facts are a function of a
+// document's bytes (hash), its classification and SCHEMA_PARSER_ID, so they are covered without being serialized.
+const schemaInputKey = (scan, lcid) => {
+  const hash = createHash('sha256').update(JSON.stringify([builderDigest(), lcid, scan.order ?? null]));
+  hash.update(JSON.stringify(scan.diagnostics ?? [])).update(JSON.stringify(scan.inventory ?? []));
+  for (const layer of scan.layers) {
+    const { files = [], documents = [], ...identity } = layer;
+    hash.update(JSON.stringify([identity, files.length]));
+    for (const document of documents) {
+      for (const key of Object.keys(document)) if (key !== 'facts') hash.update(JSON.stringify([key, document[key]]));
+      hash.update('\0');
+    }
+  }
+  return 'schema:' + hash.digest('hex');
+};
+// Stored parts: the root with empty maps, then one part per table, relationship and option set.
+const SPLIT_SCHEMA_MAPS = ['tables', 'relationships', 'optionSets'];
+const splitSchema = (schema) => {
+  const root = { ...schema };
+  for (const key of SPLIT_SCHEMA_MAPS) root[key] = {};
+  return [
+    root,
+    ...SPLIT_SCHEMA_MAPS.flatMap((key) => Object.entries(schema[key]).map(([name, value]) => [key, name, value])),
+  ];
+};
+const joinSchema = ([root, ...parts]) => {
+  for (const [key, name, value] of parts) root[key][name] = value;
+  return root;
+};
+
+/** The merged schema of a scan. With a persistent scan cache an unchanged scan reuses its stored schema across
+ * restarts (keyed by schemaInputKey); contentFingerprint is always recomputed, as side files are outside the scan.
+ * `sideHashes`: solutionSideFileHashes of the same layers, shared with the other importers of one load. */
+export function buildSolutionSchema(
+  scan,
+  { lcid = 1033, sideHashes = solutionSideFileHashes(scan.layers, scan.cache) } = {},
+) {
+  const schema = scan.cache?.file
+    ? scan.cache.deriveValue(schemaInputKey(scan, lcid), () => compileSolutionSchema(scan, { lcid }), {
+        split: splitSchema,
+        join: joinSchema,
+      })
+    : compileSolutionSchema(scan, { lcid });
+  schema.contentFingerprint = solutionContentFingerprint(scan.layers, { lcid, sideHashes });
+  return schema;
+}
+
+function compileSolutionSchema(scan, { lcid }) {
   const diagnostics = [...(scan.diagnostics ?? [])];
   const tables = {};
   const relationships = {};
@@ -1599,130 +1804,117 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           message:
             'The XML has unbalanced elements; unclosed elements were closed at their parent so metadata could be read. Correct the source file.',
         });
-      for (const entity of facts.entities ?? []) {
-        const table = ensureTable(entity.logicalName, 'solution');
-        table.origin = 'solution';
-        if (!table.sources.includes(doc.file)) table.sources.push(doc.file);
-        table.layers.push({
-          layer: layer.index,
-          solution: layer.name,
-          file: doc.file,
-          fullDefinition: Boolean(entity.fullDefinition),
-          attributes: entity.attributes.length,
-          ...(entity.unmodified ? { unmodified: true } : {}),
-        });
-        if (entity.schemaName) table.schemaName = entity.schemaName;
-        if (entity.entitySetName) {
-          if (table.entitySet && table.entitySet !== entity.entitySetName)
-            diagnostics.push({
-              code: 'SOLUTION_MAPPING_OVERRIDE',
-              entity: entity.logicalName,
-              source: doc.file,
-              previous: table.entitySet,
-              message: 'A later metadata layer changes the entity set name.',
-            });
-          table.entitySet = entity.entitySetName;
-          table.entitySetFile = doc.file;
-        }
-        if (entity.logicalCollectionName) table.logicalCollectionName = entity.logicalCollectionName;
-        if (entity.primaryIdAttribute) {
-          table.primaryIdAttribute = entity.primaryIdAttribute;
-          table.primaryIdFile = doc.file;
-        }
-        if (entity.primaryNameAttribute) {
-          table.primaryNameAttribute = entity.primaryNameAttribute;
-          table.primaryNameFile = doc.file;
-        }
-        if (entity.ownership) table.ownership = entity.ownership;
-        if (entity.tableType !== undefined) table.tableType = entity.tableType;
-        if (entity.grid !== undefined) table.grid = entity.grid;
-        if (entity.dataSourceId !== undefined) table.dataSourceId = entity.dataSourceId;
-        if (entity.dataProviderId !== undefined) table.dataProviderId = entity.dataProviderId;
-        if (entity.changeTrackingEnabled !== undefined) table.changeTrackingEnabled = entity.changeTrackingEnabled;
-        if (entity.isOptimisticConcurrencyEnabled !== undefined)
-          table.isOptimisticConcurrencyEnabled = entity.isOptimisticConcurrencyEnabled;
-        if (entity.isActivity !== undefined) table.isActivity = entity.isActivity;
-        if (entity.documentManagement !== undefined) {
-          table.documentManagement = entity.documentManagement;
-          table.documentManagementFile = doc.file;
-        }
-        if (entity.relatedNotes !== undefined) {
-          table.relatedNotes = entity.relatedNotes;
-          table.relatedNotesFile = doc.file;
-        }
-        if (entity.isIntersect) table.isIntersect = true;
-        if (entity.isVirtual !== undefined) table.isVirtual = entity.isVirtual;
-        Object.assign(table.labels, entity.labels);
-        Object.assign(table.collectionLabels, entity.collectionLabels);
-        if (entity.fullDefinition && !table.completeFile) table.completeFile = doc.file;
-        for (const attribute of entity.attributes) {
-          const resolved = resolveFormula(entity.logicalName, attribute, doc.file);
-          if (resolved.formulaDefinitionSource && !table.sources.includes(resolved.formulaDefinitionSource))
-            table.sources.push(resolved.formulaDefinitionSource);
-          const previous = table.attributes[attribute.name];
-          table.attributes[attribute.name] = {
-            ...resolved,
-            source: doc.file,
-            sources: [
-              ...new Set([
-                ...(previous?.sources ?? []),
-                doc.file,
-                ...(resolved.formulaDefinitionSource ? [resolved.formulaDefinitionSource] : []),
-              ]),
-            ],
-          };
-        }
-        // A later layer replaces the keys it exports again; other keys stay.
-        for (const key of entity.keys ?? []) {
-          table.keys ??= {};
-          const previous = table.keys[key.name];
-          table.keys[key.name] = { ...key, source: doc.file, sources: [...(previous?.sources ?? []), doc.file] };
-        }
-      }
-      for (const relationship of facts.relationships ?? []) {
-        const key = relationship.schemaName.toLowerCase();
-        const previous = relationships[key];
-        relationships[key] = { ...relationship, source: doc.file, sources: [...(previous?.sources ?? []), doc.file] };
-      }
-      for (const optionSet of facts.optionSets ?? [])
-        optionSets[norm(optionSet.name)] = { ...optionSet, source: doc.file };
-      for (const definition of facts.envDefinitions ?? [])
-        envDefinitions[norm(definition.schemaName)] = { ...definition, source: doc.file, layer: layer.index };
-      for (const value of facts.envValues ?? [])
-        envValues[norm(value.schemaName)] = { ...value, source: doc.file, layer: layer.index };
-      // Solution connection references (Customizations.xml <connectionreferences>, YAML connectionreferences/): the later
-      // layer replaces the fields it exports. Deployment profiles bind their connection ids (solution-data.mjs).
-      for (const reference of facts.connectionReferences ?? []) {
-        const key = norm(reference.logicalName);
-        connectionReferences[key] = {
-          ...connectionReferences[key],
-          ...reference,
-          source: doc.file,
-          layer: layer.index,
-        };
-      }
+      mergeSolutionDocument(layer, doc, resolveFormula, {
+        diagnostics,
+        ensureTable,
+        relationships,
+        optionSets,
+        envDefinitions,
+        envValues,
+        connectionReferences,
+      });
     }
   }
-  // Environment variables are rows of two documented system tables.
-  if (Object.keys(envDefinitions).length)
-    for (const [name, columns] of Object.entries(ENVIRONMENT_TABLE_COLUMNS)) {
-      const table = ensureTable(name, 'dataverse-reference');
-      const reference = standardTable(name).reference;
-      if (!table.sources.includes(reference)) table.sources.push(reference);
-      for (const column of columns) {
-        const [attribute, type, maxLength] = column.split(':');
-        table.attributes[attribute] ??= compact({
-          name: attribute,
-          type,
-          maxLength: num(maxLength),
-          labels: {},
-          source: reference,
-          sources: [reference],
-        });
-      }
+  addEnvironmentTables(envDefinitions, ensureTable);
+  const standardCount = addStandardRelationships(scan, tables, relationships);
+  // Notes: enabling them on a table (HasRelatedNotes) creates the one-to-many relationship
+  // <table>_Annotations from the table to annotation.objectid (navigation objectid_<table>),
+  // the relationship that notes table permissions name (adx_parentrelationship); exports omit it.
+  const annotationCount = addInferredTableRelationships(tables, relationships, {
+    enabled: 'relatedNotes',
+    suffix: '_Annotations',
+    referencingEntity: 'annotation',
+    referencingAttribute: 'objectid',
+    navigationPrefix: 'objectid_',
+    sourceField: 'relatedNotesFile',
+    marker: 'relatedNotes',
+  });
+  // Document management: enabling it on a table (IsDocumentManagementEnabled) creates the
+  // one-to-many relationship <table>_SharePointDocumentLocations from the table to
+  // sharepointdocumentlocation.regardingobjectid (navigation regardingobjectid_<table>), as
+  // the Learn table references show for knowledgearticle, mspp_website and
+  // adx_portalcomment. Tables that already have such a relationship keep theirs.
+  const documentLocationCount = addInferredTableRelationships(tables, relationships, {
+    enabled: 'documentManagement',
+    suffix: '_SharePointDocumentLocations',
+    referencingEntity: 'sharepointdocumentlocation',
+    referencingAttribute: 'regardingobjectid',
+    navigationPrefix: 'regardingobjectid_',
+    sourceField: 'documentManagementFile',
+    marker: 'documentManagement',
+  });
+  registerRelationshipTables(relationships, ensureTable);
+  resolveTableIdentities(tables);
+  resolveRelationshipDefaults(relationships, tables, diagnostics);
+  const targets = relationshipTargets(relationships);
+  const environmentVariables = environmentVariableFacts(envDefinitions, envValues, diagnostics, lcid);
+  return {
+    lcid,
+    layers: scan.layers.map((layer) =>
+      compact({
+        index: layer.index,
+        input: layer.input,
+        dir: layer.dir,
+        type: layer.type,
+        solution: layer.name,
+        version: layer.solution?.version,
+        managed: layer.solution?.managed,
+        publisherPrefix: layer.solution?.publisherPrefix,
+        files: layer.files.length,
+        documents: layer.documents.length,
+      }),
+    ),
+    order: scan.order,
+    tables,
+    relationships,
+    optionSets,
+    environmentVariables,
+    connectionReferences: Object.values(connectionReferences).sort((a, b) =>
+      compare(norm(a.logicalName), norm(b.logicalName)),
+    ),
+    targets: Object.fromEntries(
+      Object.entries(targets).map(([key, set]) => [
+        key,
+        [...set].sort(/* NOSONAR: preserve default string coercion */),
+      ]),
+    ),
+    diagnostics,
+    standardRelationships: standardCount,
+    documentLocationRelationships: documentLocationCount,
+    annotationRelationships: annotationCount,
+    fingerprint: fingerprint.digest('hex'),
+    // Set by buildSolutionSchema, which is the only caller: a fingerprint computed here would be overwritten there.
+    contentFingerprint: null,
+    ...securityDefinitions(scan.inventory ?? [], {
+      managed: new Set(
+        scan.layers.filter((l) => String(l.solution?.managed) === '1').map((l) => String(l.name).toLowerCase()),
+      ),
+    }),
+  };
+}
+
+function addEnvironmentTables(envDefinitions, ensureTable) {
+  if (!Object.keys(envDefinitions).length) return;
+  for (const [name, columns] of Object.entries(ENVIRONMENT_TABLE_COLUMNS)) {
+    const table = ensureTable(name, 'dataverse-reference');
+    const reference = standardTable(name).reference;
+    if (!table.sources.includes(reference)) table.sources.push(reference);
+    for (const column of columns) {
+      const [attribute, type, maxLength] = column.split(':');
+      table.attributes[attribute] ??= compact({
+        name: attribute,
+        type,
+        maxLength: num(maxLength),
+        labels: {},
+        source: reference,
+        sources: [reference],
+      });
     }
-  // Built-in relationships omitted by partial exports (documented; provenance distinct).
-  let standardCount = 0;
+  }
+}
+
+function addStandardRelationships(scan, tables, relationships) {
+  let count = 0;
   if (scan.layers.length)
     for (const relationship of standardRelationships()) {
       const key = relationship.schemaName.toLowerCase();
@@ -1732,69 +1924,43 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           : [relationship.entity1, relationship.entity2];
       if (!relationships[key] && sides.some((side) => tables[side])) {
         relationships[key] = { ...relationship, sources: [relationship.source] };
-        standardCount++;
+        count++;
       }
     }
-  // Notes: enabling them on a table (HasRelatedNotes) creates the one-to-many relationship
-  // <table>_Annotations from the table to annotation.objectid (navigation objectid_<table>),
-  // the relationship that notes table permissions name (adx_parentrelationship); exports omit it.
-  let annotationCount = 0;
+  return count;
+}
+
+function addInferredTableRelationships(tables, relationships, config) {
+  let count = 0;
   for (const table of Object.values(tables)) {
-    if (table.relatedNotes !== true) continue;
-    const schemaName = `${table.logicalName}_Annotations`;
+    if (table[config.enabled] !== true) continue;
+    const schemaName = `${table.logicalName}${config.suffix}`;
     const existing = Object.values(relationships).some(
       (relationship) =>
         relationship.type === 'one-to-many' &&
-        relationship.referencingEntity === 'annotation' &&
-        relationship.referencingAttribute === 'objectid' &&
+        relationship.referencingEntity === config.referencingEntity &&
+        relationship.referencingAttribute === config.referencingAttribute &&
         relationship.referencedEntity === table.logicalName,
     );
     if (existing || relationships[schemaName.toLowerCase()]) continue;
     relationships[schemaName.toLowerCase()] = {
       schemaName,
       type: 'one-to-many',
-      referencingEntity: 'annotation',
+      referencingEntity: config.referencingEntity,
       referencedEntity: table.logicalName,
-      referencingAttribute: 'objectid',
-      referencingNavigation: `objectid_${table.logicalName}`,
+      referencingAttribute: config.referencingAttribute,
+      referencingNavigation: `${config.navigationPrefix}${table.logicalName}`,
       referencedNavigation: schemaName,
-      source: table.relatedNotesFile,
-      sources: [table.relatedNotesFile],
-      relatedNotes: true,
+      source: table[config.sourceField],
+      sources: [table[config.sourceField]],
+      [config.marker]: true,
     };
-    annotationCount++;
+    count++;
   }
-  // Document management: enabling it on a table (IsDocumentManagementEnabled) creates the
-  // one-to-many relationship <table>_SharePointDocumentLocations from the table to
-  // sharepointdocumentlocation.regardingobjectid (navigation regardingobjectid_<table>), as
-  // the Learn table references show for knowledgearticle, mspp_website and
-  // adx_portalcomment. Tables that already have such a relationship keep theirs.
-  let documentLocationCount = 0;
-  for (const table of Object.values(tables)) {
-    if (table.documentManagement !== true) continue;
-    const schemaName = `${table.logicalName}_SharePointDocumentLocations`;
-    const existing = Object.values(relationships).some(
-      (relationship) =>
-        relationship.type === 'one-to-many' &&
-        relationship.referencingEntity === 'sharepointdocumentlocation' &&
-        relationship.referencingAttribute === 'regardingobjectid' &&
-        relationship.referencedEntity === table.logicalName,
-    );
-    if (existing || relationships[schemaName.toLowerCase()]) continue;
-    relationships[schemaName.toLowerCase()] = {
-      schemaName,
-      type: 'one-to-many',
-      referencingEntity: 'sharepointdocumentlocation',
-      referencedEntity: table.logicalName,
-      referencingAttribute: 'regardingobjectid',
-      referencingNavigation: `regardingobjectid_${table.logicalName}`,
-      referencedNavigation: schemaName,
-      source: table.documentManagementFile,
-      sources: [table.documentManagementFile],
-      documentManagement: true,
-    };
-    documentLocationCount++;
-  }
+  return count;
+}
+
+function registerRelationshipTables(relationships, ensureTable) {
   for (const relationship of Object.values(relationships)) {
     if (relationship.type === 'one-to-many') {
       ensureTable(relationship.referencingEntity, 'relationship');
@@ -1805,109 +1971,139 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
       ensureTable(relationship.intersectEntity, 'intersect').isIntersect = true;
     }
   }
-  // Table identity: entity set, primary columns and completeness.
-  for (const table of Object.values(tables)) {
-    const standard = standardTable(table.logicalName);
-    if (table.entitySet) table.entitySetSource = 'solution';
-    else if (table.logicalCollectionName) {
-      table.entitySet = table.logicalCollectionName;
-      table.entitySetSource = 'solution-collection-name';
-    } else if (standard) {
-      table.entitySet = standard.entitySet;
-      table.entitySetSource = 'dataverse-reference';
-      table.entitySetReference = standard.reference;
-    } else {
-      table.entitySet = pluralizeEntitySetName(table.logicalName);
-      table.entitySetSource = 'pluralized';
-    }
-    if (table.primaryIdAttribute) table.primaryIdSource = 'solution';
-    else if (standard) {
-      table.primaryIdAttribute = standard.primaryIdAttribute;
-      table.primaryIdSource = 'dataverse-reference';
-    } else if (table.isActivity) {
-      table.primaryIdAttribute = 'activityid';
-      table.primaryIdSource = 'solution-activity';
-    } else {
-      table.primaryIdAttribute = table.logicalName + 'id';
-      table.primaryIdSource = 'convention';
-    }
-    if (table.primaryNameAttribute) table.primaryNameSource = 'solution';
-    else if (standard?.primaryNameAttribute) {
-      table.primaryNameAttribute = standard.primaryNameAttribute;
-      table.primaryNameSource = 'dataverse-reference';
-    }
-    table.schemaComplete = Boolean(table.completeFile);
-    table.completeness = table.schemaComplete
-      ? {
-          complete: true,
-          source: table.completeFile,
-          reason: table.isVirtual
-            ? 'A selected layer exports this virtual table with its primary key; virtual tables have no standard system columns.'
-            : 'A selected layer exports the primary key and every standard system column of this table.',
-        }
-      : {
-          complete: false,
-          reason: table.layers.length
-            ? table.layers.every((entry) => entry.unmodified)
-              ? 'The selected layers include this table unmodified, without its columns; its columns are unknown locally.'
-              : "The selected layers export only part of this table's columns (no layer contains the primary key and all standard system columns)."
-            : "No selected layer exports this table's definition; it is known only from relationships.",
-        };
-  }
-  // Relationship defaults that depend on resolved primary keys.
-  for (const relationship of Object.values(relationships)) {
-    if (relationship.type === 'one-to-many') {
-      relationship.referencedAttribute ??= tables[relationship.referencedEntity].primaryIdAttribute;
-      relationship.referencingNavigation ??=
-        multiTableNavigation(relationship) ??
-        relationship.referencingAttributeSchemaName ??
-        relationship.referencingAttribute;
-      relationship.referencedNavigation ??= relationship.schemaName;
-    } else {
-      const self = relationship.entity1 === relationship.entity2;
-      if (!relationship.attribute1 || !relationship.attribute2) {
-        if (self)
-          diagnostics.push({
-            code: 'SOLUTION_SELF_INTERSECTION_INFERRED',
-            entity: relationship.entity1,
-            source: relationship.source,
-            relationship: relationship.schemaName,
-            message:
-              'Self-reference intersection columns use the idone/idtwo convention because this XML omits explicit attributes; verify against source FetchXML or live metadata.',
-          });
-        relationship.intersectAttributesInferred = true;
+}
+
+function resolveTableIdentities(tables) {
+  for (const table of Object.values(tables)) resolveTableIdentity(table);
+}
+
+function resolveTableIdentity(table) {
+  const standard = standardTable(table.logicalName);
+  resolveEntitySet(table, standard);
+  resolvePrimaryId(table, standard);
+  resolvePrimaryName(table, standard);
+  table.schemaComplete = Boolean(table.completeFile);
+  table.completeness = table.schemaComplete
+    ? {
+        complete: true,
+        source: table.completeFile,
+        reason: table.isVirtual
+          ? 'A selected layer exports this virtual table with its primary key; virtual tables have no standard system columns.'
+          : 'A selected layer exports the primary key and every standard system column of this table.',
       }
-      const pk1 = tables[relationship.entity1].primaryIdAttribute,
-        pk2 = tables[relationship.entity2].primaryIdAttribute;
-      relationship.attribute1 ??= self ? pk1 + 'one' : pk1;
-      relationship.attribute2 ??= self ? pk2 + 'two' : pk2;
-      relationship.navigation1 ??= relationship.schemaName;
-      relationship.navigation2 ??= relationship.schemaName;
-      const intersect = tables[relationship.intersectEntity];
-      for (const [attribute, target] of [
-        [relationship.attribute1, relationship.entity1],
-        [relationship.attribute2, relationship.entity2],
-      ])
-        intersect.attributes[attribute] ??= {
-          name: attribute,
-          type: 'uniqueidentifier',
-          requiredLevel: 'systemrequired',
-          labels: {},
-          intersectTarget: target,
-          source: relationship.source,
-          sources: [relationship.source],
-        };
-    }
+    : { complete: false, reason: tableCompletenessReason(table) };
+}
+
+function resolveEntitySet(table, standard) {
+  if (table.entitySet) table.entitySetSource = 'solution';
+  else if (table.logicalCollectionName) {
+    table.entitySet = table.logicalCollectionName;
+    table.entitySetSource = 'solution-collection-name';
+  } else if (standard) {
+    table.entitySet = standard.entitySet;
+    table.entitySetSource = 'dataverse-reference';
+    table.entitySetReference = standard.reference;
+  } else {
+    table.entitySet = pluralizeEntitySetName(table.logicalName);
+    table.entitySetSource = 'pluralized';
   }
-  // Lookup targets come from the relationships that use each lookup column.
+}
+
+function resolvePrimaryId(table, standard) {
+  if (table.primaryIdAttribute) table.primaryIdSource = 'solution';
+  else if (standard) {
+    table.primaryIdAttribute = standard.primaryIdAttribute;
+    table.primaryIdSource = 'dataverse-reference';
+  } else if (table.isActivity) {
+    table.primaryIdAttribute = 'activityid';
+    table.primaryIdSource = 'solution-activity';
+  } else {
+    table.primaryIdAttribute = table.logicalName + 'id';
+    table.primaryIdSource = 'convention';
+  }
+}
+
+function resolvePrimaryName(table, standard) {
+  if (table.primaryNameAttribute) table.primaryNameSource = 'solution';
+  else if (standard?.primaryNameAttribute) {
+    table.primaryNameAttribute = standard.primaryNameAttribute;
+    table.primaryNameSource = 'dataverse-reference';
+  }
+}
+
+function tableCompletenessReason(table) {
+  if (!table.layers.length)
+    return "No selected layer exports this table's definition; it is known only from relationships.";
+  if (table.layers.every((entry) => entry.unmodified))
+    return 'The selected layers include this table unmodified, without its columns; its columns are unknown locally.';
+  return "The selected layers export only part of this table's columns (no layer contains the primary key and all standard system columns).";
+}
+
+function resolveRelationshipDefaults(relationships, tables, diagnostics) {
+  for (const relationship of Object.values(relationships)) {
+    if (relationship.type === 'one-to-many') resolveOneToManyDefaults(relationship, tables);
+    else resolveManyToManyDefaults(relationship, tables, diagnostics);
+  }
+}
+
+function resolveOneToManyDefaults(relationship, tables) {
+  relationship.referencedAttribute ??= tables[relationship.referencedEntity].primaryIdAttribute;
+  relationship.referencingNavigation ??=
+    multiTableNavigation(relationship) ??
+    relationship.referencingAttributeSchemaName ??
+    relationship.referencingAttribute;
+  relationship.referencedNavigation ??= relationship.schemaName;
+}
+
+function resolveManyToManyDefaults(relationship, tables, diagnostics) {
+  const self = relationship.entity1 === relationship.entity2;
+  if (!relationship.attribute1 || !relationship.attribute2) {
+    if (self)
+      diagnostics.push({
+        code: 'SOLUTION_SELF_INTERSECTION_INFERRED',
+        entity: relationship.entity1,
+        source: relationship.source,
+        relationship: relationship.schemaName,
+        message:
+          'Self-reference intersection columns use the idone/idtwo convention because this XML omits explicit attributes; verify against source FetchXML or live metadata.',
+      });
+    relationship.intersectAttributesInferred = true;
+  }
+  const pk1 = tables[relationship.entity1].primaryIdAttribute,
+    pk2 = tables[relationship.entity2].primaryIdAttribute;
+  relationship.attribute1 ??= self ? pk1 + 'one' : pk1;
+  relationship.attribute2 ??= self ? pk2 + 'two' : pk2;
+  relationship.navigation1 ??= relationship.schemaName;
+  relationship.navigation2 ??= relationship.schemaName;
+  const intersect = tables[relationship.intersectEntity];
+  for (const [attribute, target] of [
+    [relationship.attribute1, relationship.entity1],
+    [relationship.attribute2, relationship.entity2],
+  ])
+    intersect.attributes[attribute] ??= {
+      name: attribute,
+      type: 'uniqueidentifier',
+      requiredLevel: 'systemrequired',
+      labels: {},
+      intersectTarget: target,
+      source: relationship.source,
+      sources: [relationship.source],
+    };
+}
+
+function relationshipTargets(relationships) {
   const targets = {};
-  for (const relationship of Object.values(relationships))
-    if (relationship.type === 'one-to-many') {
-      const key = relationship.referencingEntity + '/' + relationship.referencingAttribute;
-      (targets[key] ??= new Set()).add(relationship.referencedEntity);
-    }
-  // Environment variables (definitions joined with optional exported values).
-  const environmentVariables = Object.values(envDefinitions)
+  for (const relationship of Object.values(relationships)) {
+    if (relationship.type !== 'one-to-many') continue;
+    const key = relationship.referencingEntity + '/' + relationship.referencingAttribute;
+    if (!targets[key]) targets[key] = new Set();
+    targets[key].add(relationship.referencedEntity);
+  }
+  return targets;
+}
+
+function environmentVariableFacts(envDefinitions, envValues, diagnostics, lcid) {
+  const variables = Object.values(envDefinitions)
     .sort((a, b) => compare(norm(a.schemaName), norm(b.schemaName)))
     .map((definition) => {
       const value = envValues[norm(definition.schemaName)];
@@ -1934,43 +2130,135 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         schemaName: value.schemaName,
         message: 'An exported environment variable value has no definition in the selected layers.',
       });
-  return {
-    lcid,
-    layers: scan.layers.map((layer) =>
-      compact({
-        index: layer.index,
-        input: layer.input,
-        dir: layer.dir,
-        type: layer.type,
-        solution: layer.name,
-        version: layer.solution?.version,
-        managed: layer.solution?.managed,
-        publisherPrefix: layer.solution?.publisherPrefix,
-        files: layer.files.length,
-        documents: layer.documents.length,
-      }),
-    ),
-    order: scan.order,
-    tables,
-    relationships,
-    optionSets,
-    environmentVariables,
-    connectionReferences: Object.values(connectionReferences).sort((a, b) =>
-      compare(norm(a.logicalName), norm(b.logicalName)),
-    ),
-    targets: Object.fromEntries(Object.entries(targets).map(([key, set]) => [key, [...set].sort()])),
-    diagnostics,
-    standardRelationships: standardCount,
-    documentLocationRelationships: documentLocationCount,
-    annotationRelationships: annotationCount,
-    fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid }),
-    ...securityDefinitions(scan.inventory ?? [], {
-      managed: new Set(
-        scan.layers.filter((l) => String(l.solution?.managed) === '1').map((l) => String(l.name).toLowerCase()),
-      ),
-    }),
-  };
+  return variables;
+}
+
+function mergeSolutionDocument(layer, doc, resolveFormula, state) {
+  const { facts } = doc;
+  for (const entity of facts.entities ?? []) mergeEntityFacts(entity, layer, doc, resolveFormula, state);
+  for (const relationship of facts.relationships ?? []) {
+    const key = relationship.schemaName.toLowerCase();
+    const previous = state.relationships[key];
+    state.relationships[key] = {
+      ...relationship,
+      source: doc.file,
+      sources: [...(previous?.sources ?? []), doc.file],
+    };
+  }
+  for (const optionSet of facts.optionSets ?? [])
+    state.optionSets[norm(optionSet.name)] = { ...optionSet, source: doc.file };
+  for (const definition of facts.envDefinitions ?? [])
+    state.envDefinitions[norm(definition.schemaName)] = { ...definition, source: doc.file, layer: layer.index };
+  for (const value of facts.envValues ?? [])
+    state.envValues[norm(value.schemaName)] = { ...value, source: doc.file, layer: layer.index };
+  // Solution connection references (Customizations.xml <connectionreferences>, YAML connectionreferences/): the later
+  // layer replaces the fields it exports. Deployment profiles bind their connection ids (solution-data.mjs).
+  for (const reference of facts.connectionReferences ?? []) {
+    const key = norm(reference.logicalName);
+    state.connectionReferences[key] = {
+      ...state.connectionReferences[key],
+      ...reference,
+      source: doc.file,
+      layer: layer.index,
+    };
+  }
+}
+
+function mergeEntityFacts(entity, layer, doc, resolveFormula, { ensureTable, diagnostics }) {
+  const table = ensureTable(entity.logicalName, 'solution');
+  table.origin = 'solution';
+  if (!table.sources.includes(doc.file)) table.sources.push(doc.file);
+  table.layers.push({
+    layer: layer.index,
+    solution: layer.name,
+    file: doc.file,
+    fullDefinition: Boolean(entity.fullDefinition),
+    attributes: entity.attributes.length,
+    ...(entity.unmodified ? { unmodified: true } : {}),
+  });
+  mergeEntityNames(table, entity, doc, diagnostics);
+  mergeEntityProperties(table, entity, doc.file);
+  Object.assign(table.labels, entity.labels);
+  Object.assign(table.collectionLabels, entity.collectionLabels);
+  if (entity.fullDefinition && !table.completeFile) table.completeFile = doc.file;
+  mergeEntityAttributes(table, entity, doc.file, resolveFormula);
+  mergeEntityKeys(table, entity, doc.file);
+}
+
+function mergeEntityNames(table, entity, doc, diagnostics) {
+  if (entity.schemaName) table.schemaName = entity.schemaName;
+  if (entity.entitySetName) {
+    if (table.entitySet && table.entitySet !== entity.entitySetName)
+      diagnostics.push({
+        code: 'SOLUTION_MAPPING_OVERRIDE',
+        entity: entity.logicalName,
+        source: doc.file,
+        previous: table.entitySet,
+        message: 'A later metadata layer changes the entity set name.',
+      });
+    table.entitySet = entity.entitySetName;
+    table.entitySetFile = doc.file;
+  }
+  if (entity.logicalCollectionName) table.logicalCollectionName = entity.logicalCollectionName;
+  if (entity.primaryIdAttribute) {
+    table.primaryIdAttribute = entity.primaryIdAttribute;
+    table.primaryIdFile = doc.file;
+  }
+  if (entity.primaryNameAttribute) {
+    table.primaryNameAttribute = entity.primaryNameAttribute;
+    table.primaryNameFile = doc.file;
+  }
+}
+
+function mergeEntityProperties(table, entity, file) {
+  if (entity.ownership) table.ownership = entity.ownership;
+  if (entity.tableType !== undefined) table.tableType = entity.tableType;
+  if (entity.grid !== undefined) table.grid = entity.grid;
+  if (entity.dataSourceId !== undefined) table.dataSourceId = entity.dataSourceId;
+  if (entity.dataProviderId !== undefined) table.dataProviderId = entity.dataProviderId;
+  if (entity.changeTrackingEnabled !== undefined) table.changeTrackingEnabled = entity.changeTrackingEnabled;
+  if (entity.isOptimisticConcurrencyEnabled !== undefined)
+    table.isOptimisticConcurrencyEnabled = entity.isOptimisticConcurrencyEnabled;
+  if (entity.isActivity !== undefined) table.isActivity = entity.isActivity;
+  if (entity.documentManagement !== undefined) {
+    table.documentManagement = entity.documentManagement;
+    table.documentManagementFile = file;
+  }
+  if (entity.relatedNotes !== undefined) {
+    table.relatedNotes = entity.relatedNotes;
+    table.relatedNotesFile = file;
+  }
+  if (entity.isIntersect) table.isIntersect = true;
+  if (entity.isVirtual !== undefined) table.isVirtual = entity.isVirtual;
+}
+
+function mergeEntityAttributes(table, entity, file, resolveFormula) {
+  for (const attribute of entity.attributes) {
+    const resolved = resolveFormula(entity.logicalName, attribute, file);
+    if (resolved.formulaDefinitionSource && !table.sources.includes(resolved.formulaDefinitionSource))
+      table.sources.push(resolved.formulaDefinitionSource);
+    const previous = table.attributes[attribute.name];
+    table.attributes[attribute.name] = {
+      ...resolved,
+      source: file,
+      sources: [
+        ...new Set([
+          ...(previous?.sources ?? []),
+          file,
+          ...(resolved.formulaDefinitionSource ? [resolved.formulaDefinitionSource] : []),
+        ]),
+      ],
+    };
+  }
+}
+
+function mergeEntityKeys(table, entity, file) {
+  // A later layer replaces the keys it exports again; other keys stay.
+  for (const key of entity.keys ?? []) {
+    table.keys ??= {};
+    const previous = table.keys[key.name];
+    table.keys[key.name] = { ...key, source: file, sources: [...(previous?.sources ?? []), file] };
+  }
 }
 
 /**
@@ -1980,11 +2268,11 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
 function columnMetadataFacts(tableName, attribute, globalSet) {
   if (attribute.implicit || attribute.intersectTarget) return undefined;
   const {
-    source: _s,
-    sources: _ss,
-    name: _n,
-    formulaDefinitionSource: _fs,
-    formulaDefinitionFileName: _ff,
+    source: _s, // NOSONAR: binding is excluded from the rest object or is a placeholder
+    sources: _ss, // NOSONAR: binding is excluded from the rest object or is a placeholder
+    name: _n, // NOSONAR: binding is excluded from the rest object or is a placeholder
+    formulaDefinitionSource: _fs, // NOSONAR: binding is excluded from the rest object or is a placeholder
+    formulaDefinitionFileName: _ff, // NOSONAR: binding is excluded from the rest object or is a placeholder
     optionSet,
     ...facts
   } = attribute;
@@ -2003,27 +2291,11 @@ export function fieldDefinition(
 ) {
   const table = schema.tables[tableName];
   const labelText = (labels, fallback) => pickLabel(labels, lcid) ?? fallback;
-  const states = (attribute.optionSet?.states ?? []).map((o) => ({
-    value: o.value,
-    label: labelText(o.labels, String(o.value)),
-    defaultStatus: o.defaultStatus,
-    invariantName: o.invariantName,
-  }));
-  const statuses = (attribute.optionSet?.statuses ?? []).map((o) => ({
-    value: o.value,
-    label: labelText(o.labels, String(o.value)),
-    state: o.state,
-  }));
-  const options = (attribute.optionSet?.options ?? [])
-    .map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) }))
-    .concat(states, statuses);
+  const { states, statuses, options } = fieldOptions(attribute, labelText);
   const globalSet = attribute.optionSetName
     ? (schema.optionSets[norm(attribute.optionSetName)] ?? standardOptionSet(attribute.optionSetName))
     : null;
-  if (!options.length && globalSet)
-    options.push(
-      ...(globalSet.options ?? []).map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) })),
-    );
+  appendGlobalOptions(options, globalSet, labelText);
   if (attribute.optionSetName && !options.length && !globalSet?.dynamic)
     diagnostics?.push({
       code: 'SOLUTION_OPTIONSET_UNRESOLVED',
@@ -2034,49 +2306,17 @@ export function fieldDefinition(
       message: `Global option set ${attribute.optionSetName} is not available in the selected solution roots.`,
     });
   const type = !options.length && globalSet?.dynamic ? 'entityname' : (attribute.type ?? 'nvarchar');
-  const sourceLookupTargets =
-    schema.targets[tableName + '/' + attribute.name] ??
-    (attribute.intersectTarget ? [attribute.intersectTarget] : undefined) ??
-    (['lookup', 'owner'].includes(type) ? STANDARD_LOOKUP_TARGETS[attribute.name] : undefined);
-  // Solution relationships can name the abstract owner table. Owner columns
-  // resolve to the concrete user/team targets, unlike ordinary lookup columns.
-  const lookupTargets =
-    type === 'owner' && sourceLookupTargets?.includes('owner')
-      ? [
-          ...new Set(
-            sourceLookupTargets.flatMap((target) => (target === 'owner' ? STANDARD_LOOKUP_TARGETS.ownerid : [target])),
-          ),
-        ]
-      : sourceLookupTargets;
+  const lookupTargets = lookupTargetsFor(schema, tableName, attribute, type);
   const appDefault = attribute.appDefaultValue;
-  const defaultValue =
-    type === 'bit' && /^[01]$/.test(appDefault ?? '')
-      ? appDefault === '1'
-      : ['picklist', 'multiselectpicklist', 'state', 'status'].includes(type) &&
-          /^-?\d+$/.test(appDefault ?? '') &&
-          appDefault !== '-1'
-        ? Number(appDefault)
-        : undefined;
-  const optionSetType = attribute.optionSet
-    ? ({ bit: 'boolean', state: 'state', status: 'status' }[attribute.optionSet.type] ?? 'local')
-    : globalSet || attribute.optionSetName
-      ? 'global'
-      : undefined;
+  const defaultValue = fieldDefault(type, appDefault);
+  const optionSetType = fieldOptionSetType(attribute, globalSet);
   return {
     name: attribute.name,
     ...(attribute.validForCreate !== undefined ? { validForCreate: attribute.validForCreate } : {}),
     ...(attribute.validForUpdate !== undefined ? { validForUpdate: attribute.validForUpdate } : {}),
     label: labelText(attribute.labels, attribute.name),
     dataverseType: type,
-    ...(attribute.optionSetName
-      ? {
-          optionSetName: attribute.optionSetName,
-          optionSetSource: globalSet?.source,
-          ...(globalSet?.sourceKind ? { optionSetSourceKind: globalSet.sourceKind } : {}),
-          ...(!attribute.optionSet?.options?.length && globalSet?.open ? { optionSetOpen: true } : {}),
-          ...(globalSet?.dynamic ? { optionSetDynamic: true } : {}),
-        }
-      : {}),
+    ...fieldOptionNameFacts(attribute, globalSet),
     ...(states.length ? { states } : {}),
     ...(statuses.length ? { statuses } : {}),
     type: SIMPLE_TYPES[type] ?? 'text',
@@ -2102,15 +2342,101 @@ export function fieldDefinition(
       isPrimaryName: table?.primaryNameAttribute === attribute.name || undefined,
       attributeOf: attribute.attributeOf,
       implicit: attribute.implicit,
-      ...(provenance
-        ? {
-            source: attribute.source,
-            sources: attribute.sources?.length > 1 ? attribute.sources : undefined,
-            columnMetadata: columnMetadataFacts(tableName, attribute, globalSet),
-          }
-        : {}),
+      ...(provenance ? fieldProvenanceFacts(tableName, attribute, globalSet) : {}),
     }),
   };
+}
+
+function fieldOptionNameFacts(attribute, globalSet) {
+  if (!attribute.optionSetName) return {};
+  return {
+    optionSetName: attribute.optionSetName,
+    optionSetSource: globalSet?.source,
+    ...(globalSet?.sourceKind ? { optionSetSourceKind: globalSet.sourceKind } : {}),
+    ...(!attribute.optionSet?.options?.length && globalSet?.open ? { optionSetOpen: true } : {}),
+    ...(globalSet?.dynamic ? { optionSetDynamic: true } : {}),
+  };
+}
+
+function fieldProvenanceFacts(tableName, attribute, globalSet) {
+  return {
+    source: attribute.source,
+    sources: attribute.sources?.length > 1 ? attribute.sources : undefined,
+    columnMetadata: columnMetadataFacts(tableName, attribute, globalSet),
+  };
+}
+
+function fieldOptions(attribute, labelText) {
+  const states = (attribute.optionSet?.states ?? []).map((o) => ({
+    value: o.value,
+    label: labelText(o.labels, String(o.value)),
+    defaultStatus: o.defaultStatus,
+    invariantName: o.invariantName,
+  }));
+  const statuses = (attribute.optionSet?.statuses ?? []).map((o) => ({
+    value: o.value,
+    label: labelText(o.labels, String(o.value)),
+    state: o.state,
+  }));
+  const options = (attribute.optionSet?.options ?? [])
+    .map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) }))
+    .concat(states, statuses);
+  return { states, statuses, options };
+}
+
+function appendGlobalOptions(options, globalSet, labelText) {
+  if (!options.length && globalSet)
+    options.push(
+      ...(globalSet.options ?? []).map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) })),
+    );
+}
+
+function lookupTargetsFor(schema, tableName, attribute, type) {
+  const sourceLookupTargets =
+    schema.targets[tableName + '/' + attribute.name] ??
+    (attribute.intersectTarget ? [attribute.intersectTarget] : undefined) ??
+    (['lookup', 'owner'].includes(type) ? STANDARD_LOOKUP_TARGETS[attribute.name] : undefined);
+  // Solution relationships can name the abstract owner table. Owner columns
+  // resolve to the concrete user/team targets, unlike ordinary lookup columns.
+  return type === 'owner' && sourceLookupTargets?.includes('owner')
+    ? [
+        ...new Set(
+          sourceLookupTargets.flatMap((target) => (target === 'owner' ? STANDARD_LOOKUP_TARGETS.ownerid : [target])),
+        ),
+      ]
+    : sourceLookupTargets;
+}
+
+/* NOSONAR: mixed return values are part of the contract */ function fieldDefault(type, appDefault) {
+  if (['bit', 'boolean'].includes(type) && /^[01]$/.test(appDefault ?? '')) return appDefault === '1';
+  if (
+    ['picklist', 'multiselectpicklist', 'state', 'status'].includes(type) &&
+    /^-?\d+$/.test(appDefault ?? '') &&
+    appDefault !== '-1'
+  )
+    return Number(appDefault);
+}
+
+function fieldOptionSetType(attribute, globalSet) {
+  if (attribute.optionSet)
+    return { bit: 'boolean', state: 'state', status: 'status' }[attribute.optionSet.type] ?? 'local';
+  if (globalSet || attribute.optionSetName) return 'global';
+}
+
+function addDeclaredPrimaryFields(fields, table, options) {
+  // A selected layer may extend a base table without repeating the base
+  // attribute definitions. Its declared primary columns still exist. Keep
+  // these narrow declarations distinct from a complete inferred schema.
+  for (const [name, dataverseType, source] of [
+    [table.primaryIdAttribute, 'primarykey', table.primaryIdSource],
+    [table.primaryNameAttribute, 'nvarchar', table.primaryNameSource],
+  ])
+    if (name && source && source !== 'convention')
+      fields[name] ??= {
+        name,
+        dataverseType,
+        ...(options.provenance === false ? {} : { source: `${source}-primary-declaration` }),
+      };
 }
 
 /** All field definitions of a table, adding Dataverse columns never written to solution XML when the table is complete. */
@@ -2120,6 +2446,7 @@ export function tableFields(schema, tableName, options = {}) {
   const fields = {};
   for (const attribute of Object.values(table.attributes))
     fields[attribute.name] = fieldDefinition(schema, tableName, attribute, options);
+  addDeclaredPrimaryFields(fields, table, options);
   // Implicit Dataverse columns (versionnumber) exist on stored tables, not on virtual ones.
   if (table.schemaComplete && !table.isVirtual)
     for (const [name, column] of Object.entries(IMPLICIT_SYSTEM_COLUMNS))
@@ -2136,7 +2463,7 @@ export function tableColumnDefaults(attributes) {
   const defaults = {};
   for (const a of Object.values(attributes ?? {})) {
     const raw = a.appDefaultValue;
-    if (a.type === 'bit' && /^[01]$/.test(raw ?? '')) defaults[a.name] = raw === '1';
+    if (['bit', 'boolean'].includes(a.type) && /^[01]$/.test(raw ?? '')) defaults[a.name] = raw === '1';
     else if (a.type === 'picklist' && /^-?\d+$/.test(raw ?? '') && raw !== '-1') defaults[a.name] = Number(raw);
   }
   return defaults;
@@ -2150,13 +2477,13 @@ export function tableColumnDefaults(attributes) {
  * next value per `table.column`, the DataStore's autoNumberSequences). Explicit values
  * (including null) are kept. Returns new row arrays.
  */
-function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
+function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {}, owned = false } = {}) {
   if (!schema?.tables || !tables) return tables;
   const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const out = {};
   for (const [name, rows] of Object.entries(tables)) {
     const attributes = schema.tables[name]?.attributes;
-    if (!attributes || !Array.isArray(rows)) {
+    if (!attributes || (!Array.isArray(rows) && !recordSourceOf(rows))) {
       out[name] = rows;
       continue;
     }
@@ -2167,34 +2494,83 @@ function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} }
         /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? '') && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat),
     );
     const states = attributes.statecode?.optionSet?.states ?? [];
-    const statusOf = (state) => states.find((s) => s.value === Number(state))?.defaultStatus;
-    out[name] = rows.map((row) => {
-      if (!row || typeof row !== 'object') return row;
-      const next = { ...row };
-      for (const [column, value] of defaults) if (!Object.hasOwn(next, column)) next[column] = value;
-      if (states.length && !Object.hasOwn(next, 'statecode')) next.statecode = 0;
-      if (
-        states.length &&
-        attributes.statuscode &&
-        !Object.hasOwn(next, 'statuscode') &&
-        statusOf(next.statecode) !== undefined
-      )
-        next.statuscode = statusOf(next.statecode);
-      for (const a of autonumbers) {
-        if (next[a.name] != null && next[a.name] !== '') continue;
-        const key = `${name}.${a.name}`;
-        const value = Number(sequences[key] ?? 1000);
-        sequences[key] = value + 1;
-        next[a.name] = a.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) =>
-          String(value).padStart(Number(width), '0'),
-        );
-      }
-      if (attributes.createdon && !Object.hasOwn(next, 'createdon')) next.createdon = stamp;
-      if (attributes.modifiedon && !Object.hasOwn(next, 'modifiedon')) next.modifiedon = next.createdon ?? stamp;
-      return next;
-    });
+    if (
+      owned &&
+      !defaults.length &&
+      !autonumbers.length &&
+      !states.length &&
+      !attributes.createdon &&
+      !attributes.modifiedon
+    ) {
+      out[name] = rows;
+      continue;
+    }
+    out[name] = materializeRecordSource(rows, (row) =>
+      seedRecordDefaultRow(row, { owned, defaults, states, attributes, autonumbers, name, sequences, stamp }),
+    );
   }
   return out;
+}
+
+function seedRecordDefaultRow(row, { owned, defaults, states, attributes, autonumbers, name, sequences, stamp }) {
+  if (!row || typeof row !== 'object') return row;
+  let next = owned ? row : { ...row };
+  next = applySeedColumnDefaults(next, row, defaults);
+  next = applySeedStateDefaults(next, row, states, attributes);
+  next = applySeedAutonumbers(next, row, autonumbers, name, sequences);
+  next = applySeedTimestampDefaults(next, row, attributes, stamp);
+  return next;
+}
+
+function assignSeedValue(current, original, key, value) {
+  if (current === original) current = { ...original };
+  current[key] = value;
+  return current;
+}
+
+function applySeedColumnDefaults(next, original, defaults) {
+  for (const [column, value] of defaults)
+    if (!Object.hasOwn(next, column)) next = assignSeedValue(next, original, column, value);
+  return next;
+}
+
+function applySeedStateDefaults(next, original, states, attributes) {
+  if (states.length && !Object.hasOwn(next, 'statecode')) next = assignSeedValue(next, original, 'statecode', 0);
+  const statusOf = (state) => states.find((entry) => entry.value === Number(state))?.defaultStatus;
+  if (
+    states.length &&
+    attributes.statuscode &&
+    !Object.hasOwn(next, 'statuscode') &&
+    statusOf(next.statecode) !== undefined
+  )
+    next = assignSeedValue(next, original, 'statuscode', statusOf(next.statecode));
+  return next;
+}
+
+function applySeedAutonumbers(next, original, autonumbers, name, sequences) {
+  for (const attribute of autonumbers) {
+    if (next[attribute.name] != null && next[attribute.name] !== '') continue;
+    const key = `${name}.${attribute.name}`;
+    const value = Number(sequences[key] ?? 1000);
+    sequences[key] = value + 1;
+    next = assignSeedValue(
+      next,
+      original,
+      attribute.name,
+      attribute.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) =>
+        String(value).padStart(Number(width), '0'),
+      ),
+    );
+  }
+  return next;
+}
+
+function applySeedTimestampDefaults(next, original, attributes, stamp) {
+  if (attributes.createdon && !Object.hasOwn(next, 'createdon'))
+    next = assignSeedValue(next, original, 'createdon', stamp);
+  if (attributes.modifiedon && !Object.hasOwn(next, 'modifiedon'))
+    next = assignSeedValue(next, original, 'modifiedon', next.createdon ?? stamp);
+  return next;
 }
 
 /** A preset body with seeded tables; autonumber counters continue in its settings. */

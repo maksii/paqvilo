@@ -1,3 +1,4 @@
+// @test-kind tooling: verifies ESLint and Prettier ignore decisions for private fixture paths
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -16,7 +17,7 @@ test('formatting keeps the copied demo editor workspace valid strict JSON', asyn
   assert.deepEqual(JSON.parse(formatted), JSON.parse(source));
 });
 
-test('quality tooling never discovers private runtime state, dependencies or exported fixtures', async () => {
+test('ESLint and Prettier apply the configured ignore decisions to private paths', async () => {
   const privateFiles = [
     '.paqvilo/quality-probe.mjs',
     'examples/company-operations/.paqvilo/quality-probe.mjs',

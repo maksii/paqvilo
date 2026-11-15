@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
+import { assertReportOutput } from './lib/report-output.mjs';
+import { assertProjectOutput } from './lib/project-output.mjs';
 import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 /**
  * Liquid inventory for an exported Power Pages site (PAC standard YAML or enhanced data model).
@@ -26,12 +29,12 @@ import { importPortal } from './lib/importer.mjs';
 import { createPortalRenderer } from './lib/liquid.mjs';
 import { Block, Variable } from './lib/liquid-engine.mjs';
 
-const WORD = '\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}';
-const TAG_NAME = new RegExp(`^\\s*([${WORD}]+)\\s*([\\s\\S]*)$`, 'u');
-const FRAGMENTS = /"[^"]*"|'[^']*'|(?:[^\s,|:'"]|"[^"]*"|'[^']*')+|[|,:]/gu;
-const PATH_PARTS = new RegExp(`\\[[^\\]]+\\]|[${WORD}-]+\\??`, 'gu');
+const WORD = String.raw`\p{L}\p{Mn}\p{Nd}\p{Pc}`;
+const TAG_NAME = new RegExp(String.raw`^\s*([${WORD}]+)\s*([\s\S]*)$`, 'u');
+const FRAGMENTS = /"[^"]*"|'[^']*'|(?:[^\s,|:'"]|"[^"]*"|'[^']*')+|[|,:]/gu; // NOSONAR: regex kept: a rewrite would change matches or captures
+const PATH_PARTS = new RegExp(String.raw`\[[^\]]+\]|[${WORD}-]+\??`, 'gu');
 const IDENTIFIER_START = /^[\p{L}_]/u;
-const RANGE = /^\((\S+)\.\.(\S+)\)$/;
+const RANGE_ENVELOPE = /^\(\S+\)$/;
 const QUOTED = /^(["'])([\s\S]*)\1$/;
 const LITERALS = new Set(['true', 'false', 'nil', 'null', 'empty', 'blank']);
 /** Condition operators (DotLiquid Condition.Operators, case-insensitive) and tag keywords. */
@@ -52,7 +55,7 @@ const KEYWORDS = new Set([
 const INTERMEDIATE_TAGS = new Set(['else', 'elsif', 'elseif', 'when']);
 
 /** Global objects Power Pages documents ("Available Liquid objects"). */
-const DOCUMENTED_GLOBALS = [
+const DOCUMENTED_GLOBALS = new Set([
   'ads',
   'blogs',
   'entities',
@@ -71,9 +74,9 @@ const DOCUMENTED_GLOBALS = [
   'user',
   'weblinks',
   'website',
-];
+]);
 /** Tags Power Pages documents (conditional, iteration, variable, template and Dataverse tags). */
-const DOCUMENTED_TAGS = [
+const DOCUMENTED_TAGS = new Set([
   'assign',
   'block',
   'capture',
@@ -99,9 +102,9 @@ const DOCUMENTED_TAGS = [
   'tablerow',
   'unless',
   'webform',
-];
+]);
 /** Filters Power Pages documents ("Available Liquid filters"). */
-const DOCUMENTED_FILTERS = [
+const DOCUMENTED_FILTERS = new Set([
   'add_query',
   'append',
   'base',
@@ -175,7 +178,7 @@ const DOCUMENTED_FILTERS = [
   'url_escape',
   'where',
   'xml_escape',
-];
+]);
 /** Objects that exist only inside the tag that provides them. */
 const CONTEXTUAL_OBJECTS = {
   forloop: 'for',
@@ -254,16 +257,15 @@ async function collectSources(portal, { includeInactive = false } = {}) {
   const sources = [];
   let inactive = 0;
   for (const record of portal.records ?? []) {
-    const fields = SOURCE_FIELDS[record.kind];
-    if (!fields) continue;
-    const isActive = Number(fieldOf(record, 'statecode') ?? record.statecode ?? 0) !== 1;
-    if (!isActive) inactive++;
-    if (!isActive && !includeInactive) continue;
-    for (const [kind, suffix, fieldName] of fields) {
+    const info = sourceRecordInfo(record, includeInactive);
+    if (!info) continue;
+    inactive += Number(!info.isActive);
+    const { isActive } = info;
+    for (const [kind, suffix, fieldName] of sourceFieldsToCollect(info)) {
       let values = [];
       // YAML layouts (PAC YAML and .powerpages-site) keep text fields in side files.
-      if (record._file && /\.ya?ml$/i.test(record._file)) {
-        const file = `${record._file.replace(/\.ya?ml$/i, '')}.${suffix}`;
+      const file = yamlSourceFile(record, suffix);
+      if (file) {
         try {
           values = [{ lcid: null, text: await fs.readFile(file, 'utf8'), file }];
         } catch {
@@ -272,21 +274,43 @@ async function collectSources(portal, { includeInactive = false } = {}) {
       }
       if (!values.length)
         values = localizedValues(fieldOf(record, fieldName)).map((entry) => ({ ...entry, file: record._file }));
-      for (const { lcid, text, file } of values) {
-        if (!text || (!text.includes('{{') && !text.includes('{%'))) continue;
-        sources.push({
-          kind,
-          name: record.name ?? record.id,
-          id: record.id,
-          lcid,
-          active: isActive,
-          file: file ? path.relative(portal.sourceDir, file) : null,
-          text,
-        });
-      }
+      sources.push(...sourcesForValues(values, record, kind, isActive, portal));
     }
   }
   return { sources, inactive };
+}
+
+function sourceRecordInfo(record, includeInactive) {
+  const fields = SOURCE_FIELDS[record.kind];
+  if (!fields) return null;
+  const isActive = Number(fieldOf(record, 'statecode') ?? record.statecode ?? 0) !== 1;
+  return { fields, isActive, skip: !isActive && !includeInactive };
+}
+
+function sourceFieldsToCollect(info) {
+  return info.skip ? [] : info.fields;
+}
+
+function yamlSourceFile(record, suffix) {
+  if (!record._file || !/\.ya?ml$/i.test(record._file)) return null;
+  return `${record._file.replace(/\.ya?ml$/i, '')}.${suffix}`;
+}
+
+function sourcesForValues(values, record, kind, isActive, portal) {
+  const sources = [];
+  for (const { lcid, text, file } of values) {
+    if (!text || (!text.includes('{{') && !text.includes('{%'))) continue;
+    sources.push({
+      kind,
+      name: record.name ?? record.id,
+      id: record.id,
+      lcid,
+      active: isActive,
+      file: file ? path.relative(portal.sourceDir, file) : null,
+      text,
+    });
+  }
+  return sources;
 }
 
 /** Position-aware token scan mirroring the DotLiquid tokenizer's quote handling. */
@@ -299,42 +323,51 @@ export function scanTokens(source, rawTags) {
     start.lastIndex = position;
     const match = start.exec(text);
     if (!match) break;
-    const isTag = match[0] === '{%';
-    let i = match.index + 2;
-    let closed = false;
-    while (i < text.length) {
-      const ch = text[i++];
-      if (ch === "'" || ch === '"') {
-        const end = text.indexOf(ch, i);
-        if (end < 0) {
-          i = text.length;
-          break;
-        }
-        i = end + 1;
-      } else if ((isTag ? ch === '%' : ch === '}') && text[i] === '}') {
-        i++;
-        closed = true;
-        break;
-      }
-    }
-    const markup = text
-      .slice(match.index + 2, closed ? i - 2 : i)
-      .replace(/^-/, '')
-      .replace(/-$/, '');
-    tokens.push({ type: isTag ? 'tag' : 'output', offset: match.index, markup, closed });
-    position = i;
-    if (isTag && closed) {
-      const name = TAG_NAME.exec(markup)?.[1];
-      if (name && rawTags.has(name)) {
-        const end = new RegExp(`\\{%-?\\s*end${name}\\s*-?%\\}`, 'g');
-        end.lastIndex = position;
-        const found = end.exec(text);
-        if (!found) break;
-        position = found.index;
-      }
+    const parsed = readLiquidToken(text, match);
+    tokens.push(parsed.token);
+    position = parsed.position;
+    if (parsed.token.type === 'tag' && parsed.token.closed) {
+      const next = rawTagEnd(text, parsed.token.markup, position, rawTags);
+      if (next === null) break;
+      position = next;
     }
   }
   return tokens;
+}
+
+function readLiquidToken(text, match) {
+  const isTag = match[0] === '{%';
+  let i = match.index + 2;
+  let closed = false;
+  while (i < text.length) {
+    const ch = text[i++];
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, i);
+      if (end < 0) {
+        i = text.length;
+        break;
+      }
+      i = end + 1;
+    } else if ((isTag ? ch === '%' : ch === '}') && text[i] === '}') {
+      i++;
+      closed = true;
+      break;
+    }
+  }
+  const markup = text
+    .slice(match.index + 2, closed ? i - 2 : i)
+    .replace(/^-/, '')
+    .replace(/-$/, '');
+  return { token: { type: isTag ? 'tag' : 'output', offset: match.index, markup, closed }, position: i };
+}
+
+function rawTagEnd(text, markup, position, rawTags) {
+  const name = TAG_NAME.exec(markup)?.[1];
+  if (!name || !rawTags.has(name)) return position;
+  const end = new RegExp(String.raw`\{%-?\s*end${name}\s*-?%\}`, 'g');
+  end.lastIndex = position;
+  const found = end.exec(text);
+  return found ? found.index : null;
 }
 
 /** Variable paths referenced by an expression (filter names and named-argument keys excluded). */
@@ -352,8 +385,8 @@ export function expressionPaths(expression) {
 }
 
 function fragmentPaths(fragment) {
-  const range = RANGE.exec(fragment);
-  if (range) return [...fragmentPaths(range[1]), ...fragmentPaths(range[2])];
+  const range = rangeParts(fragment);
+  if (range) return [...fragmentPaths(range[0]), ...fragmentPaths(range[1])];
   if (QUOTED.test(fragment) || /^[+-]?\d/.test(fragment)) return [];
   if (!IDENTIFIER_START.test(fragment) && !fragment.startsWith('[')) return [];
   const parts = fragment.match(PATH_PARTS) ?? [];
@@ -381,6 +414,14 @@ function fragmentPaths(fragment) {
   ];
 }
 
+function rangeParts(fragment) {
+  if (!RANGE_ENVELOPE.test(fragment)) return null;
+  const body = fragment.slice(1, fragment.lastIndexOf(')'));
+  // The old first greedy capture selected the last separator with a nonempty right operand.
+  const separator = body.lastIndexOf('..', body.length - 3);
+  return separator < 1 ? null : [body.slice(0, separator), body.slice(separator + 2)];
+}
+
 /** Attribute names (`name: value`) of a tag's markup. */
 function attributeNames(markup) {
   const fragments = String(markup ?? '').match(FRAGMENTS) ?? [];
@@ -390,55 +431,24 @@ function attributeNames(markup) {
 /** Analyse one tag: definitions it creates, paths it reads, include targets and filters. */
 function analyseTag(name, markup) {
   const result = { definitions: [], paths: [], include: null, filters: [] };
-  const fromVariable = (expression) => {
-    const variable = new Variable(expression);
-    if (variable.name != null) result.paths.push(...fragmentPaths(variable.name));
-    for (const filter of variable.filters) {
-      result.filters.push(filter.name);
-      for (const arg of filter.args) result.paths.push(...fragmentPaths(arg));
-    }
-  };
   switch (name) {
-    case 'assign': {
-      const match = /^\s*([^=\s]+)\s*=\s*([\s\S]*)$/.exec(markup);
-      if (match) {
-        result.definitions.push(match[1]);
-        fromVariable(match[2]);
-      }
+    case 'assign':
+      analyseAssignment(markup, result);
       break;
-    }
     case 'capture':
     case 'increment':
     case 'decrement':
-    case 'fetchxml': {
-      const variable = /^\s*([^\s]+)/.exec(markup)?.[1];
-      if (variable) result.definitions.push(variable.replace(QUOTED, '$2'));
+    case 'fetchxml':
+      analyseDefinition(markup, result);
       break;
-    }
     case 'for':
-    case 'tablerow': {
-      const match = /^\s*([^\s]+)\s+in\s+([\s\S]*)$/.exec(markup);
-      if (match) {
-        result.definitions.push(match[1]);
-        result.paths.push(...expressionPaths(match[2]));
-      }
+    case 'tablerow':
+      analyseIteration(markup, result);
       break;
-    }
     case 'include':
-    case 'extends': {
-      const fragments = String(markup).match(FRAGMENTS) ?? [];
-      const target = fragments[0];
-      if (target) {
-        const quoted = QUOTED.exec(target);
-        result.include = quoted ? { name: quoted[2], dynamic: false } : { name: target, dynamic: true };
-        if (!quoted) result.paths.push(...fragmentPaths(target));
-      }
-      if (name === 'include') {
-        result.definitions.push(...attributeNames(markup));
-        result.paths.push(...expressionPaths(fragments.slice(1).join(' ')));
-      }
+    case 'extends':
+      analyseInclude(name, markup, result);
       break;
-    }
     case 'else': // DotLiquid ignores else markup ({% else if x %} is a plain else)
     case 'block':
     case 'endblock':
@@ -455,6 +465,43 @@ function analyseTag(name, markup) {
       result.paths.push(...expressionPaths(markup));
   }
   return result;
+}
+
+function analyseAssignment(markup, result) {
+  const match = /^\s*([^=\s]+)\s*=\s*([\s\S]*)$/.exec(markup); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (!match) return;
+  result.definitions.push(match[1]);
+  const variable = new Variable(match[2]);
+  if (variable.name != null) result.paths.push(...fragmentPaths(variable.name));
+  for (const filter of variable.filters) {
+    result.filters.push(filter.name);
+    for (const arg of filter.args) result.paths.push(...fragmentPaths(arg));
+  }
+}
+
+function analyseDefinition(markup, result) {
+  const variable = /^\s*([^\s]+)/.exec(markup)?.[1];
+  if (variable) result.definitions.push(variable.replace(QUOTED, '$2'));
+}
+
+function analyseIteration(markup, result) {
+  const match = /^\s*([^\s]+)\s+in\s+([\s\S]*)$/.exec(markup); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (!match) return;
+  result.definitions.push(match[1]);
+  result.paths.push(...expressionPaths(match[2]));
+}
+
+function analyseInclude(name, markup, result) {
+  const fragments = String(markup).match(FRAGMENTS) ?? [];
+  const target = fragments[0];
+  if (target) {
+    const quoted = QUOTED.exec(target);
+    result.include = quoted ? { name: quoted[2], dynamic: false } : { name: target, dynamic: true };
+    if (!quoted) result.paths.push(...fragmentPaths(target));
+  }
+  if (name !== 'include') return;
+  result.definitions.push(...attributeNames(markup));
+  result.paths.push(...expressionPaths(fragments.slice(1).join(' ')));
 }
 
 function lineAt(lineStarts, offset) {
@@ -474,7 +521,10 @@ class Counter {
   }
   add(name, location) {
     let entry = this.entries.get(name);
-    if (!entry) this.entries.set(name, (entry = { name, count: 0, sources: new Set(), examples: [] }));
+    if (!entry) {
+      entry = { name, count: 0, sources: new Set(), examples: [] };
+      this.entries.set(name, entry);
+    }
     entry.count++;
     entry.sources.add(location.source);
     if (entry.examples.length < 3 && !entry.examples.some((example) => example.source === location.source))
@@ -510,12 +560,9 @@ async function probeProperties(renderer, portal, references) {
   for (const reference of references) {
     const [root, member] = reference.split('.');
     const test = `{% if ${root}.${member} == nil %}N{% else %}Y{% endif %}`;
-    const template =
-      root === 'forloop'
-        ? `{% for inventory_item in (1..2) %}${test}{% endfor %}`
-        : root === 'tablerowloop'
-          ? `{% tablerow inventory_item in (1..2) %}${test}{% endtablerow %}`
-          : test;
+    let template = test;
+    if (root === 'forloop') template = `{% for inventory_item in (1..2) %}${test}{% endfor %}`;
+    else if (root === 'tablerowloop') template = `{% tablerow inventory_item in (1..2) %}${test}{% endtablerow %}`;
     try {
       results[reference] = /Y/.test(await renderer.renderString(template, contextFor()));
     } catch {
@@ -551,125 +598,36 @@ export async function inventoryPortal(portal, { includeInactive = false, include
   const syntaxErrors = [];
   const byKind = {};
   const sourceSummaries = [];
-  for (const source of sources) {
-    byKind[source.kind] = (byKind[source.kind] ?? 0) + 1;
-    const label = `${source.kind}:${source.name}${source.lcid ? `[${source.lcid}]` : ''}`;
-    const lineStarts = [0];
-    for (let i = 0; i < source.text.length; i++) if (source.text[i] === '\n') lineStarts.push(i + 1);
-    try {
-      engine.parse(source.text);
-    } catch (error) {
-      syntaxErrors.push({ source: label, file: source.file, message: error.message });
-    }
-    const tokens = scanTokens(source.text, rawTags);
-    let tagCount = 0;
-    let outputCount = 0;
-    for (const token of tokens) {
-      const location = { source: label, file: source.file, line: lineAt(lineStarts, token.offset) };
-      const usePaths = (paths) => {
-        for (const reference of paths) {
-          objects.add(reference.root, location);
-          if (reference.member) properties.add(`${reference.root}.${reference.member}`, location);
-        }
-      };
-      if (token.type === 'output') {
-        outputCount++;
-        const variable = new Variable(token.markup);
-        if (variable.name != null) usePaths(fragmentPaths(variable.name));
-        for (const filter of variable.filters) {
-          filters.add(filter.name, location);
-          for (const arg of filter.args) usePaths(fragmentPaths(arg));
-        }
-        continue;
-      }
-      tagCount++;
-      const parsed = TAG_NAME.exec(token.markup);
-      if (!parsed) continue;
-      const [, name, markup] = parsed;
-      tags.add(name, location);
-      const analysis = analyseTag(name, markup);
-      for (const definition of analysis.definitions) definitions.add(definition.toLowerCase());
-      for (const filter of analysis.filters) filters.add(filter, location);
-      usePaths(analysis.paths);
-      if (analysis.include)
-        includes.add(analysis.include.dynamic ? `{${analysis.include.name}}` : analysis.include.name, location);
-    }
-    if (includeSources)
-      sourceSummaries.push({
-        source: label,
-        file: source.file,
-        active: source.active,
-        tags: tagCount,
-        outputs: outputCount,
-      });
-  }
+  const analysisContext = {
+    engine,
+    rawTags,
+    tags,
+    filters,
+    objects,
+    properties,
+    includes,
+    definitions,
+    syntaxErrors,
+    byKind,
+  };
+  for (const source of sources)
+    sourceSummaries.push(...analyseInventorySource(source, analysisContext, includeSources));
   // Contextual objects defined by tags in use.
   const tagNames = new Set(tags.entries.keys());
-  const objectStatus = (name) => {
-    if (globalSet.has(name)) return 'global';
-    if (CONTEXTUAL_OBJECTS[name]) return tagNames.has(CONTEXTUAL_OBJECTS[name]) ? 'contextual' : 'undefined';
-    if (definitions.has(name)) return 'local';
-    if (DOCUMENTED_GLOBALS.includes(name)) return 'unsupported';
-    return 'undefined';
-  };
+  const objectStatus = (name) => inventoryObjectStatus(name, globalSet, tagNames, definitions);
   // Properties: probe documented members of closed and entity objects.
-  const probeTargets = [];
-  for (const name of properties.entries.keys()) {
-    const [root, member] = name.split('.');
-    if (objectStatus(root) === 'local' && !globalSet.has(root)) continue;
-    if (DOCUMENTED_PROPERTIES[root]?.includes(member.toLowerCase()) || CLOSED_OBJECTS.has(root))
-      probeTargets.push(name);
-  }
+  const probeTargets = inventoryProbeTargets(properties, objectStatus, globalSet);
   const probed = await probeProperties(renderer, portal, probeTargets);
-  const propertyStatus = (name) => {
-    const [root, member] = name.split('.');
-    const rootStatus = objectStatus(root);
-    if (rootStatus === 'local' || rootStatus === 'undefined') return rootStatus;
-    if (rootStatus === 'unsupported') return 'unsupported-object';
-    if (['entitylist', 'entityview', 'searchindex'].includes(root)) return 'component';
-    if (DICTIONARY_OBJECTS.has(root)) return 'key';
-    const documented = DOCUMENTED_PROPERTIES[root]?.includes(member.toLowerCase());
-    if (Object.hasOwn(probed, name)) {
-      if (probed[name]) return documented ? 'supported' : 'supported-undocumented';
-      return documented ? 'unsupported' : 'nil';
-    }
-    if (ENTITY_OBJECTS.has(root)) return 'attribute';
-    return 'unchecked';
-  };
-  const includeStatus = async (entry) => {
-    if (entry.name.startsWith('{')) return 'dynamic';
-    const codes = [];
-    const probeContext = { diagnostic: (code) => codes.push(code) };
-    const resolved = await engine.loadTemplateSource(entry.name, probeContext);
-    if (codes.includes('liquid-template-not-found')) return 'missing';
-    if (codes.includes('liquid-managed-template-source')) return 'runtime-managed';
-    const record = Object.values(portal.templates ?? {}).find(
-      (t) => String(t?.name ?? '').toLowerCase() === entry.name.toLowerCase(),
-    );
-    return record && resolved === record.source ? 'web-template' : 'runtime';
-  };
+  const propertyStatus = (name) => inventoryPropertyStatus(name, objectStatus, probed);
   const includeList = [];
-  for (const entry of includes.list()) includeList.push({ ...entry, resolution: await includeStatus(entry) });
+  for (const entry of includes.list())
+    includeList.push({ ...entry, resolution: await inventoryIncludeStatus(entry, engine, portal) });
 
   // A tag the engine lacks is a parse error ("Unknown tag") on both platforms unless Power Pages
   // documents it. A filter the engine lacks returns its input unchanged on both platforms
   // (DotLiquid Context.Invoke) unless Power Pages documents it.
-  const tagList = tags.list((entry) => ({
-    status: engine.tags.has(entry.name)
-      ? 'supported'
-      : structural.has(entry.name)
-        ? 'structural'
-        : DOCUMENTED_TAGS.includes(entry.name)
-          ? 'unsupported'
-          : 'unknown',
-  }));
-  const filterList = filters.list((entry) => ({
-    status: engine.filters.has(entry.name)
-      ? 'supported'
-      : DOCUMENTED_FILTERS.includes(entry.name)
-        ? 'unsupported'
-        : 'unknown',
-  }));
+  const tagList = tags.list((entry) => tagInventoryStatus(entry, engine, structural));
+  const filterList = filters.list((entry) => filterInventoryStatus(entry, engine));
   const objectList = objects.list((entry) => ({ status: objectStatus(entry.name) }));
   const propertyList = properties.list((entry) => ({ status: propertyStatus(entry.name) }));
   const unsupported = [
@@ -709,64 +667,184 @@ export async function inventoryPortal(portal, { includeInactive = false, include
   };
 }
 
+function addInventoryPaths(paths, location, objects, properties) {
+  for (const reference of paths) {
+    objects.add(reference.root, location);
+    if (reference.member) properties.add(`${reference.root}.${reference.member}`, location);
+  }
+}
+
+function analyseInventorySource(source, context, includeSources) {
+  const { engine, rawTags, tags, filters, objects, properties, includes, definitions, syntaxErrors, byKind } = context;
+  byKind[source.kind] = (byKind[source.kind] ?? 0) + 1;
+  const lcidSuffix = source.lcid ? `[${source.lcid}]` : '';
+  const label = `${source.kind}:${source.name}${lcidSuffix}`;
+  const lineStarts = [0];
+  for (let i = 0; i < source.text.length; i++) if (source.text[i] === '\n') lineStarts.push(i + 1);
+  try {
+    engine.parse(source.text);
+  } catch (error) {
+    syntaxErrors.push({ source: label, file: source.file, message: error.message });
+  }
+  const tokens = scanTokens(source.text, rawTags);
+  let tagCount = 0;
+  let outputCount = 0;
+  for (const token of tokens) {
+    const location = { source: label, file: source.file, line: lineAt(lineStarts, token.offset) };
+    if (token.type === 'output') {
+      outputCount++;
+      analyseOutputToken(token, location, filters, objects, properties);
+      continue;
+    }
+    tagCount++;
+    analyseTagToken(token, location, { tags, filters, objects, properties, includes, definitions });
+  }
+  if (!includeSources) return [];
+  return [{ source: label, file: source.file, active: source.active, tags: tagCount, outputs: outputCount }];
+}
+
+function analyseOutputToken(token, location, filters, objects, properties) {
+  const variable = new Variable(token.markup);
+  if (variable.name != null) addInventoryPaths(fragmentPaths(variable.name), location, objects, properties);
+  for (const filter of variable.filters) {
+    filters.add(filter.name, location);
+    for (const arg of filter.args) addInventoryPaths(fragmentPaths(arg), location, objects, properties);
+  }
+}
+
+function analyseTagToken(token, location, context) {
+  const { tags, filters, objects, properties, includes, definitions } = context;
+  const parsed = TAG_NAME.exec(token.markup);
+  if (!parsed) return;
+  const [, name, markup] = parsed;
+  tags.add(name, location);
+  const analysis = analyseTag(name, markup);
+  for (const definition of analysis.definitions) definitions.add(definition.toLowerCase());
+  for (const filter of analysis.filters) filters.add(filter, location);
+  addInventoryPaths(analysis.paths, location, objects, properties);
+  if (analysis.include)
+    includes.add(analysis.include.dynamic ? `{${analysis.include.name}}` : analysis.include.name, location);
+}
+
+function inventoryObjectStatus(name, globalSet, tagNames, definitions) {
+  if (globalSet.has(name)) return 'global';
+  if (CONTEXTUAL_OBJECTS[name]) return tagNames.has(CONTEXTUAL_OBJECTS[name]) ? 'contextual' : 'undefined';
+  if (definitions.has(name)) return 'local';
+  if (DOCUMENTED_GLOBALS.has(name)) return 'unsupported';
+  return 'undefined';
+}
+
+function inventoryPropertyStatus(name, objectStatus, probed) {
+  const [root, member] = name.split('.');
+  const rootStatus = objectStatus(root);
+  if (rootStatus === 'local' || rootStatus === 'undefined') return rootStatus;
+  if (rootStatus === 'unsupported') return 'unsupported-object';
+  if (['entitylist', 'entityview', 'searchindex'].includes(root)) return 'component';
+  if (DICTIONARY_OBJECTS.has(root)) return 'key';
+  const documented = DOCUMENTED_PROPERTIES[root]?.includes(member.toLowerCase());
+  if (Object.hasOwn(probed, name)) {
+    if (probed[name]) return documented ? 'supported' : 'supported-undocumented';
+    return documented ? 'unsupported' : 'nil';
+  }
+  if (ENTITY_OBJECTS.has(root)) return 'attribute';
+  return 'unchecked';
+}
+
+function inventoryProbeTargets(properties, objectStatus, globalSet) {
+  const targets = [];
+  for (const name of properties.entries.keys()) {
+    const [root, member] = name.split('.');
+    if (objectStatus(root) === 'local' && !globalSet.has(root)) continue;
+    if (DOCUMENTED_PROPERTIES[root]?.includes(member.toLowerCase()) || CLOSED_OBJECTS.has(root)) targets.push(name);
+  }
+  return targets;
+}
+
+async function inventoryIncludeStatus(entry, engine, portal) {
+  if (entry.name.startsWith('{')) return 'dynamic';
+  const codes = [];
+  const probeContext = { diagnostic: (code) => codes.push(code) };
+  const resolved = await engine.loadTemplateSource(entry.name, probeContext);
+  if (codes.includes('liquid-template-not-found')) return 'missing';
+  if (codes.includes('liquid-managed-template-source')) return 'runtime-managed';
+  const record = Object.values(portal.templates ?? {}).find(
+    (t) => String(t?.name ?? '').toLowerCase() === entry.name.toLowerCase(),
+  );
+  return record && resolved === record.source ? 'web-template' : 'runtime';
+}
+
+function tagInventoryStatus(entry, engine, structural) {
+  let status = 'unknown';
+  if (engine.tags.has(entry.name)) status = 'supported';
+  else if (structural.has(entry.name)) status = 'structural';
+  else if (DOCUMENTED_TAGS.has(entry.name)) status = 'unsupported';
+  return { status };
+}
+
+function filterInventoryStatus(entry, engine) {
+  let status = 'unknown';
+  if (engine.filters.has(entry.name)) status = 'supported';
+  else if (DOCUMENTED_FILTERS.has(entry.name)) status = 'unsupported';
+  return { status };
+}
+
 function summarize(report) {
   const lines = [];
   const count = (list, status) => list.filter((entry) => entry.status === status).length;
   lines.push(`Liquid inventory: ${report.portal} (${report.format})`);
-  lines.push(
+  /* NOSONAR: reviewed, a rewrite would not preserve behaviour */ lines.push(
     `Sources: ${report.sources.total} Liquid-bearing (${Object.entries(report.sources.byKind)
       .map(([kind, n]) => `${kind} ${n}`)
       .join(
         ', ',
       )}); inactive records ${report.sources.inactiveIncluded ? 'included' : 'skipped'}: ${report.sources.inactiveRecords}`,
-  );
-  lines.push(
     `Renderer: ${report.renderer.tags} tags, ${report.renderer.filters} filters, globals ${report.renderer.globals.join(', ')}`,
-  );
-  lines.push(
     `Tags: ${report.tags.length} distinct, ${report.totals.tags} uses (${count(report.tags, 'unsupported')} unsupported, ${count(report.tags, 'unknown')} unknown)`,
-  );
-  lines.push(
     `Filters: ${report.filters.length} distinct, ${report.totals.filters} uses (${count(report.filters, 'unsupported')} unsupported, ${count(report.filters, 'unknown')} unknown)`,
-  );
-  lines.push(
     `Objects: ${report.objects.length} distinct roots, ${report.totals.objects} references (global ${count(report.objects, 'global')}, contextual ${count(report.objects, 'contextual')}, local ${count(report.objects, 'local')}, undefined ${count(report.objects, 'undefined')}, unsupported ${count(report.objects, 'unsupported')})`,
-  );
-  lines.push(
     `Properties: ${report.properties.length} distinct first-level members (${count(report.properties, 'unsupported')} unsupported)`,
+    `Includes: ${report.includes.length} distinct targets (${report.missingIncludes.length} missing)`,
+    `Syntax errors: ${report.syntaxErrors.length}`,
   );
-  lines.push(`Includes: ${report.includes.length} distinct targets (${report.missingIncludes.length} missing)`);
-  lines.push(`Syntax errors: ${report.syntaxErrors.length}`);
   for (const error of report.syntaxErrors.slice(0, 20)) {
     const message = error.message.replace(/\s+/g, ' ');
-    lines.push(`  ${error.source}: ${message.length > 200 ? `${message.slice(0, 200)}...` : message}`);
+    const shown = message.length > 200 ? `${message.slice(0, 200)}...` : message;
+    lines.push(`  ${error.source}: ${shown}`);
   }
   if (report.missingIncludes.length) lines.push(`Missing includes: ${report.missingIncludes.join(', ')}`);
   if (report.unknownTags.length)
     lines.push(`Unknown tags (parse errors on both platforms): ${report.unknownTags.join(', ')}`);
   for (const name of report.unknownFilters) {
     const entry = report.filters.find((filter) => filter.name === name);
-    lines.push(
-      `Unknown filter (input returned unchanged on both platforms): ${name} x${entry.count} (${entry.examples.map((example) => `${example.source}:${example.line}`).join(', ')})`,
-    );
+    const exampleList = entry.examples.map((example) => `${example.source}:${example.line}`).join(', ');
+    lines.push(`Unknown filter (input returned unchanged on both platforms): ${name} x${entry.count} (${exampleList})`);
   }
   if (report.undefinedObjects.length)
     lines.push(`Undefined roots (nil on both platforms): ${report.undefinedObjects.join(', ')}`);
   lines.push(`Unsupported: ${report.unsupported.length ? '' : 'none'}`);
-  for (const entry of report.unsupported)
-    lines.push(
-      `  ${entry.kind} ${entry.name} x${entry.count} (${entry.examples.map((example) => `${example.source}:${example.line}`).join(', ')})`,
-    );
+  for (const entry of report.unsupported) {
+    const exampleList = entry.examples.map((example) => `${example.source}:${example.line}`).join(', ');
+    lines.push(`  ${entry.kind} ${entry.name} x${entry.count} (${exampleList})`);
+  }
   return lines.join('\n');
 }
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseToolArgs('liquid-inventory', argv);
-  if (options.help || !(options.portal || options.config || options.site)) {
-    console.log(`Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp('liquid-inventory')}`);
-    return options.help ? 0 : 2;
+  const usage = `Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp('liquid-inventory')}`;
+  if (options.help) {
+    console.log(usage);
+    return 0;
   }
+  if (!(options.portal || options.config || options.site)) throw new Error(usage);
   const inputs = await inventoryInputs(options);
+  if (options.out) {
+    await assertReportOutput(options.out, {
+      sourceRoots: [inputs.sourceDir, ...inputs.solutionRoots],
+      inputFiles: [inputs.configFile, options.config],
+    });
+    assertProjectOutput(path.resolve(options.out));
+  }
   const portal = await importPortal(inputs.sourceDir);
   const report = await inventoryPortal(portal, {
     ...options,
@@ -782,12 +860,12 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().then(
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;
     },
     (error) => {
-      console.error(error.stack ?? String(error));
+      reportCliError(error);
       process.exitCode = 2;
     },
   );

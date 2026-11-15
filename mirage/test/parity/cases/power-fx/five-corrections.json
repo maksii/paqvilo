@@ -1,0 +1,199 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "five-corrections",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "The five original formula corrections and the sixth row of the same official run, evaluated by the official interpreter in two independent processes with a fixed clock, Pacific time zone and en-US culture. Establishes these outcomes only; native Canvas is not claimed here."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "a262b94a1af73c9bac62810c0068b913dcbe6382539e7d2a2f95f6266dd54e39",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "096746dc38024588299067d5abbfbb7af14adfc2251ce6db43201d690be9431c",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-3",
+      "input": {
+        "expression": "2^3^2",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "2^3^2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 512,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-75",
+      "input": {
+        "expression": "IsError(DateValue(\"13/01/2024\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(DateValue(\"13/01/2024\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-76",
+      "input": {
+        "expression": "IsError(TimeValue(\"25:00\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(TimeValue(\"25:00\"))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": false,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-126",
+      "input": {
+        "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 2,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-139",
+      "input": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "phase": "evaluation",
+        "kind": "error",
+        "type": "ErrorValue",
+        "value": null,
+        "errors": [
+          {
+            "kind": "InvalidArgument",
+            "Message": "Invalid argument"
+          }
+        ],
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "extra-1",
+      "input": {
+        "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "BooleanValue",
+        "value": true,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

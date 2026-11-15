@@ -1,8 +1,10 @@
 // Dataverse TDS server over node:net: the MS-TDS connection sequence for TDS 7.x (PRELOGIN-wrapped TLS) and TDS 8.0
 // (strict, TLS first). Login and queries are delegated to the caller. Protocol only: no SQL or store knowledge.
 //
-// createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize }) -> { listen(port, host), close() }
-//   secureContext  tls.SecureContext. Wrapped (TDS 7.x) TLS needs maxVersion 'TLSv1.2' on it (see framing.mjs).
+// createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize, preloginIdleMs, fedAuthIdleMs })
+//   -> { listen(port, host), close() }
+//   secureContext  tls.SecureContext, or a function returning one at each handshake. Wrapped (TDS 7.x) TLS needs
+//                  maxVersion 'TLSv1.2' on it (see framing.mjs).
 //   serverName     LOGINACK program name (default 'Microsoft SQL Server'). version: PRELOGIN/LOGINACK version (default '12.0.2000').
 //   onLogin({ token, fedAuth, login }) -> { ok: true, principal } | { ok: false, error?: { number, message, state, class } }
 //                                     | { fedAuthInfo: { stsUrl, spn } }
@@ -48,9 +50,24 @@ const ENCRYPT_ON = 0x01;
 const ENCRYPT_REQ = 0x03;
 const CUR_CMD_SELECT = 0xc1;
 const INTERNAL_ERROR = 50000;
+// A message sent before login completes (PRELOGIN, LOGIN7, FEDAUTH token) larger than this closes the connection. A
+// connection silent before login is closed after preloginIdleMs (PRELOGIN_IDLE_MS by default). While the server waits for
+// the client's FEDAUTH token, the limit is fedAuthIdleMs (FEDAUTH_IDLE_MS by default): the hang guard for the client's
+// interactive token acquisition, which can take minutes. Once login succeeds the timeout is cleared, so an authenticated
+// session has no idle limit.
+const PRELOGIN_MAX_BYTES = 64 * 1024;
+const PRELOGIN_IDLE_MS = 30_000;
+const FEDAUTH_IDLE_MS = 15 * 60_000;
 const LOGIN_FAILED = { number: 18456, state: 1, class: 14, message: 'Login failed.' };
 const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General_CI_AS
 const EMPTY = Buffer.alloc(0);
+const contextOf = (context) => (typeof context === 'function' ? context() : context);
+
+// An idle limit is a positive finite number of milliseconds: 0 would switch the limit off, and Node refuses the others.
+function requireIdleLimit(name, value) {
+  if (!Number.isFinite(value) || value <= 0)
+    throw new RangeError(`createTdsServer ${name} must be a positive finite number`);
+}
 
 export function createTdsServer({
   secureContext,
@@ -60,7 +77,11 @@ export function createTdsServer({
   onLogin,
   onQuery,
   packetSize = DEFAULT_PACKET_SIZE,
+  preloginIdleMs = PRELOGIN_IDLE_MS,
+  fedAuthIdleMs = FEDAUTH_IDLE_MS,
 } = {}) {
+  requireIdleLimit('preloginIdleMs', preloginIdleMs);
+  requireIdleLimit('fedAuthIdleMs', fedAuthIdleMs);
   if (!secureContext || typeof onLogin !== 'function' || typeof onQuery !== 'function') {
     throw new TypeError('createTdsServer needs secureContext, onLogin and onQuery');
   }
@@ -70,6 +91,7 @@ export function createTdsServer({
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => socket.destroy());
+    socket.setTimeout(preloginIdleMs, () => socket.destroy());
     accept(socket).catch(() => socket.destroy());
   });
 
@@ -79,8 +101,9 @@ export function createTdsServer({
     const mode = detectTdsMode(first);
     if (mode === 'tds8')
       return session(
-        acceptTls(socket, { secureContext: strictSecureContext, initial: inbox.detach(), strict: true }),
+        acceptTls(socket, { secureContext: contextOf(strictSecureContext), initial: inbox.detach(), strict: true }),
         true,
+        socket,
       );
     if (mode !== 'tds7') throw new Error('connection does not start with PRELOGIN or TLS');
     const request = await inbox.message();
@@ -88,7 +111,11 @@ export function createTdsServer({
     const fields = decodePrelogin(request.payload);
     const encryption = fields.encryption?.[0] === ENCRYPT_OFF ? ENCRYPT_REQ : ENCRYPT_ON;
     writeMessage(socket, TDS.TABULAR, preloginReply(fields, encryption), packetSize);
-    return session(acceptTls(socket, { secureContext, initial: inbox.detach() }), false);
+    return session(
+      acceptTls(socket, { secureContext: contextOf(secureContext), initial: inbox.detach() }),
+      false,
+      socket,
+    );
   }
 
   function preloginReply(fields, encryption) {
@@ -103,25 +130,37 @@ export function createTdsServer({
   }
 
   // One TLS-wrapped (or strict) connection. Messages are handled in order; ATTENTION is answered at once.
-  function session(stream, strict) {
+  // transport is the TCP socket under the TLS stream: its idle timeout is fedAuthIdleMs while the client's token is
+  // awaited, preloginIdleMs again after a rejected login, and cleared at a successful login.
+  function session(stream, strict, transport) {
     stream.on('error', () => stream.destroy());
-    const conn = { loggedIn: false, principal: undefined, pendingLogin: null, running: null, queue: Promise.resolve() };
+    const conn = {
+      loggedIn: false,
+      principal: undefined,
+      pendingLogin: null,
+      rejected: false,
+      running: /** @type {AbortController | null} */ (null),
+      queue: Promise.resolve(),
+    };
     const reply = (...tokens) => {
       if (!stream.destroyed) writeMessage(stream, TDS.TABULAR, Buffer.concat(tokens), packetSize);
     };
-    const read = createMessageReader((type, payload) => {
-      if (type === ATTENTION) {
-        // Every client message gets exactly one response. A cancelled request still owes its response (DONE ATTN),
-        // which comes before the ATTENTION's own acknowledgement; the cancelled query then sends nothing more.
-        if (conn.running) {
-          conn.running.abort();
-          conn.running = null;
-          reply(doneToken({ attn: true }));
+    const read = createMessageReader(
+      (type, payload) => {
+        if (type === ATTENTION) {
+          // Every client message gets exactly one response. A cancelled request still owes its response (DONE ATTN),
+          // which comes before the ATTENTION's own acknowledgement; the cancelled query then sends nothing more.
+          if (conn.running) {
+            conn.running.abort();
+            conn.running = null;
+            reply(doneToken({ attn: true }));
+          }
+          return reply(attentionAck());
         }
-        return reply(attentionAck());
-      }
-      conn.queue = conn.queue.then(() => handle(type, payload)).catch(() => stream.destroy());
-    });
+        conn.queue = conn.queue.then(() => handle(type, payload)).catch(() => stream.destroy());
+      },
+      { maxBytes: () => (conn.loggedIn ? MAX_MESSAGE_BYTES : PRELOGIN_MAX_BYTES) },
+    );
     stream.on('data', (chunk) => {
       try {
         read(chunk);
@@ -153,7 +192,7 @@ export function createTdsServer({
     }
 
     async function login(payload) {
-      if (conn.loggedIn || conn.pendingLogin) throw new Error('unexpected LOGIN7');
+      if (conn.rejected || conn.loggedIn || conn.pendingLogin) throw new Error('unexpected LOGIN7');
       const request = decodeLogin7(payload);
       const fedAuth = request.fedAuth;
       const decision = await onLogin({ token: fedAuth?.token, fedAuth, login: request });
@@ -164,10 +203,14 @@ export function createTdsServer({
       const pending = conn.pendingLogin;
       if (!pending) throw new Error('unexpected FEDAUTH token');
       conn.pendingLogin = null;
-      // FEDAUTH_TOKEN: DWORD DataLen, DWORD TokenLen, then the UTF-16LE token.
-      const length = payload.readUInt32LE(4);
-      if (payload.length < 8 + length) throw new Error('FEDAUTH token is truncated');
-      const token = payload.subarray(8, 8 + length).toString('utf16le');
+      let token;
+      try {
+        token = fedAuthTokenText(payload);
+      } catch (error) {
+        if (!(error instanceof TdsProtocolError)) throw error;
+        transport.setTimeout(preloginIdleMs);
+        return reply(errorToken({ number: INTERNAL_ERROR, message: error.message }), doneToken({ error: true }));
+      }
       const fedAuth = { ...pending.fedAuth, token };
       const decision = await onLogin({ token, fedAuth, login: pending.request });
       if (decision?.fedAuthInfo) throw new Error('FEDAUTHINFO requested twice');
@@ -177,11 +220,13 @@ export function createTdsServer({
     function decide(decision, request, fedAuth) {
       if (decision?.fedAuthInfo) {
         conn.pendingLogin = { request, fedAuth };
+        transport.setTimeout(fedAuthIdleMs);
         return reply(fedAuthInfo(decision.fedAuthInfo));
       }
       if (!decision?.ok) return reject(decision?.error);
       conn.loggedIn = true;
       conn.principal = decision.principal;
+      transport.setTimeout(0);
       return reply(
         envChange(ENV_TYPE.DATABASE, request.database || 'master', 'master'),
         envChange(ENV_TYPE.SQL_COLLATION, COLLATION, EMPTY),
@@ -194,7 +239,9 @@ export function createTdsServer({
     }
 
     function reject(error) {
-      reply(errorToken({ ...LOGIN_FAILED, ...(error ?? {}) }), doneToken({ error: true }));
+      conn.rejected = true;
+      transport.setTimeout(preloginIdleMs);
+      reply(errorToken({ ...LOGIN_FAILED, ...error }), doneToken({ error: true }));
       stream.end();
     }
 
@@ -240,11 +287,25 @@ function resultTokens(result, rpc) {
   const tokens = [];
   if (sets.length === 0) tokens.push(endOfSet({ more: rpc, rowCount: result?.rowCount }));
   sets.forEach((set, i) => {
-    tokens.push(columnMetadata(set.columns), ...set.rows.map((values) => row(set.columns, values)));
-    tokens.push(endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }));
+    tokens.push(
+      columnMetadata(set.columns),
+      ...set.rows.map((values) => row(set.columns, values)),
+      endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }),
+    );
   });
   if (rpc) tokens.push(returnStatus(0), doneProc());
   return tokens;
+}
+
+// FEDAUTH_TOKEN: DWORD DataLen, DWORD TokenLen, then the UTF-16LE token. Each length is checked against the payload.
+function fedAuthTokenText(payload) {
+  if (payload.length < 8) {
+    throw new TdsProtocolError(`FEDAUTH token message is ${payload.length} bytes, shorter than its header`);
+  }
+  const length = payload.readUInt32LE(4);
+  if (length % 2) throw new TdsProtocolError(`FEDAUTH token of ${length} bytes is not UTF-16LE`);
+  if (payload.length < 8 + length) throw new TdsProtocolError('FEDAUTH token is truncated');
+  return payload.subarray(8, 8 + length).toString('utf16le');
 }
 
 function sqlError(err) {
@@ -266,10 +327,12 @@ function versionBytes(version) {
   return Buffer.from([major, minor, build >> 8, build & 0xff, 0, 0]);
 }
 
-// Buffers raw bytes until the caller takes them. detach() returns the unread bytes, so the TLS adapter can start from them.
-// It is called synchronously with the handoff, so no socket data is lost in between.
+// Raw bytes from the socket until the caller takes them: bytes(count) peeks, message() waits for a whole message
+// and detach() returns the unread bytes, so the TLS adapter can start from them. It is called synchronously with
+// the handoff, so no socket data is lost in between.
 function rawInbox(socket) {
-  let buffer = EMPTY;
+  const assembler = createMessageAssembler({ maxBytes: PRELOGIN_MAX_BYTES });
+  let arrivals = 0;
   let wake = null;
   let closed = false;
   const notify = () => {
@@ -278,7 +341,8 @@ function rawInbox(socket) {
     resume?.();
   };
   const onData = (chunk) => {
-    buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
+    assembler.push(chunk);
+    arrivals += 1;
     notify();
   };
   const onClose = () => {
@@ -290,8 +354,7 @@ function rawInbox(socket) {
   socket.on('close', onClose);
   const until = async (ready) => {
     for (;;) {
-      const found = ready(buffer);
-      if (found) return found;
+      if (ready()) return;
       if (closed) throw new Error('connection closed before the TDS message completed');
       await new Promise((resolve) => {
         wake = resolve;
@@ -300,42 +363,115 @@ function rawInbox(socket) {
   };
   return {
     async bytes(count) {
-      await until((b) => (b.length >= count ? b : null));
-      return buffer;
+      await until(() => assembler.available >= count);
+      return assembler.peek(count);
     },
     async message() {
-      const found = await until(takeMessage);
-      buffer = found.rest;
-      return found;
+      for (;;) {
+        const found = assembler.next();
+        if (found) return found;
+        const seen = arrivals;
+        await until(() => arrivals !== seen);
+      }
     },
     detach() {
       socket.off('data', onData);
       socket.off('end', onClose);
       socket.off('close', onClose);
-      const rest = buffer;
-      buffer = EMPTY;
-      return rest;
+      return assembler.unread();
     },
   };
 }
 
-// The first complete TDS message in raw bytes, as { type, payload, rest }; null while packets are still missing.
-function takeMessage(buffer) {
-  const parts = [];
+const packetLength = (buffer, at) => buffer.readUInt16BE(at + 2);
+
+// Reassembles TDS messages from raw chunks. A packet's header is read once, when the packet starts (readLength
+// gives its length), and its bytes are copied only once the whole packet has arrived. Nothing is rescanned.
+export function createMessageAssembler({ maxBytes = MAX_MESSAGE_BYTES, readLength = packetLength } = {}) {
+  const chunks = [];
+  let cursor = 0; // index of the chunk holding the first unread byte
+  let available = 0;
+  let packetSize = null; // length of the packet being collected, once its header is read
+  let parts = [];
+  let size = 0;
   let type;
-  let at = 0;
-  for (;;) {
-    if (buffer.length - at < HEADER_BYTES) return null;
-    const length = buffer.readUInt16BE(at + 2);
-    if (length < HEADER_BYTES) throw new Error(`TDS packet length ${length} is below the header size`);
-    if (buffer.length - at < length) return null;
-    if (type === undefined) type = buffer[at];
-    else if (buffer[at] !== type) throw new Error('TDS message packets mix message types');
-    parts.push(buffer.subarray(at + HEADER_BYTES, at + length));
-    const endOfMessage = (buffer[at + 1] & 0x01) !== 0;
-    at += length;
-    if (at > MAX_MESSAGE_BYTES) throw new Error(`TDS message exceeds ${MAX_MESSAGE_BYTES} bytes`);
-    if (endOfMessage)
-      return { type, payload: parts.length === 1 ? parts[0] : Buffer.concat(parts), rest: buffer.subarray(at) };
-  }
+
+  const peek = (count) => {
+    const out = Buffer.allocUnsafe(count);
+    let filled = 0;
+    let i = cursor;
+    while (filled < count) {
+      const taken = Math.min(chunks[i].length, count - filled);
+      chunks[i].copy(out, filled, 0, taken);
+      filled += taken;
+      i += 1;
+    }
+    return out;
+  };
+
+  const drop = (count) => {
+    let left = count;
+    while (left > 0) {
+      const chunk = chunks[cursor];
+      if (chunk.length <= left) {
+        left -= chunk.length;
+        cursor += 1;
+      } else {
+        chunks[cursor] = chunk.subarray(left);
+        left = 0;
+      }
+    }
+    available -= count;
+    chunks.splice(0, cursor);
+    cursor = 0;
+  };
+
+  // Adds one whole packet to the message in progress; returns the message when its last packet arrives.
+  const addPacket = (packet) => {
+    if (type !== undefined && packet[0] !== type) throw new Error('TDS message packets mix message types');
+    type = packet[0];
+    size += packet.length;
+    if (size > maxBytes) throw new Error(`TDS message exceeds ${maxBytes} bytes`);
+    parts.push(packet.subarray(HEADER_BYTES));
+    if ((packet[1] & 0x01) === 0) return null;
+    const message = { type, payload: parts.length === 1 ? parts[0] : Buffer.concat(parts) };
+    parts = [];
+    size = 0;
+    type = undefined;
+    return message;
+  };
+
+  const take = (count) => {
+    const out = peek(count);
+    drop(count);
+    return out;
+  };
+
+  // The next complete message, or null while its packets are still missing.
+  const next = () => {
+    for (;;) {
+      if (packetSize === null) {
+        if (available < HEADER_BYTES) return null;
+        packetSize = readLength(peek(HEADER_BYTES), 0);
+        if (packetSize < HEADER_BYTES) throw new Error(`TDS packet length ${packetSize} is below the header size`);
+      }
+      if (available < packetSize) return null;
+      const message = addPacket(take(packetSize));
+      packetSize = null;
+      if (message) return message;
+    }
+  };
+
+  return {
+    push(chunk) {
+      chunks.push(chunk);
+      available += chunk.length;
+    },
+    next,
+    peek,
+    get available() {
+      return available;
+    },
+    unread: () => Buffer.concat(chunks.slice(cursor)),
+  };
 }

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,15 +8,16 @@ import { standaloneMirageConfiguration, standaloneCatalogueConfiguration } from 
 import { loadCatalogue } from '../lense/config.mjs';
 
 test('standalone and model-driven configuration respect project catalogue, personal and environment editor precedence', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-editor-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-editor-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const project = { configFile: path.join(directory, 'project.json') };
   const file = path.join(directory, 'paqvilo.config.yml');
-  const previous = process.env.PAQVILO_EDITOR;
-  delete process.env.PAQVILO_EDITOR;
+  // Shell settings such as PAQVILO_EDITOR or PAQVILO_SITE would otherwise override the files under test.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('PAQVILO_')));
+  for (const key of Object.keys(inherited)) delete process.env[key];
   t.after(() => {
-    if (previous === undefined) delete process.env.PAQVILO_EDITOR;
-    else process.env.PAQVILO_EDITOR = previous;
+    delete process.env.PAQVILO_EDITOR;
+    Object.assign(process.env, inherited);
   });
   assert.equal(standaloneMirageConfiguration(project).editor, 'code');
   await fs.writeFile(

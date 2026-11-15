@@ -6,6 +6,7 @@ import os from 'node:os';
 import { extractManagedRichTextControls } from '../acceptance-api.mjs';
 import { officeFontPath } from '../lib/asset-cache.mjs';
 import { captureRichTextAssets, observeManagedResources } from '../lib/richtext-assets.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const base = '/webresources/msdyn_/RichTextEditorControl/',
   editor = base + 'libs/ckeditor_latest/',
@@ -153,7 +154,7 @@ test('required rich text failures remain explicit and unconfigured or hostile pa
 });
 
 test('source-owned JSON configuration is read from its discovered file, never fetched as an arbitrary endpoint', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-rte-config-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-rte-config-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'source.js');
   await fs.writeFile(file, JSON.stringify({ defaultSupportedProps: { extraPlugins: 'sourceplugin' } }));

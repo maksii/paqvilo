@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-08",
+  "baseCommit": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "evidenceLocation": "private developer workbench frontend-contract-parity/.paqvilo/evidence/",
+  "scope": "Only the enumerated native assertions; no whole-platform claim. Different suites are not summed as platform features.",
+  "normalizations": [
+    "Undefined return values use an explicit {undefined:true} sentinel on both sides; other result values, errors and output fragments compare exactly.",
+    "Native client diagnostic API/HTML name strings and archival Microsoft method source remain private; property comparisons retain positive source-label equality, type, property spellings and composite editability exactly.",
+    "Native authored form JavaScript source comparison ignores trailing whitespace only. Native backend Target system columns remain archived; client payload comparison covers the explicitly selected source fields."
+  ],
+  "suites": [
+    {
+      "id": "model-driven",
+      "results": 121,
+      "repeated": true,
+      "probeFunctionSha256": "2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089",
+      "plan": {
+        "file": "model-plan.json",
+        "sha256": "96da26b88232b7fadd9ac7d49ac773a4d7e7c086c83e83fec8aab77b34a8648f"
+      },
+      "captures": [
+        {
+          "file": "model-native-1.json",
+          "sha256": "ea2d77f3c2bbe10a311eaded18cf206a3f5121be0a0a2f7a224c911ef15ef4a2"
+        },
+        {
+          "file": "model-native-2.json",
+          "sha256": "ea2d77f3c2bbe10a311eaded18cf206a3f5121be0a0a2f7a224c911ef15ef4a2"
+        }
+      ],
+      "local": {
+        "file": "model-local.json",
+        "sha256": "ea2d77f3c2bbe10a311eaded18cf206a3f5121be0a0a2f7a224c911ef15ef4a2"
+      }
+    },
+    {
+      "id": "model-driven-controls",
+      "results": 19,
+      "repeated": true,
+      "probeFunctionSha256": "6255a59265adfd6608f4caf740e79882b3b049039d783b35d38d220b892e6b1e",
+      "plan": {
+        "file": "control-plan.json",
+        "sha256": "d5a05a7a7f1575115181c0c9f9e48e6ecbd0260ea09c313def95b3124abc9c27"
+      },
+      "captures": [
+        {
+          "file": "control-contract-native-1.json",
+          "sha256": "f479201ba0ba071c68e360fe796d504341b66fb76b7e85f6d85f84b5f0745724"
+        },
+        {
+          "file": "control-contract-native-2.json",
+          "sha256": "f479201ba0ba071c68e360fe796d504341b66fb76b7e85f6d85f84b5f0745724"
+        }
+      ],
+      "local": {
+        "file": "control-contract-local.json",
+        "sha256": "f479201ba0ba071c68e360fe796d504341b66fb76b7e85f6d85f84b5f0745724"
+      }
+    },
+    {
+      "id": "model-driven-presentation",
+      "results": 50,
+      "repeated": true,
+      "probeFunctionSha256": "d1d101c72488f3b03c7a83f0448e4b6f20450bc1b485e26a9199e2ed93d37992",
+      "plan": {
+        "file": "presentation-plan.json",
+        "sha256": "093da88d2528d33989e5306a7692df6e9ddf136e733050572671099ed6255b66"
+      },
+      "captures": [
+        {
+          "file": "presentation-native-1.json",
+          "sha256": "da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325"
+        },
+        {
+          "file": "presentation-native-2.json",
+          "sha256": "da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325"
+        }
+      ],
+      "local": {
+        "file": "presentation-local.json",
+        "sha256": "da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325"
+      }
+    },
+    {
+      "id": "model-driven-dirty",
+      "results": 82,
+      "repeated": true,
+      "probeFunctionSha256": "62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177",
+      "context": "Field snapshot dirty state and entity/data latch; new-form exported false-default Boolean; isolated email/quantity and saved-row baseline; no default-true claim.",
+      "plan": {
+        "file": "dirty-plan.json",
+        "sha256": "2027f1107ab32fc64aa684136688a0a28e68062da217882c28edf5a9e2f92f88"
+      },
+      "captures": [
+        {
+          "file": "dirty-native-1.json",
+          "sha256": "a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93"
+        },
+        {
+          "file": "dirty-native-2.json",
+          "sha256": "a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93"
+        }
+      ],
+      "local": {
+        "file": "dirty-local.json",
+        "sha256": "a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93"
+      },
+      "diagnostics": [
+        {
+          "snapshots": 45,
+          "repeated": true,
+          "probeFunctionSha256": "24247dc83a76ba4d220bd256d3aa42e70836ae07982a6a9f2f03b56c4207a928",
+          "capture": {
+            "file": "dirty-diagnostic.json",
+            "sha256": "8de1f3d8d73bf6535ebd5c3826bd2f05e3ff237fc3c944ccedda701c1dfae85d"
+          },
+          "local": {
+            "file": "dirty-diagnostic-local.json",
+            "sha256": "35b3e811d36618f3611ae572813668077365880d5e65fbb692eb11285e3d217a"
+          }
+        },
+        {
+          "snapshots": 39,
+          "repeated": true,
+          "probeFunctionSha256": "9ae504a24b7f9ae88d080696146a22ffda6151dabe31876b5c254d6f48637d12",
+          "capture": {
+            "file": "dirty-isolation.json",
+            "sha256": "290603442dbd27c9aa75891f8887065ff8fe177eb9ed673914283e077b975cba"
+          },
+          "local": {
+            "file": "dirty-isolation-local.json",
+            "sha256": "be9f30f325492340b9117b0c1e71e22bde9e5203aa84fa839fa2442b4944a77f"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pages",
+      "results": 65,
+      "repeated": true,
+      "context": "native included web template; literal response fragments",
+      "plan": {
+        "file": "pages-plan.json",
+        "sha256": "73f9042085ee0d5a68730d95d9019f6ed8313f23020b2d65ccea5f3dd11b9612"
+      },
+      "sourceReadback": {
+        "file": "pages-publish.json",
+        "sha256": "22257c013ac97503213aef29d8c29f9099a83e45dbd5fb268cc306f82d87bcec"
+      },
+      "captures": [
+        {
+          "file": "pages-native-1.json",
+          "sha256": "e3a502ad8ce329e62debd0f0514c853e3b9498330649dc8c1393546babec88fe"
+        },
+        {
+          "file": "pages-native-2.json",
+          "sha256": "e3a502ad8ce329e62debd0f0514c853e3b9498330649dc8c1393546babec88fe"
+        }
+      ],
+      "local": {
+        "file": "pages-local.json",
+        "sha256": "2cc77c04af35c4a68d5c7c83f58c3121f22010cadd2baa9c2690bdbcb3e610a4"
+      },
+      "httpLocal": {
+        "file": "pages-http-local.json",
+        "sha256": "c17d82686367ccc9bbfd8715dc361b3b209f3662774b5b27ac6adf55b1d3cf2e"
+      }
+    },
+    {
+      "id": "language",
+      "results": 20,
+      "repeated": true,
+      "context": "native included web template; literal response fragments",
+      "plan": {
+        "file": "language-plan.json",
+        "sha256": "0d25b2660aeac5461ac9557f4da198316e4a06d26d00356caec2a23199f27f42"
+      },
+      "sourceReadback": {
+        "file": "language-publish.json",
+        "sha256": "cca7b6c3ffcae15f9baa0a85c9a8a603b41fbb402181c2451dc46f07ea8abf56"
+      },
+      "captures": [
+        {
+          "file": "language-native-1.json",
+          "sha256": "656bf99028db6a7889d0c3e0d39b0dd4ab4123f8f10c6424a1a7ce85cbea76de"
+        },
+        {
+          "file": "language-native-2.json",
+          "sha256": "656bf99028db6a7889d0c3e0d39b0dd4ab4123f8f10c6424a1a7ce85cbea76de"
+        }
+      ],
+      "local": {
+        "file": "language-local.json",
+        "sha256": "8a3e2bc236f849cdc53f511c53fbcadd5cad4f7a2f6c9a86818147bd2beda4e5"
+      },
+      "httpLocal": {
+        "file": "language-http-local.json",
+        "sha256": "b01e6719a6f24f30cd217878256f2396ac4ef0a799bef3d18b2372a98969a751"
+      }
+    },
+    {
+      "id": "power-pages-rendered-controls",
+      "results": 202,
+      "clientResults": 189,
+      "propertyControls": 26,
+      "repeated": true,
+      "probeFunctionSha256": "17827c2b3477e64afaeee43edbbffea0d165ed30e1f9769f52413f2f99399171",
+      "clientProbeFunctionSha256": "7a77facc295d5313ec4ec7e1338d95b5d5574901bcf3a99e48b469683e727150",
+      "propertiesProbeFunctionSha256": "0470b713c237c14997d9b2623a052a708a9fd8f63d76eb3edc0de0168e8431dd",
+      "context": "All26 current native FormXml columns, source-rendered labels, typed DOM and authored feedback, client context and type-specific property names. Visitor identity and submission excluded.",
+      "plan": {
+        "file": "pages-controls-plan.json",
+        "sha256": "6a4baf9a30311b753050ebb2f546d62fc8519749bc31b2dd65d1c5cf4823cc72"
+      },
+      "sourceReadback": {
+        "file": "pages-controls-source.json",
+        "sha256": "bcf2d885fe889bacbe7ed1c12b66e150310464c4414fc605303af78b0aba5a1b"
+      },
+      "captures": [
+        {
+          "file": "pages-controls-native-1.json",
+          "sha256": "017dea897be59a0c91b90a8725e3172d841ab3d5e7b606439f14c6cc71e2c7e8"
+        },
+        {
+          "file": "pages-controls-native-2.json",
+          "sha256": "017dea897be59a0c91b90a8725e3172d841ab3d5e7b606439f14c6cc71e2c7e8"
+        }
+      ],
+      "local": {
+        "file": "pages-controls-local.json",
+        "sha256": "a843c4c9ed1ebdce11bdcc72b628bd0b7ffa38d285bb959b77afb32d9adc91df"
+      },
+      "clientLocal": {
+        "file": "pages-client-local.json",
+        "sha256": "73f7c01c1051ae527d5bd11e464e7e8296f59ee005838a7230bbe62eac5e9bf5"
+      },
+      "propertyDiagnostic": {
+        "file": "pages-client-diagnostic.json",
+        "sha256": "d239e1ea24579f86dfc631fd125ee052f4208b6e48e455e1b2c45bb31cbc0292"
+      },
+      "propertiesLocal": {
+        "file": "pages-client-properties-local.json",
+        "sha256": "e8cd99e0d385f3099efbe6ba066393e329823032b7ed3ba59ae3479dd82c5acc"
+      },
+      "cleanupRows": 0
+    },
+    {
+      "id": "model-driven-saves",
+      "runs": 2,
+      "savesPerRun": 2,
+      "backendUpdatesPerRun": 1,
+      "backendStage": 20,
+      "neverExcluded": true,
+      "unchangedAlwaysIncludedOnDirtySave": true,
+      "cleanSaveHasNoUpdate": true,
+      "cleanupVerified": true,
+      "captures": [
+        {
+          "file": "submit-native-1.json",
+          "sha256": "b33b41ba5317e1931dca8f3b899ff790933c19dbd8d6d0ee09506e72028ff821"
+        },
+        {
+          "file": "submit-native-2.json",
+          "sha256": "8e506e1fe481472761e71595775dbd24281f0515131fd9cf6b78e854d2c5ea2e"
+        }
+      ],
+      "plans": [
+        {
+          "file": "submit-plan-1.json",
+          "sha256": "e40bd467f0f1006b0c15f081b2127cd02b928316ac51f455b2aa509c63212b89"
+        },
+        {
+          "file": "submit-plan-2.json",
+          "sha256": "9941540deae6fa73242ab74699f9afe76bf3dd9778351ff92369bb21aa4a2789"
+        }
+      ],
+      "source": {
+        "file": "submit-source.mjs",
+        "sha256": "f609ccf71041d31c566c5fd157ca17f120019956075ae35ea9119ec121cc8a9d"
+      }
+    },
+    {
+      "id": "model-driven-restored-saves",
+      "runs": 2,
+      "savesPerRun": 2,
+      "backendUpdatesPerRun": 1,
+      "restoredDirtyExcluded": true,
+      "unchangedAlwaysIncluded": true,
+      "neverExcluded": true,
+      "cleanupVerified": true,
+      "captures": [
+        {
+          "file": "restored-submit-native-1.json",
+          "sha256": "6abab66b5aa50f198eb899aa1e02cadac8443c406d3ed3e10bf1e51e78223fec"
+        },
+        {
+          "file": "restored-submit-native-2.json",
+          "sha256": "7d49fbbbaef91eb325d614e5ec175535de01d5e5ccf1a1823f9eb9380bbea032"
+        }
+      ],
+      "plans": [
+        {
+          "file": "restored-submit-plan-1.json",
+          "sha256": "dba2663c17a5f62b6af20173846a13615350da74a73ef4767ea1573f68a1be98"
+        },
+        {
+          "file": "restored-submit-plan-2.json",
+          "sha256": "9f5577cbdc0e71ab4e6d799fde0b2c25f854e5021c438ec8558ea3f0ce6413c5"
+        }
+      ],
+      "source": {
+        "file": "restored-submit-source.mjs",
+        "sha256": "abde1b5ad87af9637830f25fc30ecead0463977efa22868387a0046c07962d79"
+      },
+      "local": {
+        "file": "restored-submit-local.json",
+        "sha256": "5aa6e3f8776a3510961a2a2af1a456a44ffb12b14ca303635a47524ef6794f8b"
+      }
+    }
+  ],
+  "fixtures": [
+    {
+      "file": "mirage/test/fixtures/model-driven-contract-expected.json",
+      "sha256": "99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8"
+    },
+    {
+      "file": "mirage/test/fixtures/model-driven-control-expected.json",
+      "sha256": "9d8a8c2989fdd76115db14323d58973c393bfa9686c642fbd52c8c28d77ff024"
+    },
+    {
+      "file": "mirage/test/fixtures/model-driven-presentation-expected.json",
+      "sha256": "da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325"
+    },
+    {
+      "file": "mirage/test/fixtures/model-driven-dirty-expected.json",
+      "sha256": "a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-controls-expected.json",
+      "sha256": "6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-client-expected.json",
+      "sha256": "7c380709e7abaee657543aeb4815a6bcd8eec7eeb478e6c7354d5c3e7dcc1779"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-client-properties-expected.json",
+      "sha256": "ccec9eaec7c1083f9b3a2aee8f65021880d369593040a226d29c9c1b76589e73"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-contract-cases.json",
+      "sha256": "f0c2a5579aa331c7b50f6f36a636d65ee1b2978e339821e2e848fc6272d33ee7"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-contract-expected.json",
+      "sha256": "2e7131f9b19f11c379357320babcf4f7e0b2e58e559ffe3b3a940f126fc3723f"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-language-cases.json",
+      "sha256": "99c620ba9e0cf548e3ad6464e073122843afaed413a482264fff657b0c09ec91"
+    },
+    {
+      "file": "mirage/test/fixtures/power-pages-language-expected.json",
+      "sha256": "0a42f3a7b11cea8fa2187e71cadeef6aa1bdc3620432048654ea7824b4507ca8"
+    }
+  ]
+}

@@ -1,8 +1,10 @@
+// @test-kind unproven: local model of the catalog column declarations and their TDS row encoding; no native capture cited.
 // Dataverse TDS catalog: exposed columns per store table and Web API row projection.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { buildCatalog, informationSchema, projectRow } from '../lib/dataverse-tds-catalog.mjs';
+import { decodeRow, row } from '../lib/dataverse-tds-types.mjs';
 import { FORMATTED, LOOKUP_LOGICAL } from '../lib/webapi-format.mjs';
 
 const lookup = { dataverseType: 'lookup' };
@@ -96,6 +98,21 @@ test('projectRow maps formatted lookup, choice and money values to SQL column na
 test('INFORMATION_SCHEMA is refused with a DataError', () => {
   const catalog = buildCatalog({ store: store() });
   assert.throws(() => informationSchema(catalog), { name: 'DataError', code: 'NotSupported' });
+});
+
+test('text columns without maxLength are nvarchar(4000) and a 150-character value round-trips', () => {
+  const data = store();
+  data.state.mappings.widget.fields.label = { dataverseType: 'nvarchar' };
+  const widget = buildCatalog({ store: data }).tables.get('widget');
+  const label = widget.columns.find((c) => c.name === 'label');
+  const columns = [{ name: 'label', type: 'nvarchar', length: label.length }];
+  const value = 'l'.repeat(150);
+  assert.deepEqual(decodeRow(columns, row(columns, [value])).values, [value]);
+  assert.equal(label.length, 4000);
+  const cols = Object.fromEntries(widget.columns.map((c) => [c.name, c]));
+  assert.equal(cols.owneridname.length, 4000, 'lookup names');
+  assert.equal(cols.statuscodename.length, 4000, 'choice names');
+  assert.equal(cols.name.length, 200, 'a declared maxLength is kept');
 });
 
 test('catalog excludes private storage mappings that have no routable entity set', () => {

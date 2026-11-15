@@ -1,3 +1,4 @@
+// @test-kind contract: capture CLI exit status, retained evidence and owned process cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,18 +7,23 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { withProcessSlot } from '../test/process-slots.mjs';
 
-function ownedProcess(t, args, { signal = t.signal } = {}) {
+function ownedProcess(t, args, { signal = t.signal, trace = () => {} } = {}) {
+  trace('spawn-requested');
   const child = spawn(process.execPath, args, {
     windowsHide: true,
     signal,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
+  child.once('spawn', () => trace('spawned', String(child.pid)));
+  child.once('exit', (code, reason) => trace('exit', JSON.stringify({ code, reason })));
+  child.once('close', (code, reason) => trace('close', JSON.stringify({ code, reason })));
   const collect = (chunk) => {
     output = (output + chunk).slice(-4000);
+    trace('output', String(chunk).slice(-300));
   };
   child.stdout.on('data', collect);
   child.stderr.on('data', collect);
@@ -37,15 +43,15 @@ function ownedProcess(t, args, { signal = t.signal } = {}) {
 }
 
 async function outputDirectory(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-capture-exit-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-capture-exit-'));
   ownedFixture(t).remove(async () => {
-    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory);
+    await fs.rm(physical, { recursive: true, force: true });
   });
   return directory;
 }
 
-test('capture CLI reports failed assertions without losing completed evidence', { timeout: 90000 }, async (t) => {
+async function captureInputs(t) {
   const dir = await outputDirectory(t);
   const source = path.join(dir, 'source');
   await fs.mkdir(source);
@@ -72,61 +78,102 @@ test('capture CLI reports failed assertions without losing completed evidence', 
       ],
     }),
   );
+  return { dir, source, matrix };
+}
+
+function captureTrace(t) {
+  const started = Date.now(),
+    events = [];
+  const trace = (label, phase, detail = '') => {
+    events.push({ elapsedMs: Date.now() - started, label, phase, detail });
+    if (events.length > 40) events.shift();
+  };
+  const onAbort = () => console.error('Invented capture phases: ' + JSON.stringify(events));
+  t.signal.addEventListener('abort', onAbort, { once: true });
+  t.after(() => t.signal.removeEventListener('abort', onAbort));
+  return trace;
+}
+
+// One capture is one independent process with its own output directory; it starts when a process slot is free.
+async function runCapture(t, { dir, source, matrix }, trace, { label, only }) {
   const script = fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url));
-  // The three captures are independent processes with their own output directories; each starts when a slot is free.
-  const runs = [
-    ['failed', 'invented/failed,invented/passed', 1],
-    ['passed', 'invented/passed', 0],
-    ['error', 'invented/error', 2],
-  ].map(([label, only, expected]) => {
-    const out = path.join(dir, label);
-    const run = { label, expected, out, child: null };
-    run.code = withProcessSlot(() => {
-      run.child = ownedProcess(t, [
-        script,
-        'capture',
-        '--matrix',
-        matrix,
-        '--source',
-        source,
-        '--out',
-        out,
-        '--side',
-        'mirage',
-        '--label',
-        label,
-        '--only',
-        only,
-      ]);
-      return run.child.done;
-    });
-    // Awaited below in order; the handler only keeps a later run's spawn error from going unhandled meanwhile.
-    run.code.catch(() => {});
-    return run;
-  });
-  for (const capture of runs) {
-    const { label, expected, out } = capture;
-    const code = await capture.code;
-    const child = capture.child;
-    const run = JSON.parse(await fs.readFile(path.join(out, 'run-' + label + '.json'), 'utf8'));
-    assert.equal(code, expected, JSON.stringify({ label, totals: run.totals, output: child.output().slice(-1000) }));
-    if (label === 'failed') {
-      assert.deepEqual(
-        run.scenarios.map((item) => item.status),
-        ['failed', 'captured'],
+  const out = path.join(dir, label);
+  let child = null;
+  trace(label, 'queued');
+  const code = await withProcessSlot(
+    () => {
+      trace(label, 'slot-acquired');
+      child = ownedProcess(
+        t,
+        [
+          script,
+          'capture',
+          '--matrix',
+          matrix,
+          '--source',
+          source,
+          '--out',
+          out,
+          '--side',
+          'mirage',
+          '--label',
+          label,
+          '--only',
+          only,
+        ],
+        { trace: (phase, detail) => trace(label, phase, detail) },
       );
-      assert.equal(run.totals.failed, 1);
-      assert.equal(run.totals.captured, 1);
-      const meta = JSON.parse(await fs.readFile(path.join(out, 'invented/failed/failed/meta.json'), 'utf8'));
-      assert.equal(meta.status, 'failed');
-      assert.ok(meta.problems.some((item) => item.includes('#absent')));
-      assert.ok((await fs.readdir(out)).some((name) => name.startsWith('run-failed-')));
-    }
-    if (label === 'error') assert.equal(run.totals.error, 1);
-  }
+      return child.done;
+    },
+    undefined,
+    { signal: t.signal },
+  );
+  return { code, child, out };
+}
+
+async function readRun(out, label) {
+  return JSON.parse(await fs.readFile(path.join(out, 'run-' + label + '.json'), 'utf8'));
+}
+
+test('capture CLI reports failed assertions without losing completed evidence', async (t) => {
+  const trace = captureTrace(t);
+  const inputs = await captureInputs(t);
+  const { code, child, out } = await runCapture(t, inputs, trace, {
+    label: 'failed',
+    only: 'invented/failed,invented/passed',
+  });
+  const run = await readRun(out, 'failed');
+  assert.equal(code, 1, JSON.stringify({ label: 'failed', totals: run.totals, output: child.output().slice(-1000) }));
+  assert.deepEqual(
+    run.scenarios.map((item) => item.status),
+    ['failed', 'captured'],
+  );
+  assert.equal(run.totals.failed, 1);
+  assert.equal(run.totals.captured, 1);
+  const meta = JSON.parse(await fs.readFile(path.join(out, 'invented/failed/failed/meta.json'), 'utf8'));
+  assert.equal(meta.status, 'failed');
+  assert.ok(meta.problems.some((item) => item.includes('#absent')));
+  assert.ok((await fs.readdir(out)).some((name) => name.startsWith('run-failed-')));
 });
 
-test('aborting an owned capture process drains its pipes before removing output', { timeout: 10000 }, async (t) => {
+test('capture CLI exits zero when every selected scenario passes', async (t) => {
+  const trace = captureTrace(t);
+  const inputs = await captureInputs(t);
+  const { code, child, out } = await runCapture(t, inputs, trace, { label: 'passed', only: 'invented/passed' });
+  const run = await readRun(out, 'passed');
+  assert.equal(code, 0, JSON.stringify({ label: 'passed', totals: run.totals, output: child.output().slice(-1000) }));
+});
+
+test('capture CLI exits with the error status for a scenario that cannot run', async (t) => {
+  const trace = captureTrace(t);
+  const inputs = await captureInputs(t);
+  const { code, child, out } = await runCapture(t, inputs, trace, { label: 'error', only: 'invented/error' });
+  const run = await readRun(out, 'error');
+  assert.equal(code, 2, JSON.stringify({ label: 'error', totals: run.totals, output: child.output().slice(-1000) }));
+  assert.equal(run.totals.error, 1);
+});
+
+test('aborting an owned capture process drains its pipes before removing output', async (t) => {
   const dir = await outputDirectory(t);
   const controller = new AbortController();
   const child = ownedProcess(t, ['-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"], {

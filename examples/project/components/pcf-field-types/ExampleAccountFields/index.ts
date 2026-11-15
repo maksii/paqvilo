@@ -107,76 +107,88 @@ export class ExampleAccountFields implements ComponentFramework.StandardControl<
     this.root = document.createElement('div');
     this.root.className = 'ExampleAccountFields';
     container.appendChild(this.root);
-    for (const group of [...new Set(fields.map((field) => field[4]))]) {
-      const section = document.createElement('fieldset');
-      section.className = 'demo-form-section';
-      const legend = document.createElement('legend');
-      legend.textContent = group;
-      section.appendChild(legend);
-      const grid = document.createElement('div');
-      grid.className = 'demo-form-grid';
-      section.appendChild(grid);
-      this.root.appendChild(section);
-      for (const [name, label, type, editor] of fields.filter((field) => field[4] === group)) {
-        const host = document.createElement('div');
-        host.className =
-          'demo-field' +
-          (type === 'lookup' ? ' demo-pcf-lookup' : '') +
-          (editor ? ' demo-pcf-field' : '') +
-          (type === 'textarea' ? ' wide' : '');
-        host.dataset.field = name;
-        grid.appendChild(host);
-        const caption = document.createElement('label');
-        caption.htmlFor = 'pcf-' + name;
-        caption.textContent = label + (name === 'name' ? ' *' : '');
-        host.appendChild(caption);
-        const detail = document.createElement('span');
-        detail.className = 'demo-field-type';
-        detail.textContent = editor ? 'PCF · ' + editor : type === 'lookup' ? 'PCF lookup · search and paging' : 'Text';
-        host.appendChild(detail);
-        if (editor) {
-          const target = document.createElement('div');
-          host.appendChild(target);
-          const child = new editors[editor]() as Editor;
-          const parameter = {
-            raw: type === 'boolean' ? false : null,
-            formatted: '',
-            attributes: {
-              Options: name === 'industrycode' ? industryOptions : [],
-              DisplayName: label,
-              LogicalName: name,
-            },
-          };
-          const childContext = Object.create(context) as ComponentFramework.Context<IInputs>;
-          Object.defineProperty(childContext, 'parameters', { value: { controlValue: parameter }, enumerable: true });
-          child.init(childContext, () => this.notify(), {}, target);
-          this.children.push(child);
-        } else {
-          const input = type === 'lookup' ? document.createElement('select') : document.createElement('input');
-          if (input instanceof HTMLInputElement) input.type = 'text';
-          else input.add(new Option('None', ''));
-          input.name = name;
-          input.id = 'pcf-' + name;
-          host.appendChild(input);
-        }
-      }
-      if (group === 'Numbers and choices') {
-        const host = document.createElement('div');
-        host.className = 'demo-field';
-        host.dataset.field = 'transactioncurrencyid';
-        const label = document.createElement('label');
-        label.textContent = 'Currency';
-        label.htmlFor = 'pcf-transactioncurrencyid';
-        const detail = document.createElement('span');
-        detail.className = 'demo-field-type';
-        detail.textContent = 'Lookup · used by credit limit';
-        const select = document.createElement('select');
-        select.name = 'transactioncurrencyid';
-        select.id = label.htmlFor;
-        host.append(label, detail, select);
-        grid.appendChild(host);
-      }
+    for (const group of new Set(fields.map((field) => field[4]))) this.createGroup(group, context);
+    this.configureInputs();
+  }
+  private createGroup(group: string, context: ComponentFramework.Context<IInputs>): void {
+    const section = document.createElement('fieldset');
+    section.className = 'demo-form-section';
+    const legend = document.createElement('legend');
+    legend.textContent = group;
+    section.appendChild(legend);
+    const grid = document.createElement('div');
+    grid.className = 'demo-form-grid';
+    section.appendChild(grid);
+    this.root.appendChild(section);
+    for (const field of fields.filter((item) => item[4] === group)) this.createField(grid, field, context);
+    if (group === 'Numbers and choices') this.createCurrencyField(grid);
+  }
+  private createField(
+    grid: HTMLDivElement,
+    [name, label, type, editor]: Field,
+    context: ComponentFramework.Context<IInputs>,
+  ): void {
+    const host = document.createElement('div');
+    host.className =
+      'demo-field' +
+      (type === 'lookup' ? ' demo-pcf-lookup' : '') +
+      (editor ? ' demo-pcf-field' : '') +
+      (type === 'textarea' ? ' wide' : '');
+    host.dataset.field = name;
+    grid.appendChild(host);
+    const caption = document.createElement('label');
+    caption.htmlFor = 'pcf-' + name;
+    caption.textContent = label + (name === 'name' ? ' *' : '');
+    host.appendChild(caption);
+    const detail = document.createElement('span');
+    detail.className = 'demo-field-type';
+    if (editor) detail.textContent = 'PCF · ' + editor;
+    else if (type === 'lookup') detail.textContent = 'PCF lookup · search and paging';
+    else detail.textContent = 'Text';
+    host.appendChild(detail);
+    if (editor) {
+      const target = document.createElement('div');
+      host.appendChild(target);
+      const child = new editors[editor]() as Editor;
+      const parameter = {
+        raw: type === 'boolean' ? false : null,
+        formatted: '',
+        attributes: {
+          Options: name === 'industrycode' ? industryOptions : [],
+          DisplayName: label,
+          LogicalName: name,
+        },
+      };
+      const childContext = Object.create(context) as ComponentFramework.Context<IInputs>;
+      Object.defineProperty(childContext, 'parameters', { value: { controlValue: parameter }, enumerable: true });
+      child.init(childContext, () => this.notify(), {}, target);
+      this.children.push(child);
+      return;
     }
+    const input = type === 'lookup' ? document.createElement('select') : document.createElement('input');
+    if (input instanceof HTMLInputElement) input.type = 'text';
+    else input.add(new Option('None', ''));
+    input.name = name;
+    input.id = 'pcf-' + name;
+    host.appendChild(input);
+  }
+  private createCurrencyField(grid: HTMLDivElement): void {
+    const host = document.createElement('div');
+    host.className = 'demo-field';
+    host.dataset.field = 'transactioncurrencyid';
+    const label = document.createElement('label');
+    label.textContent = 'Currency';
+    label.htmlFor = 'pcf-transactioncurrencyid';
+    const detail = document.createElement('span');
+    detail.className = 'demo-field-type';
+    detail.textContent = 'Lookup · used by credit limit';
+    const select = document.createElement('select');
+    select.name = 'transactioncurrencyid';
+    select.id = label.htmlFor;
+    host.append(label, detail, select);
+    grid.appendChild(host);
+  }
+  private configureInputs(): void {
     for (const host of Array.from(this.root.querySelectorAll<HTMLDivElement>('[data-field]'))) {
       const input = host.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
         'input,select,textarea',

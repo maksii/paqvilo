@@ -1,12 +1,17 @@
 // Author once; generate standalone adapter fragments with scripts/generate-compat-watchers.mjs.
 export function watchJQuery(registry, attach) {
-  (registry.jqueryWatchers ||= new Set()).add(attach);
+  let watchers = registry.jqueryWatchers;
+  if (!watchers) {
+    watchers = new Set();
+    registry.jqueryWatchers = watchers;
+  }
+  watchers.add(attach);
   if (registry.jqueryWatched) return;
-  const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
   if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-  let current = window.jQuery;
+  let current = globalThis.jQuery;
   try {
-    Object.defineProperty(window, 'jQuery', {
+    Object.defineProperty(globalThis, 'jQuery', {
       configurable: true,
       enumerable: true,
       get: () => current,

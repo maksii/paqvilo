@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,16 +9,16 @@ import { signInHeaders } from '../testing/session.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { importPortal } from '../lib/importer.mjs';
 import { configurationPresetDiagnostics, defineLazyPreset } from '../packs.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented\nadx_name: Invented diagnostics',
@@ -51,6 +52,7 @@ async function fixture(t, options = {}) {
   return { app, root };
 }
 
+// @test-kind contract+unproven: diagnostics are local; portal permission and plugin behavior have no native capture.
 test('a denied scoped API create has a readable relationship, link value and one detailed diagnostic per request', async (t) => {
   const { app } = await fixture(t),
     headers = {
@@ -88,6 +90,7 @@ test('a denied scoped API create has a readable relationship, link value and one
   );
 });
 
+// @test-kind contract+unproven: diagnostics are local; portal permission and plugin behavior have no native capture.
 test('a denied JSON native form request also records only its detailed permission diagnostic', async (t) => {
   const { app } = await fixture(t),
     response = await fetch(app.url + '/__sim/forms/entityform/create/submit', {
@@ -166,6 +169,7 @@ test('missing and blank persona parameters have a parameter-specific 400 while u
   assert.doesNotMatch(await (await fetch(app.url + '/_sim/sign-in?persona=absent')).text(), /Closest keys:\s*</);
 });
 
+// @test-kind contract+unproven: diagnostics are local; portal permission and plugin behavior have no native capture.
 test('an API create without a Create grant retains the detailed table permission diagnostic', async (t) => {
   const { app } = await fixture(t),
     headers = {
@@ -185,6 +189,7 @@ test('an API create without a Create grant retains the detailed table permission
   assert.deepEqual(diagnostics[0].permissions, []);
 });
 
+// @test-kind contract+unproven: diagnostics are local; portal permission and plugin behavior have no native capture.
 test('scoped Create denial names the grant and relationship and revokes independent PreValidation SDK writes', async (t) => {
   const stateFile = path.join(await tempDir(t), 'state.json');
   const store = await new DataStore({

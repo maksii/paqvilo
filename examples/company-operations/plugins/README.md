@@ -140,6 +140,7 @@ over stdin only, and the driver selects TLS 1.2.
 From `examples/company-operations`:
 
 ```sh
+npm run sdk:build
 node --test plugins/test/*.test.mjs
 ```
 

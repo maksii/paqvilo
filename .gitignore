@@ -19,3 +19,6 @@ dist/
 examples/project/components/**/bin/
 examples/project/components/**/obj/
 examples/project/components/**/out/
+# SonarQube scanner work directories
+.scannerwork/
+.sonar-reports/

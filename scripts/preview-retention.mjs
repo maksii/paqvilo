@@ -4,10 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const registry = 'https://registry.npmjs.org/';
-const core = '(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)';
+const core = String.raw`(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)`;
 const stablePattern = new RegExp(`^${core}$`);
 // Only versions created by our immutable branch-preview publisher are disposable.
-const previewPattern = new RegExp(`^${core}-preview\\.([a-z0-9-]+-[a-f0-9]{8})\\.([1-9][0-9]*)\\.g[a-f0-9]{12}$`);
+const previewPattern = new RegExp(
+  String.raw`^${core}-preview\.([a-z0-9-]+-[a-f0-9]{8})\.([1-9][0-9]*)\.g[a-f0-9]{12}$`,
+);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const compareCore = (left, right) => {
   for (let i = 1; i <= 3; i++) {
@@ -49,7 +51,7 @@ export function retentionPlan(metadata, { keep = 3 } = {}) {
         .map(([tag]) => tag);
       return [{ version, channel, published, released: compareCore(match, stable[0].match) <= 0, protectedTags }];
     })
-    .sort((a, b) => b.published - a.published || b.version.localeCompare(a.version));
+    .sort((a, b) => b.published - a.published || b.version.localeCompare(a.version, 'en'));
   // Protected previews count toward the cap; never silently delete custom-tag targets.
   const current = previews.filter((item) => !item.released);
   const protectedCurrent = current.filter((item) => item.protectedTags.length);
@@ -153,7 +155,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       apply = false;
     for (let i = 2; i < process.argv.length; i++) {
       if (process.argv[i] === '--apply') apply = true;
-      else if (process.argv[i] === '--keep' && /^[1-9][0-9]*$/.test(process.argv[i + 1] ?? ''))
+      else if (process.argv[i] === '--keep' && /^[1-9]\d*$/.test(process.argv[i + 1] ?? ''))
         keep = Number(process.argv[++i]);
       else throw new Error('Usage: npm run preview:cleanup -- [--keep 3] [--apply]');
     }

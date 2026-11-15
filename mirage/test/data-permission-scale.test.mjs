@@ -101,18 +101,29 @@ function scaleState(SIZE) {
   };
 }
 
-// Fastest of three runs: one GC pause or scheduler stall on a loaded runner cannot fail the ratio.
-const fastest = (fn) =>
-  Math.min(
-    ...[0, 1, 2].map(() => {
-      const started = performance.now();
-      fn();
-      return performance.now() - started;
-    }),
-  );
+// Count row reads directly so the complexity guard does not depend on scheduler or GC timing.
+// Proxy the actual tables, catching indexed iteration, filter, some, and direct table access.
+function rowReads(store, operation) {
+  let count = 0;
+  const tables = store.state.tables;
+  const originals = Object.entries(tables);
+  try {
+    for (const [name, rows] of originals)
+      tables[name] = new Proxy(rows, {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) count++;
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    operation();
+    return count;
+  } finally {
+    for (const [name, rows] of originals) tables[name] = rows;
+  }
+}
 const identity = { id: 'me', contactId: 'me', roles: ['Manager'] };
 
-test(`parent-scope grants through an intersect table scale linearly from ${SMALL} to ${SIZE} rows`, async () => {
+test(`parent-scope grants through an intersect table scale linearly from ${SMALL} to ${SIZE} rows`, async (t) => {
   const small = await new DataStore({ state: scaleState(SMALL) }).init();
   const store = await new DataStore({ state: scaleState(SIZE) }).init();
   // Roles for users "me" exist on organisations 0, 10 and 20; products belong
@@ -128,13 +139,25 @@ test(`parent-scope grants through an intersect table scale linearly from ${SMALL
   );
   assert.equal(fetched.total_record_count, Math.min(expected, 5000));
   assert.equal(store.query('change', { $select: 'name', $count: 'true' }, identity)['@odata.count'], expected);
-  // 10x the rows: a key-lookup evaluation takes about 10x the time, a parents x intersect scan about 100x.
-  const ratio = fastest(() => store.rows('change', identity)) / fastest(() => small.rows('change', identity));
-  assert.ok(ratio < 40, `rows() grew ${ratio.toFixed(1)}x for 10x the rows`);
+  // Ten times the rows must not produce the roughly 100x work of a parent-by-intersect scan.
+  const smallReads = rowReads(small, () => small.rows('change', identity));
+  const largeReads = rowReads(store, () => store.rows('change', identity));
+  assert.ok(smallReads >= SMALL && largeReads >= SIZE, 'collection checks must read their rows');
+  const ratio = largeReads / smallReads;
+  assert.ok(ratio < 40, `rows() row reads grew ${ratio.toFixed(1)}x for 10x the rows`);
   // Single-record checks (writes, Liquid entities[...] lookups) build only per-call indexes.
-  const singles = (target) => () => {
-    for (const row of target.state.tables.change.slice(0, 20)) target.allowed('change', 'read', row, identity);
+  const singles = (target) => {
+    const rows = target.state.tables.change.slice(0, 20);
+    return () => {
+      for (const row of rows) target.allowed('change', 'read', row, identity);
+    };
   };
-  const singleRatio = fastest(singles(store)) / fastest(singles(small));
-  assert.ok(singleRatio < 40, `20 single-row checks grew ${singleRatio.toFixed(1)}x for 10x the rows`);
+  const smallSingleReads = rowReads(small, singles(small));
+  const largeSingleReads = rowReads(store, singles(store));
+  assert.ok(smallSingleReads >= SMALL && largeSingleReads >= SIZE, 'single checks must build their indexes');
+  const singleRatio = largeSingleReads / smallSingleReads;
+  assert.ok(singleRatio < 40, `20 single-row checks row reads grew ${singleRatio.toFixed(1)}x for 10x the rows`);
+  t.diagnostic(
+    `collection row reads: ${smallReads} -> ${largeReads} (${ratio.toFixed(2)}x); single checks: ${smallSingleReads} -> ${largeSingleReads} (${singleRatio.toFixed(2)}x)`,
+  );
 });

@@ -45,6 +45,13 @@ function refOf(args, name) {
   return { logical, id: idOf(ref) };
 }
 
+// Every goal the rollup writes must be writable by the caller. The check runs before the first write, so a refusal changes no goal.
+function authorizeGoals(api, c, plan) {
+  const mapping = api.store.resolveMapping('goal');
+  for (const { node } of plan)
+    api.principals.authorize({ user: c.user, entity: 'goal', operation: 'write', row: node, mapping });
+}
+
 function operations(api) {
   const { store } = api;
   const rowsOf = (logical) => store.state.tables[logical] ?? [];
@@ -63,7 +70,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   // The handler another module registered (Book, InstantiateTemplate, SendEmail), called with a context of its own.
   const handlerOf = (name, binding = 'unbound', entity) => {
@@ -167,6 +174,7 @@ function operations(api) {
     };
     const root = rootOf(goal);
     await compute(root, new Set([key(root.goalid)]));
+    authorizeGoals(api, c, plan);
     const at = api.clock();
     await write(async () => {
       for (const { node, totals, suffix } of plan) {
@@ -259,7 +267,7 @@ function operations(api) {
 
   // The appointment is booked by the Book handler from the Target's own fields. The Exchange attachment parameters are ignored.
   async function immediateBook(c) {
-    const booked = await handlerOf('Book')({ ...c, body: { ...(argsOf(c).Target ?? {}) }, params: {} });
+    const booked = await handlerOf('Book')({ ...c, body: { ...argsOf(c).Target }, params: {} });
     return { ValidationResult: booked.body.ValidationResult, Notifications: [] };
   }
 

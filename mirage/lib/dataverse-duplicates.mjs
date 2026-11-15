@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse duplicate detection: duplicate rules (duplicaterule and duplicaterulecondition
 // tables), the create and update check gated by MSCRM.SuppressDuplicateDetection, and the
@@ -10,6 +11,7 @@ import { contextUrl } from './dataverse-odata.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { BULK_DUPLICATE_TYPE } from './dataverse-async.mjs';
 import { childText, parseSolutionXml } from './solution-xml.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicate-rules.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 
 const ACTIVE = 1; // statecode Active
@@ -126,7 +128,7 @@ function formatRow(api, user, mapping, row) {
   const out = {};
   for (const [column, value] of Object.entries(visible)) {
     if (mapping.fields[column]?.dataverseType !== LOOKUP) {
-      out[column] = structuredClone(value);
+      out[column] = cloneStateData(value);
       continue;
     }
     const id = valueOf(value);
@@ -166,7 +168,7 @@ function compare(op, param, a, b, caseSensitive) {
   }
   if (op === 'exact') return x === y;
   const n = Number(param);
-  if (!(n >= 1))
+  /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(n >= 1))
     throw new DataError(
       'Same first and same last conditions need an operator parameter of at least 1.',
       400,
@@ -194,11 +196,6 @@ function matchesRow(store, rule, conditions, base, row) {
     return compare('exact', null, left, right, rule.iscasesensitive === true);
   });
 }
-
-const publishedRules = (store, filter) =>
-  store.tableRows('duplicaterule').filter((r) => Number(r.statuscode) === PUBLISHED && filter(r));
-const conditionsOf = (store, rule) =>
-  store.tableRows('duplicaterulecondition').filter((c) => same(c.regardingobjectid, rule.duplicateruleid));
 
 // Rows of the rule's matching table that duplicate `base`. selfId excludes the record being written when the tables are the same.
 function duplicatesUnder(store, rule, base, selfId) {
@@ -299,20 +296,39 @@ function offsetOf(info, count) {
   throw new DataError('PagingCookie is not valid.', 400, 'InvalidRequest');
 }
 
+// The table a BusinessEntity names: the @odata.type of the documented request (Microsoft.Dynamics.CRM. prefixed), else LogicalName.
+function baseEntityOf(business) {
+  if (business['@odata.type']) return String(business['@odata.type']).replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+  return business.LogicalName ?? business.logicalName; // crmbaseentity wire shape assumed
+}
+
+// The values a duplicate check compares. When the entity carries the primary id of a row the caller can read, that stored row
+// supplies the values the request does not name (supplied values win). The row's id is returned as selfId, to be left out.
+function comparedOf(api, c, baseEntity, supplied) {
+  const { store } = api;
+  const mapping = store.state.mappings[baseEntity];
+  const selfId = supplied[mapping?.idColumn];
+  const stored =
+    selfId == null ? undefined : store.tableRows(baseEntity).find((row) => same(row[mapping.idColumn], selfId));
+  if (!stored) return { attributes: supplied, selfId };
+  api.principals.authorize({ user: c.user, entity: baseEntity, operation: 'read', row: stored, mapping });
+  return { attributes: { ...stored, ...supplied }, selfId };
+}
+
 // Needs read on the matching table (and the record access it grants). Rows the caller cannot read are left out
 // before paging, and each row is formatted as a normal read.
 const retrieveDuplicates = (api) => async (c) => {
   const { store } = api;
   const business = c.params.BusinessEntity ?? {};
-  const baseEntity = business.LogicalName ?? business.logicalName; // crmbaseentity wire shape assumed
+  const baseEntity = baseEntityOf(business);
   const matching = c.params.MatchingEntityName;
   if (!baseEntity) throw new DataError('BusinessEntity must name its logical name.', 400, 'InvalidRequest');
   const target = store.state.mappings[matching];
   if (!target) throw new DataError(`${matching} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity: matching, operation: 'read', mapping: target });
   const readable = api.principals.readFilter({ user: c.user, entity: matching, mapping: target });
-  const attributes = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
-  const selfId = attributes[store.state.mappings[baseEntity]?.idColumn];
+  const supplied = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
+  const { attributes, selfId } = comparedOf(api, c, baseEntity, supplied);
   const found = new Map();
   for (const rule of publishedRules(
     store,
@@ -406,6 +422,18 @@ const bulkDetectDuplicates = (api) => async (c) => {
   };
 };
 
+// A condition is written only as a condition of the rule being updated: it must belong to that rule now, and the write may not
+// move it to another rule.
+function assertRuleCondition(rule, condition, values) {
+  const movedTo = 'regardingobjectid' in values ? values.regardingobjectid : condition.regardingobjectid;
+  if (same(condition.regardingobjectid, rule.duplicateruleid) && same(movedTo, rule.duplicateruleid)) return;
+  throw new DataError(
+    `duplicaterulecondition With Id = ${condition.duplicateruleconditionid} Does Not Belong To duplicaterule ${rule.duplicateruleid}`,
+    400,
+    'InvalidRequest',
+  );
+}
+
 // CompoundUpdateDuplicateDetectionRule: one call updates a duplicaterule and its conditions. Only the known columns are
 // written, and each condition named in ChildEntities must already exist. Assumptions: the 404 text for a missing condition,
 // and the 204 answer (no return is documented).
@@ -435,6 +463,7 @@ const compoundUpdateRule = (api) => async (c) => {
             throw new DataError(`duplicaterulecondition With Id = ${child.id} Does Not Exist`, 404, 'NotFound');
           const values = { ...child.values };
           delete values.duplicateruleconditionid;
+          assertRuleCondition(rule, condition, values);
           await store.updateRecordAsync(
             'duplicaterulecondition',
             condition.duplicateruleconditionid,
@@ -520,7 +549,9 @@ export function parseDuplicateRuleXml(text) {
 /** Reads a solution's duplicaterules folder (one folder per rule) into rows keyed by table. */
 export async function readDuplicateRuleSolution(folder) {
   const rows = { duplicaterule: [], duplicaterulecondition: [] };
-  for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
+  // Code-unit order: the rows keep the folder order, which differs between file systems.
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     if (!entry.isDirectory()) continue;
     const text = await readFile(join(folder, entry.name, 'duplicaterule.xml'), 'utf8').catch(() => null);
     if (text === null) continue;
@@ -575,6 +606,6 @@ export function install(api) {
     handle: compoundUpdateRule(api),
     csdl: CSDL_COMPOUND_UPDATE,
   });
-  api.recordHooks.add('beforeWrite', (c, mapping, change) => beforeWrite(store, c, mapping, change));
+  api.recordHooks.add('afterPreValidation', (c, mapping, change) => beforeWrite(store, c, mapping, change));
   return api.change(() => reset(api));
 }

@@ -35,6 +35,117 @@ const privileges = (letters) => ({
   append: letters.includes('A'),
   appendTo: letters.includes('T'),
 });
+
+function addMatrixRole(role, m, roots, node, mutable, service) {
+  const path = 'WORKFORCE',
+    account = node(role, path, 'account', mutable(m.account), roots[role], 'pqvd_access_accounts');
+  if (role === 'BRANCHMANAGER') node(role, 'UNITS', 'account', 'RCUA', account, 'account_parent_account');
+  const directory = m.directory
+    ? node(role, path, 'pqvd_orgcontact', mutable(m.directory), account, 'pqvd_account_orgcontacts')
+    : null;
+  let employment = null;
+  if (m.employment)
+    employment = node(role, path, 'pqvd_employment', mutable(m.employment), directory, 'pqvd_orgcontact_employments');
+  if (m.directory)
+    node(
+      role,
+      'DEPARTMENT',
+      'pqvd_department',
+      mutable(m.department ?? m.account),
+      account,
+      'pqvd_account_departments',
+    );
+  if (m.terms) node(role, 'TERMS', 'pqvd_employmentterms', mutable(m.terms), employment, 'pqvd_employment_terms');
+  const equipment = node(role, 'EQUIPMENT', 'pqvd_equipment', mutable(m.equipment), account, 'pqvd_account_equipments');
+  if (m.finance)
+    node(role, 'FINANCE', 'pqvd_equipmentfinance', mutable(m.finance), equipment, 'pqvd_equipment_finance');
+  addMatrixLocation(role, m, account, node, mutable);
+  addMatrixAssignments(role, { path, m, employment, equipment, node, mutable, service });
+  if (m.service) service(role, 'EQUIPMENT', equipment, 'pqvd_equipment_requests', m.service);
+}
+
+function addMatrixLocation(role, m, account, node, mutable) {
+  if (!m.location) return;
+  const site = node(role, 'LOCATIONS', 'pqvd_site', mutable(m.location), account, 'pqvd_account_sites'),
+    building = node(role, 'LOCATIONS', 'pqvd_building', mutable(m.location), site, 'pqvd_site_buildings');
+  node(role, 'LOCATIONS', 'pqvd_room', mutable(m.location), building, 'pqvd_building_rooms');
+}
+
+function addMatrixAssignments(role, { path, m, employment, equipment, node, mutable, service }) {
+  if (!m.assignment) return;
+  const assignment = node(
+    role,
+    path,
+    'pqvd_assignment',
+    mutable(m.assignment),
+    employment,
+    'pqvd_employment_assignments',
+  );
+  if (m.service) service(role, path, assignment, 'pqvd_assignment_requests', m.service);
+  node(role, 'EQUIPMENT', 'pqvd_assignment', mutable(m.assignment), equipment, 'pqvd_equipment_assignments');
+}
+
+function addMatrixPermissions(matrix, roots, node, mutable, service) {
+  for (const [role, permissions] of Object.entries(matrix))
+    addMatrixRole(role, permissions, roots, node, mutable, service);
+}
+
+function addSupportRolePermissions(roots, node, service) {
+  for (const role of ['EMPLOYEE', 'CONTRACTOR', 'TEAMLEADER']) {
+    const root = roots[role];
+    node(role, 'PROFILE', 'account', 'R', root, 'pqvd_access_accounts');
+    node(role, 'DIRECTORY', 'pqvd_orgcontact', 'R', root, 'pqvd_access_orgcontacts');
+    const employment = node(role, 'ENGAGEMENT', 'pqvd_employment', 'R', root, 'pqvd_access_employments');
+    const assignment = node(role, 'ENGAGEMENT', 'pqvd_assignment', 'R', employment, 'pqvd_employment_assignments');
+    const equipment = node(role, 'CURRENT', 'pqvd_equipment', 'R', root, 'pqvd_access_equipments');
+    if (role === 'TEAMLEADER') node(role, 'DEPARTMENT', 'pqvd_department', 'R', root, 'pqvd_access_departments');
+    service(role, 'ENGAGEMENT', assignment, 'pqvd_assignment_requests', role === 'TEAMLEADER' ? 'RCU' : 'R');
+    service(role, 'CURRENT', equipment, 'pqvd_equipment_requests', 'R');
+    if (role !== 'TEAMLEADER')
+      node(role, 'REQUESTCREATE', 'pqvd_servicerequest', 'CA', assignment, 'pqvd_assignment_requests');
+  }
+}
+
+function grantAppendPrivileges(nodes) {
+  for (const child of nodes.filter((n) => n.parent && (n.privileges.create || n.privileges.write))) {
+    const parent = nodes.find((n) => n.key === child.parent);
+    if (parent.table !== 'pqvd_accesspermission') parent.privileges.appendTo = true;
+  }
+  for (const role of ['COMPANYMANAGER', 'BRANCHMANAGER', 'IT', 'CTO'])
+    for (const n of nodes.filter((n) => n.role === role && n.table === 'pqvd_room')) n.privileges.appendTo = true;
+  nodes.find((n) => n.key === 'IT-WORKFORCE-ACCOUNT').privileges.append = true;
+  nodes.find((n) => n.key === 'IT-LOCATIONS-ROOM').privileges.append = true;
+}
+
+function addReferencePermissions(schema, referenceRoles, roots, node) {
+  if (!schema.relationships.some((r) => r.name === 'pqvd_access_currencies')) return;
+  for (const role of referenceRoles) {
+    const rights = ['HR', 'PROCUREMENT'].includes(role) ? 'RT' : 'R';
+    if (schema.relationships.some((r) => r.name === 'pqvd_access_currencyreferences')) {
+      node(role, 'CURRENCYREFERENCE', 'pqvd_currencyreference', 'R', roots[role], 'pqvd_access_currencyreferences');
+      // Preserve the original system leaf registry identities. Adding the
+      // custom target must not strand active legacy grants or rename a GUID.
+      node(role, 'CURRENCYREFERENCE', 'transactioncurrency', rights, roots[role], 'pqvd_access_currencies');
+    } else node(role, 'CURRENCYREFERENCE', 'transactioncurrency', rights, roots[role], 'pqvd_access_currencies');
+    node(role, 'VENDORREFERENCE', 'account', rights, roots[role], 'pqvd_access_referenceaccounts');
+  }
+}
+
+function addTestRunnerPermissions(schema, node) {
+  const contact = node('TESTRUNNER', 'SELF', 'contact', 'RAT', null, null, { scope: 'Self' });
+  const run = node('TESTRUNNER', 'RUNS', 'pqvd_testrun', 'RCUAT', null, 'pqvd_contact_testruns');
+  // Only disposable equipment explicitly tied to the actor's own test run can
+  // receive Delete. The business trees retain their no-Delete equipment rights.
+  if (schema.relationships.some((r) => r.name === 'pqvd_testrun_canaryequipments'))
+    node('TESTRUNNER', 'CANARYCLEANUP', 'pqvd_equipment', 'D', run, 'pqvd_testrun_canaryequipments');
+  node('TESTRUNNER', 'RESULTS', 'pqvd_testresult', 'RCUAT', run, 'pqvd_testrun_results');
+  node('TESTRUNNER', 'PROBES', 'pqvd_crudprobe', 'RCUDAT', null, 'pqvd_contact_crudprobes');
+  const operation = node('TESTRUNNER', 'OPERATIONS', 'pqvd_testoperation', 'RCUAT', run, 'pqvd_testrun_operations');
+  node('TESTRUNNER', 'EVENTS', 'pqvd_pluginevent', 'R', operation, 'pqvd_testoperation_events');
+  node('TESTRUNNER', 'NODES', 'pqvd_chainnode', 'R', operation, 'pqvd_testoperation_chainnodes');
+  contact.privileges.appendTo = true;
+}
+
 export function buildBlueprint(schema, catalogue) {
   const nodes = [],
     roles = Object.entries(roleNames).map(([code, label]) => ({
@@ -51,8 +162,7 @@ export function buildBlueprint(schema, catalogue) {
     rights,
     parent = null,
     relationship = null,
-    scope = parent ? 'Parent' : 'Contact',
-    active = true,
+    { scope = parent ? 'Parent' : 'Contact', active = true } = {},
   ) {
     const key = `${role}-${path}-${table.replace('pqvd_', '').toUpperCase()}`;
     if (nodes.some((n) => n.key === key)) throw new Error('Duplicate permission ' + key);
@@ -151,105 +261,13 @@ export function buildBlueprint(schema, catalogue) {
     ])
       n = node(role, path, table, mutable(rights), n, rel);
   }
-  for (const [role, m] of Object.entries(matrix)) {
-    const path = 'WORKFORCE',
-      account = node(role, path, 'account', mutable(m.account), roots[role], 'pqvd_access_accounts');
-    if (role === 'BRANCHMANAGER') node(role, 'UNITS', 'account', 'RCUA', account, 'account_parent_account');
-    const directory = m.directory
-      ? node(role, path, 'pqvd_orgcontact', mutable(m.directory), account, 'pqvd_account_orgcontacts')
-      : null;
-    let employment = null;
-    if (m.employment)
-      employment = node(role, path, 'pqvd_employment', mutable(m.employment), directory, 'pqvd_orgcontact_employments');
-    if (m.directory)
-      node(
-        role,
-        'DEPARTMENT',
-        'pqvd_department',
-        mutable(m.department ?? m.account),
-        account,
-        'pqvd_account_departments',
-      );
-    if (m.terms) node(role, 'TERMS', 'pqvd_employmentterms', mutable(m.terms), employment, 'pqvd_employment_terms');
-    const equipment = node(
-      role,
-      'EQUIPMENT',
-      'pqvd_equipment',
-      mutable(m.equipment),
-      account,
-      'pqvd_account_equipments',
-    );
-    if (m.finance)
-      node(role, 'FINANCE', 'pqvd_equipmentfinance', mutable(m.finance), equipment, 'pqvd_equipment_finance');
-    if (m.location) {
-      const site = node(role, 'LOCATIONS', 'pqvd_site', mutable(m.location), account, 'pqvd_account_sites'),
-        building = node(role, 'LOCATIONS', 'pqvd_building', mutable(m.location), site, 'pqvd_site_buildings');
-      node(role, 'LOCATIONS', 'pqvd_room', mutable(m.location), building, 'pqvd_building_rooms');
-    }
-    if (m.assignment) {
-      const assignment = node(
-        role,
-        path,
-        'pqvd_assignment',
-        mutable(m.assignment),
-        employment,
-        'pqvd_employment_assignments',
-      );
-      if (m.service) service(role, path, assignment, 'pqvd_assignment_requests', m.service);
-      node(role, 'EQUIPMENT', 'pqvd_assignment', mutable(m.assignment), equipment, 'pqvd_equipment_assignments');
-    }
-    if (m.service) service(role, 'EQUIPMENT', equipment, 'pqvd_equipment_requests', m.service);
-  }
-  for (const role of ['EMPLOYEE', 'CONTRACTOR', 'TEAMLEADER']) {
-    const root = roots[role];
-    node(role, 'PROFILE', 'account', 'R', root, 'pqvd_access_accounts');
-    node(role, 'DIRECTORY', 'pqvd_orgcontact', 'R', root, 'pqvd_access_orgcontacts');
-    const employment = node(role, 'ENGAGEMENT', 'pqvd_employment', 'R', root, 'pqvd_access_employments');
-    const assignment = node(role, 'ENGAGEMENT', 'pqvd_assignment', 'R', employment, 'pqvd_employment_assignments');
-    const equipment = node(role, 'CURRENT', 'pqvd_equipment', 'R', root, 'pqvd_access_equipments');
-    if (role === 'TEAMLEADER') node(role, 'DEPARTMENT', 'pqvd_department', 'R', root, 'pqvd_access_departments');
-    service(role, 'ENGAGEMENT', assignment, 'pqvd_assignment_requests', role === 'TEAMLEADER' ? 'RCU' : 'R');
-    service(role, 'CURRENT', equipment, 'pqvd_equipment_requests', 'R');
-    if (role !== 'TEAMLEADER')
-      node(role, 'REQUESTCREATE', 'pqvd_servicerequest', 'CA', assignment, 'pqvd_assignment_requests');
-  }
+  addMatrixPermissions(matrix, roots, node, mutable, service);
+  addSupportRolePermissions(roots, node, service);
   // Append To is granted only on actual lookup targets of mutable descendants.
   // It never authorizes writing projection N:N relationships: roots have no Append.
-  for (const child of nodes.filter((n) => n.parent && (n.privileges.create || n.privileges.write))) {
-    const parent = nodes.find((n) => n.key === child.parent);
-    if (parent.table !== 'pqvd_accesspermission') parent.privileges.appendTo = true;
-  }
-  for (const role of ['COMPANYMANAGER', 'BRANCHMANAGER', 'IT', 'CTO'])
-    for (const n of nodes.filter((n) => n.role === role && n.table === 'pqvd_room')) n.privileges.appendTo = true;
-  // Binding Account to Equipment fails with scoped Append To alone, so the Account
-  // also gets scoped Append; Account scalar writes stay unavailable.
-  nodes.find((n) => n.key === 'IT-WORKFORCE-ACCOUNT').privileges.append = true;
-  // Binding Room fails with Append To alone in the same way.
-  nodes.find((n) => n.key === 'IT-LOCATIONS-ROOM').privileges.append = true;
-  if (schema.relationships.some((r) => r.name === 'pqvd_access_currencies'))
-    for (const role of referenceRoles) {
-      const rights = ['HR', 'PROCUREMENT'].includes(role) ? 'RT' : 'R';
-      if (schema.relationships.some((r) => r.name === 'pqvd_access_currencyreferences')) {
-        node(role, 'CURRENCYREFERENCE', 'pqvd_currencyreference', 'R', roots[role], 'pqvd_access_currencyreferences');
-        // Preserve the original system leaf registry identities. Adding the
-        // custom target must not strand active legacy grants or rename a GUID.
-        node(role, 'CURRENCYREFERENCE', 'transactioncurrency', rights, roots[role], 'pqvd_access_currencies');
-      } else node(role, 'CURRENCYREFERENCE', 'transactioncurrency', rights, roots[role], 'pqvd_access_currencies');
-      node(role, 'VENDORREFERENCE', 'account', rights, roots[role], 'pqvd_access_referenceaccounts');
-    }
-  const contact = node('TESTRUNNER', 'SELF', 'contact', 'RAT', null, null, 'Self');
-  const run = node('TESTRUNNER', 'RUNS', 'pqvd_testrun', 'RCUAT', null, 'pqvd_contact_testruns');
-  // Only disposable equipment explicitly tied to the actor's own test run can
-  // receive Delete. The business trees retain their no-Delete equipment rights.
-  if (schema.relationships.some((r) => r.name === 'pqvd_testrun_canaryequipments'))
-    node('TESTRUNNER', 'CANARYCLEANUP', 'pqvd_equipment', 'D', run, 'pqvd_testrun_canaryequipments');
-  node('TESTRUNNER', 'RESULTS', 'pqvd_testresult', 'RCUAT', run, 'pqvd_testrun_results');
-  node('TESTRUNNER', 'PROBES', 'pqvd_crudprobe', 'RCUDAT', null, 'pqvd_contact_crudprobes');
-  const operation = node('TESTRUNNER', 'OPERATIONS', 'pqvd_testoperation', 'RCUAT', run, 'pqvd_testrun_operations');
-  node('TESTRUNNER', 'EVENTS', 'pqvd_pluginevent', 'R', operation, 'pqvd_testoperation_events');
-  node('TESTRUNNER', 'NODES', 'pqvd_chainnode', 'R', operation, 'pqvd_testoperation_chainnodes');
-  // Probe binds active operation; results bind operation as well as run.
-  contact.privileges.appendTo = true;
+  grantAppendPrivileges(nodes);
+  addReferencePermissions(schema, referenceRoles, roots, node);
+  addTestRunnerPermissions(schema, node);
   const assignments = catalogue.personas.map((p) => ({
     persona: p.key,
     contactId: p.contactId,
@@ -285,6 +303,50 @@ export function assertNoActiveOrphans(b) {
       throw new Error('Active orphan permission is unsafe after observed global visibility fallback: ' + child.key);
   }
 }
+
+function validateNodeBasics(n, tables, roles) {
+  if (!tables.has(n.table) || !roles.has(n.role)) throw new Error('Unknown table/role ' + n.key);
+  if (n.scope === 'Global' || n.scope === 'Account') throw new Error('Unscoped/global business access ' + n.key);
+  if (n.table !== 'pqvd_crudprobe' && n.privileges.delete) {
+    const narrowCanary =
+      n.key === 'TESTRUNNER-CANARYCLEANUP-EQUIPMENT' &&
+      n.role === 'TESTRUNNER' &&
+      n.parent === 'TESTRUNNER-RUNS-TESTRUN' &&
+      n.relationship === 'pqvd_testrun_canaryequipments' &&
+      Object.entries(n.privileges).every(([right, value]) => value === (right === 'delete'));
+    if (!narrowCanary) throw new Error('Unexpected Delete ' + n.key);
+  }
+  if (n.table === 'pqvd_accesspermission' && Object.entries(n.privileges).some(([p, v]) => p !== 'read' && v))
+    throw new Error('Mutable security root ' + n.key);
+}
+
+function validateNodePath(n, byKey) {
+  const path = new Set();
+  let current = n;
+  while (current) {
+    if (path.has(current.key)) throw new Error('Permission cycle');
+    path.add(current.key);
+    current = current.parent ? byKey.get(current.parent) : null;
+  }
+}
+
+function validateNodeScope(n, byKey, relationships) {
+  if (n.parent) {
+    const parent = byKey.get(n.parent),
+      relationship = relationships.get(n.relationship);
+    if (!parent || parent.role !== n.role || n.scope !== 'Parent') throw new Error('Invalid parent role ' + n.key);
+    if (!relationship) throw new Error('Unknown relationship ' + n.relationship);
+    const ends = new Set([relationship.parent ?? relationship.entity1, relationship.child ?? relationship.entity2]);
+    if (!ends.has(n.table) || !ends.has(parent.table)) throw new Error('Relationship endpoint mismatch ' + n.key);
+  } else if (n.scope === 'Contact') {
+    const relationship = relationships.get(n.relationship);
+    if (relationship?.parent !== 'contact' || relationship.child !== n.table)
+      throw new Error('Invalid Contact root ' + n.key);
+    if (n.role !== 'TESTRUNNER' && n.relationship !== `pqvd_contact_access_${n.role.toLowerCase()}`)
+      throw new Error('Scope multiplication root ' + n.key);
+  } else if (n.scope !== 'Self' || n.table !== 'contact') throw new Error('Unexpected root scope ' + n.key);
+}
+
 export function validateBlueprint(b, schema) {
   assertNoActiveOrphans(b);
   const tables = new Set(schema.tables.map((t) => t.name)),
@@ -294,40 +356,9 @@ export function validateBlueprint(b, schema) {
     relationships = new Map(schema.relationships.map((r) => [r.name, r]));
   relationships.set('account_parent_account', { kind: 'oneToMany', parent: 'account', child: 'account' });
   for (const n of b.nodes) {
-    if (!tables.has(n.table) || !roles.has(n.role)) throw new Error('Unknown table/role ' + n.key);
-    if (n.scope === 'Global' || n.scope === 'Account') throw new Error('Unscoped/global business access ' + n.key);
-    if (n.table !== 'pqvd_crudprobe' && n.privileges.delete) {
-      const narrowCanary =
-        n.key === 'TESTRUNNER-CANARYCLEANUP-EQUIPMENT' &&
-        n.role === 'TESTRUNNER' &&
-        n.parent === 'TESTRUNNER-RUNS-TESTRUN' &&
-        n.relationship === 'pqvd_testrun_canaryequipments' &&
-        Object.entries(n.privileges).every(([right, value]) => value === (right === 'delete'));
-      if (!narrowCanary) throw new Error('Unexpected Delete ' + n.key);
-    }
-    if (n.table === 'pqvd_accesspermission' && Object.entries(n.privileges).some(([p, v]) => p !== 'read' && v))
-      throw new Error('Mutable security root ' + n.key);
-    const path = new Set();
-    let current = n;
-    while (current) {
-      if (path.has(current.key)) throw new Error('Permission cycle');
-      path.add(current.key);
-      current = current.parent ? byKey.get(current.parent) : null;
-    }
-    if (n.parent) {
-      const p = byKey.get(n.parent),
-        r = relationships.get(n.relationship);
-      if (!p || p.role !== n.role || n.scope !== 'Parent') throw new Error('Invalid parent role ' + n.key);
-      if (!r) throw new Error('Unknown relationship ' + n.relationship);
-      const ends = [r.parent ?? r.entity1, r.child ?? r.entity2];
-      if (!ends.includes(n.table) || !ends.includes(p.table))
-        throw new Error('Relationship endpoint mismatch ' + n.key);
-    } else if (n.scope === 'Contact') {
-      const r = relationships.get(n.relationship);
-      if (!r || r.parent !== 'contact' || r.child !== n.table) throw new Error('Invalid Contact root ' + n.key);
-      if (n.role !== 'TESTRUNNER' && n.relationship !== `pqvd_contact_access_${n.role.toLowerCase()}`)
-        throw new Error('Scope multiplication root ' + n.key);
-    } else if (n.scope !== 'Self' || n.table !== 'contact') throw new Error('Unexpected root scope ' + n.key);
+    validateNodeBasics(n, tables, roles);
+    validateNodePath(n, byKey);
+    validateNodeScope(n, byKey, relationships);
   }
   for (const a of b.assignments) if (a.roles.some((r) => !roles.has(r))) throw new Error('Unknown assigned role');
   const finding = byKey.get('IT-WORKFORCE-FINDING');

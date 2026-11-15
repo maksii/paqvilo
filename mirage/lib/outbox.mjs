@@ -53,17 +53,50 @@ const text = (value, label, max = 1_000_000) => {
   return value;
 };
 function addresses(value, label) {
-  const list = value == null ? [] : Array.isArray(value) ? value : [value];
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (value != null) list = [value];
   if (list.length > 500 || list.some((item) => typeof item !== 'string' || !item.trim() || item.length > 320))
     throw invalid(`${label} must be addresses`);
   return [...list];
 }
-const bytesOf = (content) =>
-  Buffer.isBuffer(content) || content instanceof Uint8Array
-    ? Buffer.from(content)
-    : typeof content === 'string'
-      ? Buffer.from(content, 'base64')
-      : null;
+const bytesOf = (content) => {
+  if (Buffer.isBuffer(content) || content instanceof Uint8Array) return Buffer.from(content);
+  if (typeof content === 'string') return Buffer.from(content, 'base64');
+  return null;
+};
+function sinceMs(since) {
+  if (since == null) return null;
+  if (since instanceof Date) return since.getTime();
+  if (typeof since === 'number') return since;
+  return Date.parse(since);
+}
+
+function validateOutboxCapture(entry) {
+  if (!CHANNELS.has(entry.channel)) throw invalid('channel must be email, teams, outlook or portal-email');
+  const state = entry.state ?? 'queued';
+  if (!STATES.has(state)) throw invalid('state must be queued, delivered or failed');
+  const bodyType = entry.bodyType ?? 'text';
+  if (!BODY_TYPES.has(bodyType)) throw invalid('bodyType must be text or html');
+  if (entry.source != null && (typeof entry.source !== 'object' || typeof entry.source.kind !== 'string'))
+    throw invalid('source must be { kind, id }');
+  if (entry.attachments != null && (!Array.isArray(entry.attachments) || entry.attachments.length > 100))
+    throw invalid('attachments must be an array of at most 100 items');
+  return { state, bodyType };
+}
+
+function prepareOutboxAttachment(attachment, index) {
+  if (!attachment || typeof attachment !== 'object') throw invalid('Each attachment must be an object');
+  const bytes = attachment.content == null ? null : bytesOf(attachment.content);
+  if (attachment.content != null && !bytes) throw invalid('Attachment content must be bytes or base64 text');
+  const meta = {
+    name: text(attachment.name, 'Attachment name', 260) ?? `attachment-${index + 1}`,
+    contentType: text(attachment.contentType, 'Attachment contentType', 200) ?? 'application/octet-stream',
+    size: bytes?.length ?? (Number.isSafeInteger(attachment.size) ? attachment.size : null),
+    key: null,
+  };
+  return { bytes, meta };
+}
 
 export function createOutbox({
   store,
@@ -81,7 +114,8 @@ export function createOutbox({
   // The organization composes the table at startup (dataverse-organization.mjs INTERNAL_TABLES); this seed covers a bare store.
   const seed = () => {
     store.state.mappings[OUTBOX_TABLE] ??= structuredClone(OUTBOX_MAPPING);
-    return (store.state.tables[OUTBOX_TABLE] ??= []);
+    store.state.tables[OUTBOX_TABLE] ??= [];
+    return store.state.tables[OUTBOX_TABLE];
   };
   const write = (fn, nested) => store.transact(() => fn(seed()), { incremental: true, nested });
   const view = ({ [ID]: id, ...rest }) => structuredClone({ id, ...rest });
@@ -91,7 +125,11 @@ export function createOutbox({
   const keysOf = (row) => row.attachments.map((attachment) => attachment.key).filter(Boolean);
   // Byte deletes that a nested capture deferred. Kept in state.simulator, a section the row transaction restores on
   // rollback, so a rolled-back capture takes its deferred deletes with it.
-  const pending = () => ((store.state.simulator ??= {}).outboxPendingDeletes ??= []);
+  const pending = () => {
+    store.state.simulator ??= {};
+    store.state.simulator.outboxPendingDeletes ??= [];
+    return store.state.simulator.outboxPendingDeletes;
+  };
   // Keys of bytes put by a capture whose row is not written yet: sweep() must not reclaim them.
   // ponytail: tracked per outbox instance; two outboxes on one storage would each need to share this set.
   const inFlight = new Set();
@@ -125,15 +163,7 @@ export function createOutbox({
     descriptor: outboxDescriptor,
     /** Capture one message. Pass `{ nested: true }` to join the caller's transaction so a rolled-back write drops it. */
     async capture(entry = {}, { nested = false } = {}) {
-      if (!CHANNELS.has(entry.channel)) throw invalid('channel must be email, teams, outlook or portal-email');
-      const state = entry.state ?? 'queued';
-      if (!STATES.has(state)) throw invalid('state must be queued, delivered or failed');
-      const bodyType = entry.bodyType ?? 'text';
-      if (!BODY_TYPES.has(bodyType)) throw invalid('bodyType must be text or html');
-      if (entry.source != null && (typeof entry.source !== 'object' || typeof entry.source.kind !== 'string'))
-        throw invalid('source must be { kind, id }');
-      if (entry.attachments != null && (!Array.isArray(entry.attachments) || entry.attachments.length > 100))
-        throw invalid('attachments must be an array of at most 100 items');
+      const { state, bodyType } = validateOutboxCapture(entry);
       const entryId = uuid(),
         at = now(),
         diagnostics = [],
@@ -158,15 +188,7 @@ export function createOutbox({
       };
       try {
         for (const [index, attachment] of (entry.attachments ?? []).entries()) {
-          if (!attachment || typeof attachment !== 'object') throw invalid('Each attachment must be an object');
-          const bytes = attachment.content == null ? null : bytesOf(attachment.content);
-          if (attachment.content != null && !bytes) throw invalid('Attachment content must be bytes or base64 text');
-          const meta = {
-            name: text(attachment.name, 'Attachment name', 260) ?? `attachment-${index + 1}`,
-            contentType: text(attachment.contentType, 'Attachment contentType', 200) ?? 'application/octet-stream',
-            size: bytes?.length ?? (Number.isSafeInteger(attachment.size) ? attachment.size : null),
-            key: null,
-          };
+          const { bytes, meta } = prepareOutboxAttachment(attachment, index);
           if (bytes && storage) {
             const candidate = `outbox/${entryId.toLowerCase()}/${index + 1}`;
             flight.push(candidate);
@@ -210,14 +232,7 @@ export function createOutbox({
       }
     },
     list({ correlationId, channel, since } = {}) {
-      const after =
-        since == null
-          ? null
-          : since instanceof Date
-            ? since.getTime()
-            : typeof since === 'number'
-              ? since
-              : Date.parse(since);
+      const after = sinceMs(since);
       return rowsOf()
         .filter(
           (row) =>

@@ -1,7 +1,8 @@
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
+import { loopbackServer } from './shared-browser.mjs';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
@@ -15,7 +16,7 @@ test('quick views and related-form frames keep DOM values in query components an
     ),
   );
   const requests = [];
-  const server = http.createServer((request, response) => {
+  const { server } = await loopbackServer(t, (request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
     if (scripts.has(url.pathname))
       return response.writeHead(200, { 'content-type': 'text/javascript' }).end(scripts.get(url.pathname));
@@ -28,13 +29,8 @@ test('quick views and related-form frames keep DOM values in query components an
       '<!doctype html><html><body><input id="parentid" type="hidden"><input id="parentid_entityname" type="hidden"><input id="badid" type="hidden"><div id="quick-views"></div><div id="EntityFormControl_fixture"><input id="fixture_EntityFormView_EntityID" type="hidden"><span data-form-layout></span><div class="form-custom-actions"><button type="button" class="create-related-record-link" data-filtercriteriaid="related">Create</button></div></div><section class="modal-form-createrecord" data-filtercriteriaid="related"><h2 class="modal-title">New <em>related</em> record</h2><div class="form-loading"></div><iframe data-page="/modal" src="about:blank"></iframe></section><script src="/crmentityformview.js"></script><script src="/platform-app.js"></script></body></html>',
     );
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const origin = `http://127.0.0.1:${server.address().port}`;
   const errors = [],

@@ -8,15 +8,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { INTERNAL_TABLES } from '../lib/dataverse-organization.mjs';
-import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
+import { QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENTITY =
   '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>';
 
 test('a standalone runtime at level simulation sends one message and captures one outbox entry without a schema diagnostic', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'internal-tables-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'internal-tables-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':
@@ -45,9 +45,18 @@ test('a standalone runtime at level simulation sends one message and captures on
     diagnostic: (entry) => diagnostics.push(entry),
   });
   ownedFixture(t).add(() => sim.close());
-  for (const name of [QUEUE_MESSAGE_TABLE, OUTBOX_TABLE]) {
+  for (const name of [QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE, OUTBOX_TABLE]) {
     assert.ok(INTERNAL_TABLES.includes(name), `${name} is registered as an internal table`);
     assert.ok(sim.store.state.mappings[name], `${name} is composed at startup`);
+  }
+  for (const name of [QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE]) {
+    assert.equal(sim.store.state.mappings[name].entitySet, undefined, `${name} has no entity set`);
+    assert.equal(
+      sim.store.resolveMapping(name).entitySet,
+      name,
+      `${name} resolves with its logical name as entity set`,
+    );
+    assert.equal(sim.store.resolveMapping(name).dataverseOnly, true, `${name} resolves as a dataverse-only table`);
   }
   const { messaging, outbox } = sim.organization.api.providers;
   await messaging.bus.send('x-invented-queue', { hello: 'invented' });
@@ -66,7 +75,6 @@ test('a standalone runtime at level simulation sends one message and captures on
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId, displayName: 'Invented internal table test', roles: ['System Administrator'] }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(registered.status, 201);
   const { secret } = await registered.json();
@@ -79,14 +87,12 @@ test('a standalone runtime at level simulation sends one message and captures on
       client_secret: secret,
       scope: `${sim.dataverse.origin}/.default`,
     }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(issued.status, 200);
   const { access_token: accessToken } = await issued.json();
   const get = (suffix) =>
     fetch(`${sim.dataverse.origin}/api/data/v9.2/${suffix}`, {
       headers: { authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10000),
     });
   const service = await get('');
   assert.equal(service.status, 200);
@@ -101,6 +107,7 @@ test('a standalone runtime at level simulation sends one message and captures on
   const xml = await csdl.text();
   for (const [logical, set] of [
     [QUEUE_MESSAGE_TABLE, 'paqvilo_queuemessages'],
+    [QUEUE_SEQUENCE_TABLE, 'paqvilo_queuesequences'],
     [OUTBOX_TABLE, 'paqvilo_outboxentries'],
   ]) {
     assert.ok(!catalogue.includes(set), `${logical} is absent from the service catalogue`);

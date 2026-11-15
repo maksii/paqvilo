@@ -1,3 +1,4 @@
+// @test-kind tooling: the replay shard harness runs its workers as local processes over invented fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,10 +6,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { runMirageReplayShards } from '../portal-harness/mirage-replay-shards.mjs';
+import { runMirageReplayShards, spawnWorker } from '../portal-harness/mirage-replay-shards.mjs';
 import { replayCellShard } from '../portal-harness/mirage-campaign-replay.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 test('actual process workers own separate cell/cache/receipt namespaces and unqualified evidence stays unqualified', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sharded-replay-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sharded-replay-'));
   try {
     const module = new URL('../portal-harness/mirage-campaign-replay.mjs', import.meta.url).href,
       script = path.join(directory, 'fixture.mjs');
@@ -63,7 +65,7 @@ test('actual process workers own separate cell/cache/receipt namespaces and unqu
           err += chunk;
         });
         child.on('error', reject);
-        child.on('exit', (code) => {
+        child.on('close', (code) => {
           if (code !== 0) reject(new Error(err));
           else {
             pids.push(child.pid);
@@ -88,6 +90,29 @@ test('actual process workers own separate cell/cache/receipt namespaces and unqu
     );
     await fs.appendFile(ledger.cells[0].resultFile, 'corrupt');
     await assert.rejects(runMirageReplayShards(job, { workers, runWorker }), /Parallel replay failed/);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test('a worker summary written after the worker process exited is still read whole', async () => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-replay-worker-close-'));
+  try {
+    // The worker exits at once; a detached process it started (outside the worker's Windows job, so it outlives it)
+    // keeps the worker's stdout and writes the summary only after
+    // the worker is gone, so the summary arrives after `exit` and before `close`.
+    const writer = path.join(directory, 'writer.cjs'),
+      worker = path.join(directory, 'worker.cjs');
+    await fs.writeFile(
+      writer,
+      `const pid=Number(process.argv[2]);const gone=()=>{try{process.kill(pid,0);return false}catch(error){return error.code==='ESRCH'}};const wait=setInterval(()=>{if(!gone())return;clearInterval(wait);process.stdout.write(JSON.stringify({pid}))},10);`,
+    );
+    await fs.writeFile(
+      worker,
+      `require('node:child_process').spawn(process.execPath,[${JSON.stringify(writer)},String(process.pid)],{detached:true,stdio:['ignore','inherit','ignore'],windowsHide:true}).unref();`,
+    );
+    const result = await spawnWorker(path.join(directory, 'unused-job.json'), { workerModule: worker });
+    assert.equal(result.summary.pid, result.pid);
   } finally {
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
   }

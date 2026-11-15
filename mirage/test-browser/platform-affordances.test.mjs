@@ -10,7 +10,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -21,7 +21,7 @@ before(async () => {
 after(() => sharedBrowser?.close());
 
 async function fixture(t, { captured = false, currentLookup = false, targetRead = true } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-affordance-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-affordance-'));
   const owner = ownedFixture(t);
   let app;
   owner.add(() => app?.close());

@@ -7,10 +7,10 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('native checkbox saves typed values visible to Web API, FetchXML and Liquid', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'checkbox-postback-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'checkbox-postback-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: checkbox-site\nadx_name: Checkbox fixture',

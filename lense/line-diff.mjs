@@ -22,57 +22,72 @@ export function diffLines(a, b) {
   if (n === 0 && m === 0) return [];
   const fallback = () => [{ aStart: start, aEnd: endA, bStart: start, bEnd: endB }];
   if (n === 0 || m === 0) return fallback();
+  return myersDiff(a, b, start, n, m, fallback);
+}
+
+function myersDiff(a, b, start, n, m, fallback) {
   const trace = [];
-  let comparisons = 0;
+  const state = { comparisons: 0 };
   const get = (row, depth, diagonal) => (diagonal < -depth || diagonal > depth ? -1 : row[diagonal + depth]);
   for (let depth = 0; (depth + 1) * (depth + 1) <= MAX_TRACE_CELLS; depth++) {
     const row = new Int32Array(depth * 2 + 1);
     const previous = trace.at(-1);
     for (let diagonal = -depth; diagonal <= depth; diagonal += 2) {
-      const down = depth ? get(previous, depth - 1, diagonal + 1) : 0;
-      const right = depth ? get(previous, depth - 1, diagonal - 1) : -1;
-      let x = diagonal === -depth || (diagonal !== depth && right < down) ? down : right + 1;
-      let y = x - diagonal;
-      while (x < n && y < m) {
-        if (++comparisons > MAX_COMPARISONS) return fallback();
-        if (a[start + x] !== b[start + y]) break;
-        x++;
-        y++;
-      }
-      row[diagonal + depth] = x;
-      if (x >= n && y >= m) {
-        // Walk only edit steps back through the compact trace, then group adjacent steps.
-        const edits = [];
-        for (let d = depth; d > 0; d--) {
-          const prev = trace[d - 1];
-          const k = x - y;
-          const downX = get(prev, d - 1, k + 1);
-          const rightX = get(prev, d - 1, k - 1);
-          const insert = k === -d || (k !== d && rightX < downX);
-          const prevK = insert ? k + 1 : k - 1;
-          const prevX = get(prev, d - 1, prevK);
-          const prevY = prevX - prevK;
-          edits.push({
-            aStart: start + prevX,
-            aEnd: start + prevX + (insert ? 0 : 1),
-            bStart: start + prevY,
-            bEnd: start + prevY + (insert ? 1 : 0),
-          });
-          x = prevX;
-          y = prevY;
-        }
-        const hunks = [];
-        for (const edit of edits.reverse()) {
-          const last = hunks.at(-1);
-          if (last && last.aEnd === edit.aStart && last.bEnd === edit.bStart) {
-            last.aEnd = edit.aEnd;
-            last.bEnd = edit.bEnd;
-          } else hunks.push(edit);
-        }
-        return hunks;
-      }
+      const step = advanceDiagonal({ a, b, start, n, m, depth, diagonal, trace, previous, get, state, fallback });
+      if (step.result) return step.result;
+      row[diagonal + depth] = step.x;
     }
     trace.push(row);
   }
   return fallback();
+}
+
+function advanceDiagonal({ a, b, start, n, m, depth, diagonal, trace, previous, get, state, fallback }) {
+  const down = depth ? get(previous, depth - 1, diagonal + 1) : 0;
+  const right = depth ? get(previous, depth - 1, diagonal - 1) : -1;
+  let x = diagonal === -depth || (diagonal !== depth && right < down) ? down : right + 1;
+  let y = x - diagonal;
+  while (x < n && y < m) {
+    if (++state.comparisons > MAX_COMPARISONS) return { result: fallback() };
+    if (a[start + x] !== b[start + y]) break;
+    x++;
+    y++;
+  }
+  if (x >= n && y >= m) return { result: reconstructHunks(start, depth, x, y, trace, get) };
+  return { x };
+}
+
+function reconstructHunks(start, depth, x, y, trace, get) {
+  const edits = [];
+  for (let d = depth; d > 0; d--) {
+    const prev = trace[d - 1];
+    const k = x - y;
+    const downX = get(prev, d - 1, k + 1);
+    const rightX = get(prev, d - 1, k - 1);
+    const insert = k === -d || (k !== d && rightX < downX);
+    const prevK = insert ? k + 1 : k - 1;
+    const prevX = get(prev, d - 1, prevK);
+    const prevY = prevX - prevK;
+    edits.push({
+      aStart: start + prevX,
+      aEnd: start + prevX + (insert ? 0 : 1),
+      bStart: start + prevY,
+      bEnd: start + prevY + (insert ? 1 : 0),
+    });
+    x = prevX;
+    y = prevY;
+  }
+  return mergeEdits(edits);
+}
+
+function mergeEdits(edits) {
+  const hunks = [];
+  for (const edit of edits.toReversed()) {
+    const last = hunks.at(-1);
+    if (last && last.aEnd === edit.aStart && last.bEnd === edit.bStart) {
+      last.aEnd = edit.aEnd;
+      last.bEnd = edit.bEnd;
+    } else hunks.push(edit);
+  }
+  return hunks;
 }

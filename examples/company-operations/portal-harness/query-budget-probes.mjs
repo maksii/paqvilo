@@ -10,8 +10,8 @@ const hash = (value) =>
   createHash('sha256')
     .update(typeof value === 'string' ? value : stable(value))
     .digest('hex');
-const quantifiers = ['any', 'not any', 'all', 'not all'];
-const ordinaryTypes = ['inner', 'outer'];
+const quantifiers = new Set(['any', 'not any', 'all', 'not all']);
+const ordinaryTypes = new Set(['inner', 'outer']);
 
 /** Count structural features, not the platform's undocumented budget. An `any`
  * root and its ordinary descendants are counted separately. This cannot prove
@@ -35,12 +35,12 @@ export function queryLinkFeatures(xml) {
     if (isLink) {
       types[type] = (types[type] ?? 0) + 1;
       features.total++;
-      if (ordinaryTypes.includes(type)) {
+      if (ordinaryTypes.has(type)) {
         features.ordinary++;
-        if (ancestors.some((value) => quantifiers.includes(value))) features.ordinaryUnderQuantifier++;
-      } else if (quantifiers.includes(type)) {
+        if (ancestors.some((value) => quantifiers.has(value))) features.ordinaryUnderQuantifier++;
+      } else if (quantifiers.has(type)) {
         features.quantifier++;
-        if (ancestors.some((value) => quantifiers.includes(value))) features.nestedQuantifiers++;
+        if (ancestors.some((value) => quantifiers.has(value))) features.nestedQuantifiers++;
       } else features.other++;
       ancestors.push(type);
       features.maximumLinkDepth = Math.max(features.maximumLinkDepth, ancestors.length);
@@ -115,31 +115,25 @@ function probe(base, id, xml, family, dimensions) {
   };
 }
 
-/** A separate finite discriminator domain. It is never added to, substituted
- * for, or credited towards the existing role lattice by materialization. */
-export function compileQueryBudgetProbes({ basePlan, scopedRoleMask }) {
-  validateRoot(basePlan);
-  basePlan = { ...basePlan, fixtureIds: basePlan.fixtureIds.map((value) => value.toLowerCase()) };
-  if (!Number.isSafeInteger(scopedRoleMask) || scopedRoleMask < 1 || scopedRoleMask > 4095)
-    throw new Error('Bind the actual nonzero twelve-role source mask for the scoped controls.');
+function quantifierProbes(basePlan) {
   const controls = [];
+  const dimensions = [
+    { shape: 'single-positive-control', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 0 },
+    { shape: 'quantifier-siblings-total-16', quantifierRoots: 16, ordinarySiblings: 0, ordinaryDescendants: 0 },
+    { shape: 'ordinary-siblings-15', quantifierRoots: 1, ordinarySiblings: 15, ordinaryDescendants: 0 },
+    { shape: 'ordinary-siblings-16', quantifierRoots: 1, ordinarySiblings: 16, ordinaryDescendants: 0 },
+    { shape: 'ordinary-descendants-15', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 15 },
+    { shape: 'ordinary-descendants-16', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 16 },
+    {
+      shape: 'nested-quantifiers-total-16',
+      quantifierRoots: 2,
+      ordinarySiblings: 14,
+      ordinaryDescendants: 0,
+      nested: true,
+    },
+  ];
   for (const type of quantifiers) {
     const label = type.replaceAll(' ', '-');
-    const dimensions = [
-      { shape: 'single-positive-control', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 0 },
-      { shape: 'quantifier-siblings-total-16', quantifierRoots: 16, ordinarySiblings: 0, ordinaryDescendants: 0 },
-      { shape: 'ordinary-siblings-15', quantifierRoots: 1, ordinarySiblings: 15, ordinaryDescendants: 0 },
-      { shape: 'ordinary-siblings-16', quantifierRoots: 1, ordinarySiblings: 16, ordinaryDescendants: 0 },
-      { shape: 'ordinary-descendants-15', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 15 },
-      { shape: 'ordinary-descendants-16', quantifierRoots: 1, ordinarySiblings: 0, ordinaryDescendants: 16 },
-      {
-        shape: 'nested-quantifiers-total-16',
-        quantifierRoots: 2,
-        ordinarySiblings: 14,
-        ordinaryDescendants: 0,
-        nested: true,
-      },
-    ];
     for (const dimension of dimensions) {
       const descendants = Array.from({ length: dimension.ordinaryDescendants }, (_, n) =>
         ordinary(basePlan, 'd' + n),
@@ -161,6 +155,11 @@ export function compileQueryBudgetProbes({ basePlan, scopedRoleMask }) {
       );
     }
   }
+  return controls;
+}
+
+function ordinaryProbes(basePlan) {
+  const controls = [];
   for (const ordinarySiblings of [0, 15, 16])
     controls.push(
       probe(
@@ -171,6 +170,10 @@ export function compileQueryBudgetProbes({ basePlan, scopedRoleMask }) {
         { ordinarySiblings },
       ),
     );
+  return controls;
+}
+
+function transportProbes(basePlan) {
   const transport = [];
   for (const ordinarySiblings of [0, 3, 11, 12, 15, 16])
     for (const paddingCharacters of [0, 128, 1024, 3072])
@@ -189,6 +192,20 @@ export function compileQueryBudgetProbes({ basePlan, scopedRoleMask }) {
           }),
         );
       }
+  return transport;
+}
+
+/** A separate finite discriminator domain. It is never added to, substituted
+ * for, or credited towards the existing role lattice by materialization. */
+export function compileQueryBudgetProbes({ basePlan, scopedRoleMask }) {
+  validateRoot(basePlan);
+  basePlan = { ...basePlan, fixtureIds: basePlan.fixtureIds.map((value) => value.toLowerCase()) };
+  if (!Number.isSafeInteger(scopedRoleMask) || scopedRoleMask < 1 || scopedRoleMask > 4095)
+    throw new Error('Bind the actual nonzero twelve-role source mask for the scoped controls.');
+  const quantifierPlans = quantifierProbes(basePlan);
+  const ordinaryPlans = ordinaryProbes(basePlan);
+  const controls = [...quantifierPlans, ...ordinaryPlans];
+  const transport = transportProbes(basePlan);
   const profiles = [
     {
       id: 'isolated-root-global',
@@ -271,7 +288,7 @@ export function materializeBudgetGlobalControl({ schema, catalogue, basePlan }) 
   const original = odataAdmissionCohorts({ schema, catalogue }).configurations.find(
     (configuration) => configuration.discriminator === 'direct-global',
   );
-  const { bindingContract: ignoredBinding, ...data } = original,
+  const { bindingContract: ignoredBinding, ...data } = original, // NOSONAR: binding is excluded from the rest object or is a placeholder
     configuration = structuredClone(data);
   const permission = configuration.permissions[0],
     previousId = permission.id;

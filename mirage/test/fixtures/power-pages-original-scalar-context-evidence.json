@@ -1,0 +1,880 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Exact original source programs evaluated with explicit source-local scalar context; excludes actor/site/table/request/drop-dependent programs.",
+  "context": {
+    "native": "Power Pages included web-template child in authenticated source-frozen rounds; prefix binds only the exact explicit primitive input values.",
+    "local": "Original renderer calls and actual original observed/default modes are joined separately. Matching values do not qualify unrecorded modes or enclosing parent assertions.",
+    "normalization": "None; native output bytes including CR/LF and error/HTML text are retained."
+  },
+  "captures": [
+    {
+      "runSha256": "74c660c3f3f05fa958b3c5fd4c726f5e96e2f7d283e3c0c36c2e5b9b49b106b0",
+      "producerSha256": "a97ffeedd094063907dfccc0068992aa1bf2e0701aa912773b6673990b5841ac",
+      "cases": [
+        {
+          "id": "original-context-001",
+          "facts": {
+            "originalSource": "{{ value | date: \"dd/M/yyyy\" }}",
+            "originalSourceSha256": "605431c692c5abfa1232d80801c0d476597ef46a08374b2600a3e358b2f8a384",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"dd/M/yyyy\" }}",
+            "nativeSourceSha256": "1c62379f8f37cdd56259cc7ec392e568147454a75d3402badfb99ebfb708bc41",
+            "outcome": "rendered-child",
+            "output": "02/1/2026"
+          }
+        },
+        {
+          "id": "original-context-002",
+          "facts": {
+            "originalSource": "{{ value | date: \"d/M/yyyy\" }}",
+            "originalSourceSha256": "7a3bcb402bce6fce8cce13473d88abb6bdf2270e80dbad9ac9f956845f684af1",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"d/M/yyyy\" }}",
+            "nativeSourceSha256": "42ab5d5356f9865cfc32a75fe926c3998390773df9a9ff5da6e96d39fc32f99c",
+            "outcome": "rendered-child",
+            "output": "2/1/2026"
+          }
+        },
+        {
+          "id": "original-context-003",
+          "facts": {
+            "originalSource": "{{ value | date: \"yyyy 'year' MM 'month' dd\" }}",
+            "originalSourceSha256": "5f15399c5284b4f73cae7e6933990f0dfe005d9e9d32c113f5e8cb8d24c3454c",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"yyyy 'year' MM 'month' dd\" }}",
+            "nativeSourceSha256": "0fc465564bf11099407503aa8338671b2748b5602c0a130c739c26db3bd0101d",
+            "outcome": "rendered-child",
+            "output": "2026 year 01 month 02"
+          }
+        },
+        {
+          "id": "original-context-004",
+          "facts": {
+            "originalSource": "{{ value | date: \"g\" }}",
+            "originalSourceSha256": "48550cd409aab31fd2c55f65bbe108d382bad5ed9b700751118f2f0d266b9f23",
+            "input": {
+              "value": "2026-01-02T00:00:00"
+            },
+            "inputSha256": "7a50581f6fbcc114455e0fffccd055d7f11568db70e881394cfc73dde1ab66b6",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02T00:00:00{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "c8bc33802d9a48d063d6cabef5aa9f32929daa2ecd1229b9a9c787d98cced8da",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02T00:00:00{% endraw %}{% endcapture %}{{ value | date: \"g\" }}",
+            "nativeSourceSha256": "abfebdafc26e29e0bac2adec1da8aefebb6a7fa4df101837811b248e68fe6b16",
+            "outcome": "rendered-child",
+            "output": "1/2/2026 12:00 AM"
+          }
+        },
+        {
+          "id": "original-context-005",
+          "facts": {
+            "originalSource": "{{name}}",
+            "originalSourceSha256": "f03387ea9beecce8a21e34f06746b3baf7d3d3b21735e64b7f5c35d03d1e196f",
+            "input": {
+              "name": "Alex"
+            },
+            "inputSha256": "fe2abc4974cb5e68361e939f7ee52aa35d61758ffc2726829eee05bee3d20a6d",
+            "nativeContextPrefix": "{% capture name %}{% raw %}Alex{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "c4dac19b5be835152593d3f9fbe07c4eaf4dc001d6fbf43fdde97dd871f310d8",
+            "nativeSource": "{% capture name %}{% raw %}Alex{% endraw %}{% endcapture %}{{name}}",
+            "nativeSourceSha256": "0a356e5f4db95702335f5213a9c8704ada6c504e6808022f78f2faf5e654ff93",
+            "outcome": "rendered-child",
+            "output": "Alex"
+          }
+        },
+        {
+          "id": "original-context-006",
+          "facts": {
+            "originalSource": "{{ 'abc'.size }}|{{ s.size }}",
+            "originalSourceSha256": "23fdc34e11d153fc893a706bdef168f462c41c4bfdf4fe0d1a26e355101ecda8",
+            "input": {
+              "s": "hello"
+            },
+            "inputSha256": "aa2a66ada1633cb40b81191752d22a004787247afec983bfaabc99e7b1397639",
+            "nativeContextPrefix": "{% capture s %}{% raw %}hello{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "1fe6711ca761c9de9660a36b0fbe48c3ccd5a85a8ffba3f3091e9c1b3ce22491",
+            "nativeSource": "{% capture s %}{% raw %}hello{% endraw %}{% endcapture %}{{ 'abc'.size }}|{{ s.size }}",
+            "nativeSourceSha256": "0c07c808e7552b5265e0b1abb090095494842a8405e0b3e2ad421631a7731e1a",
+            "outcome": "rendered-child",
+            "output": "abc|5"
+          }
+        },
+        {
+          "id": "original-context-007",
+          "facts": {
+            "originalSource": "{{ s | escape }}|{{ s | h }}",
+            "originalSourceSha256": "9512ec83daeb93767075b7c6f91eb93599f4fc0ac719362913738647d3addbff",
+            "input": {
+              "s": "<p>é & \"'</p>"
+            },
+            "inputSha256": "ed253afda917d7151a23399a18db5c35b86dba6da417c16c761d9606813af6be",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p>é & \"'</p>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "dab390844525b39e52792aa4db608810dc12570173fc6c50b5633b59a7ad7bd9",
+            "nativeSource": "{% capture s %}{% raw %}<p>é & \"'</p>{% endraw %}{% endcapture %}{{ s | escape }}|{{ s | h }}",
+            "nativeSourceSha256": "ba59546e77795e5ad481806166e05aa1dbe09e9d6996659ac2f4065f98bf523e",
+            "outcome": "rendered-child",
+            "output": "&lt;p&gt;&#233; &amp; &quot;&#39;&lt;/p&gt;|&lt;p&gt;&#233; &amp; &quot;&#39;&lt;/p&gt;"
+          }
+        },
+        {
+          "id": "original-context-008",
+          "facts": {
+            "originalSource": "{{ s | url_escape }}|{{ s | url_encode }}",
+            "originalSourceSha256": "210c63899e029e91fcd1a236ddc0799fb15082d4d14434e2513344b60f6a8f0f",
+            "input": {
+              "s": "This & that//"
+            },
+            "inputSha256": "fb7c15f2048aba2ca5576cdba4d10d5af4b2bd00e817625cfa201ceb6dbd130d",
+            "nativeContextPrefix": "{% capture s %}{% raw %}This & that//{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "9c198a5b241f7afab136d5b1ef8602527efa86a05bbf1c1bb962f85f734e82ac",
+            "nativeSource": "{% capture s %}{% raw %}This & that//{% endraw %}{% endcapture %}{{ s | url_escape }}|{{ s | url_encode }}",
+            "nativeSourceSha256": "acc78a875ddeb2b12d2c6dafaefc4d465d9dea3ca8bedafd82d1dcc3794445eb",
+            "outcome": "rendered-child",
+            "output": "This+%26+that%2F%2F|This+%26+that%2F%2F"
+          }
+        },
+        {
+          "id": "original-context-009",
+          "facts": {
+            "originalSource": "{{ s | xml_escape }}",
+            "originalSourceSha256": "b30a7fa671cf0036e4602cde156cf950dcb3edc7362228f3c9af6a8ae0275966",
+            "input": {
+              "s": "<a href=\"x\">'&"
+            },
+            "inputSha256": "4231b01b379d94484221f7b94eb932b83dba486edc463b77523020927279f0e3",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<a href=\"x\">'&{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "2432ad4de246aa8d4934ad3af6f842464b8ba835482d1b796594896fbb44d805",
+            "nativeSource": "{% capture s %}{% raw %}<a href=\"x\">'&{% endraw %}{% endcapture %}{{ s | xml_escape }}",
+            "nativeSourceSha256": "a0a0210d5f12724cd060b5bba623538f905b9f727aac2f61ab2dee726f1bcc82",
+            "outcome": "rendered-child",
+            "output": "&lt;a href=&quot;x&quot;&gt;&apos;&amp;"
+          }
+        },
+        {
+          "id": "original-context-010",
+          "facts": {
+            "originalSource": "{{ s | escape_once }}",
+            "originalSourceSha256": "58321dbaa9e4e283ca5b880a39d630e1ced87d6696370d1d21df8a458e5c7af5",
+            "input": {
+              "s": "1 &lt; 2 & 3"
+            },
+            "inputSha256": "e4b171dd977094205c3d5b2216f030ffd23448a52c2905a46d478cf05e1a64de",
+            "nativeContextPrefix": "{% capture s %}{% raw %}1 &lt; 2 & 3{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "79759f5d9a8edbe3ef7bb860cdd35479615e7766011458f395a94ac0cb10300d",
+            "nativeSource": "{% capture s %}{% raw %}1 &lt; 2 & 3{% endraw %}{% endcapture %}{{ s | escape_once }}",
+            "nativeSourceSha256": "46a49e60ba77585fb09089998952d5180213933c79add80b68d55e63aa2b966f",
+            "outcome": "rendered-child",
+            "output": "1 &lt; 2 & 3"
+          }
+        },
+        {
+          "id": "original-context-011",
+          "facts": {
+            "originalSource": "{{ s | truncate: 10 }}|{{ s | truncate_words: 2 }}",
+            "originalSourceSha256": "209a547ee9c742e9491092d52a2a67c4f57619c847e0e9422e97fc5764932cb0",
+            "input": {
+              "s": "This is a long sentence"
+            },
+            "inputSha256": "ee6cb3b5ab6403f3f9532b2e104fcef2520838274fa1877dc7f10f29530b58e2",
+            "nativeContextPrefix": "{% capture s %}{% raw %}This is a long sentence{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "f2a533e1a15de12702376615e15d4b118c872f5320f8f83814a921f37598d433",
+            "nativeSource": "{% capture s %}{% raw %}This is a long sentence{% endraw %}{% endcapture %}{{ s | truncate: 10 }}|{{ s | truncate_words: 2 }}",
+            "nativeSourceSha256": "30b8c6d84d2206211dc74797633413ff8ad4bb28310284b701b4c9da0ad9038f",
+            "outcome": "rendered-child",
+            "output": "This is...|This is..."
+          }
+        },
+        {
+          "id": "original-context-012",
+          "facts": {
+            "originalSource": "{{ s | split: ',' | size }}|{{ s | split: ',' | join: '|' }}",
+            "originalSourceSha256": "2d06945ec96953322d3975467ea2e4df890f3c67f2c1dadec26c87bb382d832b",
+            "input": {
+              "s": "a,b,,c"
+            },
+            "inputSha256": "1c939b20dc6b50f9bf7b336f3813b2d46ae9d20e5cb0a77f7d5fb70951e84126",
+            "nativeContextPrefix": "{% capture s %}{% raw %}a,b,,c{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "a8755af3a5e9821f9dcd330c69aa0db341c900738a4d52da034ce3ee68920b52",
+            "nativeSource": "{% capture s %}{% raw %}a,b,,c{% endraw %}{% endcapture %}{{ s | split: ',' | size }}|{{ s | split: ',' | join: '|' }}",
+            "nativeSourceSha256": "4ca64dfcc3a357a6c376276294a3cd1d35a6730bf21ec6ba715f9e139bc65ecc",
+            "outcome": "rendered-child",
+            "output": "3|a|b|c"
+          }
+        },
+        {
+          "id": "original-context-013",
+          "facts": {
+            "originalSource": "{{ s | strip_newlines }}|{{ s | newline_to_br }}",
+            "originalSourceSha256": "b45f6335684531165ca814fea78c708ffe8cc9deec80248fdf41dce571b74d53",
+            "input": {
+              "s": "a\nb\r\nc"
+            },
+            "inputSha256": "d74c8b9ad8d73e59270b18a79e627636dfdd9cdc3594d74e83f9eaed4d839e66",
+            "nativeContextPrefix": "{% capture s %}{% raw %}a\nb\r\nc{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "40a8a10639e9c928c8b9d16ddac5891f73e227069f5d77f90397d1a7623cdc68",
+            "nativeSource": "{% capture s %}{% raw %}a\nb\r\nc{% endraw %}{% endcapture %}{{ s | strip_newlines }}|{{ s | newline_to_br }}",
+            "nativeSourceSha256": "cbb3c482f6c979796711b3c6623b86d9e32434e19b3156b61e5345d8ecd6671b",
+            "outcome": "rendered-child",
+            "output": "abc|a<br>\nb<br>\r\nc"
+          }
+        },
+        {
+          "id": "original-context-014",
+          "facts": {
+            "originalSource": "{{ s | strip_html }}",
+            "originalSourceSha256": "a7363bcec2dc60de6ecdc4f0ac446c1955995f483b186e6394bd780518baec8e",
+            "input": {
+              "s": "<p>Hello <b>World</b></p><script>x</script>"
+            },
+            "inputSha256": "bcb66f0f7285a2b47b5d26b2d1301f85b60a989a4e4bb9afc599409ce3ec74b2",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p>Hello <b>World</b></p><script>x</script>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "2540b78042eee9998c95ac7fc277acdb00d721b67c1af7ae58213033ce55d9d1",
+            "nativeSource": "{% capture s %}{% raw %}<p>Hello <b>World</b></p><script>x</script>{% endraw %}{% endcapture %}{{ s | strip_html }}",
+            "nativeSourceSha256": "79908cb6b020c92fbf918b857815af89daa304a244de2138a0ba02a1d3254d1b",
+            "outcome": "rendered-child",
+            "output": "Hello Worldx"
+          }
+        },
+        {
+          "id": "original-context-015",
+          "facts": {
+            "originalSource": "{{ s | text_to_html }}",
+            "originalSourceSha256": "471815409f51e678b6af4fd3941b1fc16ebc9122c932f7c24a236a316b5b4dc6",
+            "input": {
+              "s": "Line one\nLine two\n\nhttp://example.com x"
+            },
+            "inputSha256": "6fedc24e5b8c706e0e323f49f68907c25806fd5ac7233a2515862d90f356bc97",
+            "nativeContextPrefix": "{% capture s %}{% raw %}Line one\nLine two\n\nhttp://example.com x{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "d3c9e200253a6575ef3009a2cc7b9a638d23e26ebf996436e75812293984a906",
+            "nativeSource": "{% capture s %}{% raw %}Line one\nLine two\n\nhttp://example.com x{% endraw %}{% endcapture %}{{ s | text_to_html }}",
+            "nativeSourceSha256": "511a0c2182425c12b2b50cc4728a50b177c61818e7bc2a55c202041160798916",
+            "outcome": "rendered-child",
+            "output": "<p>Line one<br>Line two</p><p><a href=\"http://example.com/\" rel=\"nofollow\">http://example.com/</a> x</p>"
+          }
+        },
+        {
+          "id": "original-context-016",
+          "facts": {
+            "originalSource": "{{ s | html_safe_escape }}",
+            "originalSourceSha256": "a03584bdef9f7d285e70b6dd09548deb4b4e6d6072ca7dc98f990e2f66880e90",
+            "input": {
+              "s": "<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">"
+            },
+            "inputSha256": "20dbe4031c67f1dba5e7b6dbdb3745493a4a045b18e8cda0e2ef47ecaf69a36c",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "a844e69cbcf3c8f71893e0b6405a5d589e239995a97796bec34f0b04f8eaefb5",
+            "nativeSource": "{% capture s %}{% raw %}<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">{% endraw %}{% endcapture %}{{ s | html_safe_escape }}",
+            "nativeSourceSha256": "afaf69bfb87ed5bac6a6c78a1c0d6ff26bf7ecbead030787f7c6f69a63a47d54",
+            "outcome": "rendered-child",
+            "output": "<img src=\"images/myimage.jpg\">"
+          }
+        },
+        {
+          "id": "original-context-017",
+          "facts": {
+            "originalSource": "{{ s | html_safe_escape }}",
+            "originalSourceSha256": "a03584bdef9f7d285e70b6dd09548deb4b4e6d6072ca7dc98f990e2f66880e90",
+            "input": {
+              "s": "<p onclick=\"x()\">ok<script>bad()</script></p>"
+            },
+            "inputSha256": "27e121efa9fb1acc608d296e61ddaed34c73bfcfad0051f9630d244bcdd437a1",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p onclick=\"x()\">ok<script>bad()</script></p>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "f09ef75f6281c2fcda666fff05cdc34bb8464ed61edfea71ea6ffcf66bdc042c",
+            "nativeSource": "{% capture s %}{% raw %}<p onclick=\"x()\">ok<script>bad()</script></p>{% endraw %}{% endcapture %}{{ s | html_safe_escape }}",
+            "nativeSourceSha256": "3a8ab8ca94b86bc65c64af5e6101051b3bc7843c2008a7f9139d61dc4364ed3e",
+            "outcome": "rendered-child",
+            "output": "<p>ok</p>"
+          }
+        },
+        {
+          "id": "original-context-018",
+          "facts": {
+            "originalSource": "{{ n | file_size }}|{{ n | file_size: 2 }}|{{ 2050 | file_size: 0 }}",
+            "originalSourceSha256": "381de0af7a5d76b838f219629367210a7c5ee880ea4d96466773d0392536bbdd",
+            "input": {
+              "n": 10000000
+            },
+            "inputSha256": "e2e7c48b9eccca3a08b1a591e4e81a5202aef8de84bcd6987926a386e3d924fa",
+            "nativeContextPrefix": "{% assign n = 10000000 %}",
+            "nativeContextPrefixSha256": "9fc7c5997e144a8befe460f32c9ccc0414c4819cf3197b65c4e3ce5ba651a13f",
+            "nativeSource": "{% assign n = 10000000 %}{{ n | file_size }}|{{ n | file_size: 2 }}|{{ 2050 | file_size: 0 }}",
+            "nativeSourceSha256": "1fe8abb62ee9e34eff2a64aea5bb2edda9c8d862e52f4dd75e2ae49c37986e8a",
+            "outcome": "rendered-child",
+            "output": "9.5 MB|9.54 MB|2 KB"
+          }
+        },
+        {
+          "id": "original-context-019",
+          "facts": {
+            "originalSource": "{{ s | date: 'yyyy' }}|{{ 'garbage' | date: 'yyyy' }}",
+            "originalSourceSha256": "d3bbd418bcb847cb6739acaa7bbab3a4b034df8433aba8222423e89e8ebd34e1",
+            "input": {
+              "s": "2024-05-07T07:20:46Z"
+            },
+            "inputSha256": "c4b0c9b318608459d0a3b3ffcc31bc10d8b2b86047d8a2851c748eeb9931e734",
+            "nativeContextPrefix": "{% capture s %}{% raw %}2024-05-07T07:20:46Z{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "b3be6fd9ffeb2dbf77b0eb5fae473b73b50a144fbd7ab8a62b7498967b7c7e8e",
+            "nativeSource": "{% capture s %}{% raw %}2024-05-07T07:20:46Z{% endraw %}{% endcapture %}{{ s | date: 'yyyy' }}|{{ 'garbage' | date: 'yyyy' }}",
+            "nativeSourceSha256": "aa696ab5c0773970edf5c51f77ac1feed51669f282bc9a40f272198d2df345a5",
+            "outcome": "rendered-child",
+            "output": "2024|garbage"
+          }
+        },
+        {
+          "id": "original-context-020",
+          "facts": {
+            "originalSource": "{{ u | base }}|{{ u | host }}|{{ u | path }}|{{ '/path?foo=bar&page=2' | path_and_query }}|{{ u | port }}|{{ u | scheme }}",
+            "originalSourceSha256": "615fc7a121828ae320938e11ff68bf271d20810287d6ea9d1637ee37257e0a17",
+            "input": {
+              "u": "https://example.com/path?foo=bar&page=2"
+            },
+            "inputSha256": "8a17b49441a06a1c6a2627c8dfa02cbb3406a00e181b7ecbb25d620d65c88158",
+            "nativeContextPrefix": "{% capture u %}{% raw %}https://example.com/path?foo=bar&page=2{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "7362e37c3b8e515df035cef98e0f24bd42b65839b42da6fe3d666b60f46c824e",
+            "nativeSource": "{% capture u %}{% raw %}https://example.com/path?foo=bar&page=2{% endraw %}{% endcapture %}{{ u | base }}|{{ u | host }}|{{ u | path }}|{{ '/path?foo=bar&page=2' | path_and_query }}|{{ u | port }}|{{ u | scheme }}",
+            "nativeSourceSha256": "ac0700f29cd0de6c4a61f33fcc536d7eb0fa33088058411d95399e46f6d166fc",
+            "outcome": "rendered-child",
+            "output": "https://example.com|example.com|/path|/path?foo=bar&page=2|443|https"
+          }
+        },
+        {
+          "id": "original-context-021",
+          "facts": {
+            "originalSource": "const headerHtml = {{ info | default: '' | json }};",
+            "originalSourceSha256": "479eb8193736b4db9e44a9fd28335ceb3af5e4a7e891d012eb9ba339578c3a8c",
+            "input": {
+              "info": "    \" \"\r\n"
+            },
+            "inputSha256": "0f3201d628cf201eb68a6276789c2548e137525dfdb5bca49e1685ad197a5d90",
+            "nativeContextPrefix": "{% capture info %}{% raw %}    \" \"\r\n{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "e096534b3e7302cda21b733f9706966e8784c5b0a9ecc82ba214c9bcf58d1198",
+            "nativeSource": "{% capture info %}{% raw %}    \" \"\r\n{% endraw %}{% endcapture %}const headerHtml = {{ info | default: '' | json }};",
+            "nativeSourceSha256": "5cd63a33128a79d637275771b3bbf7685568fa8bf667549598ef1d19784af2e3",
+            "outcome": "rendered-child",
+            "output": "const headerHtml =     \" \"\r\n;"
+          }
+        },
+        {
+          "id": "original-context-022",
+          "facts": {
+            "originalSource": "{{ info | json }}",
+            "originalSourceSha256": "68c965df8f9198401c7199b98076c9a1ab496dd5f5b709f42cb1922dc43b87d6",
+            "input": {
+              "info": "        `a\n\t\"b\"\n`\r\n"
+            },
+            "inputSha256": "1c1154fccb4f2cfbbac0d9172caf3d1d12018951046d4dce7274a5a78fd3ca31",
+            "nativeContextPrefix": "{% capture info %}{% raw %}        `a\n\t\"b\"\n`\r\n{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "47164f732c92f066a240f2d88667b8670c9c8a49b7822026cd77137e32b69172",
+            "nativeSource": "{% capture info %}{% raw %}        `a\n\t\"b\"\n`\r\n{% endraw %}{% endcapture %}{{ info | json }}",
+            "nativeSourceSha256": "b1c804c4c9344d02b21e8ffa8f6671ad824fc786460c7e0804984366051850d6",
+            "outcome": "rendered-child",
+            "output": "        `a\n\t\"b\"\n`\r\n"
+          }
+        },
+        {
+          "id": "original-context-023",
+          "facts": {
+            "originalSource": "[{{ s | json }}]|[{{ e | json }}]|[{{ q | json }}]",
+            "originalSourceSha256": "f7d2c40a4d574ea4bef1d9912dd64aa95ea424ea95ce5c74bff0d18b01ba76c8",
+            "input": {
+              "s": " \r\n\t",
+              "e": "",
+              "q": " a\"b "
+            },
+            "inputSha256": "59b29bdd01b5473c89837716677815d77d4895f8e0d3b59cb53c30b3815f6585",
+            "nativeContextPrefix": "{% capture s %}{% raw %} \r\n\t{% endraw %}{% endcapture %}{% capture e %}{% raw %}{% endraw %}{% endcapture %}{% capture q %}{% raw %} a\"b {% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "eb1bef3e004d67984d1cebe822b9a0e317b211ad3634022ac4abd3dbf970bacc",
+            "nativeSource": "{% capture s %}{% raw %} \r\n\t{% endraw %}{% endcapture %}{% capture e %}{% raw %}{% endraw %}{% endcapture %}{% capture q %}{% raw %} a\"b {% endraw %}{% endcapture %}[{{ s | json }}]|[{{ e | json }}]|[{{ q | json }}]",
+            "nativeSourceSha256": "a24c201c40628b7a9c254e090fde97407c1c1eccdc278f45bdd780babfca0593",
+            "outcome": "rendered-child",
+            "output": "[ \r\n\t]|[]|[ a\"b ]"
+          }
+        },
+        {
+          "id": "original-context-024",
+          "facts": {
+            "originalSource": "{{ t | json }}|{{ f | json }}|{{ nil | json }}|{{ 1.5 | json }}",
+            "originalSourceSha256": "97eea7281d52355245c1dfdb3ce184e46fb5a2606452e31131d595dad0261b4a",
+            "input": {
+              "t": true,
+              "f": false
+            },
+            "inputSha256": "4d06c34b5282e13bae1d93ae5fe7f79ae3943f8d2b0e308c7bc4d3c10c46c92e",
+            "nativeContextPrefix": "{% assign t = true %}{% assign f = false %}",
+            "nativeContextPrefixSha256": "ca9330e8d19bd07e6f64ead76001390ec63ead2087a107d0db25e6ae326f78df",
+            "nativeSource": "{% assign t = true %}{% assign f = false %}{{ t | json }}|{{ f | json }}|{{ nil | json }}|{{ 1.5 | json }}",
+            "nativeSourceSha256": "61407d165aa94cd9f36d7fee67a6e5c77995f266c7c7cbc75d6e841a27baccc5",
+            "outcome": "rendered-child",
+            "output": "true|false||1.5"
+          }
+        },
+        {
+          "id": "original-context-025",
+          "facts": {
+            "originalSource": "{% assign parts = v | split: ',' %}{% for p in parts %}[{{ p }}]{% endfor %}",
+            "originalSourceSha256": "e172908354a4c27b2eca90602015f2b9524d8608d13088f7b0e456c884f535bb",
+            "input": {
+              "v": null
+            },
+            "inputSha256": "aae9e223dcdc02dfd8149da8c25b9536533a7232b0c9137ee6b2cd5c2a2629eb",
+            "nativeContextPrefix": "{% assign v = nil %}",
+            "nativeContextPrefixSha256": "2ac8abd4570058d54c3c74e9455e58492cbaf0849a1514d69a150369d9b93c61",
+            "nativeSource": "{% assign v = nil %}{% assign parts = v | split: ',' %}{% for p in parts %}[{{ p }}]{% endfor %}",
+            "nativeSourceSha256": "512c3f016b7937401c9694d536e5e17dbc46a58f572cd4436f2b29b27c3c0524",
+            "outcome": "rendered-child",
+            "output": "[]"
+          }
+        }
+      ]
+    },
+    {
+      "runSha256": "b45d989cdafa4e6c0708ec579149c71f2e9a620b929fcef5d434057e1cce72fd",
+      "producerSha256": "a97ffeedd094063907dfccc0068992aa1bf2e0701aa912773b6673990b5841ac",
+      "cases": [
+        {
+          "id": "original-context-001",
+          "facts": {
+            "originalSource": "{{ value | date: \"dd/M/yyyy\" }}",
+            "originalSourceSha256": "605431c692c5abfa1232d80801c0d476597ef46a08374b2600a3e358b2f8a384",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"dd/M/yyyy\" }}",
+            "nativeSourceSha256": "1c62379f8f37cdd56259cc7ec392e568147454a75d3402badfb99ebfb708bc41",
+            "outcome": "rendered-child",
+            "output": "02/1/2026"
+          }
+        },
+        {
+          "id": "original-context-002",
+          "facts": {
+            "originalSource": "{{ value | date: \"d/M/yyyy\" }}",
+            "originalSourceSha256": "7a3bcb402bce6fce8cce13473d88abb6bdf2270e80dbad9ac9f956845f684af1",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"d/M/yyyy\" }}",
+            "nativeSourceSha256": "42ab5d5356f9865cfc32a75fe926c3998390773df9a9ff5da6e96d39fc32f99c",
+            "outcome": "rendered-child",
+            "output": "2/1/2026"
+          }
+        },
+        {
+          "id": "original-context-003",
+          "facts": {
+            "originalSource": "{{ value | date: \"yyyy 'year' MM 'month' dd\" }}",
+            "originalSourceSha256": "5f15399c5284b4f73cae7e6933990f0dfe005d9e9d32c113f5e8cb8d24c3454c",
+            "input": {
+              "value": "2026-01-02"
+            },
+            "inputSha256": "7b70b0273c45a7f5dea4900326022e03c05d340159442882fe3646587b3c9f2e",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "8473032a85b93c6887964641a97f2574d6d86aeb9cbcdfc97d9d96b37809048b",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02{% endraw %}{% endcapture %}{{ value | date: \"yyyy 'year' MM 'month' dd\" }}",
+            "nativeSourceSha256": "0fc465564bf11099407503aa8338671b2748b5602c0a130c739c26db3bd0101d",
+            "outcome": "rendered-child",
+            "output": "2026 year 01 month 02"
+          }
+        },
+        {
+          "id": "original-context-004",
+          "facts": {
+            "originalSource": "{{ value | date: \"g\" }}",
+            "originalSourceSha256": "48550cd409aab31fd2c55f65bbe108d382bad5ed9b700751118f2f0d266b9f23",
+            "input": {
+              "value": "2026-01-02T00:00:00"
+            },
+            "inputSha256": "7a50581f6fbcc114455e0fffccd055d7f11568db70e881394cfc73dde1ab66b6",
+            "nativeContextPrefix": "{% capture value %}{% raw %}2026-01-02T00:00:00{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "c8bc33802d9a48d063d6cabef5aa9f32929daa2ecd1229b9a9c787d98cced8da",
+            "nativeSource": "{% capture value %}{% raw %}2026-01-02T00:00:00{% endraw %}{% endcapture %}{{ value | date: \"g\" }}",
+            "nativeSourceSha256": "abfebdafc26e29e0bac2adec1da8aefebb6a7fa4df101837811b248e68fe6b16",
+            "outcome": "rendered-child",
+            "output": "1/2/2026 12:00 AM"
+          }
+        },
+        {
+          "id": "original-context-005",
+          "facts": {
+            "originalSource": "{{name}}",
+            "originalSourceSha256": "f03387ea9beecce8a21e34f06746b3baf7d3d3b21735e64b7f5c35d03d1e196f",
+            "input": {
+              "name": "Alex"
+            },
+            "inputSha256": "fe2abc4974cb5e68361e939f7ee52aa35d61758ffc2726829eee05bee3d20a6d",
+            "nativeContextPrefix": "{% capture name %}{% raw %}Alex{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "c4dac19b5be835152593d3f9fbe07c4eaf4dc001d6fbf43fdde97dd871f310d8",
+            "nativeSource": "{% capture name %}{% raw %}Alex{% endraw %}{% endcapture %}{{name}}",
+            "nativeSourceSha256": "0a356e5f4db95702335f5213a9c8704ada6c504e6808022f78f2faf5e654ff93",
+            "outcome": "rendered-child",
+            "output": "Alex"
+          }
+        },
+        {
+          "id": "original-context-006",
+          "facts": {
+            "originalSource": "{{ 'abc'.size }}|{{ s.size }}",
+            "originalSourceSha256": "23fdc34e11d153fc893a706bdef168f462c41c4bfdf4fe0d1a26e355101ecda8",
+            "input": {
+              "s": "hello"
+            },
+            "inputSha256": "aa2a66ada1633cb40b81191752d22a004787247afec983bfaabc99e7b1397639",
+            "nativeContextPrefix": "{% capture s %}{% raw %}hello{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "1fe6711ca761c9de9660a36b0fbe48c3ccd5a85a8ffba3f3091e9c1b3ce22491",
+            "nativeSource": "{% capture s %}{% raw %}hello{% endraw %}{% endcapture %}{{ 'abc'.size }}|{{ s.size }}",
+            "nativeSourceSha256": "0c07c808e7552b5265e0b1abb090095494842a8405e0b3e2ad421631a7731e1a",
+            "outcome": "rendered-child",
+            "output": "abc|5"
+          }
+        },
+        {
+          "id": "original-context-007",
+          "facts": {
+            "originalSource": "{{ s | escape }}|{{ s | h }}",
+            "originalSourceSha256": "9512ec83daeb93767075b7c6f91eb93599f4fc0ac719362913738647d3addbff",
+            "input": {
+              "s": "<p>é & \"'</p>"
+            },
+            "inputSha256": "ed253afda917d7151a23399a18db5c35b86dba6da417c16c761d9606813af6be",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p>é & \"'</p>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "dab390844525b39e52792aa4db608810dc12570173fc6c50b5633b59a7ad7bd9",
+            "nativeSource": "{% capture s %}{% raw %}<p>é & \"'</p>{% endraw %}{% endcapture %}{{ s | escape }}|{{ s | h }}",
+            "nativeSourceSha256": "ba59546e77795e5ad481806166e05aa1dbe09e9d6996659ac2f4065f98bf523e",
+            "outcome": "rendered-child",
+            "output": "&lt;p&gt;&#233; &amp; &quot;&#39;&lt;/p&gt;|&lt;p&gt;&#233; &amp; &quot;&#39;&lt;/p&gt;"
+          }
+        },
+        {
+          "id": "original-context-008",
+          "facts": {
+            "originalSource": "{{ s | url_escape }}|{{ s | url_encode }}",
+            "originalSourceSha256": "210c63899e029e91fcd1a236ddc0799fb15082d4d14434e2513344b60f6a8f0f",
+            "input": {
+              "s": "This & that//"
+            },
+            "inputSha256": "fb7c15f2048aba2ca5576cdba4d10d5af4b2bd00e817625cfa201ceb6dbd130d",
+            "nativeContextPrefix": "{% capture s %}{% raw %}This & that//{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "9c198a5b241f7afab136d5b1ef8602527efa86a05bbf1c1bb962f85f734e82ac",
+            "nativeSource": "{% capture s %}{% raw %}This & that//{% endraw %}{% endcapture %}{{ s | url_escape }}|{{ s | url_encode }}",
+            "nativeSourceSha256": "acc78a875ddeb2b12d2c6dafaefc4d465d9dea3ca8bedafd82d1dcc3794445eb",
+            "outcome": "rendered-child",
+            "output": "This+%26+that%2F%2F|This+%26+that%2F%2F"
+          }
+        },
+        {
+          "id": "original-context-009",
+          "facts": {
+            "originalSource": "{{ s | xml_escape }}",
+            "originalSourceSha256": "b30a7fa671cf0036e4602cde156cf950dcb3edc7362228f3c9af6a8ae0275966",
+            "input": {
+              "s": "<a href=\"x\">'&"
+            },
+            "inputSha256": "4231b01b379d94484221f7b94eb932b83dba486edc463b77523020927279f0e3",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<a href=\"x\">'&{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "2432ad4de246aa8d4934ad3af6f842464b8ba835482d1b796594896fbb44d805",
+            "nativeSource": "{% capture s %}{% raw %}<a href=\"x\">'&{% endraw %}{% endcapture %}{{ s | xml_escape }}",
+            "nativeSourceSha256": "a0a0210d5f12724cd060b5bba623538f905b9f727aac2f61ab2dee726f1bcc82",
+            "outcome": "rendered-child",
+            "output": "&lt;a href=&quot;x&quot;&gt;&apos;&amp;"
+          }
+        },
+        {
+          "id": "original-context-010",
+          "facts": {
+            "originalSource": "{{ s | escape_once }}",
+            "originalSourceSha256": "58321dbaa9e4e283ca5b880a39d630e1ced87d6696370d1d21df8a458e5c7af5",
+            "input": {
+              "s": "1 &lt; 2 & 3"
+            },
+            "inputSha256": "e4b171dd977094205c3d5b2216f030ffd23448a52c2905a46d478cf05e1a64de",
+            "nativeContextPrefix": "{% capture s %}{% raw %}1 &lt; 2 & 3{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "79759f5d9a8edbe3ef7bb860cdd35479615e7766011458f395a94ac0cb10300d",
+            "nativeSource": "{% capture s %}{% raw %}1 &lt; 2 & 3{% endraw %}{% endcapture %}{{ s | escape_once }}",
+            "nativeSourceSha256": "46a49e60ba77585fb09089998952d5180213933c79add80b68d55e63aa2b966f",
+            "outcome": "rendered-child",
+            "output": "1 &lt; 2 & 3"
+          }
+        },
+        {
+          "id": "original-context-011",
+          "facts": {
+            "originalSource": "{{ s | truncate: 10 }}|{{ s | truncate_words: 2 }}",
+            "originalSourceSha256": "209a547ee9c742e9491092d52a2a67c4f57619c847e0e9422e97fc5764932cb0",
+            "input": {
+              "s": "This is a long sentence"
+            },
+            "inputSha256": "ee6cb3b5ab6403f3f9532b2e104fcef2520838274fa1877dc7f10f29530b58e2",
+            "nativeContextPrefix": "{% capture s %}{% raw %}This is a long sentence{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "f2a533e1a15de12702376615e15d4b118c872f5320f8f83814a921f37598d433",
+            "nativeSource": "{% capture s %}{% raw %}This is a long sentence{% endraw %}{% endcapture %}{{ s | truncate: 10 }}|{{ s | truncate_words: 2 }}",
+            "nativeSourceSha256": "30b8c6d84d2206211dc74797633413ff8ad4bb28310284b701b4c9da0ad9038f",
+            "outcome": "rendered-child",
+            "output": "This is...|This is..."
+          }
+        },
+        {
+          "id": "original-context-012",
+          "facts": {
+            "originalSource": "{{ s | split: ',' | size }}|{{ s | split: ',' | join: '|' }}",
+            "originalSourceSha256": "2d06945ec96953322d3975467ea2e4df890f3c67f2c1dadec26c87bb382d832b",
+            "input": {
+              "s": "a,b,,c"
+            },
+            "inputSha256": "1c939b20dc6b50f9bf7b336f3813b2d46ae9d20e5cb0a77f7d5fb70951e84126",
+            "nativeContextPrefix": "{% capture s %}{% raw %}a,b,,c{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "a8755af3a5e9821f9dcd330c69aa0db341c900738a4d52da034ce3ee68920b52",
+            "nativeSource": "{% capture s %}{% raw %}a,b,,c{% endraw %}{% endcapture %}{{ s | split: ',' | size }}|{{ s | split: ',' | join: '|' }}",
+            "nativeSourceSha256": "4ca64dfcc3a357a6c376276294a3cd1d35a6730bf21ec6ba715f9e139bc65ecc",
+            "outcome": "rendered-child",
+            "output": "3|a|b|c"
+          }
+        },
+        {
+          "id": "original-context-013",
+          "facts": {
+            "originalSource": "{{ s | strip_newlines }}|{{ s | newline_to_br }}",
+            "originalSourceSha256": "b45f6335684531165ca814fea78c708ffe8cc9deec80248fdf41dce571b74d53",
+            "input": {
+              "s": "a\nb\r\nc"
+            },
+            "inputSha256": "d74c8b9ad8d73e59270b18a79e627636dfdd9cdc3594d74e83f9eaed4d839e66",
+            "nativeContextPrefix": "{% capture s %}{% raw %}a\nb\r\nc{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "40a8a10639e9c928c8b9d16ddac5891f73e227069f5d77f90397d1a7623cdc68",
+            "nativeSource": "{% capture s %}{% raw %}a\nb\r\nc{% endraw %}{% endcapture %}{{ s | strip_newlines }}|{{ s | newline_to_br }}",
+            "nativeSourceSha256": "cbb3c482f6c979796711b3c6623b86d9e32434e19b3156b61e5345d8ecd6671b",
+            "outcome": "rendered-child",
+            "output": "abc|a<br>\nb<br>\r\nc"
+          }
+        },
+        {
+          "id": "original-context-014",
+          "facts": {
+            "originalSource": "{{ s | strip_html }}",
+            "originalSourceSha256": "a7363bcec2dc60de6ecdc4f0ac446c1955995f483b186e6394bd780518baec8e",
+            "input": {
+              "s": "<p>Hello <b>World</b></p><script>x</script>"
+            },
+            "inputSha256": "bcb66f0f7285a2b47b5d26b2d1301f85b60a989a4e4bb9afc599409ce3ec74b2",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p>Hello <b>World</b></p><script>x</script>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "2540b78042eee9998c95ac7fc277acdb00d721b67c1af7ae58213033ce55d9d1",
+            "nativeSource": "{% capture s %}{% raw %}<p>Hello <b>World</b></p><script>x</script>{% endraw %}{% endcapture %}{{ s | strip_html }}",
+            "nativeSourceSha256": "79908cb6b020c92fbf918b857815af89daa304a244de2138a0ba02a1d3254d1b",
+            "outcome": "rendered-child",
+            "output": "Hello Worldx"
+          }
+        },
+        {
+          "id": "original-context-015",
+          "facts": {
+            "originalSource": "{{ s | text_to_html }}",
+            "originalSourceSha256": "471815409f51e678b6af4fd3941b1fc16ebc9122c932f7c24a236a316b5b4dc6",
+            "input": {
+              "s": "Line one\nLine two\n\nhttp://example.com x"
+            },
+            "inputSha256": "6fedc24e5b8c706e0e323f49f68907c25806fd5ac7233a2515862d90f356bc97",
+            "nativeContextPrefix": "{% capture s %}{% raw %}Line one\nLine two\n\nhttp://example.com x{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "d3c9e200253a6575ef3009a2cc7b9a638d23e26ebf996436e75812293984a906",
+            "nativeSource": "{% capture s %}{% raw %}Line one\nLine two\n\nhttp://example.com x{% endraw %}{% endcapture %}{{ s | text_to_html }}",
+            "nativeSourceSha256": "511a0c2182425c12b2b50cc4728a50b177c61818e7bc2a55c202041160798916",
+            "outcome": "rendered-child",
+            "output": "<p>Line one<br>Line two</p><p><a href=\"http://example.com/\" rel=\"nofollow\">http://example.com/</a> x</p>"
+          }
+        },
+        {
+          "id": "original-context-016",
+          "facts": {
+            "originalSource": "{{ s | html_safe_escape }}",
+            "originalSourceSha256": "a03584bdef9f7d285e70b6dd09548deb4b4e6d6072ca7dc98f990e2f66880e90",
+            "input": {
+              "s": "<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">"
+            },
+            "inputSha256": "20dbe4031c67f1dba5e7b6dbdb3745493a4a045b18e8cda0e2ef47ecaf69a36c",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "a844e69cbcf3c8f71893e0b6405a5d589e239995a97796bec34f0b04f8eaefb5",
+            "nativeSource": "{% capture s %}{% raw %}<img src=\"images/myimage.jpg\" onerror=\"alert(1);\">{% endraw %}{% endcapture %}{{ s | html_safe_escape }}",
+            "nativeSourceSha256": "afaf69bfb87ed5bac6a6c78a1c0d6ff26bf7ecbead030787f7c6f69a63a47d54",
+            "outcome": "rendered-child",
+            "output": "<img src=\"images/myimage.jpg\">"
+          }
+        },
+        {
+          "id": "original-context-017",
+          "facts": {
+            "originalSource": "{{ s | html_safe_escape }}",
+            "originalSourceSha256": "a03584bdef9f7d285e70b6dd09548deb4b4e6d6072ca7dc98f990e2f66880e90",
+            "input": {
+              "s": "<p onclick=\"x()\">ok<script>bad()</script></p>"
+            },
+            "inputSha256": "27e121efa9fb1acc608d296e61ddaed34c73bfcfad0051f9630d244bcdd437a1",
+            "nativeContextPrefix": "{% capture s %}{% raw %}<p onclick=\"x()\">ok<script>bad()</script></p>{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "f09ef75f6281c2fcda666fff05cdc34bb8464ed61edfea71ea6ffcf66bdc042c",
+            "nativeSource": "{% capture s %}{% raw %}<p onclick=\"x()\">ok<script>bad()</script></p>{% endraw %}{% endcapture %}{{ s | html_safe_escape }}",
+            "nativeSourceSha256": "3a8ab8ca94b86bc65c64af5e6101051b3bc7843c2008a7f9139d61dc4364ed3e",
+            "outcome": "rendered-child",
+            "output": "<p>ok</p>"
+          }
+        },
+        {
+          "id": "original-context-018",
+          "facts": {
+            "originalSource": "{{ n | file_size }}|{{ n | file_size: 2 }}|{{ 2050 | file_size: 0 }}",
+            "originalSourceSha256": "381de0af7a5d76b838f219629367210a7c5ee880ea4d96466773d0392536bbdd",
+            "input": {
+              "n": 10000000
+            },
+            "inputSha256": "e2e7c48b9eccca3a08b1a591e4e81a5202aef8de84bcd6987926a386e3d924fa",
+            "nativeContextPrefix": "{% assign n = 10000000 %}",
+            "nativeContextPrefixSha256": "9fc7c5997e144a8befe460f32c9ccc0414c4819cf3197b65c4e3ce5ba651a13f",
+            "nativeSource": "{% assign n = 10000000 %}{{ n | file_size }}|{{ n | file_size: 2 }}|{{ 2050 | file_size: 0 }}",
+            "nativeSourceSha256": "1fe8abb62ee9e34eff2a64aea5bb2edda9c8d862e52f4dd75e2ae49c37986e8a",
+            "outcome": "rendered-child",
+            "output": "9.5 MB|9.54 MB|2 KB"
+          }
+        },
+        {
+          "id": "original-context-019",
+          "facts": {
+            "originalSource": "{{ s | date: 'yyyy' }}|{{ 'garbage' | date: 'yyyy' }}",
+            "originalSourceSha256": "d3bbd418bcb847cb6739acaa7bbab3a4b034df8433aba8222423e89e8ebd34e1",
+            "input": {
+              "s": "2024-05-07T07:20:46Z"
+            },
+            "inputSha256": "c4b0c9b318608459d0a3b3ffcc31bc10d8b2b86047d8a2851c748eeb9931e734",
+            "nativeContextPrefix": "{% capture s %}{% raw %}2024-05-07T07:20:46Z{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "b3be6fd9ffeb2dbf77b0eb5fae473b73b50a144fbd7ab8a62b7498967b7c7e8e",
+            "nativeSource": "{% capture s %}{% raw %}2024-05-07T07:20:46Z{% endraw %}{% endcapture %}{{ s | date: 'yyyy' }}|{{ 'garbage' | date: 'yyyy' }}",
+            "nativeSourceSha256": "aa696ab5c0773970edf5c51f77ac1feed51669f282bc9a40f272198d2df345a5",
+            "outcome": "rendered-child",
+            "output": "2024|garbage"
+          }
+        },
+        {
+          "id": "original-context-020",
+          "facts": {
+            "originalSource": "{{ u | base }}|{{ u | host }}|{{ u | path }}|{{ '/path?foo=bar&page=2' | path_and_query }}|{{ u | port }}|{{ u | scheme }}",
+            "originalSourceSha256": "615fc7a121828ae320938e11ff68bf271d20810287d6ea9d1637ee37257e0a17",
+            "input": {
+              "u": "https://example.com/path?foo=bar&page=2"
+            },
+            "inputSha256": "8a17b49441a06a1c6a2627c8dfa02cbb3406a00e181b7ecbb25d620d65c88158",
+            "nativeContextPrefix": "{% capture u %}{% raw %}https://example.com/path?foo=bar&page=2{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "7362e37c3b8e515df035cef98e0f24bd42b65839b42da6fe3d666b60f46c824e",
+            "nativeSource": "{% capture u %}{% raw %}https://example.com/path?foo=bar&page=2{% endraw %}{% endcapture %}{{ u | base }}|{{ u | host }}|{{ u | path }}|{{ '/path?foo=bar&page=2' | path_and_query }}|{{ u | port }}|{{ u | scheme }}",
+            "nativeSourceSha256": "ac0700f29cd0de6c4a61f33fcc536d7eb0fa33088058411d95399e46f6d166fc",
+            "outcome": "rendered-child",
+            "output": "https://example.com|example.com|/path|/path?foo=bar&page=2|443|https"
+          }
+        },
+        {
+          "id": "original-context-021",
+          "facts": {
+            "originalSource": "const headerHtml = {{ info | default: '' | json }};",
+            "originalSourceSha256": "479eb8193736b4db9e44a9fd28335ceb3af5e4a7e891d012eb9ba339578c3a8c",
+            "input": {
+              "info": "    \" \"\r\n"
+            },
+            "inputSha256": "0f3201d628cf201eb68a6276789c2548e137525dfdb5bca49e1685ad197a5d90",
+            "nativeContextPrefix": "{% capture info %}{% raw %}    \" \"\r\n{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "e096534b3e7302cda21b733f9706966e8784c5b0a9ecc82ba214c9bcf58d1198",
+            "nativeSource": "{% capture info %}{% raw %}    \" \"\r\n{% endraw %}{% endcapture %}const headerHtml = {{ info | default: '' | json }};",
+            "nativeSourceSha256": "5cd63a33128a79d637275771b3bbf7685568fa8bf667549598ef1d19784af2e3",
+            "outcome": "rendered-child",
+            "output": "const headerHtml =     \" \"\r\n;"
+          }
+        },
+        {
+          "id": "original-context-022",
+          "facts": {
+            "originalSource": "{{ info | json }}",
+            "originalSourceSha256": "68c965df8f9198401c7199b98076c9a1ab496dd5f5b709f42cb1922dc43b87d6",
+            "input": {
+              "info": "        `a\n\t\"b\"\n`\r\n"
+            },
+            "inputSha256": "1c1154fccb4f2cfbbac0d9172caf3d1d12018951046d4dce7274a5a78fd3ca31",
+            "nativeContextPrefix": "{% capture info %}{% raw %}        `a\n\t\"b\"\n`\r\n{% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "47164f732c92f066a240f2d88667b8670c9c8a49b7822026cd77137e32b69172",
+            "nativeSource": "{% capture info %}{% raw %}        `a\n\t\"b\"\n`\r\n{% endraw %}{% endcapture %}{{ info | json }}",
+            "nativeSourceSha256": "b1c804c4c9344d02b21e8ffa8f6671ad824fc786460c7e0804984366051850d6",
+            "outcome": "rendered-child",
+            "output": "        `a\n\t\"b\"\n`\r\n"
+          }
+        },
+        {
+          "id": "original-context-023",
+          "facts": {
+            "originalSource": "[{{ s | json }}]|[{{ e | json }}]|[{{ q | json }}]",
+            "originalSourceSha256": "f7d2c40a4d574ea4bef1d9912dd64aa95ea424ea95ce5c74bff0d18b01ba76c8",
+            "input": {
+              "s": " \r\n\t",
+              "e": "",
+              "q": " a\"b "
+            },
+            "inputSha256": "59b29bdd01b5473c89837716677815d77d4895f8e0d3b59cb53c30b3815f6585",
+            "nativeContextPrefix": "{% capture s %}{% raw %} \r\n\t{% endraw %}{% endcapture %}{% capture e %}{% raw %}{% endraw %}{% endcapture %}{% capture q %}{% raw %} a\"b {% endraw %}{% endcapture %}",
+            "nativeContextPrefixSha256": "eb1bef3e004d67984d1cebe822b9a0e317b211ad3634022ac4abd3dbf970bacc",
+            "nativeSource": "{% capture s %}{% raw %} \r\n\t{% endraw %}{% endcapture %}{% capture e %}{% raw %}{% endraw %}{% endcapture %}{% capture q %}{% raw %} a\"b {% endraw %}{% endcapture %}[{{ s | json }}]|[{{ e | json }}]|[{{ q | json }}]",
+            "nativeSourceSha256": "a24c201c40628b7a9c254e090fde97407c1c1eccdc278f45bdd780babfca0593",
+            "outcome": "rendered-child",
+            "output": "[ \r\n\t]|[]|[ a\"b ]"
+          }
+        },
+        {
+          "id": "original-context-024",
+          "facts": {
+            "originalSource": "{{ t | json }}|{{ f | json }}|{{ nil | json }}|{{ 1.5 | json }}",
+            "originalSourceSha256": "97eea7281d52355245c1dfdb3ce184e46fb5a2606452e31131d595dad0261b4a",
+            "input": {
+              "t": true,
+              "f": false
+            },
+            "inputSha256": "4d06c34b5282e13bae1d93ae5fe7f79ae3943f8d2b0e308c7bc4d3c10c46c92e",
+            "nativeContextPrefix": "{% assign t = true %}{% assign f = false %}",
+            "nativeContextPrefixSha256": "ca9330e8d19bd07e6f64ead76001390ec63ead2087a107d0db25e6ae326f78df",
+            "nativeSource": "{% assign t = true %}{% assign f = false %}{{ t | json }}|{{ f | json }}|{{ nil | json }}|{{ 1.5 | json }}",
+            "nativeSourceSha256": "61407d165aa94cd9f36d7fee67a6e5c77995f266c7c7cbc75d6e841a27baccc5",
+            "outcome": "rendered-child",
+            "output": "true|false||1.5"
+          }
+        },
+        {
+          "id": "original-context-025",
+          "facts": {
+            "originalSource": "{% assign parts = v | split: ',' %}{% for p in parts %}[{{ p }}]{% endfor %}",
+            "originalSourceSha256": "e172908354a4c27b2eca90602015f2b9524d8608d13088f7b0e456c884f535bb",
+            "input": {
+              "v": null
+            },
+            "inputSha256": "aae9e223dcdc02dfd8149da8c25b9536533a7232b0c9137ee6b2cd5c2a2629eb",
+            "nativeContextPrefix": "{% assign v = nil %}",
+            "nativeContextPrefixSha256": "2ac8abd4570058d54c3c74e9455e58492cbaf0849a1514d69a150369d9b93c61",
+            "nativeSource": "{% assign v = nil %}{% assign parts = v | split: ',' %}{% for p in parts %}[{{ p }}]{% endfor %}",
+            "nativeSourceSha256": "512c3f016b7937401c9694d536e5e17dbc46a58f572cd4436f2b29b27c3c0524",
+            "outcome": "rendered-child",
+            "output": "[]"
+          }
+        }
+      ]
+    }
+  ]
+}

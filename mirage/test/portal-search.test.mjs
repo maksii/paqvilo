@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777710';
 const DETAILS = '77777777-7777-4777-8777-777777777711';
@@ -15,7 +15,7 @@ const view = (table, id, name, columns, filter = '') =>
   `<savedquery><savedqueryid>{${id}}</savedqueryid><querytype>0</querytype><isdefault>0</isdefault><LocalizedNames><LocalizedName description="${name}" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="${table}">${columns.map((column) => `<attribute name="${column}"/>`).join('')}${filter}</entity></fetch></fetchxml><layoutxml><grid><row>${columns.map((column) => `<cell name="${column}" width="100"/>`).join('')}</row></grid></layoutxml></savedquery>`;
 
 async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-search-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-search-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': `adx_websiteid: ${SITE}\nadx_name: Invented search`,
@@ -102,7 +102,6 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
   const sim = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,
@@ -184,7 +183,7 @@ test('the default /search/ page renders the search results markup and states a d
 // Knowledge articles are searchable only when Published with Internal set to No, and the platform does not let a site
 // change that. The store row decides, never the view's projected columns.
 test('knowledge article eligibility does not depend on the Portal Search view columns', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-search-ka-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-search-ka-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': `adx_websiteid: ${SITE}\nadx_name: Invented search`,
@@ -260,7 +259,6 @@ test('knowledge article eligibility does not depend on the Portal Search view co
   const sim = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,

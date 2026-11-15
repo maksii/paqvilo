@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { inventoryWebApi } from '../webapi-inventory.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A site's own Web API client object is named by the caller (--client-wrapper); the inventory has
 // no built-in project wrapper.
 test('client wrapper calls count as requests only for the wrappers the caller names', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-inventory-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-inventory-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Inventory\nadx_websiteid: site',

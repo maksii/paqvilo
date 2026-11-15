@@ -1,3 +1,4 @@
+// @test-kind compatibility: MSCRM.BypassCustomPluginExecution Web API header named in the test comment; the store option mirrors it
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

@@ -1,0 +1,54 @@
+{
+  "recordedDate": "2026-11-08",
+  "scope": "Official Microsoft SDK resolved getContext object-cache behavior with an authored bridge response; not evidence of Power Apps native host context fields or transport.",
+  "package": {
+    "name": "@microsoft/power-apps",
+    "version": "1.5.0",
+    "integrity": "sha512-aOJ6/eOfUm2xIqLbIPOQIeAbgjFWTQcFrdmnLQH5eCKQavth1dK8LRKn4s9uVtOE/Tay+Ijf0M1OJVcwChfO7A=="
+  },
+  "probeFunctionSha256": "f258408354c9982fcf4966faeb8ffa01c270e4dc954146a06243727c3c028437",
+  "sources": [
+    {
+      "file": "dist/app/ContextProvider.js",
+      "sha256": "5455776509e6af83d65d61940b347776ed584a11fd946d32b16be8ba4b0aa4b8"
+    },
+    {
+      "file": "dist/internal/plugins/PluginBridge.js",
+      "sha256": "67423e59643781ed03ce78981d54271fb7457412ba21dbc2d0cf68aaa83759b9"
+    }
+  ],
+  "captures": [
+    {
+      "run": 1,
+      "sha256": "a1e83e58fba3f2c31b43f8d6a36b2624ceec42a950593102dbbd6c947ba7a6ac"
+    },
+    {
+      "run": 2,
+      "sha256": "a1e83e58fba3f2c31b43f8d6a36b2624ceec42a950593102dbbd6c947ba7a6ac"
+    }
+  ],
+  "rows": [
+    {
+      "id": "context.resolvedReference",
+      "value": true
+    },
+    {
+      "id": "context.queryReference",
+      "value": true
+    },
+    {
+      "id": "context.clientMutationVisible",
+      "value": true
+    },
+    {
+      "id": "context.mutationReference",
+      "value": true
+    }
+  ],
+  "hostCalls": [
+    {
+      "service": "AppLifecycle",
+      "action": "getContext"
+    }
+  ]
+}

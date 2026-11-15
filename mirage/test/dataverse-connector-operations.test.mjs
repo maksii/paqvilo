@@ -1,8 +1,11 @@
+// @test-kind compatibility: Microsoft Learn Dataverse connector operations (UpdateRecord, UpdateOnlyRecord, associate, changesets) over the SDK service
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { createConnectorRuntime, DATAVERSE_OPERATION_SPEC } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
+import { localOrganizationService } from '../lib/local-organization-service.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 // The Dataverse connector operations share one parameter table with the interpreter allowlist and run through
 // the SDK service of the flow principal (the organization's internal entries when the store has an organization).
@@ -117,6 +120,7 @@ test('AssociateEntities relates two invented rows through a 1:N relationship and
   assert.equal(rows('x_child')[0].x_parentid ?? null, null);
 });
 
+// @test-kind security: origin confinement: an @odata.id on another origin is refused
 test('an @odata.id on another origin is refused', () => {
   const { invoke, rows } = setup();
   assert.throws(
@@ -132,6 +136,7 @@ test('an @odata.id on another origin is refused', () => {
   assert.equal(rows('x_child')[0].x_parentid ?? null, null);
 });
 
+// @test-kind contract: Paqvilo answers OperationUnsupported for connector actions and file columns that are not wired
 test('bound and unbound actions and file columns answer OperationUnsupported until the organization entry is wired', () => {
   const { invoke } = setup();
   assert.throws(() => invoke('PerformUnboundAction', { actionName: 'x_Recalculate', 'item/x_value': 1 }), {
@@ -219,6 +224,73 @@ test('a changeset commits its rows together and rolls every one back when one fa
   );
 });
 
+test('a flow handles a failed plugin transaction in a changeset and continues in its outer run transaction', async () => {
+  const { store, connectors, rows } = setup();
+  const steps = ['x_parent', 'x_child'].map((entity, index) => ({
+    id: `30000000-0000-0000-0000-00000000000${index}`,
+    enabled: true,
+    entity,
+    message: 'Create',
+    stage: 20,
+    mode: 0,
+    rank: 1,
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+    typeName: `Invented.Rule${index}`,
+    assemblyId: 'invented',
+  }));
+  let caught = false;
+  const handlers = new Map([
+    [
+      steps[0].id,
+      () => {
+        try {
+          localOrganizationService(store, profile).create('x_child', { x_name: 'Rejected child' });
+        } catch {
+          caught = true;
+        }
+      },
+    ],
+    [steps[1].id, (ctx) => ctx.reject('Rejected nested create')],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  store.setPluginPipeline((ctx) => runPluginPhase({ ...ctx, store, items, handlers }));
+  const definition = {
+    triggers: manual,
+    actions: {
+      Batch: {
+        type: 'ChangeSet',
+        runAfter: {},
+        actions: {
+          AddParent: action('CreateRecord', { entityName: 'x_parents', 'item/x_name': 'Must roll back' }),
+        },
+      },
+      Reply: {
+        type: 'Response',
+        runAfter: { Batch: ['Failed'] },
+        inputs: { statusCode: 200, body: { batch: "@actions('Batch')['status']" } },
+      },
+    },
+  };
+  const response = await store.transact(
+    async () => {
+      const answer = await executeFlowDefinition({ definition, input: {}, connectors, serviceProfile: profile });
+      localOrganizationService(store, profile).update('x_parent', PARENT, {
+        x_name: 'Flow handled the failed request',
+      });
+      return answer;
+    },
+    { cloneResult: false },
+  );
+  assert.equal(caught, true);
+  assert.equal(response.body.batch, 'Failed');
+  assert.equal(rows('x_parent').length, 1);
+  assert.equal(rows('x_child').length, 1);
+  assert.equal(rows('x_parent')[0].x_name, 'Flow handled the failed request');
+});
+
+// @test-kind contract: Paqvilo connector inspect and invoke share one parameter set
 test('inspect and invoke accept the same parameter set', () => {
   const { connectors, invoke } = setup();
   for (const [operationId, spec] of Object.entries(DATAVERSE_OPERATION_SPEC)) {

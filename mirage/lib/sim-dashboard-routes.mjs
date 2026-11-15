@@ -21,8 +21,9 @@ export const DASHBOARD_STATUSES = Object.freeze([
   'planned',
 ]);
 
-// The only strings `activity` keeps: request ring entries (at, method, path), storage provider ids and the reload time.
-const ACTIVITY_STRINGS = new Set(['at', 'method', 'path', 'id', 'lastReloadAt']);
+// The only strings `activity` keeps: request ring entries (at, method, path, and the traceId / spanId that link them to
+// their activity), storage provider ids and the reload time.
+const ACTIVITY_STRINGS = new Set(['at', 'method', 'path', 'traceId', 'spanId', 'id', 'lastReloadAt']);
 /** Numbers and nulls only (maps keep their keys); any other leaf is dropped. */
 export function activityFacts(value, key = '') {
   if (value === null || typeof value === 'number') return value;
@@ -67,7 +68,7 @@ export function createDashboardRoutes({ host, extras = () => ({}), docs = {} }) 
     const organizationHost = current();
     if (!organizationHost) return send(res, 503, { status: 'starting' }, { 'retry-after': '1' });
     const shared = organizationHost.topology();
-    const extra = (await extras()) ?? {};
+    const extra = (await extras()) ?? {}; // NOSONAR: await kept: the value may be a thenable and timing matters
     const clock = organizationHost.organization?.store?.clock ?? systemClock;
     // An edge is kept only when both of its ends are on this runtime (the shared part names hosts' clients such as client:staff).
     // A connection of a part that is switched off is drawn switched off too, so the map still shows what it would connect to.
@@ -76,7 +77,18 @@ export function createDashboardRoutes({ host, extras = () => ({}), docs = {} }) 
     const off = new Set(nodes.filter((node) => node.status === 'disabled').map((node) => String(node.id)));
     return send(res, 200, {
       generatedAt: new Date(clock.now()).toISOString(),
-      runtime: { product: 'Mirage', ...shared.runtime, ...extra.runtime },
+      // startedAt never changes; uptimeMs is read on every answer like the activity counters (outside the topology memo).
+      runtime: {
+        product: 'Mirage',
+        ...shared.runtime,
+        ...extra.runtime,
+        ...(Number.isFinite(organizationHost.startedAt)
+          ? {
+              startedAt: new Date(organizationHost.startedAt).toISOString(),
+              uptimeMs: Math.max(0, Math.round(clock.now() - organizationHost.startedAt)),
+            }
+          : {}),
+      },
       nodes,
       edges: [...shared.edges, ...(extra.edges ?? [])]
         .filter((edge) => ids.has(String(edge.from)) && ids.has(String(edge.to)))

@@ -20,7 +20,7 @@ export function validateLocalOverrides({ compat = {}, head = {} } = {}) {
     ['head', head],
   ])
     if (!value || typeof value !== 'object' || Array.isArray(value))
-      throw new Error(`mirage.${label} must be an object`);
+      throw new Error(`mirage.${label} must be an object`); // NOSONAR: stringification is intentional here
   for (const [name, value] of Object.entries(compat))
     if (!Object.hasOwn(COMPAT_ADAPTERS, name) || typeof value !== 'boolean')
       throw new Error(`Unknown adapter or non-boolean mirage.compat.${name}`);

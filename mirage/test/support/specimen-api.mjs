@@ -1,3 +1,4 @@
+import { ownedFixture } from '../../testing/owned-fixture.mjs';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../../lib/data.mjs';
 import { dataverseSettings } from '../../lib/dataverse-settings.mjs';
@@ -75,7 +76,7 @@ export async function specimenApi(t, { fields = {}, rows } = {}) {
       }),
       log: () => {},
     });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     await api.close();
   });
   const tokenResponse = await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {

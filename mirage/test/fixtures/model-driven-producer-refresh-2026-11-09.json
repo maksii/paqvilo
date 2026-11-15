@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "id": "model-driven-producer-refresh-2026-11-09",
+  "recordedDate": "2026-11-09",
+  "scope": "Reproduces the existing 121 model-driven attribute and collection results; no additional assertions, cases or platform coverage.",
+  "historicalEvidence": {
+    "file": "frontend-parity-evidence.json",
+    "suite": "model-driven",
+    "probeFunctionSha256": "2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089",
+    "suitePreservedUnchanged": true
+  },
+  "producer": {
+    "file": "mirage/testing/model-driven-contract.mjs",
+    "export": "captureModelDrivenContract",
+    "functionSha256": "e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3",
+    "moduleSha256": "bc84ba3fcac7314f660d9a9af41b8d5c135915447093a8b94c5a17646488016f",
+    "change": "Synchronous field-state snapshot and restoration helpers preserve the original operation and await order."
+  },
+  "input": {
+    "originalPlanSha256": "96da26b88232b7fadd9ac7d49ac773a4d7e7c086c83e83fec8aab77b34a8648f",
+    "jsonSha256": "39181c4c2acaad371ed350cd51507f8a4f4611cfb6660f3e5adf04d3d71c6b25",
+    "orderedCaseIdsSha256": "3d8a21aacb96f46f04643a598d82ee5e3074188bb5421e5724d2d06aaf4aea3c",
+    "resultCount": 121,
+    "originalInputAndOrderPreserved": true
+  },
+  "fixture": {
+    "file": "model-driven-contract-expected.json",
+    "sha256": "99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8",
+    "unchanged": true
+  },
+  "recording": {
+    "id": "3916448a-a068-474e-90f0-7501b4138811",
+    "receiptSha256": "a7b613bb16a271f7ab81a46756d2e0e19c50b0ca1ba88409bd4d305c6a41f5a7",
+    "journalSha256": "2e9faf98281a6c8d50ad8f9a89ae47c87bfd9677e6ffb1777b2a182926e73d34",
+    "runnerModuleSha256": "946478707b2c44d774e8e19d881a2b2909981bad87067fd490bcad398a22ddc8",
+    "runnerInputSha256": "89e245f2ed5e2a588c4164a1482b3e948c5518537d506e6eb626f38d0d88fd60",
+    "runs": [
+      {
+        "id": "1afaf99d-da04-47f3-bd01-1eb1cfe2e0ef",
+        "resultsSha256": "99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8",
+        "sourceBeforeSha256": "5e158756afc1715945d9689197647d429784628893583c35bd7b41c0d646e5fa",
+        "stateBeforeSha256": "be2466aeb541d8fcedcd2cc925810de65b3524f3475b87ac61c02011fd9ae86e",
+        "sourceAfterSha256": "848de58f5b47d666e33672d219d919206c6e5abdbc67ec2a967ec79c83129fee",
+        "receiptSha256": "a0611c0d2aa19b04e829b13cf2c411c1dc06da4c42d80b5cc4f4c0b4311b9af8",
+        "ownedPageClosed": true
+      },
+      {
+        "id": "d27337dd-c309-4894-80ec-2cd350b8bc11",
+        "resultsSha256": "99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8",
+        "sourceBeforeSha256": "99e21847f8501fd9fc549ac4135234533fb774e4cddea14a33471379fe3b3b20",
+        "stateBeforeSha256": "b380350d34ec0b3f42f826c8ad757a0883d4a130798bffd5bca4328dc114e81a",
+        "sourceAfterSha256": "b7711271640e6ab8741fe558c2fbe8369f4cadc730572668d1a05b4f7411c273",
+        "receiptSha256": "fb72466e8e7dfe7991dd42c3aad6845f447fd7b321cf607efbcf308438cc9698",
+        "ownedPageClosed": true
+      }
+    ]
+  },
+  "originalProducerControl": {
+    "receiptSha256": "1a699396e50ae1a44f7f189b0155f43a712f10c6a1f4fe9ed3cda000a320684a",
+    "postStateSha256": "fc01311ecd6726ba9fc77e1b72fbc13faaafa4397a44e76fc4d031f87af2e300",
+    "reviewSha256": "8a54d9a0d9b47c58da0a120e07fd1bca8ed22f71e466d3138362b299a6a9ddaa",
+    "status": "The original receipt remains HELD for blocked external operations; its complete source, result and restoration facts were reviewed separately."
+  },
+  "comparison": {
+    "results": "Both independent native runs match the historical 121-result arrays exactly and are byte-identical to the unchanged public fixture.",
+    "sourceReadsPerCheck": 16,
+    "attributeStates": 24,
+    "touchedFields": 11,
+    "controlCount": 68,
+    "touchedValueRequiredAndSubmitStateRestored": true,
+    "allAttributeValuesUnchanged": true,
+    "entirePostStateMatchesOriginalControl": true,
+    "stablePostStateSha256": "e3caff6139d14ea533d61396475fddd215bde0930b4b110eaced9b79a9fc4ee6",
+    "postStateProjection": "Only elapsedMs and sourceReads[].bodySha256 are omitted; values, metadata, inventories and dirty flags remain exact.",
+    "nativeDirtyState": "The original and both refreshed runs retain the same entity/data and default-field dirty flags after value restoration; no pristine-form guarantee is added."
+  },
+  "limits": [
+    "Private source bodies, deployment and actor identities, browser state and ownership journals remain under ignored local evidence; they are not included here.",
+    "Existing authenticated browser contexts remain user-owned; only the recording pages were closed.",
+    "External POSTs were blocked and excluded, while explicitly reviewed UI startup operations remained allowed; no tested record saves or fixture mutations were performed.",
+    "Existing-context service-worker and WebSocket traffic is outside the page-routing guarantee.",
+    "Power Pages, other producers and historical capture provenance are unchanged."
+  ]
+}

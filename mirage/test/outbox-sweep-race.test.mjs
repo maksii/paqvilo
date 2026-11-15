@@ -7,7 +7,8 @@ import { createMemoryStorage } from '../lib/storage-memory.mjs';
 const attachment = [{ name: 'a.txt', content: Buffer.from('invented attachment') }];
 const message = (subject) => ({ channel: 'email', to: ['x@example.test'], subject, attachments: attachment });
 
-// A memory provider whose next list() waits until released, then runs `afterList` before answering.
+// A memory provider whose next list() signals that it was entered and waits until released, then runs `afterList`
+// before answering.
 function gated() {
   const storage = createMemoryStorage({ id: 'outbox-test' });
   let gate = null,
@@ -15,9 +16,10 @@ function gated() {
   const list = storage.list.bind(storage);
   storage.list = async (prefix, options) => {
     if (gate) {
-      const wait = gate;
+      const { entered, released } = gate;
       gate = null;
-      await wait;
+      entered.resolve();
+      await released.promise;
     }
     const page = await list(prefix, options);
     if (afterList) {
@@ -30,11 +32,8 @@ function gated() {
   return {
     storage,
     hold() {
-      let release;
-      gate = new Promise((resolve) => {
-        release = resolve;
-      });
-      return release;
+      gate = { entered: Promise.withResolvers(), released: Promise.withResolvers() };
+      return { entered: gate.entered.promise, release: gate.released.resolve };
     },
     after(fn) {
       afterList = fn;
@@ -52,9 +51,10 @@ const bytes = async (storage, key) => {
 test('a capture committed while sweep lists keeps its bytes', async () => {
   const { storage, hold } = gated();
   const outbox = createOutbox({ store: await new DataStore({ state: emptyState() }).init(), storage });
-  const release = hold();
+  const { entered, release } = hold();
   const sweeping = outbox.sweep();
-  await new Promise((resolve) => setImmediate(resolve));
+  // The capture commits only once the sweep is listing, so the race is the one under test on every run.
+  await entered;
   const entry = await outbox.capture(message('Invented'));
   release();
   assert.deepEqual(await sweeping, { deleted: 0, pending: 0 });

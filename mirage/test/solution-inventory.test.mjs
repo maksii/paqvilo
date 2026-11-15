@@ -22,6 +22,8 @@ import {
   canvasMsappRecord,
 } from '../lib/solution-inventory.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CONNECTOR_ID = '77777777-7777-4777-8777-777777777772';
 const BPF_ID = '77777777-7777-4777-8777-777777777773';
@@ -45,6 +47,26 @@ const msapp = () =>
     { name: 'Src/App.pa.yaml', data: Buffer.from(PA_YAML) },
     { name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(SCREEN) },
   ]);
+
+test('canvas payload layers replace source coverage diagnostics, while metadata preserves them', async () => {
+  const partialBytes = writeSolutionAssetEntries([
+    { name: 'Src/App.pa.yaml', data: Buffer.from('App: [') },
+    { name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(SCREEN) },
+  ]);
+  const partial = await canvasMsappRecord(partialBytes, { name: 'x_app' });
+  const valid = await canvasMsappRecord(msapp(), { name: 'x_app' });
+  const metadata = { component: 'canvasapp', name: 'x_app', level: 'inventory', dependencies: [] };
+  for (const [first, latest, status] of [
+    [partial, valid, 'satisfied'],
+    [valid, partial, 'unsupported'],
+  ]) {
+    const [record] = mergeCanvasLayers([first, latest, metadata]);
+    assert.deepEqual(record.sourceDiagnostics, latest.sourceDiagnostics);
+    const graph = buildSourceGraph({ scan: { inventory: [record] } });
+    for (const id of ['canvas:app/x_app', 'canvas:rendering'])
+      assert.equal(graph.requirements().find((row) => row.id === id).status, status);
+  }
+});
 
 test('canvas metadata and payload fidelity agree through either order and metadata-only layers', async () => {
   const payload = await canvasMsappRecord(msapp(), { name: 'x_app' });
@@ -88,7 +110,7 @@ test('canvas metadata and payload fidelity agree through either order and metada
     assert.deepEqual(app.sources, ['base/app.msapp', 'extension/app.meta.xml']);
     assert.ok(graph.requirements().some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
     assert.ok(!graph.requirements().some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
-    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_NOT_RENDERED'));
+    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_RENDERING_BASELINE'));
   }
   const broken = await canvasMsappRecord(Buffer.from('invalid'), { name: 'x_app' });
   const [failed] = mergeInventory([payload, broken, metadata]);
@@ -174,7 +196,7 @@ async function writeTree(root, files) {
   }
 }
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-inventory-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-inventory-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -425,6 +447,8 @@ test('a YAML source-control repository is detected, imports its tables and envir
 });
 
 test('inventory keeps solution cache reuse: an unchanged rescan only hits and an unchanged previous scan is returned', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await tempDir(t);
   await writeTree(root, CLASSIC);
   const cacheFile = path.join(root, '.paqvilo', 'solution-cache.json');

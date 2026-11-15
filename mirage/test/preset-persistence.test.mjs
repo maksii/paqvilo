@@ -7,11 +7,12 @@ import { DataStore } from '../lib/data.mjs';
 import { bootstrapPresetLibrary, resolvePreset } from '../lib/presets.mjs';
 import { applySolutionData } from '../lib/solution-data.mjs';
 import { presetId, presetBody, syntheticPresetPack } from './fixtures/lazy-preset-pack.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const libraryFor = (fixture) => bootstrapPresetLibrary({ packs: [fixture.pack], tables: {}, mappings: {} });
 
 async function stateFile(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-presets-persistence-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-presets-persistence-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return path.join(dir, 'state.json');
 }

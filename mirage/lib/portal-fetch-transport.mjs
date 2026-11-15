@@ -1,7 +1,7 @@
 import { DataError } from './data-error.mjs';
 
 const escape = (value) =>
-  encodeURIComponent(value).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  encodeURIComponent(value).replace(/[!'()*]/g, (c) => '%' + c.codePointAt(0).toString(16).toUpperCase());
 export function portalFetchTransportSizes(xml) {
   const once = escape(xml),
     twice = escape(once);
@@ -40,7 +40,9 @@ export function assertPortalFetchXmlTransport(xml, profile) {
         ...sizes,
       },
     );
-  const status = bytes > profile.maxUrlXmlBytes ? 414 : bytes > profile.maxHeaderXmlBytes ? 400 : null;
+  let status = null;
+  if (bytes > profile.maxUrlXmlBytes) status = 414;
+  else if (bytes > profile.maxHeaderXmlBytes) status = 400;
   if (status)
     throw new DataError(
       status === 414

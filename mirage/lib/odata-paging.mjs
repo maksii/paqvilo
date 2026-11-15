@@ -3,6 +3,33 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 const failure = (message) => Object.assign(new Error(message), { status: 400, code: 'InvalidPagingToken' });
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+function readPagingCursor(encoded, sign, query, context, preference, pageSize) {
+  if (encoded.length > 2048) throw failure('Invalid paging token.');
+  const [data, signature, extra] = encoded.split('.');
+  if (!data || !signature || extra) throw failure('Invalid paging token.');
+  const expected = Buffer.from(sign(data)),
+    actual = Buffer.from(signature);
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw failure('Invalid paging token.');
+  let cursor;
+  try {
+    cursor = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+  } catch {
+    throw failure('Invalid paging token.');
+  }
+  if (
+    cursor.query !== query ||
+    cursor.context !== context ||
+    !Number.isSafeInteger(cursor.offset) ||
+    cursor.offset < 0 ||
+    !Number.isInteger(cursor.pageSize) ||
+    cursor.pageSize < 1 ||
+    cursor.pageSize > 5000 ||
+    (preference && cursor.pageSize !== pageSize)
+  )
+    throw failure('Paging query, identity or local data changed; restart the query.');
+  return cursor;
+}
+
 /**
  * Simulator cursors bind query, persona and data; they never grant record access.
  * `revision` is the store's data revision (DataStore#dataRevision), which advances with
@@ -29,29 +56,7 @@ export function prepareODataPage({ url, prefer = '', identity, revision, secret 
     size = pageSize;
   const sign = (data) => createHmac('sha256', secret).update(data).digest('base64url');
   if (encoded) {
-    if (encoded.length > 2048) throw failure('Invalid paging token.');
-    const [data, signature, extra] = encoded.split('.');
-    if (!data || !signature || extra) throw failure('Invalid paging token.');
-    const expected = Buffer.from(sign(data)),
-      actual = Buffer.from(signature);
-    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw failure('Invalid paging token.');
-    let cursor;
-    try {
-      cursor = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
-    } catch {
-      throw failure('Invalid paging token.');
-    }
-    if (
-      cursor.query !== query ||
-      cursor.context !== context ||
-      !Number.isSafeInteger(cursor.offset) ||
-      cursor.offset < 0 ||
-      !Number.isInteger(cursor.pageSize) ||
-      cursor.pageSize < 1 ||
-      cursor.pageSize > 5000 ||
-      (preference && cursor.pageSize !== pageSize)
-    )
-      throw failure('Paging query, identity or local data changed; restart the query.');
+    const cursor = readPagingCursor(encoded, sign, query, context, preference, pageSize);
     offset = cursor.offset;
     size = cursor.pageSize;
   }
@@ -67,7 +72,7 @@ export function prepareODataPage({ url, prefer = '', identity, revision, secret 
       // Dataverse next links keep OData punctuation literal ($select=...&$skiptoken=...).
       const encode = (value) =>
         encodeURIComponent(value).replace(/%(24|28|29|27|2C|3A|2F|40)/gi, (_all, hex) =>
-          String.fromCharCode(parseInt(hex, 16)),
+          String.fromCodePoint(Number.parseInt(hex, 16)),
         );
       const search = [...params.entries(), ['$skiptoken', data + '.' + sign(data)]]
         .map(([key, value]) => encode(key) + '=' + encode(value))

@@ -1,3 +1,4 @@
+// @test-kind compatibility: unpacked solution format: customapi FxExpressionId links fxexpressions/<name>/fxexpression.xml so the Function evaluates its Power Fx
 // A Dataverse Function defined in a Solution: fxexpressions/<name>/fxexpression.xml holds the Power Fx expression and the
 // customapi.xml names it (customapi.FxExpressionId), so the Function
 // evaluates through the core engine instead of answering default outputs.
@@ -10,11 +11,11 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { serveOrganization } from './support/web-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { parseCustomApiFiles, parseFxExpressionFiles } from '../lib/dataverse-customapi.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FX = '77777777-7777-4777-8777-777777777741';
@@ -40,7 +41,7 @@ const files = {
 };
 
 async function organization(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'customapi-fxexpression-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'customapi-fxexpression-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -63,24 +64,7 @@ async function organization(t) {
       ],
     }),
   });
-  const transport = await startDataverseApi({ organization: runtime });
-  ownedFixture(t).add(async () => {
-    await transport.close();
-    await runtime.close();
-  });
-  const token = (
-    await (
-      await fetch(transport.authority + '/oauth2/v2.0/token', {
-        method: 'POST',
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: APP,
-          client_secret: 'invented',
-          scope: transport.origin + '/.default',
-        }),
-      })
-    ).json()
-  ).access_token;
+  const { transport, token } = await serveOrganization(t, runtime, APP, 'invented');
   return async (route) => {
     const response = await fetch(transport.origin + '/api/data/v9.2/' + route, {
       headers: { authorization: `Bearer ${token}` },
@@ -98,7 +82,8 @@ test('a Solution Function linked to its fxexpression (by id or by unique name) e
   assert.equal(half.status, 200, JSON.stringify(half.body));
   assert.equal(half.body.Ratio, 5);
   const plain = await get('x_Plain(Budget=10,Spent=0)');
-  assert.equal(plain.body.Ratio, 0, 'a custom API without fxexpressionid keeps the documented default output');
+  assert.equal(plain.status, 200, JSON.stringify(plain.body));
+  assert.equal(plain.body.Ratio, null, 'an unauthored scalar output defaults to null at the HTTP boundary');
 });
 
 test('the parsers link customapi.fxexpressionid to the fxexpression row of the same Solution', () => {

@@ -2,9 +2,10 @@
 // over a 300-second sliding window. Errors are 429 with a Retry-After header.
 // Limits are documented per web server; the simulator is one server.
 import { DataError } from './data-error.mjs';
+import { groupDigitRuns } from './group-digit-runs.mjs';
 
 const WINDOW_MS = 300000;
-const thousands = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const thousands = (n) => groupDigitRuns(String(n), ',');
 
 export function createServiceProtection({
   requestsPer300s: requestsOption = null,
@@ -26,7 +27,10 @@ export function createServiceProtection({
 
   function stateOf(userId) {
     let s = users.get(userId);
-    if (!s) users.set(userId, (s = { requests: [], executed: [], active: 0 }));
+    if (!s) {
+      s = { requests: [], executed: [], active: 0 };
+      users.set(userId, s);
+    }
     return s;
   }
 

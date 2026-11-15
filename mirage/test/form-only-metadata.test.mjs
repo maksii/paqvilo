@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('runtime imports portal-referenced standalone FormXml without an Entity.xml table definition', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'form-only-metadata-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'form-only-metadata-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': 'adx_websiteid: 77777777-7777-4777-8777-777777777791\nadx_name: Invented standalone form',
@@ -35,7 +35,6 @@ test('runtime imports portal-referenced standalone FormXml without an Entity.xml
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
-    stateFile: path.join(root, 'state.json'),
     initial: {
       mappings: { exa_partial: { entitySet: 'exa_partials', idColumn: 'exa_partialid', nameColumn: 'exa_label' } },
       tables: { exa_partial: [] },

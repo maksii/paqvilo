@@ -1,7 +1,9 @@
+// @test-kind unproven: the checks in this file exercise portal source index with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { createSourceInspector } from '../lense/source-inspection.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
@@ -11,6 +13,26 @@ import { inspectionFixture } from './source-inspection-fixture.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { loadDeploymentProfiles, resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 
+// @test-kind security+contract: Windows source links use native canonical paths and still refuse edited source bytes
+test(
+  'Windows source links use native canonical paths and still refuse edited source bytes',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const fx = inspectionFixture();
+    t.after(fx.cleanup);
+    const index = buildPortalSourceIndex({ portal: await importPortal(fx.portal) });
+    const source = index.templates.get('main');
+    assert.ok(source);
+    const native = fs.realpathSync.native;
+    t.mock.method(fs, 'realpathSync', () => assert.fail('source links must not repeat the legacy component walker'));
+    fs.realpathSync.native = native;
+    assert.equal(sourceEditorTarget(source).file, native(source.file));
+    fs.writeFileSync(source.file, source.text + '\n<!-- edited -->');
+    assert.equal(sourceEditorTarget(source), null, 'native lookup retains the final content revision guard');
+  },
+);
+
+// @test-kind contract: shared index revision agrees with renderer/inspector and source links revalidate current field identity
 test('shared index revision agrees with renderer/inspector and source links revalidate current field identity', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -33,6 +55,73 @@ test('shared index revision agrees with renderer/inspector and source links reva
   assert.match(admitted.editorTarget.file, /Main\.webtemplate\.source\.html$/);
   fs.writeFileSync(admitted.editorTarget.file, '<section>New source</section>');
   assert.equal((await inspector.lookupSource(body)).state, 'stale');
+});
+
+test('imports and index builds touch each shared export file once instead of once per record', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const file = path.join(fx.portal, 'contentsnippet.yml');
+  const work = async (count) => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        Array.from({ length: count }, (_, index) => ({
+          adx_contentsnippetid: 'shared-' + index,
+          adx_name: 'Shared ' + index,
+          adx_value: `<b id="shared-${index}"></b>`,
+        })),
+      ),
+    );
+    const reads = t.mock.method(fs.promises, 'readFile');
+    let portal;
+    try {
+      portal = await importPortal(fx.portal);
+    } finally {
+      reads.mock.restore();
+    }
+    assert.equal(portal.snippets['Shared ' + (count - 1)], `<b id="shared-${count - 1}"></b>`);
+    const realpath = t.mock.method(fs, 'realpathSync');
+    try {
+      const index = buildPortalSourceIndex({ portal });
+      const linked = [...index.sources.values()].filter(
+        (source) => source.file === file && source.fieldPath[0] === 'value' && source.ref,
+      );
+      assert.equal(linked.length, count, 'every row keeps its own editor reference into the shared file');
+      return { reads: reads.mock.callCount(), resolutions: realpath.mock.callCount() };
+    } finally {
+      realpath.mock.restore();
+    }
+  };
+  // Each absent sidecar probe and each Windows realpath (one lstat per path
+  // component) is a filesystem round trip; per-row work made a 4,200-row
+  // export take minutes to import and index.
+  assert.deepEqual(await work(40), await work(80));
+});
+
+// @test-kind contract: resolved source paths are remembered for one index build only, so a retargeted root is followed
+test('resolved source paths are remembered for one index build only, so a retargeted root is followed', (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const copy = path.join(fx.work, 'copy'),
+    link = path.join(fx.work, 'selected');
+  fs.cpSync(fx.portal, copy, { recursive: true });
+  fs.symlinkSync(fx.portal, link, 'junction');
+  const relative = 'web-templates/Partial.webtemplate.source.html';
+  const text = fs.readFileSync(path.join(fx.portal, relative), 'utf8');
+  const source = {
+    file: path.join(link, relative),
+    sourceDir: link,
+    region: { start: 0 },
+    contentRevision: createHash('sha256').update(text).digest('hex'),
+  };
+  assert.equal(sourceEditorTarget(source, undefined, new Map()).file, fs.realpathSync(path.join(fx.portal, relative)));
+  fs.unlinkSync(link);
+  fs.symlinkSync(copy, link, 'junction');
+  assert.equal(
+    sourceEditorTarget(source, undefined, new Map()).file,
+    fs.realpathSync(path.join(copy, relative)),
+    'a later build resolves the retargeted root again',
+  );
 });
 
 test('localized JSON source identity follows LCID rather than mutable array position', () => {
@@ -90,6 +179,7 @@ test('duplicate localized identities remain conflicting instead of silently sele
   assert.ok(index.diagnostics.some((issue) => issue.reason === 'duplicate-source-identity'));
 });
 
+// @test-kind contract: profile overrides bind the actual profile field and preserve unrelated source definitions
 test('profile overrides bind the actual profile field and preserve unrelated source definitions', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -146,6 +236,7 @@ test('Solution-only edits change current FormXml content evidence without relabe
   );
 });
 
+// @test-kind contract: web-file implementation opens actual blob code and treats a leading BOM as an editor encoding marker
 test('web-file implementation opens actual blob code and treats a leading BOM as an editor encoding marker', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -170,6 +261,26 @@ test('web-file implementation opens actual blob code and treats a leading BOM as
   const second = await inspector.lookupSource({ ...request, region: { start: offset, end: offset + 1 } });
   assert.equal(second.editorTarget.line, 2);
   assert.equal(second.editorTarget.column, 1);
+});
+
+// @test-kind contract: editor positions count CRLF, CR and LF as one line break each at every offset, with or without a shared cache
+test('editor positions count CRLF, CR and LF as one line break each at every offset, with or without a shared cache', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const text = 'a\r\nbb\rc\n\nd\r\r\ne';
+  fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), text);
+  const index = await createSourceInspector({ sourceDir: fx.portal }).sourceIndexFor('/');
+  const source = [...index.sources.values()].find(
+    (source) => source.componentKey === 'web-file:widget-js' && source.rawBytes,
+  );
+  const cache = new Map();
+  for (let start = 0; start <= text.length; start++) {
+    const prefix = text.slice(0, start),
+      last = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r'));
+    const expected = { line: prefix.split(/\r\n|\r|\n/).length, column: Math.max(1, start - last) };
+    for (const target of [sourceEditorTarget(source, { start }), sourceEditorTarget(source, { start }, cache)])
+      assert.deepEqual({ line: target.line, column: target.column }, expected, 'offset ' + start);
+  }
 });
 
 for (const entry of [
@@ -263,6 +374,7 @@ test('global source revision covers all languages while winners and their source
   assert.notEqual(en.snippet('Banner').contentRevision, fr.snippet('Banner').contentRevision);
 });
 
+// @test-kind security+contract: semantic configuration changes after index admission fail the final container read, which re-checks the admitted source
 test('semantic configuration changes after index admission fail the final guarded container read', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);

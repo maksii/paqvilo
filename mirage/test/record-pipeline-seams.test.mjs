@@ -1,5 +1,6 @@
 // The organization entries a flow connector calls with an explicit backend profile: store.recordPipeline
 // .fileContentInternal (file column upload and download) and .executeMessageInternal (a custom API action).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -53,7 +54,7 @@ async function organization(t) {
     settings: dataverseSettings({ enabled: true }),
     extensions: await sourceOrganizationExtensions({ customApis }),
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   return store;
 }
 

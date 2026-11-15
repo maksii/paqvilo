@@ -1,3 +1,4 @@
+// @test-kind contract: metadata-backed local rendering exposes edited YAML fields without changing deployment diagnostics
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import YAML from 'yaml';
@@ -50,6 +51,9 @@ test('known YAML rendered fields are discoverable and literal changes preserve m
   );
   assert.equal(result.applied.length, 4);
   assert.ok(result.html.includes('<p>New footer</p>'));
+  assert.ok(result.html.includes('<p>New question</p>'));
+  assert.ok(result.html.includes('<p>New instructions</p>'));
+  assert.ok(result.html.includes('<p>New link description</p>'));
   const footerFile = files[0][0];
   fx.write(footerFile, fx.read(footerFile).replace('footer-id', 'different-footer'));
   assert.ok(

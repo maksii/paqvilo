@@ -1,26 +1,28 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
+import { fetchLocalState } from './lib/local-state-fetch.mjs';
 
 const hash = (value) =>
   createHash('sha256')
     .update(JSON.stringify(value) ?? 'null')
     .digest('hex');
 const loopback = (host) => ['127.0.0.1', 'localhost', '[::1]'].includes(host);
-const canonical = (value) =>
-  Array.isArray(value)
-    ? value.map(canonical)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, canonical(value[key])]),
-        )
-      : value;
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort(/* NOSONAR: preserve default string coercion */)
+        .map((key) => [key, canonical(value[key])]),
+    );
+  return value;
+};
 const fieldAt = (value, selector) =>
   selector
     .split('.')
@@ -53,42 +55,7 @@ function validateContractOptions(contract) {
     throw new Error('Contract kind must be json or text.');
 }
 
-/** Explicit projection prevents volatile annotations from masking useful record parity. */
-export function normalizeContract(body, contract) {
-  validateContractOptions(contract);
-  if (contract.statusOnly) return null;
-  if (contract.kind === 'text') return String(body).replace(/\r\n/g, '\n');
-  const parsed = typeof body === 'string' ? JSON.parse(body) : body;
-  const collection = contract.collection ? fieldAt(parsed, contract.collection) : parsed;
-  if (collection === undefined) throw new Error('The response lacks the configured collection.');
-  const project = (row) => {
-    if (!contract.fields?.length) return canonical(row);
-    return Object.fromEntries(
-      contract.fields.map((key) => {
-        const value = fieldAt(row, key);
-        if (value === undefined) throw new Error('The response lacks a configured field.');
-        return [key, canonical(value)];
-      }),
-    );
-  };
-  if (!Array.isArray(collection)) return project(collection);
-  const records = collection.map(project);
-  return contract.unordered === true
-    ? records.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
-    : records;
-}
-
-/** Compare only explicit GET contracts using the browser's existing identity. */
-export async function compareReferenceContracts({
-  localUrl,
-  origin,
-  cdpUrl,
-  contracts,
-  outputDir,
-  bridge: suppliedBridge,
-  localSession,
-  localVisitor,
-}) {
+function validateComparisonOrigins(localUrl, origin) {
   const local = new URL(localUrl);
   if (
     local.protocol !== 'http:' ||
@@ -110,49 +77,114 @@ export async function compareReferenceContracts({
     reference.hash
   )
     throw new Error('Reference URL must be a credential-free HTTPS origin.');
+  return { local, reference };
+}
+
+function validateOneContract(contract, ids) {
+  validateContractOptions(contract);
+  if (typeof contract.id !== 'string' || !contract.id.trim() || contract.id.length > 160 || ids.has(contract.id))
+    throw new Error('Contracts require unique string IDs of 1–160 characters.');
+  ids.add(contract.id);
+  validateLivePath(contract.path);
+  if (contract.method !== undefined && contract.method !== 'GET')
+    throw new Error('Reference parity accepts only GET reads.');
+  if (
+    contract.expectedStatus !== undefined &&
+    (!Number.isInteger(contract.expectedStatus) || contract.expectedStatus < 100 || contract.expectedStatus > 599)
+  )
+    throw new Error('Expected HTTP status is invalid.');
+  if (contract.expectedCount !== undefined && (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0))
+    throw new Error('Expected count must be a nonnegative integer.');
+  if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined))
+    throw new Error('Status-only contracts cannot assert response data.');
+  if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer))
+    throw new Error('Only an explicit odata.maxpagesize preference is supported.');
+}
+
+function validateContractPlan(contracts) {
   if (!Array.isArray(contracts) || !contracts.length || contracts.length > 100)
     throw new Error('Supply 1–100 explicit read contracts.');
   const ids = new Set();
-  for (const contract of contracts) {
-    validateContractOptions(contract);
-    if (typeof contract.id !== 'string' || !contract.id.trim() || contract.id.length > 160 || ids.has(contract.id))
-      throw new Error('Contracts require unique string IDs of 1–160 characters.');
-    ids.add(contract.id);
-    validateLivePath(contract.path);
-    if (contract.method !== undefined && contract.method !== 'GET')
-      throw new Error('Reference parity accepts only GET reads.');
-    if (
-      contract.expectedStatus !== undefined &&
-      (!Number.isInteger(contract.expectedStatus) || contract.expectedStatus < 100 || contract.expectedStatus > 599)
-    )
-      throw new Error('Expected HTTP status is invalid.');
-    if (
-      contract.expectedCount !== undefined &&
-      (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0)
-    )
-      throw new Error('Expected count must be a nonnegative integer.');
-    if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined))
-      throw new Error('Status-only contracts cannot assert response data.');
-    if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer))
-      throw new Error('Only an explicit odata.maxpagesize preference is supported.');
-  }
-  if (!outputDir) throw new Error('Supply an ignored evidence output directory.');
+  for (const contract of contracts) validateOneContract(contract, ids);
+}
+
+function validateVisitorOptions(localSession, localVisitor, localOrigin) {
   if (localSession !== undefined && localVisitor !== undefined)
     throw new Error('Supply either localSession or localVisitor, not both.');
   if (
     localSession !== undefined &&
-    (!localSession ||
-      localSession.origin !== local.origin ||
+    (localSession?.origin !== localOrigin ||
       typeof localSession.request !== 'function' ||
       typeof localSession.session !== 'function')
   )
     throw new Error('Local session must be a portal visitor for the selected loopback origin.');
+}
+
+function localVisitorOptions(localVisitor, before) {
+  if (localVisitor === undefined) return undefined;
+  if (
+    !localVisitor ||
+    typeof localVisitor !== 'object' ||
+    Array.isArray(localVisitor) ||
+    Object.keys(localVisitor).some((key) => !['contactId', 'roles', 'configuredPersona'].includes(key)) ||
+    (localVisitor.configuredPersona !== undefined && typeof localVisitor.configuredPersona !== 'boolean')
+  )
+    throw new Error('Local visitor requires contactId, optional roles, or configuredPersona: true.');
+  let { contactId, roles } = localVisitor;
+  if (localVisitor.configuredPersona) {
+    const configured = before.config?.identity;
+    contactId ??= configured?.contactId ?? configured?.id;
+    if (roles === undefined && (configured?.roleSource ?? 'override') === 'override') roles = configured?.roles;
+  }
+  if (typeof contactId !== 'string' || !contactId.trim())
+    throw new Error('Local authenticated visitor requires an existing contactId; no configured persona is available.');
+  return { contactId, roles };
+}
+
+export function normalizeContract(body, contract) {
+  validateContractOptions(contract);
+  if (contract.statusOnly) return null;
+  if (contract.kind === 'text') return String(body).replaceAll('\r\n', '\n');
+  const parsed = typeof body === 'string' ? JSON.parse(body) : body;
+  const collection = contract.collection ? fieldAt(parsed, contract.collection) : parsed;
+  if (collection === undefined) throw new Error('The response lacks the configured collection.');
+  const project = (row) => {
+    if (!contract.fields?.length) return canonical(row);
+    return Object.fromEntries(
+      contract.fields.map((key) => {
+        const value = fieldAt(row, key);
+        if (value === undefined) throw new Error('The response lacks a configured field.');
+        return [key, canonical(value)];
+      }),
+    );
+  };
+  if (!Array.isArray(collection)) return project(collection);
+  const records = collection.map(project);
+  return contract.unordered === true
+    ? records.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+    : records;
+}
+
+/** Compare only explicit GET contracts using the browser's existing identity. */
+/* NOSONAR: preserve supplied bridge and visitor callback await ordering */ export async function compareReferenceContracts({
+  localUrl,
+  origin,
+  cdpUrl,
+  contracts,
+  outputDir,
+  bridge: suppliedBridge,
+  localSession,
+  localVisitor,
+}) {
+  const { local, reference } = validateComparisonOrigins(localUrl, origin);
+  validateContractPlan(contracts);
+  if (!outputDir) throw new Error('Supply an ignored evidence output directory.');
+  validateVisitorOptions(localSession, localVisitor, local.origin);
   const readState = async () => {
-    const response = await fetch(local.origin + '/__sim/api/state', {
+    const response = await fetchLocalState(local.origin + '/__sim/api/state', {
       redirect: 'error',
       signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) throw new Error('Local runtime state is unavailable.');
     const state = await response.json();
     if (
       state.config?.mode !== 'local' ||
@@ -165,29 +197,8 @@ export async function compareReferenceContracts({
   const before = await readState();
   let visitor = localSession,
     ownedVisitor = false,
-    visitorIdentity,
-    visitorOptions;
-  if (localVisitor !== undefined) {
-    if (
-      !localVisitor ||
-      typeof localVisitor !== 'object' ||
-      Array.isArray(localVisitor) ||
-      Object.keys(localVisitor).some((key) => !['contactId', 'roles', 'configuredPersona'].includes(key)) ||
-      (localVisitor.configuredPersona !== undefined && typeof localVisitor.configuredPersona !== 'boolean')
-    )
-      throw new Error('Local visitor requires contactId, optional roles, or configuredPersona: true.');
-    let { contactId, roles } = localVisitor;
-    if (localVisitor.configuredPersona) {
-      const configured = before.config?.identity;
-      contactId ??= configured?.contactId ?? configured?.id;
-      if (roles === undefined && (configured?.roleSource ?? 'override') === 'override') roles = configured?.roles;
-    }
-    if (typeof contactId !== 'string' || !contactId.trim())
-      throw new Error(
-        'Local authenticated visitor requires an existing contactId; no configured persona is available.',
-      );
-    visitorOptions = { contactId, roles };
-  }
+    visitorIdentity;
+  const visitorOptions = localVisitorOptions(localVisitor, before);
   const stateSignature = (state) =>
     hash({
       source: state.status?.sourceFingerprint,
@@ -307,18 +318,8 @@ export async function compareReferenceContracts({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        local: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-        output: { type: 'string' },
-        'local-contact': { type: 'string' },
-        'local-role': { type: 'string', multiple: true },
-        'local-configured-persona': { type: 'boolean' },
-      },
-    });
+    const values = parseToolArgs('reference-parity', process.argv.slice(2));
+    assertToolOptions('reference-parity', values, ['local', 'origin', 'cdp']);
     const localVisitor =
       values['local-contact'] !== undefined || values['local-role'] !== undefined || values['local-configured-persona']
         ? {

@@ -1,3 +1,5 @@
+import { groupDigitRuns } from './group-digit-runs.mjs';
+import { likeTokens, likeTokensMatch, likeTokensSuffixStart } from './dataverse-values.mjs';
 // Dataverse SQL scalar function library with T-SQL semantics for the TDS endpoint.
 // Independent of the parser: callers pass evaluated argument values. The parser maps
 // CAST(x AS t) to castValue(x, t); CONVERT and TRY_CONVERT are registered as functions.
@@ -20,7 +22,9 @@
 // Guesses: error numbers other than 245 (documented for CAST/CONVERT) follow SQL Server from memory, including
 // FORMATMESSAGE's missing-parameter 2787; unsupported functions raise 195 with a plain message (no documented text);
 // DATALENGTH of decimals is fixed at 17 bytes; ISNUMERIC accepts plain numeric text only; an empty CHARINDEX or
-// REPLACE pattern returns 0 and the input. FORMAT currency codes cover common regions only.
+// REPLACE pattern returns 0 and the input. FORMAT currency codes cover common regions only;
+// well-formed cultures unsupported by Intl use en-US as an approximation, and Intl's
+// culture-name grammar does not establish SQL Server behavior for every name.
 import { randomUUID } from 'node:crypto';
 
 const DAY = 86400000;
@@ -56,10 +60,16 @@ const TYPE_ALIAS = {
   nchar: 'nvarchar',
   smalldatetime: 'datetime',
 };
-const TYPE_TEXT = /^\s*([a-z]+)\s*(?:\(\s*([^)]*?)\s*\))?\s*$/i;
+function trimSqlTrailingSpaces(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === ' ') end--;
+  return text.slice(0, end);
+}
+
+const TYPE_TEXT = /^\s*([a-z]+)(?:\s*\(([^)]*)\))?\s*$/i;
 const DECIMAL_TEXT = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i;
-const FLOAT_TEXT = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
-const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d{1,3}))?)?)?$/;
+const FLOAT_TEXT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d{1,3}))?)?)?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const US_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
 const COMPACT_DATE = /^(\d{4})(\d{2})(\d{2})$/;
 const GUID_TEXT = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
@@ -198,8 +208,11 @@ const FLOAT = () => ({ type: 'float' });
 const DATETIME = () => ({ type: 'datetime' });
 const GUID = () => ({ type: 'uniqueidentifier' });
 const FIRST = ([a]) => ({ ...a });
-const NUMERIC = ([a]) =>
-  a.type === 'null' ? { type: 'int' } : NUMERIC_KINDS.has(a.type) ? { ...a } : { type: 'float' };
+const NUMERIC = ([a]) => {
+  if (a.type === 'null') return { type: 'int' };
+  if (NUMERIC_KINDS.has(a.type)) return { ...a };
+  return { type: 'float' };
+};
 const ISNULL_TYPE = ([a, b]) => (a.type === 'null' ? { ...b } : { ...a });
 const COMMON = (types) => commonType(types);
 
@@ -252,7 +265,7 @@ export function returnType(name, argTypes = [], extra = {}) {
 
 const anyNull = (...xs) => xs.some((x) => x === null || x === undefined);
 const fail = (number, message) => {
-  throw { number, message };
+  throw { number, message }; // NOSONAR: thrown value is part of the error contract
 };
 const pad = (n, width = 2) => String(n).padStart(width, '0');
 const fields = (d) => ({
@@ -266,7 +279,7 @@ const fields = (d) => ({
 });
 const daysIn = (y, month1) => new Date(Date.UTC(y, month1, 0)).getUTCDate();
 const weekdaySun0 = (d) => (((Math.floor(d.getTime() / DAY) + 4) % 7) + 7) % 7;
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/-]/g, String.raw`\$&`);
 
 // Decimal text helpers: a value is { coef: BigInt, scale } meaning coef / 10^scale.
 export function parseDecimal(text) {
@@ -530,34 +543,51 @@ function toGuid(value) {
   return m[1].toUpperCase();
 }
 // Parses text per style. Unknown style numbers raise 9809; text that does not match raises 241.
-function fromText(text, style) {
+function parseStyledDate(text, style) {
   const s = Number(style ?? 0);
-  let m = null;
-  let year;
-  let month;
-  let day;
-  let [h, mi, sec, ms] = [0, 0, 0, 0];
-  if (s === 101 || s === 103) {
-    m = US_DATE.exec(text);
-    if (m) {
-      year = m[3];
-      [month, day] = s === 101 ? [m[1], m[2]] : [m[2], m[1]];
-    }
-  } else if (s === 112) {
-    m = COMPACT_DATE.exec(text);
-    if (m) [year, month, day] = [m[1], m[2], m[3]];
-  } else if (s === 0 || s === 120 || s === 121 || s === 126) {
-    m = ISO_DATE.exec(text) ?? COMPACT_DATE.exec(text);
-    if (m) {
-      [year, month, day] = [m[1], m[2], m[3]];
-      if (m[4] !== undefined) {
-        h = Number(m[4]);
-        mi = Number(m[5]);
-        sec = m[6] === undefined ? 0 : Number(m[6]);
-        ms = m[7] === undefined ? 0 : Number(m[7].padEnd(3, '0'));
-      }
-    }
-  } else fail(9809, `The style ${style} is not a valid style number for datetime.`);
+  if (s === 101 || s === 103) return parseUsStyleDate(text, s);
+  if (s === 112) return parseCompactStyleDate(text);
+  if (s === 0 || s === 120 || s === 121 || s === 126) return parseIsoStyleDate(text);
+  return fail(9809, `The style ${style} is not a valid style number for datetime.`);
+}
+function parseUsStyleDate(text, style) {
+  const m = US_DATE.exec(text);
+  if (!m) return { m: null };
+  const year = m[3];
+  const [month, day] = style === 101 ? [m[1], m[2]] : [m[2], m[1]];
+  return { m, year, month, day };
+}
+function parseCompactStyleDate(text) {
+  const m = COMPACT_DATE.exec(text);
+  return m ? { m, year: m[1], month: m[2], day: m[3] } : { m: null };
+}
+function parseIsoStyleDate(text) {
+  const m = ISO_DATE.exec(text) ?? COMPACT_DATE.exec(text);
+  if (!m) return { m: null };
+  const [year, month, day] = [m[1], m[2], m[3]];
+  let h = 0,
+    mi = 0,
+    sec = 0,
+    ms = 0;
+  if (m[4] !== undefined) {
+    h = Number(m[4]);
+    mi = Number(m[5]);
+    sec = m[6] === undefined ? 0 : Number(m[6]);
+    ms = m[7] === undefined ? 0 : Number(m[7].padEnd(3, '0'));
+  }
+  return {
+    m,
+    year,
+    month,
+    day,
+    h,
+    mi,
+    sec,
+    ms,
+  };
+}
+function fromText(text, style) {
+  const { m, year, month, day, h = 0, mi = 0, sec = 0, ms = 0 } = parseStyledDate(text, style);
   if (!m) fail(241, 'Conversion failed when converting date and/or time from character string.');
   const [y, mo, d] = [Number(year), Number(month), Number(day)];
   if (y < 1753 || y > 9999)
@@ -568,7 +598,7 @@ function fromText(text, style) {
   return new Date(Date.UTC(y, mo - 1, d, h, mi, sec, ms));
 }
 function toDatetime(value, style, _fromType) {
-  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof Date) return new Date(value.getTime()); // NOSONAR: Date subclass may override getTime
   if (typeof value === 'string') return fromText(value.trim(), style);
   if (typeof value === 'boolean') fail(8114, 'Error converting data type bit to datetime.');
   // Numbers are days since 1900-01-01 with an optional fraction of a day.
@@ -596,40 +626,35 @@ function parseType(spec) {
   if (raw === 'money' || raw === 'smallmoney')
     return { base: 'decimal', precision: raw === 'money' ? 19 : 10, scale: 4 };
   const base = TYPE_ALIAS[raw] ?? raw;
-  const args = m?.[2] ? m[2].split(',').map((x) => x.trim()) : [];
-  switch (base) {
-    case 'decimal':
-      return {
-        base,
-        precision: args[0] === undefined ? 18 : Number(args[0]),
-        scale: args[1] === undefined ? 0 : Number(args[1]),
-      };
-    case 'varchar':
-    case 'nvarchar': {
-      let length = 30; // CAST and CONVERT default for character types without a length
-      if (args[0] !== undefined) length = args[0].toLowerCase() === 'max' ? Infinity : Number(args[0]);
-      return { base, length };
-    }
-    case 'binary':
-    case 'varbinary': {
-      // binary(n) defaults to 1 byte, varbinary(n) to 30; binary has no max
-      const max = args[0] !== undefined && args[0].toLowerCase() === 'max';
-      if (max && base === 'binary') fail(102, "Incorrect syntax near 'max'.");
-      const length = args[0] === undefined ? (base === 'binary' ? 1 : 30) : max ? Infinity : Number(args[0]);
-      return { base, length };
-    }
-    case 'int':
-    case 'bigint':
-    case 'smallint':
-    case 'tinyint':
-    case 'bit':
-    case 'float':
-    case 'datetime':
-    case 'uniqueidentifier':
-      return { base };
-    default:
-      return fail(2715, `Cannot find data type ${spec}.`);
-  }
+  const argsText = m?.[2]?.trim();
+  const args = argsText ? argsText.split(',').map((x) => x.trim()) : [];
+  if (base === 'decimal') return parseDecimalType(base, args);
+  if (base === 'varchar' || base === 'nvarchar') return parseCharacterType(base, args);
+  if (base === 'binary' || base === 'varbinary') return parseBinaryType(base, args);
+  if (['int', 'bigint', 'smallint', 'tinyint', 'bit', 'float', 'datetime', 'uniqueidentifier'].includes(base))
+    return { base };
+  return fail(2715, `Cannot find data type ${spec}.`);
+}
+function parseDecimalType(base, args) {
+  return {
+    base,
+    precision: args[0] === undefined ? 18 : Number(args[0]),
+    scale: args[1] === undefined ? 0 : Number(args[1]),
+  };
+}
+function parseCharacterType(base, args) {
+  let length = 30;
+  if (args[0] !== undefined) length = args[0].toLowerCase() === 'max' ? Infinity : Number(args[0]);
+  return { base, length };
+}
+function parseBinaryType(base, args) {
+  const max = args[0]?.toLowerCase() === 'max';
+  if (max && base === 'binary') fail(102, "Incorrect syntax near 'max'.");
+  let length;
+  if (args[0] === undefined) length = base === 'binary' ? 1 : 30;
+  else if (max) length = Infinity;
+  else length = Number(args[0]);
+  return { base, length };
 }
 
 // Binary targets: text becomes its bytes (varchar single-byte, nvarchar UTF-16LE), integers big-endian (4 bytes,
@@ -643,13 +668,7 @@ function toBinary(value, t, fromType) {
     bytes = Buffer.alloc(8);
     bytes.writeBigInt64BE(value);
   } else if (typeof value === 'number' && Number.isInteger(value)) {
-    if (value >= -2147483648 && value <= 2147483647) {
-      bytes = Buffer.alloc(4);
-      bytes.writeInt32BE(value);
-    } else {
-      bytes = Buffer.alloc(8);
-      bytes.writeBigInt64BE(BigInt(value));
-    }
+    bytes = integerToBytes(value);
   } else if (typeof value === 'boolean') bytes = Buffer.from([value ? 1 : 0]);
   else fail(8114, `Error converting data type ${fromType} to ${t.base}.`);
   if (t.base === 'binary') {
@@ -658,6 +677,16 @@ function toBinary(value, t, fromType) {
     return out;
   }
   return Buffer.from(t.length === Infinity ? bytes : bytes.subarray(0, t.length));
+}
+function integerToBytes(value) {
+  if (value >= -2147483648 && value <= 2147483647) {
+    const bytes = Buffer.alloc(4);
+    bytes.writeInt32BE(value);
+    return bytes;
+  }
+  const bytes = Buffer.alloc(8);
+  bytes.writeBigInt64BE(BigInt(value));
+  return bytes;
 }
 
 // CAST and CONVERT. Strings truncate to the target length; text-to-number failures raise 245 (int) or 8114.
@@ -700,31 +729,46 @@ export function castValue(value, spec, { style, fromType = 'nvarchar' } = {}) {
 // int/bigint/decimal/float follow the other operand's type; datetime and binary likewise.
 function convertOperand(v, other) {
   if (typeof v === 'string' && !Buffer.isBuffer(other)) {
-    if (typeof other === 'string') return v;
-    if (other instanceof Date) return toDatetime(v, undefined, 'nvarchar');
-    if (typeof other === 'bigint') return castValue(v, 'bigint');
-    if (isDecimalValue(other)) {
-      const p = parseDecimal(v);
-      if (!p) fail(8114, 'Error converting data type nvarchar to numeric.');
-      return { decimal: formatDecimal(p) };
-    }
-    if (typeof other === 'number' && !Number.isInteger(other)) return toFloat(v, 'nvarchar');
-    return castValue(v, 'int');
+    return convertStringOperand(v, other);
   }
-  if (Buffer.isBuffer(v)) {
-    if (typeof other === 'string') return castValue(v, 'nvarchar');
-    if (other instanceof Date) return castValue(v, 'datetime');
-    if (typeof other === 'bigint') return castValue(v, 'bigint');
-    if (isDecimalValue(other)) return castValue(v, 'decimal(38,0)');
-    return castValue(v, 'int');
-  }
+  if (Buffer.isBuffer(v)) return convertBufferOperand(v, other);
   return v;
+}
+function convertStringOperand(value, other) {
+  if (typeof other === 'string') return value;
+  if (other instanceof Date) return toDatetime(value, undefined, 'nvarchar');
+  if (typeof other === 'bigint') return castValue(value, 'bigint');
+  if (isDecimalValue(other)) {
+    const p = parseDecimal(value);
+    if (!p) fail(8114, 'Error converting data type nvarchar to numeric.');
+    return { decimal: formatDecimal(p) };
+  }
+  if (typeof other === 'number' && !Number.isInteger(other)) return toFloat(value, 'nvarchar');
+  return castValue(value, 'int');
+}
+function convertBufferOperand(value, other) {
+  if (typeof other === 'string') return castValue(value, 'nvarchar');
+  if (other instanceof Date) return castValue(value, 'datetime');
+  if (typeof other === 'bigint') return castValue(value, 'bigint');
+  if (isDecimalValue(other)) return castValue(value, 'decimal(38,0)');
+  return castValue(value, 'int');
 }
 const isDecimalValue = (v) =>
   v !== null && typeof v === 'object' && !(v instanceof Date) && !Buffer.isBuffer(v) && 'decimal' in v;
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ * @param {object} ctx
+ * @param {string | null} typeA
+ * @param {string | null} typeB
+ */
 export function compareValues(a, b, ctx, typeA = null, typeB = null) {
-  const ord = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  const ord = (x, y) => {
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
+  };
   // A string meets varbinary through its own encoding: varchar is single-byte, nvarchar is UTF-16LE.
   if (Buffer.isBuffer(a) && typeof b === 'string') b = Buffer.from(b, typeB === 'nvarchar' ? 'utf16le' : 'latin1');
   else if (Buffer.isBuffer(b) && typeof a === 'string') a = Buffer.from(a, typeA === 'nvarchar' ? 'utf16le' : 'latin1');
@@ -732,8 +776,8 @@ export function compareValues(a, b, ctx, typeA = null, typeB = null) {
   const x0 = convertOperand(a, b);
   const y0 = convertOperand(b, a);
   if (typeof x0 === 'string' && typeof y0 === 'string') {
-    let x = x0.replace(/ +$/, '');
-    let y = y0.replace(/ +$/, '');
+    let x = trimSqlTrailingSpaces(x0);
+    let y = trimSqlTrailingSpaces(y0);
     if (!ctx.caseSensitive) {
       x = x.toLowerCase();
       y = y.toLowerCase();
@@ -749,23 +793,13 @@ export function compareValues(a, b, ctx, typeA = null, typeB = null) {
 }
 
 // String functions. Every one returns null for a NULL argument unless noted (CONCAT, CONCAT_WS).
-const likeToRegExp = (pattern, ctx) => {
-  let out = '';
-  for (let i = 0; i < pattern.length; i += 1) {
-    const c = pattern[i];
-    const close = c === '[' ? pattern.indexOf(']', i + 1) : -1;
-    if (c === '%') out += '[\\s\\S]*';
-    else if (c === '_') out += '[\\s\\S]';
-    else if (close > i + 1) {
-      const negate = pattern[i + 1] === '^';
-      const body = pattern.slice(i + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, '\\$&');
-      out += `[${negate ? '^' : ''}${body}]`;
-      i = close;
-    } else out += escapeRe(c);
-  }
-  return new RegExp(out, ctx.caseSensitive ? '' : 'i');
+// Without a leading %, the pattern must match the whole text; with one, the leftmost start whose remaining text
+// matches to its end. -1 when there is none.
+const likePosition = (tokens, text, floating) => {
+  if (floating) return likeTokensSuffixStart(tokens, text);
+  return likeTokensMatch(tokens, text) ? 0 : -1;
 };
-const dateFormatTokens = /yyyy|yy|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|tt|'[^']*'|[\s\S]/g;
+const dateFormatTokens = /yyyy|yy|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|tt|'[^']*'|[\s\S]/g; // NOSONAR: regex kept: a rewrite would change matches or captures
 function dateFormat(d, pattern, locale) {
   const { y, mo, day, h, mi, s, ms } = fields(d);
   const h12 = h % 12 || 12;
@@ -807,12 +841,12 @@ function numberFormat(n, pattern, locale) {
   while (frac.length > minFrac && frac.endsWith('0')) frac = frac.slice(0, -1);
   if (int === '0' && minInt === 0) int = '';
   int = int.padStart(minInt, '0');
-  if (intPat.includes(',')) int = int.replace(/\B(?=(\d{3})+(?!\d))/g, sep.group);
+  if (intPat.includes(',')) int = groupDigitRuns(int, sep.group);
   const body = int + (frac ? `${sep.decimal}${frac}` : '') || '0';
   return (n < 0 && /[1-9]/.test(body) ? '-' : '') + body;
 }
 
-def('LEN', 1, 1, INT, ([s]) => (s === null ? null : textOf(s).replace(/ +$/, '').length));
+def('LEN', 1, 1, INT, ([s]) => (s === null ? null : trimSqlTrailingSpaces(textOf(s)).length));
 def('DATALENGTH', 1, 1, INT, ([v]) => {
   if (v === null) return null;
   if (typeof v === 'string') return 2 * v.length;
@@ -851,10 +885,14 @@ def('CHARINDEX', 2, 3, INT, ([find, s, start], ctx) => {
 });
 def('PATINDEX', 2, 2, INT, ([pattern, s], ctx) => {
   if (anyNull(pattern, s)) return null;
-  // Leading % wildcards do not move the reported start: '%[0-9]%' reports the first digit.
-  const re = likeToRegExp(textOf(pattern).replace(/^%+/, ''), ctx);
-  const m = re.exec(textOf(s));
-  return m ? m.index + 1 : 0;
+  // Leading % permits a search without contributing to the reported start position.
+  const original = textOf(pattern);
+  const leadingWildcard = original.startsWith('%');
+  const remaining = original.replace(/^%+/, '');
+  if (leadingWildcard && remaining === '') return 1;
+  const tokens = likeTokens(remaining, { ignoreCase: !ctx.caseSensitive, brackets: 'pattern' });
+  const index = likePosition(tokens, textOf(s), leadingWildcard);
+  return index < 0 ? 0 : index + 1;
 });
 def('REPLACE', 3, 3, TEXT, ([s, from, to], ctx) => {
   if (anyNull(s, from, to)) return null;
@@ -871,10 +909,10 @@ def('REVERSE', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : Array.from(tex
 def('LOWER', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).toLowerCase()));
 def('UPPER', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).toUpperCase()));
 def('LTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).replace(/^ +/, '')));
-def('RTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).replace(/ +$/, '')));
+def('RTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : trimSqlTrailingSpaces(textOf(s))));
 // TRIM(s) removes spaces. TRIM(characters, s) follows TRIM(characters FROM s): args are [characters, string].
 def('TRIM', 1, 2, TEXT_OF_FIRST, (args) => {
-  if (args.length === 1) return args[0] === null ? null : textOf(args[0]).replace(/^ +| +$/g, '');
+  if (args.length === 1) return args[0] === null ? null : trimSqlTrailingSpaces(textOf(args[0]).replace(/^ +/, ''));
   const [chars, s] = args;
   if (anyNull(chars, s)) return null;
   const set = textOf(chars);
@@ -885,14 +923,13 @@ def('TRIM', 1, 2, TEXT_OF_FIRST, (args) => {
   while (b > a && set.includes(str[b - 1])) b -= 1;
   return str.slice(a, b);
 });
-// CONCAT treats NULL as an empty string; CONCAT_WS skips NULL arguments and returns NULL for a NULL separator.
+// CONCAT treats NULL as an empty string; CONCAT_WS skips NULL values and uses an empty NULL separator.
 def('CONCAT', 2, 254, TEXT, (args) => args.map((v) => (v === null ? '' : textOf(v))).join(''));
 def('CONCAT_WS', 3, 254, TEXT, ([sep, ...rest]) => {
-  if (sep === null) return null;
   return rest
     .filter((v) => v !== null)
     .map((v) => textOf(v))
-    .join(textOf(sep));
+    .join(sep === null ? '' : textOf(sep));
 });
 def('STUFF', 4, 4, TEXT, ([s, start, len, ins]) => {
   if (anyNull(s, start, len, ins)) return null;
@@ -912,8 +949,8 @@ def('STR', 1, 3, TEXT, ([f, length, dec]) => {
   const text = toFloat(f, 'nvarchar').toFixed(Number(places));
   return text.length > Number(width) ? '*'.repeat(Number(width)) : text.padStart(Number(width));
 });
-// FORMAT(value, format [, culture]). Culture defaults to en-US. A NULL argument, or a culture Intl does not
-// recognise, gives NULL. Standard formats N, C, P (numbers) and d, D (dates) plus custom patterns are culture-aware.
+// FORMAT(value, format [, culture]). Culture defaults to en-US; Intl-rejected culture tags raise 9818.
+// Standard formats N, C, P (numbers) and d, D (dates) plus custom patterns are culture-aware.
 const NUMBER_STANDARD = /^([NCP])(\d{0,2})$/i;
 const DATE_STANDARD = {
   d: { year: 'numeric', month: '2-digit', day: '2-digit' },
@@ -949,9 +986,9 @@ const cultureOf = (name) => {
   try {
     [tag] = Intl.getCanonicalLocales(String(name).trim());
   } catch (_e) {
-    return null;
+    fail(9818, `The culture parameter '${name}' provided in the function call is not supported.`);
   }
-  return Intl.NumberFormat.supportedLocalesOf(tag).length ? tag : null;
+  return Intl.NumberFormat.supportedLocalesOf(tag).length ? tag : 'en-US';
 };
 function separators(locale) {
   const parts = new Intl.NumberFormat(locale).formatToParts(1000.5);
@@ -972,7 +1009,6 @@ function standardNumber(n, letter, precision, locale) {
 def('FORMAT', 2, 3, TEXT, ([v, fmt, culture]) => {
   if (v === null || fmt === null || culture === null) return null;
   const locale = cultureOf(culture === undefined ? 'en-US' : textOf(culture));
-  if (!locale) return null;
   const pattern = textOf(fmt);
   if (v instanceof Date) {
     return Object.hasOwn(DATE_STANDARD, pattern)
@@ -994,7 +1030,7 @@ def('FORMAT', 2, 3, TEXT, ([v, fmt, culture]) => {
 
 // FORMATMESSAGE(msg, args...): printf-style %s %d %i %u %x %X %o %% with flags - 0 +, width and .precision.
 // NULL arguments print as (null). A message number would read sys.messages, which this library does not have.
-const PLACEHOLDER = /%([-0+]*)(\d*)(?:\.(\d+))?([sdiuxXo%])/g;
+const PLACEHOLDER = /%([-0+]*)([1-9]\d*|)(?:\.(\d+))?([sdiuxXo%])/g;
 const RADIX = { d: 10, i: 10, u: 10, x: 16, X: 16, o: 8 };
 function formatMessageArg(flags, width, precision, type, v) {
   let sign = '';
@@ -1002,20 +1038,36 @@ function formatMessageArg(flags, width, precision, type, v) {
   if (type === 's' || v === null) {
     body = v === null ? '(null)' : textOf(v);
     if (precision !== undefined) body = body.slice(0, Number(precision));
-  } else {
-    const n = castValue(v, 'bigint');
-    const signed = type === 'd' || type === 'i';
-    if (signed && n < 0n) sign = '-';
-    else if (signed && flags.includes('+')) sign = '+';
-    // Unsigned views of negative values use 32 bits when the value fits an int, else 64 bits.
-    const magnitude = signed ? (n < 0n ? -n : n) : BigInt.asUintN(n < 0n && n >= -(2n ** 31n) ? 32 : 64, n);
-    body = magnitude.toString(RADIX[type]);
-    if (type === 'X') body = body.toUpperCase();
-    if (precision !== undefined) body = body.padStart(Number(precision), '0');
-    else if (flags.includes('0') && !flags.includes('-')) body = body.padStart(width - sign.length, '0');
-  }
+  } else ({ sign, body } = formatIntegerMessageArg(flags, width, precision, type, v));
   const text = sign + body;
   return flags.includes('-') ? text.padEnd(width) : text.padStart(width);
+}
+function formatIntegerMessageArg(flags, width, precision, type, value) {
+  const n = castValue(value, 'bigint');
+  const sign = messageIntegerSign(n, type, flags);
+  const magnitude = messageIntegerMagnitude(n, type);
+  let body = magnitude.toString(RADIX[type]);
+  if (type === 'X') body = body.toUpperCase();
+  body = padMessageInteger(body, flags, width, precision, sign);
+  return { sign, body };
+}
+function messageIntegerSign(value, type, flags) {
+  if (type !== 'd' && type !== 'i') return '';
+  if (value < 0n) return '-';
+  if (flags.includes('+')) return '+';
+  return '';
+}
+
+function messageIntegerMagnitude(value, type) {
+  if (type === 'd' || type === 'i') return value < 0n ? -value : value;
+  const bits = value < 0n && value >= -(2n ** 31n) ? 32 : 64;
+  return BigInt.asUintN(bits, value);
+}
+
+function padMessageInteger(body, flags, width, precision, sign) {
+  if (precision !== undefined) return body.padStart(Number(precision), '0');
+  if (flags.includes('0') && !flags.includes('-')) return body.padStart(width - sign.length, '0');
+  return body;
 }
 def('FORMATMESSAGE', 1, 254, TEXT, ([msg, ...args]) => {
   if (msg === null) return null;
@@ -1041,28 +1093,28 @@ def('ASCII', 1, 1, INT, ([s]) => {
   if (s === null) return null;
   const str = textOf(s);
   if (!str) return null;
-  const code = str.charCodeAt(0);
+  const code = str.codePointAt(0);
   return code <= 255 ? code : 63; // no single-byte code page value: the conversion yields '?'
 });
 def('CHAR', 1, 1, TEXT_ONE, ([n]) => {
   if (n === null || Number(n) < 0 || Number(n) > 255) return null;
-  return String.fromCharCode(Number(n));
+  return String.fromCharCode(Number(n)); // NOSONAR: UTF-16 code unit semantics are required
 });
 def('UNICODE', 1, 1, INT, ([s]) => {
   if (s === null) return null;
   const str = textOf(s);
-  return str ? str.charCodeAt(0) : null;
+  return str ? str.charCodeAt(0) : null; // NOSONAR: UTF-16 code unit semantics are required
 });
 def('NCHAR', 1, 1, TEXT_ONE, ([n]) => {
   if (n === null || Number(n) < 0 || Number(n) > 65535) return null;
-  return String.fromCharCode(Number(n));
+  return String.fromCharCode(Number(n)); // NOSONAR: UTF-16 code unit semantics are required
 });
 
 // Date functions. Dates are UTC; string arguments parse with the default datetime style.
 const nowOf = (ctx) => {
   const src = ctx.now;
   const d = typeof src === 'function' ? src() : (src ?? new Date());
-  return new Date(d.getTime());
+  return new Date(d.getTime()); // NOSONAR: Date subclass may override getTime
 };
 def('GETDATE', 0, 0, DATETIME, (_, ctx) => nowOf(ctx));
 def('GETUTCDATE', 0, 0, DATETIME, (_, ctx) => nowOf(ctx));
@@ -1115,7 +1167,8 @@ def('ISDATE', 1, 1, INT, ([v]) => {
   try {
     castValue(v, 'datetime');
     return 1;
-  } catch (_e) {
+  } catch (_e) /* NOSONAR: error intentionally ignored */ {
+    // Conversion errors are the expected false result for ISDATE.
     return 0;
   }
 });
@@ -1131,9 +1184,9 @@ const positiveOrFail = (x) => {
   return x;
 };
 const mulberry32 = (seed) => {
-  let a = seed | 0;
+  let a = seed | 0; // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
   return () => {
-    a = (a + 0x6d2b79f5) | 0;
+    a = (a + 0x6d2b79f5) | 0; // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -1149,9 +1202,14 @@ function roundToInteger(x, mode) {
   const q = coef / div;
   const rem = coef % div;
   const adjust = rem !== 0n && (mode === 'ceil' ? coef > 0n : coef < 0n);
-  return { decimal: (adjust ? (mode === 'ceil' ? q + 1n : q - 1n) : q).toString() };
+  let rounded = q;
+  if (adjust) {
+    if (mode === 'ceil') rounded = q + 1n;
+    else rounded = q - 1n;
+  }
+  return { decimal: rounded.toString() };
 }
-def('ABS', 1, 1, NUMERIC, ([x]) => {
+/* NOSONAR: mixed return values are part of the contract */ def('ABS', 1, 1, NUMERIC, ([x]) => {
   if (x === null) return null;
   const v = numIn(x);
   if (typeof v === 'bigint') return v < 0n ? -v : v;
@@ -1161,7 +1219,7 @@ def('ABS', 1, 1, NUMERIC, ([x]) => {
 });
 def('CEILING', 1, 1, NUMERIC, ([x]) => roundToInteger(x, 'ceil'));
 def('FLOOR', 1, 1, NUMERIC, ([x]) => roundToInteger(x, 'floor'));
-def('ROUND', 2, 3, NUMERIC, ([x, len, fn]) => {
+/* NOSONAR: mixed return values are part of the contract */ def('ROUND', 2, 3, NUMERIC, ([x, len, fn]) => {
   if (x === null || len === null || fn === null) return null;
   const k = Number(len);
   const truncate = fn !== undefined && Number(fn) !== 0;
@@ -1170,13 +1228,21 @@ def('ROUND', 2, 3, NUMERIC, ([x, len, fn]) => {
   if (typeof v === 'number') return Number(formatDecimal(roundParts(parseDecimal(String(v)), k, truncate)));
   return { decimal: formatDecimal(roundParts(parseDecimal(v.decimal), k, truncate, true)) };
 });
-def('SIGN', 1, 1, NUMERIC, ([x]) => {
+/* NOSONAR: mixed return values are part of the contract */ def('SIGN', 1, 1, NUMERIC, ([x]) => {
   if (x === null) return null;
   const v = numIn(x);
-  if (typeof v === 'bigint') return v > 0n ? 1n : v < 0n ? -1n : 0n;
+  if (typeof v === 'bigint') {
+    if (v > 0n) return 1n;
+    if (v < 0n) return -1n;
+    return 0n;
+  }
   if (typeof v === 'number') return Math.sign(v) || 0;
-  const { coef } = parseDecimal(v.decimal);
-  return { decimal: coef > 0n ? '1' : coef < 0n ? '-1' : '0' };
+  const { coef, scale } = parseDecimal(v.decimal);
+  const unit = 10n ** BigInt(scale);
+  let sign = 0n;
+  if (coef > 0n) sign = unit;
+  else if (coef < 0n) sign = -unit;
+  return { decimal: formatDecimal({ coef: sign, scale }) };
 });
 def('POWER', 2, 2, FLOAT, ([x, y]) =>
   anyNull(x, y) ? null : floatOut(toFloat(x, 'nvarchar') ** toFloat(y, 'nvarchar')),

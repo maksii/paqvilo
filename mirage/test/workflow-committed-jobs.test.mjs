@@ -1,6 +1,7 @@
 // Classic workflow background runs are durable committed jobs (dataverse-workflows.mjs through committed-work.mjs): the
 // Ready asyncoperation row is written inside the triggering commit, a rolled-back write leaves no job, and the store's job
 // runner completes it as a Workflow job (operationtype 10).
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -54,7 +55,7 @@ test('a background workflow job commits with its trigger and runs on the job run
     settings: dataverseSettings({ enabled: false }),
     extensions: [...EXTENSIONS, workflowExtension({ facts: [FACT], handlers, diagnostic: () => {} })],
   });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   const jobs = () => store.tableRows('asyncoperation').filter((row) => row.name === 'Invented background');
 
   // A write that rolls back takes its job row with it.

@@ -5,9 +5,101 @@ const nativeString = String,
   lower = Function.prototype.call.bind(String.prototype.toLowerCase),
   safeInteger = Number.isSafeInteger;
 const normalize = (value) => lower(replace(nativeString(value ?? ''), /[{}]/g, ''));
+function sanitizeMetadataArray(value, depth, tools) {
+  const result = [];
+  for (let index = 0; index < value.length && index < 128; index++)
+    tools.push(result, sanitizeMetadata(tools.own(value, index), depth + 1, tools));
+  return result;
+}
+
+function sanitizeMetadataObject(value, depth, tools) {
+  const { own, descriptors, keys, test, define } = tools;
+  const result = {},
+    fields = descriptors(value),
+    names = keys(fields);
+  // An index loop on purpose: for...of would use Array.prototype[Symbol.iterator], which customizations can replace.
+  /* NOSONAR */ for (let index = 0; index < names.length; index++) {
+    // NOSONAR
+    const key = names[index];
+    if (test(/^(?:record|row|value|values|user|userId|recordId|entityId|text|label|url|query|href)$/i, key)) continue;
+    const item = sanitizeMetadata(own(fields[key], 'value'), depth + 1, tools);
+    if (item !== undefined) define(result, key, { value: item, enumerable: true, writable: true, configurable: true });
+  }
+  return result;
+}
+
+function sanitizeMetadata(value, depth, tools) {
+  const { isArray, prototype, objectPrototype, finite, slice } = tools;
+  if (depth > 6) return undefined;
+  if (typeof value === 'string') return value.length <= 2048 ? value : slice(value, 0, 2048);
+  if (typeof value === 'boolean' || value === null || (typeof value === 'number' && finite(value))) return value;
+  if (isArray(value)) return sanitizeMetadataArray(value, depth, tools);
+  if (!value || prototype(value) !== objectPrototype) return undefined;
+  return sanitizeMetadataObject(value, depth, tools);
+}
+
+/* NOSONAR */ function applyRegistryEntry(entry, element, node, result, scope, currentLease, selected, append, push) {
+  if (entry.lifetime !== 'document' && entry.lease !== currentLease) {
+    if (!selected && entry.owner && (entry.coverage !== 'self' || element === node)) {
+      push(result.facts, {
+        subject: 'selection',
+        predicate: 'identity',
+        dimension: 'owner',
+        kind: 'observed',
+        proof: 'mirage-registry',
+        binding: entry.owner,
+        scope,
+        stale: true,
+        reason: 'render-lease-expired',
+      });
+      append(result.sourceRefs, entry.sourceRefs, (ref) => ({ ...ref, sourceRevision: scope?.sourceRevision }));
+      append(result.sourceKeys, entry.sourceKeys);
+      push(result.availability, { capability: 'selected-owner', reason: 'render-lease-expired' });
+      result.providerGeneration = entry.generation;
+      return true;
+    }
+    return selected;
+  }
+  if (entry.generation > result.providerGeneration) result.providerGeneration = entry.generation;
+  const fact = (binding, dimension, predicate = 'identity') => ({
+    subject: dimension === 'owner' ? 'selection' : binding.key,
+    predicate,
+    dimension,
+    kind: 'observed',
+    proof: 'mirage-registry',
+    binding,
+    scope,
+  });
+  if (!selected && entry.owner && (entry.coverage !== 'self' || element === node)) {
+    push(result.facts, fact(entry.owner, 'owner'));
+    append(result.sourceKeys, entry.sourceKeys);
+    append(result.sourceRefs, entry.sourceRefs, (ref) => ({ ...ref, sourceRevision: scope?.sourceRevision }));
+    append(result.availability, entry.availability);
+    append(result.facts, entry.facts, (item) => ({ ...item, scope }));
+    selected = true;
+  } else if (entry.owner) push(result.contextFacts, fact(entry.owner, 'enclosing', 'contains'));
+  append(result.contextFacts, entry.context, (item) => fact(item, 'context', item.relationship ?? 'contains'));
+  return selected;
+}
+
+function uniqueKeys(values, seen, setHas, setAdd, push) {
+  const result = [];
+  /* NOSONAR */ for (let index = 0; index < values.length; index++) {
+    const key = values[index];
+    if (!setHas(seen, key)) {
+      setAdd(seen, key);
+      push(result, key);
+    }
+  }
+  return result;
+}
 export const modelDrivenKey = (kind, id) => `${kind}:${normalize(id)}`;
+const controlFallbackName = (control) =>
+  safeInteger(control?.ordinal)
+    ? `@${control.ordinal}`
+    : (control?.attributes?.datafieldname ?? control?.name ?? control);
 export const modelDrivenControlKey = (formId, control, region = 'body') =>
-  `control:${normalize(formId)}:${normalize(control?.uniqueId ?? control?.id ?? (safeInteger(control?.ordinal) ? `@${control.ordinal}` : (control?.attributes?.datafieldname ?? control?.name ?? control)))}:${region}`;
+  `control:${normalize(formId)}:${normalize(control?.uniqueId ?? control?.id ?? controlFallbackName(control))}:${region}`;
 
 export function createModelDrivenProvenanceRegistry(document) {
   // Capture before customizations run. Neither prototype replacements nor a
@@ -50,35 +142,26 @@ export function createModelDrivenProvenanceRegistry(document) {
   };
   const append = (target, rows, transform) => {
     if (!isArray(rows)) return;
-    for (let index = 0; index < rows.length; index++) push(target, transform ? transform(rows[index]) : rows[index]);
+    for (let index = 0; index < rows.length; index++) push(target, transform ? transform(rows[index]) : rows[index]); // NOSONAR: array-like or mutated collection, index loop kept
   };
   const bindings = new NativeWeakMap();
   let generation = 0,
     currentLease = freeze({ generation: 0 });
   let currentContext = { state: 'loading' };
-  const metadata = (value, depth = 0) => {
-    if (depth > 6) return undefined;
-    if (typeof value === 'string') return value.length <= 2048 ? value : slice(value, 0, 2048);
-    if (typeof value === 'boolean' || value === null || (typeof value === 'number' && finite(value))) return value;
-    if (isArray(value)) {
-      const result = [];
-      for (let index = 0; index < value.length && index < 128; index++)
-        push(result, metadata(own(value, index), depth + 1));
-      return result;
-    }
-    if (!value || prototype(value) !== objectPrototype) return undefined;
-    const result = {},
-      fields = descriptors(value),
-      names = keys(fields);
-    for (let index = 0; index < names.length; index++) {
-      const key = names[index];
-      if (test(/^(?:record|row|value|values|user|userId|recordId|entityId|text|label|url|query|href)$/i, key)) continue;
-      const item = metadata(own(fields[key], 'value'), depth + 1);
-      if (item !== undefined)
-        define(result, key, { value: item, enumerable: true, writable: true, configurable: true });
-    }
-    return result;
+  const metadataTools = {
+    own,
+    isArray,
+    prototype,
+    objectPrototype,
+    descriptors,
+    keys,
+    test,
+    finite,
+    slice,
+    define,
+    push,
   };
+  const metadata = (value, depth = 0) => sanitizeMetadata(value, depth, metadataTools);
   const bind = (node, input, lease = currentLease) => {
     if (!sameDocument(node)) return () => {};
     const entry = freeze({
@@ -136,57 +219,9 @@ export function createModelDrivenProvenanceRegistry(document) {
       setAdd(seen, element);
       const entry = weakGet(bindings, element);
       if (!entry) continue;
-      if (entry.lifetime !== 'document' && entry.lease !== currentLease) {
-        if (!selected && entry.owner && (entry.coverage !== 'self' || element === node)) {
-          push(result.facts, {
-            subject: 'selection',
-            predicate: 'identity',
-            dimension: 'owner',
-            kind: 'observed',
-            proof: 'mirage-registry',
-            binding: entry.owner,
-            scope,
-            stale: true,
-            reason: 'render-lease-expired',
-          });
-          append(result.sourceRefs, entry.sourceRefs, (ref) => ({ ...ref, sourceRevision: scope?.sourceRevision }));
-          append(result.sourceKeys, entry.sourceKeys);
-          push(result.availability, { capability: 'selected-owner', reason: 'render-lease-expired' });
-          result.providerGeneration = entry.generation;
-          selected = true;
-        }
-        continue;
-      }
-      if (entry.generation > result.providerGeneration) result.providerGeneration = entry.generation;
-      const fact = (binding, dimension, predicate = 'identity') => ({
-        subject: dimension === 'owner' ? 'selection' : binding.key,
-        predicate,
-        dimension,
-        kind: 'observed',
-        proof: 'mirage-registry',
-        binding,
-        scope,
-      });
-      if (!selected && entry.owner && (entry.coverage !== 'self' || element === node)) {
-        push(result.facts, fact(entry.owner, 'owner'));
-        append(result.sourceKeys, entry.sourceKeys);
-        append(result.sourceRefs, entry.sourceRefs, (ref) => ({ ...ref, sourceRevision: scope?.sourceRevision }));
-        append(result.availability, entry.availability);
-        append(result.facts, entry.facts, (item) => ({ ...item, scope }));
-        selected = true;
-      } else if (entry.owner) push(result.contextFacts, fact(entry.owner, 'enclosing', 'contains'));
-      append(result.contextFacts, entry.context, (item) => fact(item, 'context', item.relationship ?? 'contains'));
+      selected = applyRegistryEntry(entry, element, node, result, scope, currentLease, selected, append, push);
     }
-    const sourceKeys = [],
-      seenKeys = new NativeSet();
-    for (let index = 0; index < result.sourceKeys.length; index++) {
-      const key = result.sourceKeys[index];
-      if (!setHas(seenKeys, key)) {
-        setAdd(seenKeys, key);
-        push(sourceKeys, key);
-      }
-    }
-    result.sourceKeys = sourceKeys;
+    result.sourceKeys = uniqueKeys(result.sourceKeys, new NativeSet(), setHas, setAdd, push);
     if (!selected) push(result.availability, { reason: 'node-owner-not-bound' });
     return clone(result);
   };

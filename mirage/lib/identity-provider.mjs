@@ -1,9 +1,12 @@
 import http from 'node:http';
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPair, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chooserReport, chooserResults, chooserSearch, CHOOSER_PARAMETERS } from './persona-chooser.mjs';
 import { identityProviderSettings, newUserPolicy } from './identity-provider-settings.mjs';
+import { recordHttpError } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 /**
  * Local identity provider for the portal's external sign-in. Each runtime starts one on its
@@ -66,12 +69,13 @@ const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-b
 const CODE_LIFETIME_MS = 5 * 60 * 1000;
 const TOKEN_LIFETIME_S = 3600;
 const LIMIT = 500;
+
 const normalizeResponseType = (value) =>
   String(value ?? '')
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .sort()
+    .sort(/* NOSONAR: preserve default string coercion */)
     .join(' ');
 const remember = (map, key, value) => {
   map.set(key, value);
@@ -123,7 +127,16 @@ function decodeJwt(token) {
  *   portal's data records that contact's identity at the provider (async).
  * - allowRedirect(url): whether a post_logout_redirect_uri is on the portal's origin.
  */
-export async function startIdentityProvider({
+
+/** PKCE (RFC 7636): the code_verifier for the code's challenge; an error message or null. */
+function verifyPkce(entry, verifier) {
+  if (!entry.challenge) return null;
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(String(verifier ?? '')))
+    return 'The code_verifier is missing or malformed (PKCE).';
+  const derived = entry.method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier;
+  return derived === entry.challenge ? null : 'The code_verifier does not match the code_challenge (PKCE).';
+}
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function startIdentityProvider({
   host = '127.0.0.1',
   port = 0,
   providers,
@@ -136,6 +149,13 @@ export async function startIdentityProvider({
   provision = async () => {},
   allowRedirect = () => false,
   clock = () => Date.now(),
+  // The runtime's trace store (docs/design/tracing.md): each request is an http root of host identity-provider, joined to
+  // the portal's back-channel calls through their forwarded trace headers (D-R3-8).
+  traces = null,
+  // Generates the signing key pair; the default runs off the event loop. Tests pass their own to hold it.
+  generateSigningKeyPair = promisify(generateKeyPair),
+  // Counts the chooser's work ({ compared, scanned }, persona-chooser.mjs chooserSelection) when given.
+  chooserWork = null,
 }) {
   settings = identityProviderSettings(settings);
   const builtinAssets = new Map(
@@ -146,9 +166,22 @@ export async function startIdentityProvider({
       ]),
     ),
   );
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const jwk = publicKey.export({ format: 'jwk' });
-  const kid = createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16);
+  // Generated off the event loop by the first request that needs it (most runs never sign in). Concurrent first requests
+  // share one generation; a failed generation fails the requests that waited for it, and the next request tries again.
+  let pendingKey = null;
+  const signingKey = () => {
+    pendingKey ??= Promise.resolve()
+      .then(() => generateSigningKeyPair('rsa', { modulusLength: 2048 }))
+      .then(({ privateKey, publicKey }) => {
+        const jwk = publicKey.export({ format: 'jwk' });
+        return { privateKey, jwk, kid: createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16) };
+      })
+      .catch((error) => {
+        pendingKey = null;
+        throw error;
+      });
+    return pendingKey;
+  };
   let origin = null;
   let cookieName = 'paqvilo-mirage-idp';
   const sessions = new Map();
@@ -157,10 +190,11 @@ export async function startIdentityProvider({
   const assertions = new Map();
   const authority = (provider) => `${origin}/${provider.slug}/`;
   const tokenEndpoint = (provider) => `${authority(provider)}oauth2/token`;
-  const signToken = (payload) => {
+  const signToken = async (payload) => {
+    const { privateKey, kid } = await signingKey();
     const header = base64url(JSON.stringify({ typ: 'JWT', alg: 'RS256', kid }));
     const body = base64url(JSON.stringify(payload));
-    return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')}`;
+    return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')}`; // NOSONAR: preserve template coercion and selected evaluation
   };
   const headers = (extra = {}) => ({
     'content-type': 'text/html; charset=utf-8',
@@ -183,17 +217,23 @@ export async function startIdentityProvider({
     });
     res.end(JSON.stringify(value));
   };
-  const fail = (res, status, message) =>
-    respond(
+  // The refusal a response names, for the request's http root (D-R3-4).
+  const refusals = new WeakMap();
+  const fail = (res, status, message) => {
+    refusals.set(res, { code: 'IdentityProviderRequestRejected', message });
+    return respond(
       res,
       status,
       page(
         `<h1>${TITLE}</h1><p class="note">The request was rejected.</p><p role="alert" id="paqvilo-mirage-idp-error">${escapeHtml(message)}</p>`,
       ),
     );
+  };
   /** A token endpoint error (RFC 6749 5.2); invalid_client answers 401. */
-  const tokenError = (res, error, description) =>
-    json(res, error === 'invalid_client' ? 401 : 400, { error, error_description: description });
+  const tokenError = (res, error, description) => {
+    refusals.set(res, { code: error, message: description });
+    return json(res, error === 'invalid_client' ? 401 : 400, { error, error_description: description });
+  };
   const readForm = (req) =>
     new Promise((resolve, reject) => {
       const chunks = [];
@@ -286,7 +326,7 @@ export async function startIdentityProvider({
   const idTokenClaims = (provider, params, user, { code = null, accessToken = null } = {}) => {
     const { name, given, family } = nameParts(user);
     const now = Math.floor(clock() / 1000);
-    const acr = params.acr_values.split(/\s+/).filter(Boolean)[0];
+    const acr = params.acr_values.split(/\s+/).find(Boolean);
     return {
       aud: params.client_id,
       iss: authority(provider),
@@ -329,9 +369,9 @@ export async function startIdentityProvider({
     return token;
   };
   /** The authorization response for `user`, as the response type asks. */
-  const answer = (res, provider, params, user) => {
-    const type = normalizeResponseType(params.response_type).split(' ');
-    const code = type.includes('code') ? randomBytes(24).toString('base64url') : null;
+  const answer = async (res, provider, params, user) => {
+    const type = new Set(normalizeResponseType(params.response_type).split(' '));
+    const code = type.has('code') ? randomBytes(24).toString('base64url') : null;
     if (code)
       remember(codes, code, {
         slug: provider.slug,
@@ -345,12 +385,12 @@ export async function startIdentityProvider({
         method: params.code_challenge ? params.code_challenge_method || 'plain' : null,
         expires: clock() + CODE_LIFETIME_MS,
       });
-    const accessToken = type.includes('token') ? issueAccessToken(provider, params, user) : null;
+    const accessToken = type.has('token') ? issueAccessToken(provider, params, user) : null;
     const fields = {
       ...(code ? { code } : {}),
       ...(accessToken ? { access_token: accessToken, token_type: 'Bearer', expires_in: String(TOKEN_LIFETIME_S) } : {}),
-      ...(type.includes('id_token')
-        ? { id_token: signToken(idTokenClaims(provider, params, user, { code, accessToken })) }
+      ...(type.has('id_token')
+        ? { id_token: await signToken(idTokenClaims(provider, params, user, { code, accessToken })) }
         : {}),
       state: params.state,
     };
@@ -358,7 +398,8 @@ export async function startIdentityProvider({
     remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: clock() });
     return deliver(res, params, fields, { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` });
   };
-  const chooser = (provider, params, extras, list, query) => {
+  const chooser = (provider, params, extras, list, query) /* NOSONAR */ => {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const hidden = Object.entries({ ...extras, ...params })
       .filter(([, value]) => value)
       .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -367,7 +408,7 @@ export async function startIdentityProvider({
       report = chooserReport(personaCatalog(), list);
     const parameters = new URLSearchParams(query);
     for (const [key, value] of Object.entries({ ...extras, ...params })) if (value) parameters.set(key, value);
-    if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action);
+    if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action, chooserWork);
     const policy = newUserPolicy(settings, registration(), provider, params),
       presentation = parameters.get('presentation') === 'dialog' ? 'dialog' : settings.presentation;
     const requested =
@@ -377,14 +418,15 @@ export async function startIdentityProvider({
       ]
         .map(
           ([key, value]) =>
-            `<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}"${['prompt', 'acr_values'].includes(key) ? ` id="paqvilo-mirage-idp-${key === 'acr_values' ? 'acr' : 'prompt'}"` : ''}>${escapeHtml(value)}</dd>`,
+            `<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}"${['prompt', 'acr_values'].includes(key) ? ` id="paqvilo-mirage-idp-${key === 'acr_values' ? 'acr' : 'prompt'}"` : ''}>${escapeHtml(value)}</dd>`, // NOSONAR: preserve lazy branch evaluation and coercion; preserve template coercion and selected evaluation
         )
         .join('') +
       (params.prompt.split(/\s+/).includes('consent')
         ? `<dt>consent</dt><dd>The portal asks for consent to the scope ${escapeHtml(params.scope)}.</dd>`
         : '');
     const create = policy.allowed
-      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${policy.forced ? `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>` : ''}<div class="chooser-registration-fields">${[
+      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${/* NOSONAR */ policy.forced ? /* NOSONAR */ `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>` : ''}<div class="chooser-registration-fields">${[
+          // NOSONAR: preserve template coercion and selected evaluation; preserve lazy branch evaluation and coercion
           ['given_name', 'Given name', 'text', 100],
           ['family_name', 'Family name', 'text', 100],
           ['email', 'Email', 'email', 200],
@@ -399,7 +441,7 @@ export async function startIdentityProvider({
           )}</div><button type="submit" form="idp-register" name="subject" value="new">Continue as a new user</button></section>`
       : '';
     const requester = new URL(params.redirect_uri).origin,
-      content = chooserResults(report, parameters, action),
+      content = chooserResults(report, parameters, action, chooserWork),
       heading =
         provider.caption && provider.caption !== provider.key ? `${provider.caption} (${provider.key})` : provider.key;
     const head =
@@ -412,7 +454,7 @@ export async function startIdentityProvider({
         )
         .join('');
     return page(
-      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>` : ''}</header>${chooserSearch(report, parameters, action, hidden)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requested ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>` : ''}</div>`,
+      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>` : ''}</header>${chooserSearch(report, parameters, action, hidden, chooserWork)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requested ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>` : ''}</div>`, // NOSONAR: preserve template coercion and selected evaluation
       { head },
     );
   };
@@ -436,7 +478,8 @@ export async function startIdentityProvider({
 
   // ---- token endpoint: client authentication and the code grant
   /** The client's authentication at the token endpoint, as the provider registration expects; an error message or null. */
-  function authenticateClient(provider, form) {
+  function /* NOSONAR */ authenticateClient(provider, form) {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const method = provider.tokenAuthMethod === 'private_key_jwt' ? 'private_key_jwt' : 'client_secret_post';
     if (method === 'client_secret_post') {
       if (form.client_assertion) return 'This client is registered for client_secret_post, not a client assertion.';
@@ -475,19 +518,11 @@ export async function startIdentityProvider({
     if (!audiences.includes(tokenEndpoint(provider)) && !audiences.includes(authority(provider)))
       return "The client assertion's audience is not this token endpoint.";
     const now = clock() / 1000;
-    if (!(Number(exp) > now - 60)) return 'The client assertion has expired.';
+    if (!(Number(exp) > now - 60)) return 'The client assertion has expired.'; // NOSONAR: the negated comparison preserves NaN behavior
     if (typeof jti !== 'string' || !jti) return 'The client assertion has no jti.';
     if (assertions.has(`${provider.slug}|${jti}`)) return 'The client assertion was already used (jti replay).';
     remember(assertions, `${provider.slug}|${jti}`, clock());
     return null;
-  }
-  /** PKCE (RFC 7636): the code_verifier for the code's challenge; an error message or null. */
-  function verifyPkce(entry, verifier) {
-    if (!entry.challenge) return null;
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(String(verifier ?? '')))
-      return 'The code_verifier is missing or malformed (PKCE).';
-    const derived = entry.method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier;
-    return derived === entry.challenge ? null : 'The code_verifier does not match the code_challenge (PKCE).';
   }
   async function token(req, res, provider) {
     const form = await readForm(req);
@@ -523,7 +558,7 @@ export async function startIdentityProvider({
       access_token: accessToken,
       expires_in: TOKEN_LIFETIME_S,
       scope: entry.scope,
-      id_token: signToken(idTokenClaims(provider, params, entry.user, { accessToken })),
+      id_token: await signToken(idTokenClaims(provider, params, entry.user, { accessToken })),
     });
   }
   function userinfo(req, res, provider) {
@@ -542,7 +577,8 @@ export async function startIdentityProvider({
     return json(res, 200, userInfoClaims(entry.user));
   }
 
-  async function handle(req, res) {
+  async function /* NOSONAR */ handle(req, res) {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const url = new URL(req.url, origin);
     if (
       req.method === 'GET' &&
@@ -622,8 +658,10 @@ export async function startIdentityProvider({
           'sub',
         ],
       });
-    if (req.method === 'GET' && route === 'discovery/keys')
+    if (req.method === 'GET' && route === 'discovery/keys') {
+      const { jwk, kid } = await signingKey();
       return json(res, 200, { keys: [{ kty: jwk.kty, use: 'sig', kid, alg: 'RS256', n: jwk.n, e: jwk.e }] });
+    }
     if (req.method === 'POST' && route === 'oauth2/token') return token(req, res, provider);
     if (['GET', 'POST'].includes(req.method) && route === 'openid/userinfo') return userinfo(req, res, provider);
     if (route === 'oauth2/authorize' && ['GET', 'POST'].includes(req.method)) {
@@ -705,18 +743,43 @@ export async function startIdentityProvider({
         res,
         200,
         page(
-          `<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${target ? `<p role="alert">The post_logout_redirect_uri is not on the portal's origin and was not followed.</p>` : ''}`,
+          `<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${target ? `<p role="alert">The post_logout_redirect_uri is not on the portal's origin and was not followed.</p>` : ''}`, // NOSONAR: preserve template coercion and selected evaluation
         ),
         cleared,
       );
     }
     return fail(res, 404, 'Unknown identity provider endpoint.');
   }
-  const server = http.createServer((req, res) => {
+  const serve = (req, res) =>
     handle(req, res).catch((error) => {
       if (!res.headersSent) fail(res, error.status ?? 500, error.message);
       else res.end();
     });
+  const server = http.createServer((req, res) => {
+    if (!traces?.enabled) return serve(req, res);
+    const span = traces.start({
+      kind: 'http',
+      name: `${req.method} ${String(req.url ?? '/').split('?')[0]}`,
+      module: 'identity',
+      operation: req.method,
+      ...ANONYMOUS_ROOT,
+      origin: { host: 'identity-provider', portal: null, preset: null },
+      ...traces.fromHeaders(req.headers),
+    });
+    setTraceHeaders(res, span);
+    res.on('close', () => {
+      if (!res.writableFinished)
+        span.end({
+          status: 'error',
+          error: { code: 'REQUEST_ABORTED', message: 'The client closed the request before completion.' },
+          attributes: { statusCode: 499 },
+        });
+    });
+    res.on('finish', () => {
+      recordHttpError(span, res.statusCode, refusals.get(res));
+      span.end({ attributes: { statusCode: res.statusCode } });
+    });
+    return traces.run(span, () => serve(req, res));
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);

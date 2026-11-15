@@ -1,26 +1,36 @@
-import test from 'node:test';
+// @test-kind contract+security: Owned loopback browser interception preserves user drafts and user-owned browser state.
+import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { openBrowser } from '../lense/browser.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { startOnFreePort } from './helpers/debug-port.mjs';
+
+// Late-inspection tests share one browser; each test owns its contexts and loopback server.
+let sharedBrowser;
+before(async () => {
+  sharedBrowser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
+after(() => sharedBrowser?.close());
 
 async function lateInspectionFixture(t, html, cleanup) {
-  let browser;
   const server = http.createServer((_request, response) =>
     response.writeHead(200, { 'content-type': 'text/html' }).end(html),
   );
+  const contexts = [];
   t.after(async () => {
     try {
       await cleanup();
     } finally {
-      await browser?.close();
+      await Promise.allSettled(contexts.map((context) => context.close()));
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
@@ -28,53 +38,54 @@ async function lateInspectionFixture(t, html, cleanup) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  // Contexts opened through this view close with the test, before its server.
+  const browser = {
+    async newContext(options) {
+      const context = await sharedBrowser.newContext(options);
+      contexts.push(context);
+      return context;
+    },
+  };
   return { browser, origin };
 }
 
-test(
-  'CDP debugger conflicts leave the intended browser untouched and disconnect preserves its pages',
-  { timeout: 60_000 },
-  async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
-    const fixture = http.createServer((_request, response) =>
-      response
-        .writeHead(200, { 'content-type': 'text/html' })
-        .end('<!doctype html><title>Owned fixture</title><p id="value">original</p>'),
-    );
-    fixture.on('connect', (_request, socket) => {
-      socket.on('error', () => {});
-      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+test('CDP debugger conflicts leave the intended browser untouched and disconnect preserves its pages', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
+  const fixture = http.createServer((_request, response) =>
+    response
+      .writeHead(200, { 'content-type': 'text/html' })
+      .end('<!doctype html><title>Owned fixture</title><p id="value">original</p>'),
+  );
+  fixture.on('connect', (_request, socket) => {
+    socket.on('error', () => {});
+    socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+  });
+  let owner, attachment;
+  ownedFixture(t).add(async () => {
+    await Promise.allSettled([attachment?.close(), owner?.close()]);
+    fixture.closeAllConnections();
+    await new Promise((resolve) => fixture.close(resolve));
+    await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+  });
+  fixture.listen(0, '127.0.0.1');
+  await once(fixture, 'listening');
+  const origin = `http://127.0.0.1:${fixture.address().port}`;
+  const launch = chromium.launchPersistentContext;
+  t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
+    return launch.call(this, profile, {
+      ...options,
+      proxy: { server: origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
     });
-    let owner, attachment;
-    t.after(async () => {
-      await Promise.allSettled([attachment?.close(), owner?.close()]);
-      fixture.closeAllConnections();
-      await new Promise((resolve) => fixture.close(resolve));
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    fixture.listen(0, '127.0.0.1');
-    await once(fixture, 'listening');
-    const origin = `http://127.0.0.1:${fixture.address().port}`;
-    const reservation = net.createServer().listen(0, '127.0.0.1');
-    await once(reservation, 'listening');
-    const debugPort = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
-    const launch = chromium.launchPersistentContext;
-    t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
-      return launch.call(this, profile, {
-        ...options,
-        proxy: { server: origin, bypass: '127.0.0.1,localhost' },
-        args: [
-          ...options.args,
-          '--disable-background-networking',
-          '--disable-component-update',
-          '--disable-sync',
-          '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-        ],
-      });
-    });
-    owner = await openBrowser(
+  });
+  owner = await startOnFreePort((debugPort) =>
+    openBrowser(
       {
         configDir: directory,
         siteName: 'fixture',
@@ -86,118 +97,115 @@ test(
         },
       },
       { debugPort },
-    );
-    const page = owner.context.pages()[0];
-    await page.goto(origin);
-    const cfg = { browser: { cdpUrl: `http://127.0.0.1:${debugPort}`, debugPort } };
-    await assert.rejects(openBrowser(cfg), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
-    assert.equal(await page.textContent('#value'), 'original');
-    attachment = await openBrowser(cfg, { debugPort: 0 });
-    assert.equal(attachment.attached, true);
-    const attachedPage = attachment.context.pages().find((candidate) => candidate.url() === page.url());
-    assert.ok(attachedPage, 'the transport attaches to the intended browser');
-    await attachedPage.evaluate(() => {
-      document.querySelector('#value').textContent = 'attached';
-    });
-    await attachment.close();
-    attachment = null;
-    assert.equal(await page.textContent('#value'), 'attached', 'disconnect keeps the original page alive');
-    await page.goto(origin);
-    assert.equal(await page.textContent('#value'), 'original', 'the browser remains usable after detachment');
-  },
-);
+    ),
+  );
+  const { debugPort } = owner;
+  const page = owner.context.pages()[0];
+  await page.goto(origin);
+  const cfg = { browser: { cdpUrl: `http://127.0.0.1:${debugPort}`, debugPort } };
+  await assert.rejects(openBrowser(cfg), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  assert.equal(await page.textContent('#value'), 'original');
+  attachment = await openBrowser(cfg, { debugPort: 0 });
+  assert.equal(attachment.attached, true);
+  const attachedPage = attachment.context.pages().find((candidate) => candidate.url() === page.url());
+  assert.ok(attachedPage, 'the transport attaches to the intended browser');
+  await attachedPage.evaluate(() => {
+    document.querySelector('#value').textContent = 'attached';
+  });
+  await attachment.close();
+  attachment = null;
+  assert.equal(await page.textContent('#value'), 'attached', 'disconnect keeps the original page alive');
+  await page.goto(origin);
+  assert.equal(await page.textContent('#value'), 'original', 'the browser remains usable after detachment');
+});
 
-test(
-  'late inspection preserves an edited initial document and manual reload applies local sources',
-  { timeout: 30000 },
-  async (t) => {
-    let detach, release;
-    const { browser, origin } = await lateInspectionFixture(
-      t,
-      '<!doctype html><input id="draft"><div id="editor" contenteditable>default</div>',
-      async () => {
-        release?.();
-        await detach?.();
+test('late inspection preserves an edited initial document and manual reload applies local sources', async (t) => {
+  let detach, release;
+  const { browser, origin } = await lateInspectionFixture(
+    t,
+    '<!doctype html><input id="draft"><div id="editor" contenteditable>default</div>',
+    async () => {
+      release?.();
+      await detach?.();
+    },
+  );
+  for (const kind of ['text', 'contenteditable', 'shadow', 'open-shadow']) {
+    const editor = kind === 'contenteditable',
+      shadow = kind === 'shadow' || kind === 'open-shadow';
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let entered, reported;
+    const installing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const warning = new Promise((resolve) => {
+      reported = resolve;
+    });
+    let documents = 0;
+    detach = await interceptOrigin(
+      context,
+      origin,
+      (route) => {
+        if (route.request().isNavigationRequest()) documents++;
+        return route.fulfill({
+          headers: { 'content-type': 'text/html' },
+          body: '<!doctype html><input id="draft"><script>window.localPreview = true</script>',
+        });
+      },
+      {
+        async onAttach({ configure }) {
+          entered();
+          await gate;
+          await configure('Page.enable');
+          await configure('Page.addScriptToEvaluateOnNewDocument', { source: 'window.inspectionReady = true;' });
+        },
+        onError: reported,
       },
     );
-    for (const kind of ['text', 'contenteditable', 'shadow', 'open-shadow']) {
-      const editor = kind === 'contenteditable',
-        shadow = kind === 'shadow' || kind === 'open-shadow';
-      const context = await browser.newContext({ serviceWorkers: 'block' });
-      const gate = new Promise((resolve) => {
-        release = resolve;
-      });
-      let entered, reported;
-      const installing = new Promise((resolve) => {
-        entered = resolve;
-      });
-      const warning = new Promise((resolve) => {
-        reported = resolve;
-      });
-      let documents = 0;
-      detach = await interceptOrigin(
-        context,
-        origin,
-        (route) => {
-          if (route.request().isNavigationRequest()) documents++;
-          return route.fulfill({
-            headers: { 'content-type': 'text/html' },
-            body: '<!doctype html><input id="draft"><script>window.localPreview = true</script>',
-          });
+    const page = await context.newPage();
+    await installing;
+    await page.goto(origin);
+    if (shadow) {
+      await page.evaluate(
+        (mode) => {
+          const host = document.createElement('div'),
+            input = document.createElement('input');
+          host.id = 'fixture-shadow';
+          document.body.appendChild(host);
+          host.attachShadow({ mode }).appendChild(input);
+          window.fixtureShadowInput = input;
+          input.focus();
         },
-        {
-          async onAttach({ configure }) {
-            entered();
-            await gate;
-            await configure('Page.enable');
-            await configure('Page.addScriptToEvaluateOnNewDocument', { source: 'window.inspectionReady = true;' });
-          },
-          onError: reported,
-        },
+        kind === 'open-shadow' ? 'open' : 'closed',
       );
-      const page = await context.newPage();
-      await installing;
-      await page.goto(origin);
-      if (shadow) {
-        await page.evaluate(
-          (mode) => {
-            const host = document.createElement('div'),
-              input = document.createElement('input');
-            host.id = 'fixture-shadow';
-            document.body.appendChild(host);
-            host.attachShadow({ mode }).appendChild(input);
-            window.fixtureShadowInput = input;
-            input.focus();
-          },
-          kind === 'open-shadow' ? 'open' : 'closed',
-        );
-        if (kind === 'open-shadow') await page.locator('#fixture-shadow input').fill('keep my draft');
-        else await page.keyboard.type('keep my draft');
-      } else await page.locator(editor ? '#editor' : '#draft').fill('keep my draft');
-      if (editor || shadow) await page.locator('#draft').focus();
-      release();
-      const diagnostic = await warning;
-      assert.equal(diagnostic.code, 'reload_required');
-      assert.doesNotMatch(diagnostic.message, /keep my draft|127\.0\.0\.1/);
-      assert.equal(page.isClosed(), false);
-      assert.equal(
-        shadow
-          ? await page.evaluate(() => window.fixtureShadowInput.value)
-          : await page.locator(editor ? '#editor' : '#draft')[editor ? 'textContent' : 'inputValue'](),
-        'keep my draft',
-      );
-      assert.equal(documents, 0, 'draft preservation does not start a corrective navigation');
-      await page.goto(origin);
-      assert.equal(documents, 1, 'manual reload restores the complete local overlay');
-      assert.equal(await page.evaluate(() => window.inspectionReady && window.localPreview), true);
-      await detach();
-      detach = null;
-      await context.close();
-    }
-  },
-);
+      if (kind === 'open-shadow') await page.locator('#fixture-shadow input').fill('keep my draft');
+      else await page.keyboard.type('keep my draft');
+    } else await page.locator(editor ? '#editor' : '#draft').fill('keep my draft');
+    if (editor || shadow) await page.locator('#draft').focus();
+    release();
+    const diagnostic = await warning;
+    assert.equal(diagnostic.code, 'reload_required');
+    assert.doesNotMatch(diagnostic.message, /keep my draft|127\.0\.0\.1/);
+    assert.equal(page.isClosed(), false);
+    assert.equal(
+      shadow
+        ? await page.evaluate(() => window.fixtureShadowInput.value)
+        : await page.locator(editor ? '#editor' : '#draft')[editor ? 'textContent' : 'inputValue'](),
+      'keep my draft',
+    );
+    assert.equal(documents, 0, 'draft preservation does not start a corrective navigation');
+    await page.goto(origin);
+    assert.equal(documents, 1, 'manual reload restores the complete local overlay');
+    assert.equal(await page.evaluate(() => window.inspectionReady && window.localPreview), true);
+    await detach();
+    detach = null;
+    await context.close();
+  }
+});
 
-test('a same-address navigation supersedes a pending late-document repair', { timeout: 30000 }, async (t) => {
+test('a same-address navigation supersedes a pending late-document repair', async (t) => {
   let detach, release;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
     release?.();
@@ -250,73 +258,110 @@ test('a same-address navigation supersedes a pending late-document repair', { ti
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
-test(
-  'editing while a corrective response is pending cancels only that repair and preserves the draft',
-  { timeout: 30000 },
-  async (t) => {
-    let detach, release, attaching;
-    const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
-      release?.();
-      if (attaching) detach = await attaching;
-      await detach?.();
+async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) {
+  let detach, release, attaching, releaseObservation;
+  const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    releaseObservation?.();
+    release?.();
+    if (attaching) detach = await attaching;
+    await detach?.();
+  });
+  const context = await browser.newContext({ serviceWorkers: 'block' }),
+    page = await context.newPage();
+  await page.goto(origin);
+  await page.locator('#draft').focus();
+  let requested, reported, settled, repairRequest;
+  const held = new Promise((resolve) => {
+      requested = resolve;
+    }),
+    warning = new Promise((resolve) => {
+      reported = resolve;
+    }),
+    completed = new Promise((resolve) => {
+      settled = resolve;
     });
-    const context = await browser.newContext({ serviceWorkers: 'block' }),
-      page = await context.newPage();
-    await page.goto(origin);
-    await page.locator('#draft').focus();
-    let requested, reported, settled, repairRequest;
-    const held = new Promise((resolve) => {
-        requested = resolve;
-      }),
-      warning = new Promise((resolve) => {
-        reported = resolve;
-      }),
-      completed = new Promise((resolve) => {
-        settled = resolve;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const observed = Promise.withResolvers(),
+    observationHeld = Promise.withResolvers();
+  if (delayRequestObservation) {
+    const emit = page.emit.bind(page);
+    t.mock.method(page, 'emit', (event, ...args) => {
+      if (event === 'request' && args[0].isNavigationRequest() && !releaseObservation) {
+        releaseObservation = () => {
+          releaseObservation = () => {};
+          return emit(event, ...args);
+        };
+        observationHeld.resolve();
+        return false;
+      }
+      return emit(event, ...args);
+    });
+  }
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && !repairRequest) {
+      repairRequest = request;
+      observed.resolve();
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (request === repairRequest) settled('cancelled');
+  });
+  page.on('load', () => settled('committed'));
+  attaching = interceptOrigin(
+    context,
+    origin,
+    async (route) => {
+      if (route.request().isNavigationRequest()) {
+        requested();
+        await gate;
+      }
+      await route.fulfill({
+        headers: { 'content-type': 'text/html' },
+        body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
       });
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    page.on('request', (request) => {
-      if (request.isNavigationRequest() && !repairRequest) repairRequest = request;
-    });
-    page.on('requestfailed', (request) => {
-      if (request === repairRequest) settled('cancelled');
-    });
-    page.on('load', () => settled('committed'));
-    attaching = interceptOrigin(
-      context,
-      origin,
-      async (route) => {
-        if (route.request().isNavigationRequest()) {
-          requested();
-          await gate;
-        }
-        await route.fulfill({
-          headers: { 'content-type': 'text/html' },
-          body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
-        });
-      },
-      { onError: reported },
-    );
-    await held;
+    },
+    { onError: reported },
+  );
+  let editingStarted = false;
+  const editing = (async () => {
+    // Fetch and Playwright observe this navigation through separate CDP sessions.
+    // Cancellation can only be asserted through Playwright after it knows the request.
+    await Promise.all([held, observed.promise]);
+    editingStarted = true;
     await page.keyboard.insertText('draft entered after repair started');
-    release();
-    detach = await attaching;
-    assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
-    assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
-    assert.equal((await warning).code, 'reload_required');
-    assert.equal(page.url(), origin + '/');
-    await page.goto(origin);
-    assert.equal(
-      await page.evaluate(() => window.localPreview),
-      true,
-      'explicit navigation still applies the complete overlay',
-    );
-  },
-);
+  })();
+  if (delayRequestObservation) {
+    await Promise.all([held, observationHeld.promise]);
+    assert.equal(repairRequest, undefined, 'the Fetch pause does not imply Playwright request observation');
+    assert.equal(editingStarted, false, 'editing waits for both navigation observation channels');
+    releaseObservation();
+  }
+  await editing;
+  release();
+  detach = await attaching;
+  assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
+  assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
+  assert.equal((await warning).code, 'reload_required');
+  assert.equal(page.url(), origin + '/');
+  await page.goto(origin);
+  assert.equal(
+    await page.evaluate(() => window.localPreview),
+    true,
+    'explicit navigation still applies the complete overlay',
+  );
+}
 
-test('late repair distinguishes pristine native controls from edited form state', { timeout: 30000 }, async (t) => {
+test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
+  await pendingResponseEdit(t);
+});
+
+test('pending-response editing waits for Playwright request delivery after the Fetch pause', async (t) => {
+  await pendingResponseEdit(t, { delayRequestObservation: true });
+});
+
+test('late repair distinguishes pristine native controls from edited form state', async (t) => {
   let detach;
   const html =
     '<!doctype html><input id="text"><input id="check" type="checkbox"><input id="range" type="range"><input id="color" type="color"><input id="file" type="file"><div id="editor" contenteditable>default</div><textarea id="notes">default</textarea><select id="pick"><option>A</option><option>B</option></select><select size="2"><option>A</option><option>B</option></select>';
@@ -427,7 +472,7 @@ test('late repair distinguishes pristine native controls from edited form state'
   }
 });
 
-test('late inspection restores and cleans its current cancellation binding', { timeout: 30000 }, async (t) => {
+test('late inspection restores and cleans its current cancellation binding', async (t) => {
   for (const edited of [false, true])
     await t.test(edited ? 'edited document' : 'pristine document', async (t) => {
       let detach, bindingName;
@@ -450,8 +495,9 @@ test('late inspection restores and cleans its current cancellation binding', { t
           }
           const answer = await send(method, params);
           if (
-            method === 'Runtime.evaluate' &&
-            params.expression?.includes('function installLateDraftTracker') &&
+            method === 'Page.addScriptToEvaluateOnNewDocument' &&
+            params.runImmediately &&
+            params.source?.includes('function installLateDraftTracker') &&
             binding
           ) {
             await send('Runtime.addBinding', binding);
@@ -489,7 +535,7 @@ test('late inspection restores and cleans its current cancellation binding', { t
     });
 });
 
-test('cancelled and superseded repairs release their navigation ownership', { timeout: 30000 }, async (t) => {
+test('cancelled and superseded repairs release their navigation ownership', async (t) => {
   for (const mode of ['superseded', 'aborted'])
     await t.test(mode, async (t) => {
       let detach, attaching, control;

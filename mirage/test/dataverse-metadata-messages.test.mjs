@@ -1,6 +1,7 @@
 // Metadata messages (dataverse-metadata-messages.mjs): reference checks, autonumber seeds, key activation, languages,
 // localized labels and translation files, called through the operation registry. The store is seeded with
 // ensureSecurityModel, so privileges are the runtime shapes.
+// @test-kind contract: Paqvilo's own metadata message behaviour; the translation file layout is a documented guess in the module
 import { randomUUID } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import test from 'node:test';
@@ -16,6 +17,7 @@ const VERSION = 'v9.2';
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
 const ADMIN_OID = 'aaaaaaaa-0000-4000-8000-000000000001';
 const CLERK_OID = 'bbbbbbbb-0000-4000-8000-000000000002';
+const GUEST_OID = 'cccccccc-0000-4000-8000-000000000003';
 const FORM_ID = '11111111-2222-4333-8444-555555555555';
 const SOLUTION_ID = '22222222-2222-4333-8444-555555555555';
 const WIDGET_ID = '33333333-2222-4333-8444-555555555555';
@@ -28,6 +30,7 @@ const SETTINGS = {
   users: [
     { objectId: ADMIN_OID, upn: 'admin@example.test', displayName: 'Admin', roles: ['System Administrator'] },
     { objectId: CLERK_OID, upn: 'clerk@example.test', displayName: 'Clerk', roles: ['Basic User'] },
+    { objectId: GUEST_OID, upn: 'guest@example.test', displayName: 'Guest', roles: [] },
   ],
 };
 
@@ -180,6 +183,7 @@ const BINDINGS = {
   ],
 };
 
+// @test-kind security: a basic user cannot publish customizations
 test('PublishAllXmlAsync returns a publication system job and refuses a basic user before queueing', async () => {
   const api = await apiFor();
   const response = await call(api, 'PublishAllXmlAsync');
@@ -279,6 +283,7 @@ test('autonumber seed defaults to 1000, SetAutoNumberSeed moves the next value, 
   );
 });
 
+// @test-kind security: a basic user cannot change an autonumber seed
 test('SetAutoNumberSeed refuses a non-autonumber column and a basic user', async () => {
   const api = await apiFor();
   await assert.rejects(
@@ -461,6 +466,68 @@ test('ImportTranslation refuses a label longer than 500 characters and a file th
     }),
     { status: 400, message: /not a zip archive/ },
   );
+});
+
+// A zip whose central directory lists its one local entry twice, both at offset 0.
+function duplicatedCentralEntry(zip) {
+  const end = zip.length - 22,
+    start = zip.readUInt32LE(end + 16),
+    directory = zip.subarray(start, end),
+    trailer = Buffer.from(zip.subarray(end));
+  trailer.writeUInt16LE(2, 8);
+  trailer.writeUInt16LE(2, 10);
+  trailer.writeUInt32LE(directory.length * 2, 12);
+  return Buffer.concat([zip.subarray(0, start), directory, directory, trailer]);
+}
+
+// @test-kind security: a translation archive that reuses one local header or points past its end is a refused bad file
+test('ImportTranslation refuses a zip whose central entries share one local header, and a directory offset past its end', async () => {
+  const api = await apiFor();
+  const zip = zipOf([{ name: 'CrmTranslations.xml', data: Buffer.from('<x/>') }]);
+  const shared = duplicatedCentralEntry(zip).toString('base64');
+  await assert.rejects(
+    call(api, 'ImportTranslation', { body: { TranslationFile: shared, ImportJobId: SOLUTION_ID } }),
+    { status: 400, details: { innerCode: '0x80048061' } },
+  );
+  const outOfRange = Buffer.from(zip);
+  outOfRange.writeUInt32LE(0x7fffffff, outOfRange.length - 6);
+  await assert.rejects(
+    call(api, 'ImportTranslation', {
+      body: { TranslationFile: outOfRange.toString('base64'), ImportJobId: SOLUTION_ID },
+    }),
+    { status: 400, details: { innerCode: '0x80048061' } },
+  );
+});
+
+// @test-kind security: translation export needs the export privilege and a row label read needs read access to the row
+test('translation export refuses a Basic User; a row label read refuses a principal without roles', async () => {
+  const api = await apiFor();
+  const clerk = CLERK(api);
+  await assert.rejects(call(api, 'ExportTranslation', { body: { SolutionName: 'new_Invented' }, caller: clerk }), {
+    status: 403,
+  });
+  await assert.rejects(call(api, 'ExportFieldTranslation', { caller: clerk }), { status: 403 });
+  const moniker = { '@odata.type': 'Microsoft.Dynamics.CRM.systemform', formid: FORM_ID };
+  const guest = api.principals.byObjectId(GUEST_OID);
+  await assert.rejects(
+    call(api, 'RetrieveLocLabels', { params: { EntityMoniker: moniker, AttributeName: 'name' }, caller: guest }),
+    { status: 403 },
+  );
+});
+
+// @test-kind security: SetLocLabels changes a row's labels only for a principal who may write that row, as the sibling write messages require
+test('SetLocLabels refuses a principal without write on the row; System Administrator writes', async () => {
+  const api = await apiFor();
+  await call(api, 'ProvisionLanguage', { body: { Language: 1036 } });
+  const moniker = { '@odata.type': 'Microsoft.Dynamics.CRM.systemform', formid: FORM_ID };
+  const body = { EntityMoniker: moniker, AttributeName: 'name', Labels: [{ Label: 'Formulaire', LanguageCode: 1036 }] };
+  await assert.rejects(call(api, 'SetLocLabels', { body, caller: CLERK(api) }), { status: 403 });
+  const { body: unchanged } = await call(api, 'RetrieveLocLabels', {
+    params: { EntityMoniker: moniker, AttributeName: 'name' },
+  });
+  assert.deepEqual(unchanged.Label.LocalizedLabels, [], 'the refused write changes nothing');
+  const written = await call(api, 'SetLocLabels', { body, caller: ADMIN(api) });
+  assert.equal(written.status, 204);
 });
 
 test('ExportFieldTranslation carries the row labels written by SetLocLabels and ImportFieldTranslation reads them back', async () => {

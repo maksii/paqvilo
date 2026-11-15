@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "scope": "Only the first reader cause line for Boolean true to four scalar targets and invalid Edm.Date. Native full CLR suffixes remain private; no assertion of stack-frame absence in the full native envelope.",
+  "producerSha256": "e239c49d9a778341a6fdd6813c0f2f1c1bee3b0a8c739df53f3bd23dc5131e4a",
+  "captures": [
+    {
+      "source": "dataverse-native-1794134489551",
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "cases": [
+        {
+          "id": "values.pqwp_text.8.create",
+          "nativeBodySha256": "474f6688c2926d64f1f62a18f322ca555a4fd711e3af1af5aa1a46d9dae33676",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'."
+        },
+        {
+          "id": "values.pqwp_integer.9.create",
+          "nativeBodySha256": "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+        },
+        {
+          "id": "values.pqwp_decimal.8.create",
+          "nativeBodySha256": "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'."
+        },
+        {
+          "id": "values.pqwp_double.8.create",
+          "nativeBodySha256": "c26a153eca7b31fe8f326a2160debba49e43e5f690659278b64fb9bedc78ec74",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'."
+        },
+        {
+          "id": "values.pqwp_dateonly.4.create",
+          "nativeBodySha256": "058227a566c822c3c5d3937be54823857fb77793f97652e5f27f563d465b83b6",
+          "cause": "Cannot convert the literal '2020-02-30' to the expected type 'Edm.Date'. ---> System.FormatException: String '2020-02-30' was not recognized as a valid Edm.Date."
+        }
+      ]
+    },
+    {
+      "source": "dataverse-native-1794135645404",
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "cases": [
+        {
+          "id": "values.pqwp_text.8.create",
+          "nativeBodySha256": "474f6688c2926d64f1f62a18f322ca555a4fd711e3af1af5aa1a46d9dae33676",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.String'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.String'."
+        },
+        {
+          "id": "values.pqwp_integer.9.create",
+          "nativeBodySha256": "ef8f470185b9c6a7948ef1abd43f972971ee114d12155fa308c6004c6c2623ec",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Int32'."
+        },
+        {
+          "id": "values.pqwp_decimal.8.create",
+          "nativeBodySha256": "1fa462023c35e081852c20b34ee64a1981016d965786aebf9799f7297b556f3d",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Decimal'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Decimal'."
+        },
+        {
+          "id": "values.pqwp_double.8.create",
+          "nativeBodySha256": "c26a153eca7b31fe8f326a2160debba49e43e5f690659278b64fb9bedc78ec74",
+          "cause": "Cannot convert the literal 'True' to the expected type 'Edm.Double'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type 'Edm.Double'."
+        },
+        {
+          "id": "values.pqwp_dateonly.4.create",
+          "nativeBodySha256": "058227a566c822c3c5d3937be54823857fb77793f97652e5f27f563d465b83b6",
+          "cause": "Cannot convert the literal '2020-02-30' to the expected type 'Edm.Date'. ---> System.FormatException: String '2020-02-30' was not recognized as a valid Edm.Date."
+        }
+      ]
+    }
+  ],
+  "emptyBooleanProof": {
+    "fixture": "webapi-native-scalar-reader.json",
+    "sha256": "ca297cf7e3fd91a1ae9fd4a4b4e22eda260c517b384c7747bf71c295809e140b"
+  }
+}

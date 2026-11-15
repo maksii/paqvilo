@@ -1,0 +1,474 @@
+/* Activity workspace (view-activity.mjs) inside the shared page chrome (ui-kit.css .ui-page-chrome, .ui-filter-drawer):
+   the filter form in the drawer, the list, the detail cards, log lines, findings and the empty guide. Colours come from
+   the ui-kit tokens only, so the dark theme (ui-kit.css) applies unchanged. */
+
+/* The filter form in the drawer: one field per row, labels above, the (i) beside each label. */
+.ui-activity-filters {
+  max-width: none;
+}
+.ui-activity-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.ui-activity-fields > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 4px;
+}
+.ui-activity-fields > div > :not(label, .ui-info) {
+  grid-column: 1 / -1;
+}
+.ui-activity-fields .ui-info {
+  justify-self: start;
+}
+.ui-activity-fields label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ui-activity-fields input,
+.ui-activity-fields select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font: inherit;
+  font-size: 13px;
+}
+.ui-activity-filters > .ui-link-button {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.ui-activity-more {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ui-line);
+}
+.ui-chip.is-dimmed {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.ui-activity-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ui-activity-actions .ui-help {
+  margin: 0;
+  font-size: 13px;
+}
+.ui-activity-note {
+  margin: 4px 0;
+}
+
+/* The tab strip sits in the chrome's toolbar row, left of the actions; its panel is one card right under it. */
+.ui-page-toolbar:has(.ui-activity-tabstrip) > .ui-page-summary {
+  display: none;
+}
+.ui-page-actions:has(.ui-activity-tabstrip) {
+  flex: 1 1 auto;
+  margin-left: 0;
+}
+.ui-activity-tabstrip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  margin-right: auto;
+  border-bottom: 0;
+}
+.ui-activity-tabstrip .ui-tab {
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.ui-activity-tabstrip .ui-tab[aria-selected='true'] {
+  background: var(--ui-info-bg);
+}
+.ui-activity-panel {
+  padding: 0 12px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+/* The detail tabs' (i) sits on the tab strip's row, right after the tabs, and continues the strip's rule. */
+.ui-tabs:has(> .ui-activity-tabhelp) {
+  display: grid;
+  grid-template-columns: auto 1fr;
+}
+.ui-tabs > .ui-activity-tabhelp {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--ui-line);
+  line-height: 1;
+}
+.ui-tabs:has(> .ui-activity-tabhelp) > .ui-tabpanel {
+  grid-column: 1 / -1;
+}
+/* One row above a list: its controls and (i) on the left, the count and pager on the right. */
+.ui-activity-listbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 2px 0 4px;
+}
+.ui-activity-listbar > .ui-toolbar,
+.ui-activity-listbar > .ui-table-tools {
+  margin: 0;
+}
+.ui-activity-listbar .ui-table-size select {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* Activity tables wrap their text instead of cutting it, divide their rows and keep the header in view; beside an
+   open activity (and at phone width) the list keeps Time, Result and Activity, the other columns fold away. */
+.ui-table[data-table^='activity-'] th,
+.ui-table[data-table^='activity-'] td {
+  padding: 8px 10px;
+}
+.ui-table[data-table^='activity-'] td {
+  max-width: none;
+  white-space: normal;
+}
+.ui-table[data-table^='activity-'] td > time {
+  white-space: nowrap;
+}
+.ui-table[data-table^='activity-'] thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ui-surface);
+}
+.ui-trace-main .ui-table[data-table='activity-list'] {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.ui-table-wrap:has(> .ui-table[data-table='activity-list']) {
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+.ui-table[data-table='activity-list'] .ui-trace-error {
+  max-width: 36em;
+}
+.ui-table tr.is-read td {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.ui-table tr.is-read td:nth-child(3) {
+  padding-left: 28px;
+}
+.ui-activity-who {
+  color: inherit;
+  text-decoration: none;
+}
+.ui-activity-who:hover,
+.ui-activity-who:focus-visible {
+  color: var(--ui-accent);
+  text-decoration: underline;
+}
+@media (min-width: 1200px) {
+  .ui-trace-layout.has-detail .ui-table[data-table='activity-list'] .ui-trace-error {
+    min-width: 0;
+  }
+}
+@media (max-width: 700px) {
+  .ui-table[data-table='activity-list'] .ui-trace-extra {
+    display: none;
+  }
+  .ui-trace-root,
+  .ui-trace-origin {
+    max-width: 100%;
+  }
+}
+
+/* The open activity: one card per block (D-M-6), the Why line first. */
+.ui-activity-detail {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+.ui-activity-detail > .ui-drawer-head h3 {
+  overflow-wrap: anywhere;
+}
+.ui-activity-why {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.ui-activity-why a {
+  margin-left: 4px;
+}
+.ui-activity-related .ui-help {
+  margin: 0;
+}
+.ui-activity-card {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+.ui-activity-card > h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.ui-activity-card > .ui-kv,
+.ui-activity-card > .ui-table-wrap,
+.ui-activity-card > .ui-drawer-actions,
+.ui-activity-card > .ui-empty {
+  margin-bottom: 0;
+}
+.ui-source {
+  overflow-wrap: anywhere;
+}
+
+/* Log lines and findings: one line each, the time first, wrapping instead of scrolling sideways. */
+.ui-log-lines,
+.ui-finding-list {
+  margin: 8px 0;
+  padding: 0;
+  font-size: 13px;
+  list-style: none;
+}
+.ui-log-line,
+.ui-finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-log-text {
+  flex: 1 1 24em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ui-level-error .ui-log-text {
+  color: var(--ui-bad);
+}
+.ui-level-warning .ui-log-text {
+  color: var(--ui-warn);
+}
+.ui-finding-where {
+  flex-basis: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ui-finding .ui-drawer-actions {
+  margin: 0;
+}
+.ui-finding-group > summary code {
+  overflow-wrap: anywhere;
+}
+.ui-finding-first {
+  color: var(--ui-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.ui-activity-log-tools > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ui-activity-log-tools label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* Pages & render: two columns, the actions stacked on a phone so the table fits its frame. */
+.ui-activity-page-last {
+  display: block;
+  margin-top: 2px;
+}
+@media (max-width: 760px) {
+  .ui-table[data-table='activity-pages'] td.ui-actions {
+    white-space: normal;
+  }
+  .ui-table[data-table='activity-pages'] td.ui-actions > * {
+    display: flex;
+    margin: 0 0 6px;
+  }
+}
+
+/* Nothing recorded yet: three steps to the first activity. */
+.ui-empty-guide {
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px dashed var(--ui-line);
+  border-radius: var(--ui-radius);
+}
+.ui-empty-guide p {
+  margin: 0 0 8px;
+}
+.ui-empty-guide ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+.ui-empty-guide li {
+  margin: 4px 0;
+}
+.ui-activity-tabstrip .ui-tab {
+  font-size: 13px;
+}
+.ui-activity-actions select {
+  max-width: 8em;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.ui-trace-main .ui-table[data-table^='activity-'] thead th {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.ui-page-chrome:has(.ui-activity-tabstrip) {
+  margin-bottom: 6px;
+}
+.ui-activity-panel > .ui-table-wrap:first-child {
+  margin-top: 2px;
+}
+.ui-span-ref-meta {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+/* Phone width (D-M-6: first row in the top quarter): the tabs become one select, the actions keep one row with
+   symbols instead of words, and the Live status shows only while it says something. */
+.ui-narrow,
+.ui-activity-tabselect {
+  display: none;
+}
+@media (max-width: 700px) {
+  .ui-wide,
+  .ui-activity-tabstrip {
+    display: none;
+  }
+  .ui-narrow {
+    display: inline;
+  }
+  .ui-activity-tabselect {
+    display: block;
+    flex: 1 1 6em;
+    min-width: 0;
+    height: 32px;
+    padding: 4px 8px;
+    border: 1px solid var(--ui-line);
+    border-radius: 8px;
+    background: var(--ui-surface);
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: 13px;
+  }
+  .ui-activity-actions {
+    flex-wrap: nowrap;
+  }
+  /* Narrower symbol buttons leave the tab select room for its longest tab name. */
+  .ui-activity-actions .ui-button.ui-small {
+    padding-inline: 7px;
+  }
+  .ui-activity-actions .ui-help:empty,
+  .ui-activity-actions .ui-info {
+    display: none;
+  }
+  /* One row: the tab select, Live, Refresh, Export, Settings and Filters (the export keeps its chosen format). */
+  .ui-page-actions:has(.ui-activity-tabstrip) {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .ui-activity-actions select {
+    display: none;
+  }
+}
+/* On a phone the log stream and Pages & render stack each row: the log keeps time and type above its readable line
+   with the action under it; a page stacks its name, last activity and actions. The sort headers stay one wrapping row. */
+@media (max-width: 700px) {
+  table[data-table='activity-log'],
+  table[data-table='activity-log'] thead,
+  table[data-table='activity-log'] tbody,
+  table[data-table='activity-pages'],
+  table[data-table='activity-pages'] thead,
+  table[data-table='activity-pages'] tbody {
+    display: block;
+    width: 100%;
+  }
+  table[data-table='activity-log'] thead tr,
+  table[data-table='activity-pages'] thead tr {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  table[data-table='activity-log'] thead th.ui-actions,
+  table[data-table='activity-pages'] thead th.ui-actions {
+    display: none;
+  }
+  table[data-table='activity-log'] tbody tr,
+  table[data-table='activity-pages'] tbody tr {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    border-bottom: 1px solid var(--ui-line);
+  }
+  table[data-table='activity-log'] td,
+  table[data-table='activity-pages'] td {
+    border: 0;
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  table[data-table='activity-log'] td:nth-child(n + 3),
+  table[data-table='activity-pages'] td {
+    grid-column: 1 / -1;
+    padding-top: 0;
+  }
+  table[data-table='activity-log'] td.ui-actions,
+  table[data-table='activity-pages'] td.ui-actions {
+    position: static;
+    box-shadow: none;
+    background: none;
+  }
+  table[data-table='activity-log'] td.ui-actions:empty {
+    display: none;
+  }
+}
+/* The quick search sits in the toolbar row before Filters (D-M-11); on a phone it takes a compact row of its own. */
+.ui-activity-search {
+  width: 10em;
+  min-width: 0;
+  height: 30px;
+  padding: 3px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font: inherit;
+  font-size: 13px;
+}
+@media (max-width: 700px) {
+  .ui-page-actions:has(.ui-activity-tabstrip) {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .ui-activity-search {
+    order: 1;
+    flex: 1 0 100%;
+    width: auto;
+    height: 26px;
+  }
+  .ui-page-chrome:has(.ui-activity-tabstrip) {
+    margin-bottom: 2px;
+  }
+}
+/* Compare with its own (i) right after it, as one control. */
+.ui-activity-compare {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

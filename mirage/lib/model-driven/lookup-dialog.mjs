@@ -1,5 +1,72 @@
 import { icon, navigationIcon } from './icons.mjs';
 
+function renderLookupGrid(found, destination, columns, widths, display, choose) {
+  const grid = document.createElement('table');
+  grid.setAttribute('aria-label', `${destination.label} lookup results`);
+  grid.style.minWidth = `${42 + columns.reduce((sum, name) => sum + (widths.get(name) || 180), 0)}px`;
+  const head = grid.createTHead().insertRow();
+  const selectionHeading = document.createElement('th');
+  selectionHeading.className = 'lookup-selection';
+  selectionHeading.setAttribute('aria-label', 'Selection');
+  head.append(selectionHeading);
+  for (const name of columns) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = destination.fields[name]?.label ?? name;
+    cell.style.width = `${widths.get(name) || 180}px`;
+    head.append(cell);
+  }
+  const tbody = grid.createTBody();
+  for (const record of found.rows) {
+    const row = tbody.insertRow();
+    row.setAttribute('aria-selected', 'false');
+    const cell = row.insertCell();
+    cell.className = 'lookup-selection';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'lookup-record';
+    radio.setAttribute('aria-label', `Select ${display(record[destination.nameColumn]) || '(No name)'}`);
+    cell.append(radio);
+    for (const name of columns) {
+      const cell = row.insertCell();
+      if (name === destination.nameColumn) {
+        const glyph = document.createElement('span');
+        glyph.innerHTML = icon(navigationIcon({ entity: destination.entity }));
+        const title = document.createElement('span');
+        title.textContent = display(record[name]) || '(No name)';
+        cell.append(glyph, title);
+      } else cell.textContent = display(record[name + '@OData.Community.Display.V1.FormattedValue'] ?? record[name]);
+    }
+    row.addEventListener('click', () => choose(record, destination, row));
+    radio.addEventListener('change', () => choose(record, destination, row));
+  }
+  return grid;
+}
+
+function renderEmptyLookup(results) {
+  const empty = document.createElement('div');
+  empty.className = 'lookup-browser-empty';
+  const title = document.createElement('h3');
+  title.textContent = 'We don’t have any data for this view';
+  const detail = document.createElement('p');
+  detail.textContent = 'Please try switching to another view';
+  empty.append(title, detail);
+  results.append(empty);
+}
+
+function renderLookupResponse(found, destination, columns, widths, results, status, { display, choose }) {
+  if (found.rows.length) results.append(renderLookupGrid(found, destination, columns, widths, display, choose));
+  else renderEmptyLookup(results);
+  if (found.rows.length)
+    status.textContent = `${found.rows.length} record${found.rows.length === 1 ? '' : 's'}${found.more ? ' (first 50)' : ''}`;
+  else {
+    const announcement = document.createElement('span');
+    announcement.className = 'sr-only';
+    announcement.textContent = 'No records found.';
+    status.replaceChildren(announcement);
+  }
+}
+
 // All data access is supplied by the shell's same-origin adapter. Dismissal and
 // replacement abort the view lifetime, so stale reads cannot select a new value.
 export function createLookupDialog(
@@ -113,8 +180,10 @@ export function createLookupDialog(
     const renderView = () => {
       const definitions = views();
       const current = definitions.find((definition) => definition.id === view);
+      let triggerLabel = 'Select a view';
+      if (current) triggerLabel = current.name + (current.isDefault ? ' (default)' : '');
       const trigger = pickerButton(
-        current ? current.name + (current.isDefault ? ' (default)' : '') : 'Select a view',
+        triggerLabel,
         definitions.map((definition) => ({
           label: definition.name,
           value: definition.id,
@@ -129,7 +198,7 @@ export function createLookupDialog(
             view = value;
             renderView();
             clearTimeout(timer);
-            load();
+            void load();
           },
         },
       );
@@ -149,7 +218,7 @@ export function createLookupDialog(
             renderTarget();
             clearTimeout(timer);
             setViews();
-            load();
+            void load();
           },
         },
       );
@@ -210,65 +279,7 @@ export function createLookupDialog(
           { signal },
         );
         if (token !== sequence || lifetime.signal.aborted) return;
-        const grid = document.createElement('table');
-        grid.setAttribute('aria-label', `${destination.label} lookup results`);
-        grid.style.minWidth = `${42 + columns.reduce((sum, name) => sum + (widths.get(name) || 180), 0)}px`;
-        const head = grid.createTHead().insertRow();
-        const selectionHeading = document.createElement('th');
-        selectionHeading.className = 'lookup-selection';
-        selectionHeading.setAttribute('aria-label', 'Selection');
-        head.append(selectionHeading);
-        for (const name of columns) {
-          const cell = document.createElement('th');
-          cell.scope = 'col';
-          cell.textContent = destination.fields[name]?.label ?? name;
-          cell.style.width = `${widths.get(name) || 180}px`;
-          head.append(cell);
-        }
-        const tbody = grid.createTBody();
-        for (const record of found.rows) {
-          const row = tbody.insertRow();
-          row.setAttribute('aria-selected', 'false');
-          const cell = row.insertCell();
-          cell.className = 'lookup-selection';
-          const radio = document.createElement('input');
-          radio.type = 'radio';
-          radio.name = 'lookup-record';
-          radio.setAttribute('aria-label', `Select ${display(record[destination.nameColumn]) || '(No name)'}`);
-          cell.append(radio);
-          for (const name of columns) {
-            const cell = row.insertCell();
-            if (name === destination.nameColumn) {
-              const glyph = document.createElement('span');
-              glyph.innerHTML = icon(navigationIcon({ entity: destination.entity }));
-              const title = document.createElement('span');
-              title.textContent = display(record[name]) || '(No name)';
-              cell.append(glyph, title);
-            } else
-              cell.textContent = display(record[name + '@OData.Community.Display.V1.FormattedValue'] ?? record[name]);
-          }
-          row.addEventListener('click', () => choose(record, destination, row));
-          radio.addEventListener('change', () => choose(record, destination, row));
-        }
-        if (found.rows.length) results.append(grid);
-        else {
-          const empty = document.createElement('div');
-          empty.className = 'lookup-browser-empty';
-          const title = document.createElement('h3');
-          title.textContent = 'We don’t have any data for this view';
-          const detail = document.createElement('p');
-          detail.textContent = 'Please try switching to another view';
-          empty.append(title, detail);
-          results.append(empty);
-        }
-        if (found.rows.length)
-          status.textContent = `${found.rows.length} record${found.rows.length === 1 ? '' : 's'}${found.more ? ' (first 50)' : ''}`;
-        else {
-          const announcement = document.createElement('span');
-          announcement.className = 'sr-only';
-          announcement.textContent = 'No records found.';
-          status.replaceChildren(announcement);
-        }
+        renderLookupResponse(found, destination, columns, widths, results, status, { display, choose });
       } catch (error) {
         if (token !== sequence || lifetime.signal.aborted) return;
         status.textContent = error.message + ' ';
@@ -298,11 +309,11 @@ export function createLookupDialog(
       if (event.key === 'Enter') {
         event.preventDefault();
         clearTimeout(timer);
-        load();
+        void load();
       }
     });
     renderTarget();
     setViews();
-    load();
+    void load();
   });
 }

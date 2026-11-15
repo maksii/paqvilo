@@ -1,8 +1,9 @@
+// @test-kind contract: shared helper contracts (raw body bounds, CLR host line parsing, query field access, column validation, message records)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { readRawBody } from '../lib/http-body.mjs';
-import { decodeClrMessage, clrOutputFailure } from '../lib/plugin-clr-protocol.mjs';
+import { decodeClrMessage } from '../lib/plugin-clr-protocol.mjs';
 import { fieldValue } from '../lib/fetchxml-engine.mjs';
 import { columnValue } from '../lib/odata-query.mjs';
 import { validateCalculatedColumns } from '../lib/dataverse-calculated.mjs';
@@ -28,29 +29,17 @@ test('raw HTTP body bounds count exact bytes, preserve binary/BOM and propagate 
   await assert.rejects(readRawBody(stream, options), (error) => error === streamError);
 });
 
-test('CLR parsing preserves worker-specific oversized line policy and pending RPC refusals', () => {
+test('CLR parsing refuses malformed lines and admits any line size and concurrent callbacks', () => {
   for (const line of ['{', 'null', '[]', 'true', '3'])
     assert.equal(decodeClrMessage(line).error.code, 'LocalPluginProtocol');
   assert.equal(decodeClrMessage('{"kind":"unknown"}').error.message, 'Unknown CLR host message.');
-  assert.equal(
-    decodeClrMessage('{"kind":"rpc"}', { pending: true }).error.message,
-    'Concurrent CLR SDK calls are unsupported.',
-  );
-  for (const kind of ['result', 'failure'])
-    assert.equal(
-      decodeClrMessage(JSON.stringify({ kind }), { pending: true }).error.message,
-      'CLR completed with a pending SDK callback.',
-    );
-  for (const kind of ['rpc', 'trace', 'result', 'failure'])
-    assert.deepEqual(decodeClrMessage(JSON.stringify({ kind })).message, { kind });
-  assert.equal(decodeClrMessage('{"kind":"trace"}', { pooled: true, active: false }).error.code, 'LocalPluginProtocol');
-  const oversized = ' '.repeat(4 * 1024 * 1024 + 1);
-  assert.equal(decodeClrMessage(oversized).error.code, 'LocalPluginOutputLimit');
-  assert.equal(decodeClrMessage(oversized, { pooled: true }).error.code, 'LocalPluginProtocol');
-  assert.equal(clrOutputFailure('stderr', 65536), null);
-  assert.equal(clrOutputFailure('stderr', 65537).code, 'LocalPluginOutputLimit');
-  assert.equal(clrOutputFailure('stdout', 8 * 1024 * 1024), null);
-  assert.equal(clrOutputFailure('stdout', 8 * 1024 * 1024 + 1).code, 'LocalPluginOutputLimit');
+  for (const kind of ['rpc', 'trace', 'telemetry', 'result', 'failure'])
+    assert.deepEqual(decodeClrMessage(JSON.stringify({ kind, invocationId: 'a' })).message, {
+      kind,
+      invocationId: 'a',
+    });
+  const large = JSON.stringify({ kind: 'rpc', call: 2, arguments: ['x'.repeat(5 * 1024 * 1024)] });
+  assert.equal(decodeClrMessage(large).message.arguments[0].length, 5 * 1024 * 1024);
 });
 
 test('both query engines retain direct-field precedence, lookup scalars and missing values', () => {

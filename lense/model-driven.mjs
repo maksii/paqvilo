@@ -63,67 +63,103 @@ const confinedMapFile = (value) =>
   !value.startsWith('/') &&
   !value.split('/').some((part) => ['.', '..', ''].includes(part));
 
-function validMapSegments(map) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let source = 0,
-    line = 0,
-    column = 0,
-    name = 0,
-    generated = 0;
-  let fields = [],
-    value = 0,
-    shift = 0,
-    continued = false,
-    separated = false;
-  const segment = () => {
-    if (!fields.length || continued || ![1, 4, 5].includes(fields.length) || fields[0] < 0) return false;
-    generated += fields[0];
-    if (!Number.isSafeInteger(generated)) return false;
-    if (fields.length >= 4) {
-      source += fields[1];
-      line += fields[2];
-      column += fields[3];
-      if (
-        source < 0 ||
-        source >= map.sources.length ||
-        line < 0 ||
-        column < 0 ||
-        ![source, line, column].every(Number.isSafeInteger)
-      )
-        return false;
-      if (fields.length === 5) {
-        name += fields[4];
-        if (name < 0 || name >= map.names.length || !Number.isSafeInteger(name)) return false;
-      }
+function finishMapSegment(state, map) {
+  const { fields } = state;
+  if (!fields.length || state.continued || ![1, 4, 5].includes(fields.length) || fields[0] < 0) return false;
+  state.generated += fields[0];
+  if (!Number.isSafeInteger(state.generated)) return false;
+  if (fields.length >= 4) {
+    state.source += fields[1];
+    state.line += fields[2];
+    state.column += fields[3];
+    if (
+      state.source < 0 ||
+      state.source >= map.sources.length ||
+      state.line < 0 ||
+      state.column < 0 ||
+      ![state.source, state.line, state.column].every(Number.isSafeInteger)
+    )
+      return false;
+    if (fields.length === 5) {
+      state.name += fields[4];
+      if (state.name < 0 || state.name >= map.names.length || !Number.isSafeInteger(state.name)) return false;
     }
-    fields = [];
-    return true;
-  };
-  for (const char of map.mappings) {
-    if (char === ',' || char === ';') {
-      if (fields.length || continued) {
-        if (!segment()) return false;
-      } else if (char === ',' || separated) return false;
-      if (char === ';') generated = 0;
-      separated = char === ',';
-      continue;
-    }
-    const digit = alphabet.indexOf(char);
-    if (digit < 0 || shift > 45 || fields.length >= 5) return false;
-    value += (digit & 31) * 2 ** shift;
-    continued = (digit & 32) !== 0;
-    if (continued) shift += 5;
-    else {
-      fields.push((value % 2 ? -1 : 1) * Math.floor(value / 2));
-      value = 0;
-      shift = 0;
-    }
-    separated = false;
   }
-  return !separated && !continued && (!fields.length || segment());
+  state.fields = [];
+  return true;
 }
 
-export async function readModelDrivenResourceMap(file, { assets = new Map() } = {}) {
+function consumeMapCharacter(state, char, map) {
+  if (char === ',' || char === ';') {
+    if (state.fields.length || state.continued) {
+      if (!finishMapSegment(state, map)) return false;
+    } else if (char === ',' || state.separated) return false;
+    if (char === ';') state.generated = 0;
+    state.separated = char === ',';
+    return true;
+  }
+  const digit = state.alphabet.indexOf(char);
+  if (digit < 0 || state.shift > 45 || state.fields.length >= 5) return false;
+  state.value += (digit & 31) * 2 ** state.shift;
+  state.continued = (digit & 32) !== 0;
+  if (state.continued) state.shift += 5;
+  else {
+    state.fields.push((state.value % 2 ? -1 : 1) * Math.floor(state.value / 2));
+    state.value = 0;
+    state.shift = 0;
+  }
+  state.separated = false;
+  return true;
+}
+
+function validMapSegments(map) {
+  const state = {
+    alphabet: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
+    source: 0,
+    line: 0,
+    column: 0,
+    name: 0,
+    generated: 0,
+    fields: [],
+    value: 0,
+    shift: 0,
+    continued: false,
+    separated: false,
+  };
+  for (const char of map.mappings) if (!consumeMapCharacter(state, char, map)) return false;
+  return !state.separated && !state.continued && (!state.fields.length || finishMapSegment(state, map));
+}
+
+function validSourceMap(parsed) {
+  return (
+    parsed.version === 3 &&
+    Array.isArray(parsed.sources) &&
+    parsed.sources.length > 0 &&
+    parsed.sources.length <= 10000 &&
+    typeof parsed.mappings === 'string' &&
+    /^[A-Za-z0-9+/;,]*$/.test(parsed.mappings) &&
+    parsed.sections === undefined &&
+    Array.isArray(parsed.names) &&
+    !parsed.names.some((name) => typeof name !== 'string') &&
+    validMapSegments(parsed) &&
+    (parsed.sourceRoot === undefined || parsed.sourceRoot === '') &&
+    !parsed.sources.some((source) => !confinedMapFile(source)) &&
+    (parsed.sourcesContent === undefined || validSourceContents(parsed))
+  );
+}
+
+function validSourceContents(parsed) {
+  return (
+    Array.isArray(parsed.sourcesContent) &&
+    parsed.sourcesContent.length === parsed.sources.length &&
+    !parsed.sourcesContent.some((source) => source !== null && typeof source !== 'string')
+  );
+}
+
+/* NOSONAR: preserve source-map input and observation ordering */ export async function readModelDrivenResourceMap(
+  file,
+  { assets = new Map() } = {},
+) {
   if (!file) return [];
   const data = await readLocalFile(file, { maxBytes: 1024 * 1024, encoding: 'utf8' });
   const map = JSON.parse(data);
@@ -160,24 +196,7 @@ export async function readModelDrivenResourceMap(file, { assets = new Map() } = 
         if (data.length > remaining) throw new Error('Source maps exceed the aggregate debugger-map byte limit.');
         remaining -= data.length;
         const parsed = JSON.parse(data.toString('utf8'));
-        if (
-          parsed.version !== 3 ||
-          !Array.isArray(parsed.sources) ||
-          !parsed.sources.length ||
-          parsed.sources.length > 10000 ||
-          typeof parsed.mappings !== 'string' ||
-          !/^[A-Za-z0-9+/;,]*$/.test(parsed.mappings) ||
-          parsed.sections !== undefined ||
-          !Array.isArray(parsed.names) ||
-          parsed.names.some((name) => typeof name !== 'string') ||
-          !validMapSegments(parsed) ||
-          (parsed.sourceRoot !== undefined && parsed.sourceRoot !== '') ||
-          parsed.sources.some((source) => !confinedMapFile(source)) ||
-          (parsed.sourcesContent !== undefined &&
-            (!Array.isArray(parsed.sourcesContent) ||
-              parsed.sourcesContent.length !== parsed.sources.length ||
-              parsed.sourcesContent.some((source) => source !== null && typeof source !== 'string')))
-        )
+        if (!validSourceMap(parsed))
           throw new Error(
             'Source map must be a version 3 map with confined relative sources and no remote source root.',
           );
@@ -229,6 +248,64 @@ export function inventoryCounts(records = []) {
 
 const DEBUG_MAP_LIMITS = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
 const SCRIPT_PROOF_LIMITS = { bodyBytes: 16 * 1024 * 1024, lineEntries: 65536, entries: 128 };
+
+function prepareOverlayAsset(asset, explicitSidecars, mapLimits, budget, diagnostics) {
+  if (!asset.file || !/(?:java|ecma)script/i.test(asset.mime)) return asset;
+  const text = asset.data.toString('utf8');
+  if (hasSourceMap(text) || explicitSidecars.has(asset.name)) return asset;
+  const estimate = fileSourceMapEstimate(text, asset.file);
+  if (asset.data.length + estimate > mapLimits.assetBytes || estimate > budget.remaining) {
+    diagnostics.push({
+      code: 'MODEL_SOURCE_MAP_LIMIT',
+      name: asset.name,
+      message:
+        'Local debugger map omitted because it exceeds the bounded asset or session map budget. The original script is still overlaid.',
+    });
+    return asset;
+  }
+  const data = withFileSourceMap(asset.data, asset.file);
+  budget.remaining -= data.length - asset.data.length;
+  return { ...asset, data };
+}
+
+function attachOverlaySidecar(mapping, assets, nextRoutes, mapLimits, budget, diagnostics, sidecarScripts) {
+  if (mapping.sourceMapDiagnostic) diagnostics.push(mapping.sourceMapDiagnostic);
+  if (!mapping.sourceMap) return;
+  if (sidecarScripts.has(mapping.resource)) throw new Error('A script can declare only one source-map sidecar.');
+  sidecarScripts.add(mapping.resource);
+  const asset = assets.get(mapping.resource),
+    mapPath = pathname(mapping.sourceMap.path);
+  if (nextRoutes.has(mapPath)) throw new Error(`Debugger sidecar conflicts with a declared resource at ${mapPath}.`);
+  const text = asset.data.toString('utf8');
+  if (/sourceMappingURL=data:/i.test(text)) {
+    diagnostics.push({
+      code: 'MODEL_SOURCE_MAP_INLINE_PRESERVED',
+      name: asset.name,
+      message: 'The existing inline source map is preserved; the sidecar mapping is unused.',
+    });
+    return;
+  }
+  if (mapping.sourceMap.data.length > budget.remaining || mapping.sourceMap.data.length > mapLimits.assetBytes) {
+    diagnostics.push({
+      code: 'MODEL_SOURCE_MAP_LIMIT',
+      name: asset.name,
+      message:
+        'Debugger sidecar omitted because it exceeds the session map budget. The compiled script remains overlaid.',
+    });
+    return;
+  }
+  budget.remaining -= mapping.sourceMap.data.length;
+  const data = Buffer.concat([asset.data, Buffer.from(`\n//# sourceMappingURL=${mapPath}\n`)]);
+  const rewritten = { ...asset, data };
+  assets.set(asset.name, rewritten);
+  for (const [key, value] of nextRoutes) if (value === asset) nextRoutes.set(key, rewritten);
+  nextRoutes.set(mapPath, {
+    name: asset.name,
+    data: mapping.sourceMap.data,
+    mime: 'application/json; charset=utf-8',
+    debuggerMap: true,
+  });
+}
 
 /** Exact declared assets only. No response fetch, native request replay or API interception. */
 export function createModelDrivenOverlay({
@@ -335,37 +412,24 @@ export function createModelDrivenOverlay({
       provenance: scriptResourceProofFromSourceRefs(cached.refs, cached.body, String(revision)),
     };
   };
-  function replace(next, nextMappings = mappings) {
-    // Prepare debugger mappings once per revision, rather than copying a bundle
-    // and building an inline map on every intercepted request.
-    let remainingMapBytes = mapLimits.totalBytes;
-    const nextDiagnostics = [...next.diagnostics];
-    const explicitSidecars = new Set(
-      nextMappings.filter((mapping) => mapping.sourceMap).map((mapping) => mapping.resource),
-    );
-    const assets = new Map(
-      [...next.assets.values()].map((asset) => {
-        if (!asset.file || !/(?:java|ecma)script/i.test(asset.mime)) return [asset.name, asset];
-        const text = asset.data.toString('utf8');
-        if (hasSourceMap(text) || explicitSidecars.has(asset.name)) return [asset.name, asset];
-        const estimate = fileSourceMapEstimate(text, asset.file);
-        if (asset.data.length + estimate > mapLimits.assetBytes || estimate > remainingMapBytes) {
-          nextDiagnostics.push({
-            code: 'MODEL_SOURCE_MAP_LIMIT',
-            name: asset.name,
-            message:
-              'Local debugger map omitted because it exceeds the bounded asset or session map budget. The original script is still overlaid.',
-          });
-          return [asset.name, asset];
-        }
-        const data = withFileSourceMap(asset.data, asset.file);
-        remainingMapBytes -= data.length - asset.data.length;
-        return [asset.name, { ...asset, data }];
-      }),
-    );
-    const rawAssets = new Map([...next.assets.values()].map((asset) => [asset.name, asset]));
-    const nextRoutes = new Map(),
-      nextPaths = new Map([...assets.keys()].map((name) => [name, new Set()]));
+  const eligibleModelDrivenRequest = (request, url) =>
+    url.origin === origin &&
+    ['GET', 'HEAD'].includes(request.method()) &&
+    !request.isNavigationRequest?.() &&
+    request.resourceType?.() !== 'document' &&
+    ownsRequest(request);
+  const recordUnmatchedResource = (key, request) => {
+    if (
+      (key.startsWith('/WebResources/') || ['script', 'stylesheet'].includes(request.resourceType?.())) &&
+      (unmatched.has(key) || unmatched.size < 256)
+    )
+      unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
+  };
+  const isNativeComparisonRead = (nativeRead, asset, request) =>
+    nativeRead && nativeRead.name === asset.name && request.method() === 'GET';
+  const shouldFallbackForOverlayState = (asset) =>
+    online || paused.has(asset.name) || (scope === 'changed' && !editedSources.has(asset.name));
+  function registerOverlayRoutes(next, nextMappings, assets, nextRoutes, nextPaths) {
     const add = (key, name) => {
       const asset = assets.get(name);
       if (!asset) throw new Error(`Resource map selects an undeclared Solution resource: ${name}`);
@@ -382,48 +446,28 @@ export function createModelDrivenOverlay({
     if (localSimulation)
       for (const [url, asset] of next.assets) if (url.startsWith('/_apps/controls/')) add(url, asset.name);
     for (const mapping of nextMappings) add(mapping.path, mapping.resource);
+  }
+  function replace(next, nextMappings = mappings) {
+    // Prepare debugger mappings once per revision, rather than copying a bundle
+    // and building an inline map on every intercepted request.
+    const nextDiagnostics = [...next.diagnostics];
+    const explicitSidecars = new Set(
+      nextMappings.filter((mapping) => mapping.sourceMap).map((mapping) => mapping.resource),
+    );
+    const budget = { remaining: mapLimits.totalBytes };
+    const assets = new Map(
+      [...next.assets.values()].map((asset) => [
+        asset.name,
+        prepareOverlayAsset(asset, explicitSidecars, mapLimits, budget, nextDiagnostics),
+      ]),
+    );
+    const rawAssets = new Map([...next.assets.values()].map((asset) => [asset.name, asset]));
+    const nextRoutes = new Map(),
+      nextPaths = new Map([...assets.keys()].map((name) => [name, new Set()]));
+    registerOverlayRoutes(next, nextMappings, assets, nextRoutes, nextPaths);
     const sidecarScripts = new Set();
-    for (const mapping of nextMappings) {
-      if (mapping.sourceMapDiagnostic) nextDiagnostics.push(mapping.sourceMapDiagnostic);
-      if (!mapping.sourceMap) continue;
-      if (sidecarScripts.has(mapping.resource)) throw new Error('A script can declare only one source-map sidecar.');
-      sidecarScripts.add(mapping.resource);
-      const asset = assets.get(mapping.resource),
-        mapPath = pathname(mapping.sourceMap.path);
-      if (nextRoutes.has(mapPath))
-        throw new Error(`Debugger sidecar conflicts with a declared resource at ${mapPath}.`);
-      const text = asset.data.toString('utf8');
-      if (/sourceMappingURL=data:/i.test(text)) {
-        nextDiagnostics.push({
-          code: 'MODEL_SOURCE_MAP_INLINE_PRESERVED',
-          name: asset.name,
-          message: 'The existing inline source map is preserved; the sidecar mapping is unused.',
-        });
-        continue;
-      }
-      if (mapping.sourceMap.data.length > remainingMapBytes || mapping.sourceMap.data.length > mapLimits.assetBytes) {
-        nextDiagnostics.push({
-          code: 'MODEL_SOURCE_MAP_LIMIT',
-          name: asset.name,
-          message:
-            'Debugger sidecar omitted because it exceeds the session map budget. The compiled script remains overlaid.',
-        });
-        continue;
-      }
-      remainingMapBytes -= mapping.sourceMap.data.length;
-      // Debuggers use the final directive. Preserve every executable byte,
-      // including string/regex literals that merely resemble map comments.
-      const data = Buffer.concat([asset.data, Buffer.from(`\n//# sourceMappingURL=${mapPath}\n`)]);
-      const rewritten = { ...asset, data };
-      assets.set(asset.name, rewritten);
-      for (const [key, value] of nextRoutes) if (value === asset) nextRoutes.set(key, rewritten);
-      nextRoutes.set(mapPath, {
-        name: asset.name,
-        data: mapping.sourceMap.data,
-        mime: 'application/json; charset=utf-8',
-        debuggerMap: true,
-      });
-    }
+    for (const mapping of nextMappings)
+      attachOverlaySidecar(mapping, assets, nextRoutes, mapLimits, budget, nextDiagnostics, sidecarScripts);
     const sourceIndex = createModelDrivenMetadataIndex(next, { sourceRevision: revision + 1 });
     // Publish only a complete import. An invalid save cannot partially replace routes.
     routes = nextRoutes;
@@ -452,9 +496,8 @@ export function createModelDrivenOverlay({
       if (!paths?.size || !/(?:javascript|ecmascript|text\/css)/i.test(resources.get(name)?.mime ?? ''))
         throw new Error('Select a declared text resource.');
       if (nativeReads.size >= 2) throw new Error('Two native comparisons are already in progress.');
-      const token = randomUUID(),
-        entry = { name, expires: Date.now() + 15000 };
-      nativeReads.set(token, entry);
+      const token = randomUUID();
+      nativeReads.set(token, { name });
       return {
         path: [...paths].at(-1),
         token,
@@ -487,13 +530,7 @@ export function createModelDrivenOverlay({
         else fallbackOptions = { headers: forwarded };
       }
       const fallback = () => route.fallback(fallbackOptions);
-      if (
-        url.origin !== origin ||
-        !['GET', 'HEAD'].includes(request.method()) ||
-        request.isNavigationRequest?.() ||
-        request.resourceType?.() === 'document' ||
-        !ownsRequest(request)
-      ) {
+      if (!eligibleModelDrivenRequest(request, url)) {
         await fallback();
         return;
       }
@@ -506,26 +543,17 @@ export function createModelDrivenOverlay({
       }
       const asset = routes.get(key);
       if (!asset) {
-        if (
-          (/^\/WebResources\//.test(key) || ['script', 'stylesheet'].includes(request.resourceType?.())) &&
-          (unmatched.has(key) || unmatched.size < 256)
-        )
-          unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
+        recordUnmatchedResource(key, request);
         await fallback();
         return;
       }
       const nativeRead = nativeReads.get(nativeToken);
-      if (
-        nativeRead &&
-        nativeRead.name === asset.name &&
-        nativeRead.expires > Date.now() &&
-        request.method() === 'GET'
-      ) {
+      if (isNativeComparisonRead(nativeRead, asset, request)) {
         nativeReads.delete(nativeToken);
         await fallback();
         return;
       }
-      if (online || paused.has(asset.name) || (scope === 'changed' && !editedSources.has(asset.name))) {
+      if (shouldFallbackForOverlayState(asset)) {
         await fallback();
         return;
       }

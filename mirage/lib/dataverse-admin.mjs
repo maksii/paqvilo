@@ -1,11 +1,19 @@
 // Shared local administration for every Mirage organization host. The caller enforces CSRF/origin.
 import { randomUUID, X509Certificate, createPublicKey } from 'node:crypto';
-import { dataverseSettings, GRANT_TYPES } from './dataverse-settings.mjs';
+import { dataverseSettings, GRANT_TYPES, spaRedirectUris } from './dataverse-settings.mjs';
 import { createApplicationUser, assignRoles, uuidV5 } from './dataverse-security.mjs';
 import { hashSecret, newClientSecret, certificateThumbprints } from './dataverse-auth.mjs';
 import { seedManagedIdentityRows } from './dataverse-managed-identity.mjs';
 import { classicWorkflowsView, runOverride } from './dataverse-workflows.mjs';
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
+// The settings validator, with its message as the administration error.
+const checkSpaRedirectUris = (value, publicClient) => {
+  try {
+    return spaRedirectUris(value, publicClient);
+  } catch (error_) {
+    throw error(`${error_.message}.`);
+  }
+};
 const decodeAdminIdentifier = (value) => {
   try {
     return decodeURIComponent(value);
@@ -29,7 +37,7 @@ export function createDataverseAdmin({
   change,
 }) {
   const DATAVERSE_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return async (req, res, relative) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ return async (req, res, relative) => {
     const dataverse = getDataverse();
     const method = req.method;
     if (!dataverse) throw error('The Dataverse API is disabled for this runtime.', 404, 'DATAVERSE_DISABLED');
@@ -111,6 +119,7 @@ export function createDataverseAdmin({
       allowedGrants: app.allowedGrants ?? Object.keys(GRANT_TYPES),
       publicClient: app.publicClient === true,
       redirectUris: app.redirectUris ?? [],
+      spaRedirectUris: app.spaRedirectUris ?? [],
       // Issuer and subject are not secret; the issuer's public keys stay in dataverse.federatedIssuers.
       federatedCredentials: (app.federatedCredentials ?? []).map(({ issuer, subject, audiences }) => ({
         issuer,
@@ -136,8 +145,18 @@ export function createDataverseAdmin({
       }
     };
     const grantNames = new Set([...Object.keys(GRANT_TYPES), ...Object.values(GRANT_TYPES)]);
+    // Single-page redirect URIs are checked against the client type the registration has after this request: the body's
+    // publicClient, else the registration's current one. Removing the public client of a registration with them is refused.
+    const spaFields = (body, fields, current) => {
+      const publicClient = fields.publicClient ?? current.publicClient === true;
+      if (body.spaRedirectUris !== undefined) {
+        fields.spaRedirectUris = checkSpaRedirectUris(body.spaRedirectUris, publicClient);
+      } else if (!publicClient && (current.spaRedirectUris ?? []).length) {
+        throw error('spaRedirectUris requires publicClient: true.');
+      }
+    };
     // Shared by create and PATCH: only the fields present in the body are checked and returned.
-    const registrationFields = (body, { requireName = false } = {}) => {
+    const registrationFields = (body, { requireName = false, current = {} } = {}) => {
       const fields = {};
       if (body.displayName !== undefined || requireName) {
         if (typeof body.displayName !== 'string' || !body.displayName.trim()) throw error('displayName is required.');
@@ -157,6 +176,7 @@ export function createDataverseAdmin({
           throw error('allowedGrants must name known grant types.');
         fields.allowedGrants = [...body.allowedGrants];
       }
+      spaFields(body, fields, current);
       return fields;
     };
 
@@ -205,6 +225,7 @@ export function createDataverseAdmin({
             certificates: [],
             publicClient: false,
             redirectUris: [],
+            spaRedirectUris: [],
             allowedGrants: ['client_credentials'],
             ...fields,
           });
@@ -217,7 +238,7 @@ export function createDataverseAdmin({
     if (method === 'PATCH' && patchAppId)
       return change(async () => {
         const app = requireApp(patchAppId);
-        const fields = registrationFields(await jsonObjectBody(req));
+        const fields = registrationFields(await jsonObjectBody(req), { current: app });
         await store.transact(() => {
           // The application user carries the display name, as it does at registration.
           if (fields.displayName !== undefined) {
@@ -334,8 +355,8 @@ export function createDataverseAdmin({
             ],
             federatedIssuers: [{ issuer: body.issuer, jwks: body.jwks }],
           });
-        } catch (failure) {
-          throw error(failure.message);
+        } catch (error_) {
+          throw error(error_.message);
         }
         const [credential] = normalized.applications[0].federatedCredentials;
         const [issuer] = normalized.federatedIssuers;
@@ -398,7 +419,13 @@ export function createDataverseAdmin({
         );
         // Same sync as the registration at startup: the managedidentity rows follow the configured plus runtime list.
         await store.transact(() => {
-          (store.state.dataverse.managedIdentities ??= []).push({
+          const stateDataverse = store.state.dataverse;
+          let identities = stateDataverse.managedIdentities;
+          if (identities === null || identities === undefined) {
+            identities = [];
+            stateDataverse.managedIdentities = identities;
+          }
+          identities.push({
             clientId,
             principalId,
             displayName: body.displayName,

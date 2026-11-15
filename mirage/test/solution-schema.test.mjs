@@ -1,3 +1,4 @@
+// @test-kind contract: solution schema parsing, column metadata and solution data are Paqvilo's own designed behaviour, checked against local fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,10 +13,13 @@ import {
 } from '../lib/solution-schema.mjs';
 import { importSolutionData, applySolutionData, solutionSeedRows, sourceRecordId } from '../lib/solution-data.mjs';
 import { pluralizeEntitySetName, standardTable } from '../lib/solution-standard.mjs';
+import { createMetadataService } from '../lib/dataverse-metadata.mjs';
 import { discoverSolutionRoots, resolveSolutionRoots, solutionWatchFilter } from '../lib/solution-roots.mjs';
 import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { bootstrapReport, formatReport, resolveReportInputs } from '../bootstrap-report.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 
@@ -72,7 +76,7 @@ const solution = (name) =>
   `<ImportExportXml><SolutionManifest><UniqueName>${name}</UniqueName><Version>1.0.0.0</Version><Managed>2</Managed><Publisher><CustomizationPrefix>sample</CustomizationPrefix></Publisher><RootComponents /></SolutionManifest></ImportExportXml>`;
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-solution-schema-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-solution-schema-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);
@@ -97,6 +101,36 @@ test('solution paths are classified for table metadata, forms, views and environ
     'envvalue',
   );
   assert.equal(classifySolutionPath('WebResources/script.js'), null);
+});
+
+// @test-kind compatibility: Microsoft Learn BooleanAttributeMetadata reports a Two Options column with TrueOption and FalseOption
+test('an exported Two Options column imports as a boolean option set and reports BooleanAttributeMetadata', async (t) => {
+  const twoOptions =
+    '<AppDefaultValue>1</AppDefaultValue><optionset Name="sample_flag"><OptionSetType>bit</OptionSetType><IntroducedVersion>1.0.0.0</IntroducedVersion><IsCustomizable>1</IsCustomizable><displaynames><displayname description="Flag" languagecode="1033" /></displaynames><options><option value="1" ExternalValue="" IsHidden="0"><labels><label description="Yes" languagecode="1033" /></labels></option><option value="0" ExternalValue="" IsHidden="0"><labels><label description="No" languagecode="1033" /></labels></option></options></optionset>';
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', {
+      attributes: attribute('sample_itemid', 'primarykey') + attribute('sample_flag', 'bit', twoOptions),
+    }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  assert.equal(
+    fieldDefinition(schema, 'sample_item', schema.tables.sample_item.attributes.sample_flag).optionSetType,
+    'boolean',
+  );
+  const service = createMetadataService({
+    organizationId: '7014a3e5-497a-439e-b4a1-3f2b79879001',
+    schema,
+    mappings: {},
+  });
+  const column = service
+    .attributes('sample_item', { cast: 'BooleanAttributeMetadata' })
+    .find((a) => a.LogicalName === 'sample_flag');
+  assert.equal(column.AttributeType, 'Boolean');
+  assert.equal(column.OptionSet.OptionSetType, 3);
+  assert.equal(column.OptionSet.TrueOption.Value, 1);
+  assert.equal(column.OptionSet.TrueOption.Label.UserLocalizedLabel.Label, 'Yes');
+  assert.equal(column.OptionSet.FalseOption.Value, 0);
+  assert.equal(column.OptionSet.FalseOption.Label.UserLocalizedLabel.Label, 'No');
 });
 
 test('entity sets come from Entity.xml, then the documented catalogue, then pluralization', async (t) => {
@@ -556,6 +590,8 @@ test('Web API tables receive complete column metadata on their mapping; user map
 });
 
 test('parsed files are cached by file identity and re-read after any change', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  const settled = settleFileTimes(t);
   const root = await tree(t, {
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { set: 'sample_items', full: true }),
   });
@@ -568,6 +604,8 @@ test('parsed files are cached by file identity and re-read after any change', as
   assert.deepEqual(scan.cache.stats, { hits: 1, misses: 0 });
   const file = path.join(root, 'Entities/sample_item/Entity.xml');
   const original = await fs.readFile(file, 'utf8');
+  // A same-size edit, possibly in the same file-time tick: the real clock lets the racy window catch it.
+  settled.restore();
   await fs.writeFile(file, original.replace('sample_items', 'sample_xtems'));
   scan = await scanSolutionSources([root], { cacheFile });
   assert.equal(scan.cache.stats.misses, 1);
@@ -758,7 +796,7 @@ test('solution repositories are discovered next to the portal repository without
 test('the watch filter matches layers whose root was given in another spelling (8.3 short name, junction)', async (t) => {
   // chokidar reports paths in the spelling a root was given (the Windows 8.3 short form
   // of os.tmpdir(), a junction or symbolic link), while scanned layer directories are real paths.
-  const given = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-watch-spelling-'));
+  const given = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-watch-spelling-'));
   const alias = given + '-alias';
   t.after(async () => {
     await fs.rm(alias, { force: true });
@@ -1204,6 +1242,8 @@ test('case relationships come from Learn and document management creates <table>
 });
 
 test('while a share is open several caches of one process parse a Solution root once', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await tree(t, {
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { set: 'sample_items', full: true }),
     'Entities/sample_other/Entity.xml': entityXml('sample_other', { set: 'sample_others', full: true }),
@@ -1342,4 +1382,27 @@ test('a self-referencing relationship with IsHierarchical is hierarchical on bot
   assert.equal(data.mappings.sample_node.relationships.sample_node_parent.hierarchical, true, 'the one-to-many side');
   assert.equal(Object.hasOwn(data.mappings.sample_node.relationships.sample_Related, 'hierarchical'), false);
   assert.equal(Object.hasOwn(data.mappings.sample_other.relationships.sample_node_related, 'hierarchical'), false);
+});
+
+// @test-kind compatibility: an exported Two Options column typed boolean is a boolean field, not free text, in the solution schema
+test('a Two Options column exported as boolean imports as a boolean field with its option labels', async (t) => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', {
+      set: 'sample_items',
+      full: true,
+      attributes: attribute(
+        'sample_Consent',
+        'boolean',
+        `<AppDefaultValue>0</AppDefaultValue><optionset Name="sample_item_sample_consent"><OptionSetType>bit</OptionSetType><options><option value="0">${label('No')}</option><option value="1">${label('Yes')}</option></options></optionset>`,
+      ),
+    }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]), { lcid: 1036 });
+  const field = tableFields(schema, 'sample_item').sample_consent;
+  assert.equal(field.type, 'boolean');
+  assert.equal(field.defaultValue, false);
+  assert.deepEqual(field.options, [
+    { value: 0, label: 'No (fr)' },
+    { value: 1, label: 'Yes (fr)' },
+  ]);
 });

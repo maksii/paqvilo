@@ -1,3 +1,4 @@
+// @test-kind compatibility+contract: OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749), PKCE (RFC 7636) and the Power Pages OpenID Connect site settings on Microsoft Learn; diagnostics and options are Paqvilo's design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,9 +6,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { adminServes } from '../lib/admin-origin.mjs';
 import { contactFieldsFromClaims, externalProviders, oidcOptions } from '../lib/external-login.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The authorization code flow and the request options of an OpenID Connect provider (lib/identity-provider.mjs,
 // lib/sign-in-flow.mjs).
@@ -143,7 +145,7 @@ async function provider(t, registration) {
     ...registration,
   };
   const idp = await startIdentityProvider({ providers: () => [client], users: async () => USERS });
-  t.after(() => idp.close());
+  ownedFixture(t).add(() => idp.close());
   const authority = idp.authority(client);
   const discovery = await (await fetch(`${authority}.well-known/openid-configuration`)).json();
   const base = {
@@ -172,6 +174,66 @@ async function provider(t, registration) {
     );
   return { idp, authority, discovery, authorize, tokenRequest };
 }
+
+// @test-kind contract: the provider generates its signing key off the event loop on the first request that needs it.
+test('the identity provider generates its signing key once, on the first request that needs it, and retries a failed generation', async (t) => {
+  const generated = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const generations = [];
+  const waiters = { arrivals: () => {}, generations: () => {} };
+  let arrivals = 0;
+  const client = { slug: 'held-key', key: 'Held', caption: 'Held', clientId: 'held-client', redirectUri: `${PORTAL}/` };
+  const idp = await startIdentityProvider({
+    // Every request reads the provider list first, so each call marks one request reaching the provider.
+    providers: () => {
+      arrivals++;
+      waiters.arrivals();
+      return [client];
+    },
+    users: async () => USERS,
+    generateSigningKeyPair: (...args) =>
+      new Promise((resolve, reject) => {
+        generations.push({ args, resolve, reject });
+        waiters.generations();
+      }),
+  });
+  ownedFixture(t).add(() => idp.close());
+  // Resolves once `read()` reaches `count`; the matching waiter is called on every change.
+  const reach = (name, read, count) =>
+    new Promise((resolve) => {
+      waiters[name] = () => read() >= count && resolve();
+      waiters[name]();
+    });
+  const authority = idp.authority(client);
+  const keys = () =>
+    fetch(`${authority}discovery/keys`).then(async (response) => ({
+      status: response.status,
+      body: await response.json().catch(() => null),
+    }));
+  // Start and a request that does not need the key generate nothing.
+  assert.equal((await fetch(`${authority}.well-known/openid-configuration`)).status, 200);
+  assert.equal(generations.length, 0);
+  // Two concurrent first key requests share one generation; its failure fails both.
+  const first = [keys(), keys()];
+  await reach('arrivals', () => arrivals, 3);
+  await reach('generations', () => generations.length, 1);
+  assert.equal(generations.length, 1);
+  assert.deepEqual(generations[0].args, ['rsa', { modulusLength: 2048 }]);
+  generations[0].reject(new Error('Invented generation failure'));
+  assert.deepEqual(
+    (await Promise.all(first)).map((answer) => answer.status),
+    [500, 500],
+  );
+  // The next request generates again; later requests reuse the key.
+  const retried = keys();
+  await reach('generations', () => generations.length, 2);
+  generations[1].resolve(generated);
+  const expected = generated.publicKey.export({ format: 'jwk' }).n;
+  for (const answer of [await retried, await keys()]) {
+    assert.equal(answer.status, 200);
+    assert.equal(answer.body.keys[0].n, expected);
+  }
+  assert.equal(generations.length, 2);
+});
 
 test('the identity provider redeems authorization codes with client_secret_post and PKCE, and serves UserInfo', async (t) => {
   const { authority, discovery, authorize, tokenRequest } = await provider(t, { clientSecret: 's3cret' });
@@ -483,7 +545,7 @@ const initial = () => ({
   },
 });
 async function portal(t, settings) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-flow-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -491,19 +553,22 @@ async function portal(t, settings) {
   }
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial: initial(),
   });
   ownedFixture(t).add(() => app.close());
   const jar = new Map();
+  // The administration answers on its own origin, and a same-origin browser write to it carries that Origin.
   const request = async (target, { headers = {}, ...init } = {}) => {
-    const response = await fetch(new URL(target, app.url), {
+    const base = adminServes(new URL(target, app.url).pathname) ? app.adminOrigin : app.url;
+    const write = !['GET', 'HEAD'].includes(init.method ?? 'GET');
+    const response = await fetch(new URL(target, base), {
       redirect: 'manual',
       ...init,
       headers: {
         'sec-fetch-site': 'same-origin',
+        ...(write && base === app.adminOrigin ? { origin: base } : {}),
         ...(jar.size ? { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
         ...headers,
       },

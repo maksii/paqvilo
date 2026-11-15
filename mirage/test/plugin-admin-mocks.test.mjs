@@ -1,11 +1,13 @@
+// @test-kind contract: Paqvilo admin plug-in mocks: typed saved configurations, shape and stage validation, no side effects on refusal
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
-import { pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
+import { disableSteps, pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
 import { validateOperationOverrides } from '../lib/operation-catalogue.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const recordId = '20000000-0000-0000-0000-000000000001';
 const sdkEntity = (title, id = recordId) => ({
@@ -18,13 +20,7 @@ async function fixture(t, { unsupported = false, enhanced = false } = {}) {
   const first = await pluginFixture(t),
     initial = first.app.store.snapshot();
   await first.app.close();
-  for (let number = 3; number <= 11; number++) {
-    const file = path.join(first.solution, 'SdkMessageProcessingSteps', pluginId(number) + '.xml');
-    await fs.writeFile(
-      file,
-      (await fs.readFile(file, 'utf8')).replace('<StateCode>0</StateCode>', '<StateCode>1</StateCode>'),
-    );
-  }
+  await disableSteps(first.solution, 3, 11);
   for (const [number, options] of [
     [20, { message: 'RetrieveMultiple', stage: 40 }],
     [21, { message: 'RetrieveMultiple', stage: 20 }],
@@ -36,12 +32,14 @@ async function fixture(t, { unsupported = false, enhanced = false } = {}) {
       path.join(first.solution, 'SdkMessageProcessingSteps', pluginId(number) + '.xml'),
       stepXml(number, options),
     );
+  // An image without an image adapter is unsupported for original execution. (Impersonation no longer is: native runs an
+  // impersonating step with the impersonated user as UserId, and every local handler implements that.)
   if (unsupported)
     await fs.writeFile(
       path.join(first.solution, 'SdkMessageProcessingSteps', pluginId(25) + '.xml'),
       stepXml(25, { stage: 20 }).replace(
         '</SdkMessageProcessingStep>',
-        '<ImpersonatingUserId>10000000-0000-0000-0000-000000000001</ImpersonatingUserId></SdkMessageProcessingStep>',
+        '<SdkMessageProcessingStepImages><SdkMessageProcessingStepImage><Name>Before</Name><EntityAlias>Before</EntityAlias><ImageType>0</ImageType></SdkMessageProcessingStepImage></SdkMessageProcessingStepImages></SdkMessageProcessingStep>',
       ),
     );
   // An enhanced-authorization site maps visitors to Dataverse users and provisions the site's application user on portal requests.
@@ -57,7 +55,7 @@ async function fixture(t, { unsupported = false, enhanced = false } = {}) {
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const admin = (number, body) =>
     fetch(app.url + '/__sim/api/operations/' + encodeURIComponent('plugin-step:' + pluginId(number)), {
       method: 'PATCH',
@@ -106,6 +104,7 @@ test('Admin saves typed read and bulk mocks and those exact configurations affec
     (await admin(22, { targets: [sdkEntity('Mock bulk result', '00000000-0000-0000-0000-000000000000')] })).status,
     200,
   );
+  assert.equal((await admin(24, { targets: [sdkEntity('PostOperation context value')] })).status, 200);
   const user = '10000000-0000-0000-0000-000000000001',
     profile = {
       userId: user,
@@ -154,7 +153,6 @@ test('Admin rejects mock result shape or stage mismatches before changing saved 
     [21, { collection: { $type: 'EntityCollection', entities: [] } }],
     [22, { targets: [{ fx_title: 'Untyped' }] }],
     [22, { targets: [{ ...sdkEntity('Wrong table'), logicalName: 'other' }] }],
-    [24, { targets: [sdkEntity('PostOperation write')] }],
     [20, { collection: { $type: 'EntityCollection', entities: 'Invalid' } }],
     [20, { collection: { $type: 'EntityCollection', entities: [] } }],
     [20, { collection: { $type: 'EntityCollection', entities: [{ ...sdkEntity('Unknown field'), unexpected: 1 }] } }],
@@ -202,11 +200,11 @@ test('Plugin mock Double values admit invariant finite wire text and reject inva
     assert.throws(() => configure(value), /finite invariant/);
 });
 
-test('Explicit admin mock applies an eligible source-known patch without executing unsupported original identity logic', async (t) => {
+test('Explicit admin mock applies an eligible source-known patch without executing unsupported original image logic', async (t) => {
   const { app, admin } = await fixture(t, { unsupported: true });
   const catalogue = await (await fetch(app.url + '/__sim/api/operations')).json(),
     step = catalogue.items.find((item) => item.id === pluginId(25));
-  assert.match(step.unsupported, /Impersonated/);
+  assert.match(step.unsupported, /image adapter/);
   assert.equal((await admin(25, { target: { fx_title: 'Configured mock title' } })).status, 200);
   const write = (title) =>
     fetch(app.url + '/_api/fx_widgets', {

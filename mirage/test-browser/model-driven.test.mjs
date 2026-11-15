@@ -1,11 +1,63 @@
+// @test-kind contract: Paqvilo's own model-driven shell behaviour for grids, record forms, subgrids and their local commands.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appsOrigin } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const chrome = sharedBrowser();
+
+test('large grids label capped counts and keep records beyond that count accessible', async (t) => {
+  const rows = Array.from({ length: 6001 }, (_, i) => ({
+    x_itemid: `${i.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    x_name: 'Invented ' + String(i).padStart(4, '0'),
+    x_quantity: 1,
+  }));
+  const { origin } = await modelDrivenFixture(t, { initial: { tables: { x_item: rows, x_child: [] } } });
+  const query = { view: 'items-view', page: 201, pageSize: 25, sort: 'x_name', direction: 'asc' };
+  const response = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify(query)));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.total, 5000);
+  assert.equal(body.totalLimitExceeded, true);
+  assert.equal(body.rows.length, 25);
+  assert.equal(body.rows[0].x_name, 'Invented 5000');
+  assert.equal(body.more, true);
+  const page = await chrome.page(t);
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Invented 0000', exact: true }).waitFor();
+  assert.match(await page.locator('.grid-footer').textContent(), /Rows: 5000\+/);
+  await page.getByRole('button', { name: 'Next ›', exact: true }).click();
+  await page.getByRole('button', { name: 'Invented 0050', exact: true }).waitFor();
+  assert.match(await page.locator('.grid-footer').textContent(), /Rows: 5000\+/);
+  const filtered = await fetch(
+    origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ search: 'Invented 6000' })),
+  );
+  const exact = await filtered.json();
+  assert.equal(exact.total, 1);
+  assert.equal(Boolean(exact.totalLimitExceeded), false);
+});
+
+/** A route gate: `held` settles once a request waits in `hold()`, which returns after `release()`. */
+function routeGate(t) {
+  let release, intercepted;
+  const opened = new Promise((resolve) => {
+    release = resolve;
+  });
+  const held = new Promise((resolve) => {
+    intercepted = resolve;
+  });
+  t.after(() => release());
+  return {
+    held,
+    release: () => release(),
+    hold: () => {
+      intercepted();
+      return opened;
+    },
+  };
+}
 
 test('grid Refresh reloads selected-table form metadata before opening New', async (t) => {
   const { origin, sim, solutionDir } = await modelDrivenFixture(t);
@@ -97,89 +149,81 @@ test('new record URL defaults accept rendered columns and ignore arbitrary prope
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
 });
 
-test(
-  'slow model-driven reads and saves show feedback, prevent duplicate writes and recover with retry',
-  { timeout: 30000 },
-  async (t) => {
-    const { origin } = await modelDrivenFixture(t);
-    const page = await chrome.page(t, { reducedMotion: 'reduce' });
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    let startupFailed = false;
-    await page.route('**/_apps/api/index', (route) => {
-      if (startupFailed) return route.continue();
-      startupFailed = true;
-      return route.fulfill({ status: 503, json: { error: { message: 'Invented startup failure' } } });
-    });
-    await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
-    await page.getByRole('status').filter({ hasText: 'Invented startup failure' }).waitFor();
-    assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
-    await page.getByRole('button', { name: 'Try again', exact: true }).click();
-    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-    let release,
-      rejectRead = false;
-    await page.route('**/_apps/api/tables/x_item?*', async (route) => {
-      if (rejectRead)
-        return route.fulfill({ status: 503, json: { error: { message: 'Invented temporary read failure' } } });
-      await new Promise((resolve) => {
-        release = resolve;
-      });
-      await route.continue();
-    });
-    t.after(() => release?.());
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-    await page.locator('#app-loading').filter({ hasText: 'Loading records' }).waitFor();
-    assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
-    assert.equal(await page.locator('#content').evaluate((node) => node.inert), true);
-    assert.equal(
-      await page.getByRole('button', { name: 'Copper', exact: true }).count(),
-      1,
-      'previous data remains visible during refresh',
-    );
-    while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
-    release();
-    await page.locator('#app-loading').waitFor({ state: 'detached' });
-    rejectRead = true;
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-    await page.getByRole('status').filter({ hasText: 'Invented temporary read failure' }).waitFor();
-    assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
-    await page.unroute('**/_apps/api/tables/x_item?*');
-    await page.getByRole('button', { name: 'Try again', exact: true }).click();
-    await page.route('**/_apps/api/tables/x_item/*', (route) =>
-      route.fulfill({ status: 503, json: { error: { message: 'Invented record failure' } } }),
-    );
-    await page.getByRole('button', { name: 'Copper', exact: true }).click();
-    await page.getByRole('status').filter({ hasText: 'Invented record failure' }).waitFor();
-    assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
-    await page.unroute('**/_apps/api/tables/x_item/*');
-    await page.getByRole('button', { name: 'Try again', exact: true }).click();
-    await page.getByLabel('Name', { exact: true }).fill('Delayed save');
-    let writes = 0;
-    release = undefined;
-    await page.route('**/_apps/api/tables/x_item/*', async (route) => {
-      if (route.request().method() !== 'PATCH') return route.continue();
-      writes++;
-      await new Promise((resolve) => {
-        release = resolve;
-      });
-      await route.continue();
-    });
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await page.locator('#save-status').filter({ hasText: 'Saving…' }).waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
-    assert.equal(await page.locator('#record-form').evaluate((node) => node.inert), true);
-    await page.evaluate(() =>
-      document.querySelector('#record-form').dispatchEvent(new Event('submit', { cancelable: true })),
-    );
-    while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(writes, 1);
-    release();
-    await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
-    assert.equal(await page.locator('#record-form').evaluate((node) => node.inert), false);
-    assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Delayed save');
-    assert.deepEqual(errors, []);
-  },
-);
+test('slow model-driven reads and saves show feedback, prevent duplicate writes and recover with retry', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const page = await chrome.page(t, { reducedMotion: 'reduce' });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  let startupFailed = false;
+  await page.route('**/_apps/api/index', (route) => {
+    if (startupFailed) return route.continue();
+    startupFailed = true;
+    return route.fulfill({ status: 503, json: { error: { message: 'Invented startup failure' } } });
+  });
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('status').filter({ hasText: 'Invented startup failure' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  const read = routeGate(t);
+  let rejectRead = false;
+  await page.route('**/_apps/api/tables/x_item?*', async (route) => {
+    if (rejectRead)
+      return route.fulfill({ status: 503, json: { error: { message: 'Invented temporary read failure' } } });
+    await read.hold();
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('#app-loading').filter({ hasText: 'Loading records' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
+  assert.equal(await page.locator('#content').evaluate((node) => node.inert), true);
+  assert.equal(
+    await page.getByRole('button', { name: 'Copper', exact: true }).count(),
+    1,
+    'previous data remains visible during refresh',
+  );
+  await read.held;
+  read.release();
+  await page.locator('#app-loading').waitFor({ state: 'detached' });
+  rejectRead = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Invented temporary read failure' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
+  await page.unroute('**/_apps/api/tables/x_item?*');
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.route('**/_apps/api/tables/x_item/*', (route) =>
+    route.fulfill({ status: 503, json: { error: { message: 'Invented record failure' } } }),
+  );
+  await page.getByRole('button', { name: 'Copper', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Invented record failure' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
+  await page.unroute('**/_apps/api/tables/x_item/*');
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Delayed save');
+  let writes = 0;
+  const save = routeGate(t);
+  await page.route('**/_apps/api/tables/x_item/*', async (route) => {
+    if (route.request().method() !== 'PATCH') return route.continue();
+    writes++;
+    await save.hold();
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#save-status').filter({ hasText: 'Saving…' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
+  assert.equal(await page.locator('#record-form').evaluate((node) => node.inert), true);
+  await page.evaluate(() =>
+    document.querySelector('#record-form').dispatchEvent(new Event('submit', { cancelable: true })),
+  );
+  await save.held;
+  assert.equal(writes, 1);
+  save.release();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  assert.equal(writes, 1, 'the duplicate submit must not send a second write after the first completes');
+  assert.equal(await page.locator('#record-form').evaluate((node) => node.inert), false);
+  assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Delayed save');
+  assert.deepEqual(errors, []);
+});
 
 test('navigation cancels a pending grid search and repeated dialogs release listeners', async (t) => {
   const { origin } = await modelDrivenFixture(t);
@@ -225,40 +269,35 @@ test('navigation cancels a pending grid search and repeated dialogs release list
   assert.equal(await page.locator('#record-form').count(), 1, 'Escape must keep the unsaved record');
 });
 
-test('completion of a save cannot clear pending feedback on a newer form route', { timeout: 30000 }, async (t) => {
+test('completion of a save cannot clear pending feedback on a newer form route', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
   await page.goto(
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByLabel('Name', { exact: true }).fill('Save before navigation');
-  let releaseSave, releaseForm;
-  t.after(() => {
-    releaseSave?.();
-    releaseForm?.();
-  });
+  const save = routeGate(t),
+    form = routeGate(t);
   await page.route('**/_apps/api/tables/x_item/*', async (route) => {
     if (route.request().method() !== 'PATCH') return route.continue();
-    await new Promise((resolve) => {
-      releaseSave = resolve;
-    });
+    await save.hold();
     await route.continue();
   });
   await page.route('**/_apps/api/tables/x_child/*', async (route) => {
-    await new Promise((resolve) => {
-      releaseForm = resolve;
-    });
+    await form.hold();
     await route.continue();
   });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  while (!releaseSave) await new Promise((resolve) => setTimeout(resolve, 10));
+  const saveButton = await page.getByRole('button', { name: 'Save', exact: true }).elementHandle();
+  await saveButton.click();
+  await save.held;
   await page.evaluate(() => {
     void window.Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' });
   });
   await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
-  while (!releaseForm) await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSave();
-  await page.waitForFunction(() => !document.querySelector('#commands button[aria-busy=true]'));
+  await form.held;
+  save.release();
+  // The retired Save button leaves its busy state only after the stale save completion has run.
+  await page.waitForFunction((button) => !button.isConnected && !button.hasAttribute('aria-busy'), saveButton);
   assert.equal(
     await page.locator('#commands').getAttribute('aria-busy'),
     'true',
@@ -266,7 +305,7 @@ test('completion of a save cannot clear pending feedback on a newer form route',
   );
   assert.equal(await page.locator('#content').evaluate((node) => node.inert), true);
   await page.locator('#app-loading').filter({ hasText: 'Loading record' }).waitFor();
-  releaseForm();
+  form.release();
   await page.getByRole('heading', { name: 'Copper child', exact: true }).waitFor();
   assert.equal(await page.locator('#commands').getAttribute('aria-busy'), 'false');
 });
@@ -340,9 +379,9 @@ test('model-driven shell supports solution navigation, editable grids and local 
 });
 
 test('default management app edits portal customization and exposes working setup/admin links', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await page.goto(origin + '/main.aspx');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx');
   await page.getByRole('button', { name: 'Invented portal', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Content Snippets', exact: true }).click();
   await page.locator('tbody').getByRole('button', { name: 'Welcome', exact: true }).click();
@@ -352,7 +391,7 @@ test('default management app edits portal customization and exposes working setu
   const portal = await chrome.page(t);
   await portal.goto(origin + '/');
   assert.match(await portal.locator('body').innerText(), /Hello from management/);
-  await page.goto(origin + '/_sim/');
+  await page.goto(sim.adminOrigin + '/_sim/');
   assert.equal(
     await page.getByRole('link', { name: 'Model-driven apps', exact: true }).getAttribute('href'),
     '/main.aspx',
@@ -370,7 +409,7 @@ test('exported related subgrid filters by the current record and binds related c
   assert.equal(await page.getByRole('button', { name: 'Silver child', exact: true }).count(), 0);
   await page.locator('[data-action=new-related]').click();
   await page.getByLabel('Name', { exact: true }).fill('New related child');
-  assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Copper');
   const [createdResponse] = await Promise.all([
     page.waitForResponse(
       (response) => response.url().includes('/_apps/api/tables/x_child') && response.request().method() === 'POST',
@@ -395,4 +434,156 @@ test('exported related subgrid filters by the current record and binds related c
     () => !document.querySelector('.related-grid tbody')?.textContent.includes('New related child'),
   );
   assert.equal((await fetch(origin + '/_apps/api/tables/x_child/' + created.x_childid)).status, 404);
+});
+
+const silverId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+test('grid bulk delete after a refused row removes the deleted rows, keeps the refused row selected and retries only it', async (t) => {
+  const { origin } = await modelDrivenFixture(t, {
+    initial: {
+      tables: {
+        x_item: [
+          { x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper', x_quantity: 2 },
+          { x_itemid: silverId, x_name: 'Silver', x_quantity: 8 },
+          { x_itemid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', x_name: 'Third', x_quantity: 1 },
+        ],
+        x_child: [],
+      },
+    },
+  });
+  const page = await chrome.page(t);
+  const requests = [],
+    refusal = { active: true };
+  await refuseRowDelete(page, { refusedId: silverId, refusal, requests });
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  for (const name of ['Copper', 'Silver', 'Third']) await page.getByLabel(`Select ${name}`, { exact: true }).check();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete local records', exact: true })
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click();
+  await page.locator('#notice.error', { hasText: '2 deleted, 1 failed' }).waitFor();
+  assert.equal(
+    await page.locator('#notice').textContent(),
+    '2 deleted, 1 failed: <b>Refused</b> by the invented plug-in.',
+    'The first failure message is shown as text.',
+  );
+  assert.equal(await page.locator('#notice b').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Third', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Silver', exact: true }).count(), 1);
+  assert.equal(await page.getByLabel('Select Silver', { exact: true }).isChecked(), true);
+  assert.equal(await page.getByRole('button', { name: 'Delete', exact: true }).isDisabled(), false);
+
+  requests.length = 0;
+  refusal.active = false;
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete local records', exact: true })
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Silver', exact: true }).waitFor({ state: 'detached' });
+  assert.deepEqual(requests, [
+    `GET /_apps/api/tables/x_item/${silverId}`,
+    `DELETE /_apps/api/tables/x_item/${silverId}`,
+  ]);
+});
+
+test('subgrid bulk delete after a refused related row removes the deleted rows, keeps the refused row selected and retries only it', async (t) => {
+  const childTwo = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const child = (childid, name) => ({ x_childid: childid, x_name: name, x_parentid: parentId });
+  const { origin } = await modelDrivenFixture(t, {
+    initial: {
+      tables: {
+        x_item: [{ x_itemid: parentId, x_name: 'Copper', x_quantity: 2 }],
+        x_child: [
+          child('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'Child one'),
+          child(childTwo, 'Child two'),
+          child('ffffffff-ffff-4fff-8fff-ffffffffffff', 'Child three'),
+        ],
+      },
+    },
+  });
+  const page = await chrome.page(t);
+  const requests = [],
+    refusal = { active: true };
+  await refuseRowDelete(page, { refusedId: childTwo, refusal, requests });
+  await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=${parentId}`);
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.getByRole('button', { name: 'Child one', exact: true }).waitFor();
+  for (const name of ['Child one', 'Child two', 'Child three'])
+    await page.getByLabel(`Select ${name}`, { exact: true }).check();
+  const related = page.locator('.related-grid');
+  await related.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete local records', exact: true })
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click();
+  await page.locator('#notice.error', { hasText: '2 deleted, 1 failed' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Child one', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Child three', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Child two', exact: true }).count(), 1);
+  assert.equal(await page.getByLabel('Select Child two', { exact: true }).isChecked(), true);
+  assert.equal(await related.getByRole('button', { name: 'Delete', exact: true }).isDisabled(), false);
+
+  requests.length = 0;
+  refusal.active = false;
+  await related.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete local records', exact: true })
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click();
+  await page.getByText('No related records.', { exact: true }).waitFor();
+  assert.deepEqual(requests, [
+    `GET /_apps/api/tables/x_child/${childTwo}`,
+    `DELETE /_apps/api/tables/x_child/${childTwo}`,
+  ]);
+});
+
+/** Refuses the DELETE of one row with a plug-in style message while `refusal.active`; records every row request. */
+function refuseRowDelete(page, { refusedId, refusal, requests }) {
+  return page.route('**/_apps/api/tables/*/*', async (route) => {
+    const request = route.request(),
+      { pathname } = new URL(request.url());
+    requests.push(`${request.method()} ${pathname}`);
+    if (refusal.active && request.method() === 'DELETE' && pathname.endsWith('/' + refusedId))
+      return route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: '0x80040220', message: '<b>Refused</b> by the invented plug-in.' } }),
+      });
+    return route.continue();
+  });
+}
+
+test('grid More commands is disabled while nothing overflows and opens the hidden commands, Delete included, when it is narrow', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const page = await chrome.page(t, { viewport: { width: 1600, height: 800 } });
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  const more = page.getByRole('button', { name: 'More commands', exact: true });
+  assert.equal(await more.isDisabled(), true, 'a wide list has no hidden command to open');
+  assert.equal(await more.getAttribute('title'), 'No additional commands');
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.waitForFunction(
+    () => document.querySelector('#commands [aria-label="More commands"]')?.disabled === false,
+  );
+  assert.equal(await more.isEnabled(), true, 'a narrow list moves commands into More');
+  await page.getByLabel('Select Silver', { exact: true }).check();
+  await more.focus();
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'More commands', exact: true });
+  await menu.waitFor();
+  assert.equal(await menu.getByRole('menuitem', { name: 'Refresh', exact: true }).count(), 1);
+  await menu.getByRole('menuitem', { name: 'Delete', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await page
+    .getByRole('dialog', { name: 'Delete local records', exact: true })
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Silver', exact: true }).waitFor({ state: 'detached' });
+  await page.locator('#notice', { hasText: 'deleted locally' }).waitFor();
+  assert.equal(await page.locator('#notice').textContent(), '1 record deleted locally.');
 });

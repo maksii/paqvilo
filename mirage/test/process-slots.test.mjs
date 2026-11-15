@@ -1,3 +1,4 @@
+// @test-kind tooling: process-slot scheduling and cancellation for isolated test child processes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { withProcessSlot } from './process-slots.mjs';
@@ -28,5 +29,58 @@ test('process slots never run more than the limit at once and run every call', a
     await withProcessSlot(() => job('after a failure'), 1),
     'after a failure',
     'a failed call releases its slot',
+  );
+});
+
+test('process slots count each limit separately, so a stricter caller is never handed an extra slot', async () => {
+  const running = { wide: 0, narrow: 0 },
+    peak = { wide: 0, narrow: 0 };
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const job = (kind) => async () => {
+    running[kind]++;
+    peak[kind] = Math.max(peak[kind], running[kind]);
+    await gate;
+    running[kind]--;
+  };
+  const all = [
+    ...Array.from({ length: 3 }, () => withProcessSlot(job('wide'), 3)),
+    ...Array.from({ length: 2 }, () => withProcessSlot(job('narrow'), 1)),
+  ];
+  // Every admitted job has started once the pending promise reactions have run.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(running, { wide: 3, narrow: 1 }, 'a full wide pool does not hold back the narrow one');
+  release();
+  await Promise.all(all);
+  assert.deepEqual(peak, { wide: 3, narrow: 1 });
+});
+
+test('an aborted queued process never starts after the active slot is released', async () => {
+  const controller = new AbortController();
+  let release,
+    started = false;
+  const active = withProcessSlot(() => new Promise((resolve) => (release = resolve)), 1);
+  const queued = withProcessSlot(
+    () => {
+      started = true;
+    },
+    1,
+    { signal: controller.signal },
+  );
+  const rejected = assert.rejects(queued, { name: 'AbortError' });
+  const next = withProcessSlot(() => 'next', 1);
+  controller.abort();
+  release();
+  await active;
+  await rejected;
+  assert.equal(started, false);
+  assert.equal(await next, 'next');
+  await assert.rejects(
+    withProcessSlot(() => assert.fail('pre-aborted work started'), 1, { signal: controller.signal }),
+    {
+      name: 'AbortError',
+    },
   );
 });

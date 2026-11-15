@@ -1,15 +1,16 @@
+// @test-kind contract: Mirage-only catalogue sites are accepted by the offline Lense commands and kept out of Lense targets and audits.
 // A catalogue site from the setup `model-driven` template (no portal export, no environment) is a Mirage-only site:
 // init --check, lense list/doctor and mirage init accept it, and portals=all leaves it out of the Lense targets.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { renderTemplate } from '../lense/setup/templates.mjs';
 import { loadDevTargets, mirageOnlySite, loadCatalogue } from '../lense/config.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
@@ -22,14 +23,14 @@ const run = (...args) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 },
+          { env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         ),
       ),
   );
 
 function fixture(t) {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-only-')));
+  const dir = tempDirSync('paqvilo-mirage-only-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   fs.mkdirSync(path.join(dir, 'solutions', 'x_core', 'Other'), { recursive: true });
   fs.writeFileSync(
@@ -103,4 +104,39 @@ test('portals=all with only Mirage-only sites: list succeeds and names them, the
     listed.sites.map((site) => [site.name, site.mirageOnly]),
     [['org', true]],
   );
+});
+
+test('audit --all skips a Mirage-only site as skipped and keeps the portal verdict under strict', async (t) => {
+  const { dir, file } = fixture(t);
+  fs.mkdirSync(path.join(dir, 'portal', 'web-pages'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'portal', 'website.yml'), 'adx_websiteid: site\nadx_name: Invented');
+  fs.writeFileSync(
+    path.join(dir, 'portal', 'web-pages', 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
+  );
+  const catalogue = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const portal = { source: './portal', environments: { local: 'http://127.0.0.1:9' } };
+  const mixed = path.join(dir, 'mixed.json');
+  fs.writeFileSync(mixed, JSON.stringify({ ...catalogue, sites: { portal, org: catalogue.sites.org } }));
+  const [strict, lax, onlyAll, onlySite] = await Promise.all([
+    run('lense', 'audit', '--config', mixed, '--all', '--strict', '--json'),
+    run('lense', 'audit', '--config', mixed, '--all', '--json'),
+    run('lense', 'audit', '--config', file, '--all', '--json'),
+    run('lense', 'audit', '--config', mixed, '--site', 'org', '--json'),
+  ]);
+  assert.equal(strict.status, 0, strict.stdout + strict.stderr);
+  const report = JSON.parse(strict.stdout);
+  assert.equal(report.ok, true);
+  assert.equal(report.complete, true);
+  const byName = (name) => report.reports.find((item) => item.site === name);
+  assert.equal(byName('org').skipped.code, 'mirage_only_site');
+  assert.equal(byName('portal').coverage.complete, true);
+  assert.equal(lax.status, 0, lax.stdout + lax.stderr);
+  assert.equal(JSON.parse(lax.stdout).ok, true);
+  // A catalogue of only Mirage-only sites, or an explicit --site naming one, is still a failed audit.
+  assert.equal(onlyAll.status, 1);
+  assert.equal(JSON.parse(onlyAll.stdout).ok, false);
+  assert.match(onlyAll.stdout, /is a model-driven Mirage site without a portal/);
+  assert.equal(onlySite.status, 1);
+  assert.equal(JSON.parse(onlySite.stdout).ok, false);
 });

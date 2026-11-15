@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../../mirage/testing/owned-fixture.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import http from 'node:http';
 import { once, EventEmitter } from 'node:events';
 import { chromium } from 'playwright-core';
 import { startAgentServer } from '../../lense/agent-server.mjs';
-import { ownedFixture, drainFixture } from '../../mirage/testing/owned-fixture.mjs';
+import { PROFILE_RELEASE_RETRIES } from '../helpers/profile-cleanup.mjs';
 
 export function agentBrowserFixture(
   t,
@@ -16,7 +17,7 @@ export function agentBrowserFixture(
     startAgent = startAgentServer,
   } = {},
 ) {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), prefix)),
+  const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), prefix)),
     servers = [];
   let browser, agent;
   const owner = ownedFixture(t);
@@ -30,7 +31,7 @@ export function agentBrowserFixture(
       }),
     ),
   );
-  owner.remove(() => fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }));
+  owner.remove(() => fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const serve = async (handler) => {
     const server = createServer(handler);
     server.on('connect', (_request, socket) => {

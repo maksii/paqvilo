@@ -1,24 +1,17 @@
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { reconcilePermissionDiagnostics, compactBuiltinPresets } from './data.mjs';
-import {
-  scanSolutionSources,
-  buildSolutionSchema,
-  tableFields,
-  tableColumnDefaults,
-  readSolutionZip,
-} from './solution-schema.mjs';
+import { scanSolutionSources, buildSolutionSchema, tableFields, tableColumnDefaults } from './solution-schema.mjs';
 import { pluralizeEntitySetName, standardTable } from './solution-standard.mjs';
 import { resolveScopedRelationship } from './permissions.mjs';
 import { sourceRecordId } from './source-record-id.mjs';
+import { cloneStateData, copyPlainGraph } from './state-clone.mjs';
 export { sourceRecordId };
-
-export { readSolutionZip };
 
 const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const SCOPED = ['contact', 'account', 'parent'];
+const SCOPED = new Set(['contact', 'account', 'parent']);
 const ENV_DEFINITION = 'environmentvariabledefinition';
 const ENV_VALUE = 'environmentvariablevalue';
 
@@ -40,13 +33,7 @@ function mappingFor(schema, name) {
   if (table.ownership !== undefined) mapping.ownership = table.ownership;
   if (table.tableType !== undefined) mapping.tableType = table.tableType;
   if (table.isVirtual !== undefined) mapping.isVirtual = table.isVirtual;
-  for (const [source, property] of Object.entries({
-    dataSourceId: 'DataSourceId',
-    dataProviderId: 'DataProviderId',
-    changeTrackingEnabled: 'ChangeTrackingEnabled',
-    isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
-  }))
-    if (table[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = table[source];
+  addDataverseMetadata(mapping, table);
   mapping.inferred = mapping.entitySetInferred || mapping.idColumnInferred;
   if (table.primaryNameAttribute) {
     mapping.nameColumn = table.primaryNameAttribute;
@@ -54,29 +41,50 @@ function mappingFor(schema, name) {
   }
   if (table.isIntersect) mapping.intersect = true;
   // The table's display name by language (Entity.xml LocalizedNames): services that show a table type use it.
-  if (table.labels && Object.keys(table.labels).length) mapping.labels = structuredClone(table.labels);
+  if (table.labels && Object.keys(table.labels).length) mapping.labels = copyPlainGraph(table.labels);
   // Alternate keys (Web API key addressing and uniqueness) with the defining file.
-  const keys = Object.values(table.keys ?? {});
-  if (keys.length)
-    mapping.alternateKeys = keys.map((key) => ({
-      name: key.name,
-      ...(key.schemaName ? { schemaName: key.schemaName } : {}),
-      attributes: [...key.attributes],
-      source: key.source,
-    }));
+  addAlternateKeys(mapping, table);
   // A created row receives the same column defaults as a seeded row (tableColumnDefaults):
   // two-option/choice AppDefaultValue, then the active state with its default status reason.
   const columnDefaults = tableColumnDefaults(table.attributes);
   if (Object.keys(columnDefaults).length) mapping.recordDefaults = columnDefaults;
+  addStateDefaults(mapping, table);
+  return mapping;
+}
+
+function addDataverseMetadata(mapping, table) {
+  const sourceProperties = {
+    dataSourceId: 'DataSourceId',
+    dataProviderId: 'DataProviderId',
+    changeTrackingEnabled: 'ChangeTrackingEnabled',
+    isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
+  };
+  for (const [source, property] of Object.entries(sourceProperties))
+    if (table[source] !== undefined) {
+      if (mapping.dataverseMetadata == null) mapping.dataverseMetadata = {};
+      mapping.dataverseMetadata[property] = table[source];
+    }
+}
+
+function addAlternateKeys(mapping, table) {
+  const keys = Object.values(table.keys ?? {});
+  if (!keys.length) return;
+  mapping.alternateKeys = keys.map((key) => ({
+    name: key.name,
+    ...(key.schemaName ? { schemaName: key.schemaName } : {}),
+    attributes: [...key.attributes],
+    source: key.source,
+  }));
+}
+
+function addStateDefaults(mapping, table) {
   const state = table.attributes.statecode;
   const states = state?.type === 'state' ? (state.optionSet?.states ?? []) : [];
   const valid = states.filter((s) => Number.isInteger(s.value) && Number.isInteger(s.defaultStatus));
-  if (valid.length) {
-    mapping.stateStatusDefaults = Object.fromEntries(valid.map((s) => [s.value, s.defaultStatus]));
-    const active = valid.find((s) => s.value === 0);
-    if (active) mapping.recordDefaults = { ...mapping.recordDefaults, statecode: 0, statuscode: active.defaultStatus };
-  }
-  return mapping;
+  if (!valid.length) return;
+  mapping.stateStatusDefaults = Object.fromEntries(valid.map((s) => [s.value, s.defaultStatus]));
+  const active = valid.find((s) => s.value === 0);
+  if (active) mapping.recordDefaults = { ...mapping.recordDefaults, statecode: 0, statuscode: active.defaultStatus };
 }
 
 /**
@@ -87,97 +95,18 @@ function mappingFor(schema, name) {
  */
 export async function importSolutionData(
   roots = [],
-  { entities, cacheFile, cache, order = 'explicit', lcid = 1033, scan, schema } = {},
+  { entities, cacheFile, cache, order = 'explicit', lcid = 1033, scan, schema, sideHashes } = {},
 ) {
   if (typeof roots === 'string') roots = [roots];
   scan ??= await scanSolutionSources(roots, { cacheFile, cache, order });
-  schema ??= buildSolutionSchema(scan, { lcid });
+  schema ??= buildSolutionSchema(scan, { lcid, sideHashes });
 
   const mappings = {};
-  for (const name of Object.keys(schema.tables).sort()) mappings[name] = mappingFor(schema, name);
+  for (const name of Object.keys(schema.tables).sort(/* NOSONAR: preserve default string coercion */))
+    mappings[name] = mappingFor(schema, name);
   const relationships = {};
   for (const [key, rel] of Object.entries(schema.relationships)) {
-    if (rel.type === 'one-to-many') {
-      relationships[key] = {
-        schemaName: rel.schemaName,
-        type: 'one-to-many',
-        referencingEntity: rel.referencingEntity,
-        referencedEntity: rel.referencedEntity,
-        referencingAttribute: rel.referencingAttribute,
-        referencedAttribute: rel.referencedAttribute,
-        referencingNavigation: rel.referencingNavigation,
-        referencedNavigation: rel.referencedNavigation,
-        // The Solution's cascade configuration ({ assign, delete, archive, reparent, share,
-        // unshare, rollupView }, CascadeType names as exported), on the relationship and on
-        // both navigation sides; absent when the source states none (standard fallbacks).
-        ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
-        source: rel.source,
-        ...(rel.sources?.length > 1 ? { sources: rel.sources } : {}),
-        ...(rel.standardFallback ? { standardFallback: true } : {}),
-      };
-      const child = mappings[rel.referencingEntity],
-        parent = mappings[rel.referencedEntity];
-      child.relationships[rel.referencingNavigation] = {
-        entity: rel.referencedEntity,
-        from: rel.referencingAttribute,
-        to: rel.referencedAttribute,
-        many: false,
-        schemaName: rel.schemaName,
-        type: 'many-to-one',
-        partner: rel.referencedNavigation,
-        ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
-        ...(rel.isHierarchical ? { hierarchical: true } : {}),
-      };
-      parent.relationships[rel.referencedNavigation] = {
-        entity: rel.referencingEntity,
-        from: rel.referencedAttribute,
-        to: rel.referencingAttribute,
-        many: true,
-        schemaName: rel.schemaName,
-        type: 'one-to-many',
-        partner: rel.referencingNavigation,
-        ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
-        ...(rel.isHierarchical ? { hierarchical: true } : {}),
-      };
-    } else {
-      relationships[key] = {
-        schemaName: rel.schemaName,
-        type: 'many-to-many',
-        intersectEntity: rel.intersectEntity,
-        entity1: rel.entity1,
-        entity2: rel.entity2,
-        attribute1: rel.attribute1,
-        attribute2: rel.attribute2,
-        navigation1: rel.navigation1,
-        navigation2: rel.navigation2,
-        source: rel.source,
-        ...(rel.sources?.length > 1 ? { sources: rel.sources } : {}),
-        ...(rel.intersectAttributesInferred ? { intersectAttributesInferred: true } : {}),
-      };
-      const first = mappings[rel.entity1],
-        second = mappings[rel.entity2];
-      first.relationships[rel.navigation1] = {
-        entity: rel.entity2,
-        from: first.idColumn,
-        to: second.idColumn,
-        many: true,
-        intersect: { entity: rel.intersectEntity, from: rel.attribute1, to: rel.attribute2 },
-        schemaName: rel.schemaName,
-        type: 'many-to-many',
-        partner: rel.navigation2,
-      };
-      if (first !== second || rel.navigation1 !== rel.navigation2)
-        second.relationships[rel.navigation2] = {
-          entity: rel.entity1,
-          from: second.idColumn,
-          to: first.idColumn,
-          many: true,
-          intersect: { entity: rel.intersectEntity, from: rel.attribute2, to: rel.attribute1 },
-          schemaName: rel.schemaName,
-          type: 'many-to-many',
-          partner: rel.navigation1,
-        };
-    }
+    mapRelationship(key, rel, mappings, relationships);
   }
   const wanted = entities ? new Set(entities.map((e) => String(e).toLowerCase())) : null;
   const filtered = wanted
@@ -214,6 +143,90 @@ export async function importSolutionData(
       cache: scan.cache?.stats,
     },
   };
+}
+
+/* NOSONAR */ function mapRelationship(key, rel, mappings, relationships) {
+  if (rel.type === 'one-to-many') {
+    relationships[key] = {
+      schemaName: rel.schemaName,
+      type: 'one-to-many',
+      referencingEntity: rel.referencingEntity,
+      referencedEntity: rel.referencedEntity,
+      referencingAttribute: rel.referencingAttribute,
+      referencedAttribute: rel.referencedAttribute,
+      referencingNavigation: rel.referencingNavigation,
+      referencedNavigation: rel.referencedNavigation,
+      // The Solution's cascade configuration ({ assign, delete, archive, reparent, share,
+      // unshare, rollupView }, CascadeType names as exported), on the relationship and on
+      // both navigation sides; absent when the source states none (standard fallbacks).
+      ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      source: rel.source,
+      ...(rel.sources?.length > 1 ? { sources: rel.sources } : {}),
+      ...(rel.standardFallback ? { standardFallback: true } : {}),
+    };
+    const child = mappings[rel.referencingEntity],
+      parent = mappings[rel.referencedEntity];
+    child.relationships[rel.referencingNavigation] = {
+      entity: rel.referencedEntity,
+      from: rel.referencingAttribute,
+      to: rel.referencedAttribute,
+      many: false,
+      schemaName: rel.schemaName,
+      type: 'many-to-one',
+      partner: rel.referencedNavigation,
+      ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      ...(rel.isHierarchical ? { hierarchical: true } : {}),
+    };
+    parent.relationships[rel.referencedNavigation] = {
+      entity: rel.referencingEntity,
+      from: rel.referencedAttribute,
+      to: rel.referencingAttribute,
+      many: true,
+      schemaName: rel.schemaName,
+      type: 'one-to-many',
+      partner: rel.referencingNavigation,
+      ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      ...(rel.isHierarchical ? { hierarchical: true } : {}),
+    };
+    return;
+  }
+  relationships[key] = {
+    schemaName: rel.schemaName,
+    type: 'many-to-many',
+    intersectEntity: rel.intersectEntity,
+    entity1: rel.entity1,
+    entity2: rel.entity2,
+    attribute1: rel.attribute1,
+    attribute2: rel.attribute2,
+    navigation1: rel.navigation1,
+    navigation2: rel.navigation2,
+    source: rel.source,
+    ...(rel.sources?.length > 1 ? { sources: rel.sources } : {}),
+    ...(rel.intersectAttributesInferred ? { intersectAttributesInferred: true } : {}),
+  };
+  const first = mappings[rel.entity1],
+    second = mappings[rel.entity2];
+  first.relationships[rel.navigation1] = {
+    entity: rel.entity2,
+    from: first.idColumn,
+    to: second.idColumn,
+    many: true,
+    intersect: { entity: rel.intersectEntity, from: rel.attribute1, to: rel.attribute2 },
+    schemaName: rel.schemaName,
+    type: 'many-to-many',
+    partner: rel.navigation2,
+  };
+  if (first !== second || rel.navigation1 !== rel.navigation2)
+    second.relationships[rel.navigation2] = {
+      entity: rel.entity1,
+      from: second.idColumn,
+      to: first.idColumn,
+      many: true,
+      intersect: { entity: rel.intersectEntity, from: rel.attribute2, to: rel.attribute1 },
+      schemaName: rel.schemaName,
+      type: 'many-to-many',
+      partner: rel.navigation1,
+    };
 }
 
 /**
@@ -299,7 +312,7 @@ export function applySolutionData(
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
   };
-  const result = owned ? input : structuredClone(input);
+  const result = owned ? input : cloneStateData(input, { forkTables: true });
   result.mappings ??= {};
   result.tables ??= {};
   result.simulator ??= {};
@@ -314,33 +327,103 @@ export function applySolutionData(
     mapping.dataverseMetadata?.createdByMetadataApi !== true;
   const solutionRelationships = new Set(previous.relationshipMappings ?? []),
     relationshipsTaken = [];
+  applyImportedMappings({
+    result,
+    metadata,
+    webApiTables,
+    solutionRelationships,
+    relationshipsTaken,
+    diagnostics: importDiagnostics,
+    imported,
+    dataverseSeeded,
+  });
+  const seeded = applySolutionSeeds(
+    result,
+    metadata,
+    previous,
+    environmentVariables,
+    connectionReferences,
+    importDiagnostics,
+  );
+  // Imported table permissions in configured mode: resolve scopes from relationships.
+  const permissions = result.permissions ?? [];
+  const resolved = resolveImportedPermissions(permissions, metadata, result);
+  result.simulator.solutionData = {
+    roots: metadata.roots,
+    stats: metadata.stats,
+    fingerprint: metadata.fingerprint,
+    ...(metadata.contentFingerprint !== undefined ? { contentFingerprint: metadata.contentFingerprint } : {}),
+    ...(Object.keys(seeded).length ? { seededRows: seeded } : {}),
+    ...(relationshipsTaken.length ? { relationshipMappings: relationshipsTaken } : {}),
+  };
+  // Solution diagnostics describe the current layers only; earlier imports are replaced.
+  result.simulator.importDiagnostics = [
+    ...(result.simulator.importDiagnostics ?? []).filter(
+      (d) => !resolved.has(d.id) && !String(d.code ?? '').startsWith('SOLUTION_'),
+    ),
+    ...importDiagnostics,
+    ...metadata.diagnostics,
+  ];
+  applyPresetMappings(result.presets, metadata.mappings);
+  return reconcilePermissionDiagnostics(applyCustomColumns(result));
+}
+
+function applyImportedMappings({
+  result,
+  metadata,
+  webApiTables,
+  solutionRelationships,
+  relationshipsTaken,
+  diagnostics,
+  imported,
+  dataverseSeeded,
+}) {
   for (const [name, mapping] of Object.entries(metadata.mappings)) {
-    const existing = result.mappings[name];
-    if (!existing || imported(existing) || dataverseSeeded(existing)) {
-      const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
-      result.mappings[name] = structuredClone(rest);
-    } else {
-      // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
-      // and create defaults (column defaults, state/status pairs) when it names none (as a preset
-      // layered over the imported mappings does): a record created through it gets what Dataverse sets.
-      for (const key of ['nameColumn', 'alternateKeys', 'recordDefaults', 'stateStatusDefaults', 'labels'])
-        if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
-      // Relationships an earlier import gave this configured mapping follow the Solution (a relationship added to the
-      // source since then declares its navigation too); relationships the mapping declared itself stay.
-      if (
-        mapping.relationships !== undefined &&
-        (existing.relationships === undefined || solutionRelationships.has(name))
-      ) {
-        existing.relationships = structuredClone(mapping.relationships);
-        relationshipsTaken.push(name);
-      }
-    }
+    applyCurrentMapping(
+      name,
+      mapping,
+      result.mappings,
+      solutionRelationships,
+      relationshipsTaken,
+      imported,
+      dataverseSeeded,
+    );
     result.tables[name] ??= [];
   }
-  // Previously imported mappings that the selected layers no longer define.
-  for (const [name, mapping] of Object.entries(result.mappings))
-    if (!metadata.mappings[name] && mapping.userConfigured !== true && mapping.metadataSources?.length) {
-      result.mappings[name] = {
+  resetRemovedMappings(result.mappings, metadata.mappings, diagnostics);
+  applyWebApiFieldMetadata(result.mappings, metadata.schema, webApiTables, imported);
+}
+
+function applyCurrentMapping(
+  name,
+  mapping,
+  resultMappings,
+  solutionRelationships,
+  relationshipsTaken,
+  imported,
+  dataverseSeeded,
+) {
+  const existing = resultMappings[name];
+  if (!existing || imported(existing) || dataverseSeeded(existing)) {
+    const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    resultMappings[name] = copyPlainGraph(rest);
+    return;
+  }
+  for (const key of ['nameColumn', 'alternateKeys', 'recordDefaults', 'stateStatusDefaults', 'labels'])
+    if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = copyPlainGraph(mapping[key]);
+  if (
+    mapping.relationships !== undefined &&
+    (existing.relationships === undefined || solutionRelationships.has(name))
+  ) {
+    existing.relationships = copyPlainGraph(mapping.relationships);
+    relationshipsTaken.push(name);
+  }
+}
+
+function resetRemovedMappings(resultMappings, importedMappings, diagnostics) {
+  for (const [name, mapping] of Object.entries(resultMappings))
+    if (!importedMappings[name] && mapping.userConfigured !== true && mapping.metadataSources?.length) {
+      resultMappings[name] = {
         entitySet: standardTable(name)?.entitySet ?? pluralizeEntitySetName(name),
         entitySetSource: standardTable(name) ? 'dataverse-reference' : 'pluralized',
         idColumn: standardTable(name)?.primaryIdAttribute ?? name + 'id',
@@ -350,16 +433,17 @@ export function applySolutionData(
         entitySetInferred: !standardTable(name),
         idColumnInferred: !standardTable(name),
       };
-      importDiagnostics.push({
+      diagnostics.push({
         code: 'SOLUTION_MAPPING_REMOVED',
         entity: name,
         message: 'The selected solution layers no longer define this table; its imported mapping was reset.',
       });
     }
-  // Complete column metadata for Web API tables (the 400 InvalidAttribute rule).
-  const schema = metadata.schema;
+}
+
+function applyWebApiFieldMetadata(mappings, schema, webApiTables, imported) {
   const apiTables = webApiTables ? new Set([...webApiTables].map((name) => String(name).toLowerCase())) : null;
-  for (const [name, mapping] of Object.entries(result.mappings)) {
+  for (const [name, mapping] of Object.entries(mappings)) {
     if (mapping.userConfigured === true) continue;
     const table = schema?.tables[name];
     const ours = imported(mapping) || mapping.fieldMetadataSource === 'solution' || mapping.fieldMetadata === undefined;
@@ -373,12 +457,14 @@ export function applySolutionData(
       delete mapping.fieldMetadataSource;
     }
   }
-  // Source-derived rows: upsert by primary key and remove rows that left the source.
+}
+
+function applySolutionSeeds(result, metadata, previous, environmentVariables, connectionReferences, diagnostics) {
   const seeds = solutionSeedRows(metadata, { environmentVariables, connectionReferences });
   const boundReferences = new Set((connectionReferences ?? []).map((reference) => reference.logicalName.toLowerCase()));
   for (const reference of metadata.connectionReferences ?? [])
     if (!boundReferences.has(reference.logicalName.toLowerCase()))
-      importDiagnostics.push({
+      diagnostics.push({
         code: 'SOLUTION_CONNREF_UNBOUND',
         severity: 'warning',
         logicalName: reference.logicalName,
@@ -398,128 +484,161 @@ export function applySolutionData(
     const table = (result.tables[entity] ??= []);
     const before = new Set((previous.seededRows?.[entity] ?? []).map(id));
     const current = new Set(rows.map((row) => id(row[key])));
-    for (let index = table.length - 1; index >= 0; index--) {
-      const rowId = id(table[index]?.[key]);
-      if (before.has(rowId) && !current.has(rowId)) table.splice(index, 1);
-    }
-    const positions = new Map();
-    table.forEach((row, index) => {
-      const value = id(row?.[key]);
-      if (!positions.has(value)) positions.set(value, index);
-    });
-    for (const row of rows) {
-      const rowId = id(row[key]),
-        index = positions.get(rowId) ?? -1;
-      if (index >= 0) table[index] = { ...table[index], ...row };
-      else {
-        positions.set(rowId, table.length);
-        table.push(row);
-      }
-    }
+    removeDepartedSeedRows(table, key, before, current);
+    upsertSeedRows(table, rows, key);
     seeded[entity] = [...current];
   }
+  removeOldSeedRows(result, previous, seeds);
+  return seeded;
+}
+
+function removeDepartedSeedRows(table, key, before, current) {
+  for (let index = table.length - 1; index >= 0; index--) {
+    const rowId = id(table[index]?.[key]);
+    if (before.has(rowId) && !current.has(rowId)) table.splice(index, 1);
+  }
+}
+
+function upsertSeedRows(table, rows, key) {
+  const positions = new Map();
+  table.forEach((row, index) => {
+    const value = id(row?.[key]);
+    if (!positions.has(value)) positions.set(value, index);
+  });
+  for (const row of rows) {
+    const rowId = id(row[key]),
+      index = positions.get(rowId) ?? -1;
+    if (index >= 0) table[index] = { ...table[index], ...row };
+    else {
+      positions.set(rowId, table.length);
+      table.push(row);
+    }
+  }
+}
+
+function removeOldSeedRows(result, previous, seeds) {
   for (const [entity, ids] of Object.entries(previous.seededRows ?? {}))
     if (!seeds[entity] && result.tables[entity]) {
       const key = result.mappings[entity]?.idColumn ?? entity + 'id';
       const stale = new Set(ids.map(id));
       result.tables[entity] = result.tables[entity].filter((row) => !stale.has(id(row?.[key])));
     }
-  // Imported table permissions in configured mode: resolve scopes from relationships.
-  const permissions = result.permissions ?? [];
-  const byId = new Map(permissions.map((p) => [id(p.id), p]));
+}
+
+function resolveImportedPermissions(permissions, metadata, result) {
+  const byId = new Map(permissions.map((permission) => [id(permission.id), permission]));
   const resolved = new Set();
-  for (const p of permissions)
-    if (p.imported && p.userConfigured !== true && SCOPED.includes(p.scope) && p.metadataSource) {
-      p.enabled = false;
-      p.disabledReason = 'The currently selected solution metadata must resolve this permission relationship.';
-      delete p.field;
-      delete p.relationship;
-      delete p.identityRelationship;
-      delete p.metadataSource;
-      if (p.inheritedRoles) {
-        p.roles = [];
-        delete p.inheritedRoles;
-      }
-    }
+  resetImportedPermissions(permissions);
   for (let pass = 0; pass < permissions.length + 1; pass++) {
     let changed = false;
-    for (const permission of permissions) {
-      if (!permission.imported || permission.userConfigured === true || !SCOPED.includes(permission.scope)) continue;
-      const rel = metadata.relationships[String(permission.relationshipName ?? '').toLowerCase()];
-      if (!rel) continue;
-      const parent = permission.scope === 'parent' ? byId.get(id(permission.parentPermissionId)) : null;
-      if (permission.scope === 'parent' && (!parent || parent.enabled === false)) continue;
-      const target = parent?.entity ?? (permission.scope === 'account' ? 'account' : 'contact');
-      const resolution = resolveScopedRelationship(rel, permission, target, result.mappings);
-      if (!resolution) continue;
-      if (permission.scope === 'parent') {
-        permission.relationship = resolution.descriptor;
-        if (!permission.roles?.length) {
-          permission.roles = structuredClone(parent.roles ?? []);
-          permission.inheritedRoles = true;
-        }
-      } else if (resolution.field) permission.field = resolution.field;
-      else permission.identityRelationship = resolution.descriptor;
-      if (!permission.roles?.length) continue;
-      if (permission.enabled === false) {
-        permission.enabled = true;
-        delete permission.disabledReason;
-        resolved.add(permission.id);
-        changed = true;
-      }
-      permission.metadataSource = rel.source;
-    }
+    for (const permission of permissions)
+      if (resolveScopedPermission(permission, byId, metadata, result, resolved)) changed = true;
     if (!changed) break;
   }
-  for (const p of permissions)
-    if (p.imported && p.enabled === false && p.userConfigured !== true && SCOPED.includes(p.scope)) {
-      const rel = metadata.relationships[String(p.relationshipName ?? '').toLowerCase()];
-      const parent = byId.get(id(p.parentPermissionId));
-      if (!rel)
-        p.disabledReason = p.relationshipName
-          ? `No selected solution layer or documented Dataverse relationship defines '${p.relationshipName}'.`
-          : 'The exported permission has no relationship name for its scope.';
-      else if (p.scope === 'parent' && !parent)
-        p.disabledReason =
-          'The referenced parent permission is inactive or was not exported into this portal; Power Pages does not apply children of an ineffective parent.';
-      else if (p.scope === 'parent' && parent.enabled === false)
-        p.disabledReason = 'The referenced parent permission is disabled or unresolved.';
-      else if (!p.roles?.length)
-        p.disabledReason =
-          'No web roles are associated with this root permission; Power Pages requires at least one web role for a table permission to take effect.';
-      else
-        p.disabledReason = `Relationship '${rel.schemaName}' does not connect '${p.entity}' to the required ${p.scope === 'parent' ? 'parent permission table' : p.scope} table.`;
-    }
-  result.simulator.solutionData = {
-    roots: metadata.roots,
-    stats: metadata.stats,
-    fingerprint: metadata.fingerprint,
-    ...(metadata.contentFingerprint !== undefined ? { contentFingerprint: metadata.contentFingerprint } : {}),
-    ...(Object.keys(seeded).length ? { seededRows: seeded } : {}),
-    ...(relationshipsTaken.length ? { relationshipMappings: relationshipsTaken } : {}),
-  };
-  // Solution diagnostics describe the current layers only; earlier imports are replaced.
-  result.simulator.importDiagnostics = [
-    ...(result.simulator.importDiagnostics ?? []).filter(
-      (d) => !resolved.has(d.id) && !String(d.code ?? '').startsWith('SOLUTION_'),
-    ),
-    ...importDiagnostics,
-    ...metadata.diagnostics,
-  ];
-  for (const preset of Object.values(result.presets ?? {})) {
-    if (preset.mappings)
-      for (const [name, mapping] of Object.entries(metadata.mappings))
-        if (preset.mappings[name]?.userConfigured !== true) {
-          const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
-          preset.mappings[name] = {
-            ...preset.mappings[name],
-            ...structuredClone(rest),
-            relationships: {
-              ...preset.mappings[name]?.relationships,
-              ...structuredClone(rest.relationships),
-            },
-          };
-        }
-  }
-  return reconcilePermissionDiagnostics(applyCustomColumns(result));
+  setUnresolvedPermissionReasons(permissions, byId, metadata);
+  return resolved;
 }
+
+function resetImportedPermissions(permissions) {
+  for (const permission of permissions)
+    if (
+      permission.imported &&
+      permission.userConfigured !== true &&
+      SCOPED.has(permission.scope) &&
+      permission.metadataSource
+    ) {
+      permission.enabled = false;
+      permission.disabledReason = 'The currently selected solution metadata must resolve this permission relationship.';
+      delete permission.field;
+      delete permission.relationship;
+      delete permission.identityRelationship;
+      delete permission.metadataSource;
+      if (permission.inheritedRoles) {
+        permission.roles = [];
+        delete permission.inheritedRoles;
+      }
+    }
+}
+
+function resolveScopedPermission(permission, byId, metadata, result, resolved) {
+  if (!permission.imported || permission.userConfigured === true || !SCOPED.has(permission.scope)) return false;
+  const rel = metadata.relationships[String(permission.relationshipName ?? '').toLowerCase()];
+  if (!rel) return false;
+  const parent = permission.scope === 'parent' ? byId.get(id(permission.parentPermissionId)) : null;
+  if (permission.scope === 'parent' && (!parent || parent.enabled === false)) return false;
+  const target = parent?.entity ?? (permission.scope === 'account' ? 'account' : 'contact');
+  const resolution = resolveScopedRelationship(rel, permission, target, result.mappings);
+  if (!resolution) return false;
+  applyPermissionResolution(permission, resolution, parent);
+  if (!permission.roles?.length) return false;
+  if (permission.enabled !== false) {
+    permission.metadataSource = rel.source;
+    return false;
+  }
+  permission.enabled = true;
+  delete permission.disabledReason;
+  resolved.add(permission.id);
+  permission.metadataSource = rel.source;
+  return true;
+}
+
+function applyPermissionResolution(permission, resolution, parent) {
+  if (permission.scope === 'parent') {
+    permission.relationship = resolution.descriptor;
+    if (!permission.roles?.length) {
+      permission.roles = copyPlainGraph(parent.roles ?? []);
+      permission.inheritedRoles = true;
+    }
+  } else if (resolution.field) permission.field = resolution.field;
+  else permission.identityRelationship = resolution.descriptor;
+}
+
+function setUnresolvedPermissionReasons(permissions, byId, metadata) {
+  for (const permission of permissions)
+    if (
+      permission.imported &&
+      permission.enabled === false &&
+      permission.userConfigured !== true &&
+      SCOPED.has(permission.scope)
+    )
+      setUnresolvedPermissionReason(permission, byId, metadata);
+}
+
+function setUnresolvedPermissionReason(permission, byId, metadata) {
+  const rel = metadata.relationships[String(permission.relationshipName ?? '').toLowerCase()];
+  const parent = byId.get(id(permission.parentPermissionId));
+  if (!rel)
+    permission.disabledReason = permission.relationshipName
+      ? `No selected solution layer or documented Dataverse relationship defines '${permission.relationshipName}'.`
+      : 'The exported permission has no relationship name for its scope.';
+  else if (permission.scope === 'parent' && !parent)
+    permission.disabledReason =
+      'The referenced parent permission is inactive or was not exported into this portal; Power Pages does not apply children of an ineffective parent.';
+  else if (permission.scope === 'parent' && parent.enabled === false)
+    permission.disabledReason = 'The referenced parent permission is disabled or unresolved.';
+  else if (!permission.roles?.length)
+    permission.disabledReason =
+      'No web roles are associated with this root permission; Power Pages requires at least one web role for a table permission to take effect.';
+  else
+    permission.disabledReason = `Relationship '${rel.schemaName}' does not connect '${permission.entity}' to the required ${permission.scope === 'parent' ? 'parent permission table' : permission.scope} table.`;
+}
+
+function applyPresetMappings(presets, mappings) {
+  for (const preset of Object.values(presets ?? {})) {
+    if (!preset.mappings) continue;
+    for (const [name, mapping] of Object.entries(mappings)) {
+      if (preset.mappings[name]?.userConfigured === true) continue;
+      const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping; // NOSONAR: binding is excluded from the rest object or is a placeholder
+      preset.mappings[name] = {
+        ...preset.mappings[name],
+        ...copyPlainGraph(rest),
+        relationships: {
+          ...preset.mappings[name]?.relationships,
+          ...copyPlainGraph(rest.relationships),
+        },
+      };
+    }
+  }
+}
+
+export { readSolutionZip } from './solution-schema.mjs';

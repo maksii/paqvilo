@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scope": "The native service document enumerates exactly its independent CSDL EntitySet declarations in declaration order. Native catalogue membership is a source input; this does not prove CRUD support for unrelated native entity sets.",
+  "captures": [
+    {
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "caseId": "service.document",
+      "responseSha256": "d2bdb9e66834e7c61a0f4f4d50bfd38596591e41085f0c0dec8bb8579408d00f",
+      "entitySets": 878
+    },
+    {
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "caseId": "service.document",
+      "responseSha256": "d2bdb9e66834e7c61a0f4f4d50bfd38596591e41085f0c0dec8bb8579408d00f",
+      "entitySets": 878
+    }
+  ],
+  "expected": {
+    "serviceDocumentFollowsCsdlDeclarationOrder": true,
+    "kind": "EntitySet",
+    "urlEqualsName": true
+  }
+}

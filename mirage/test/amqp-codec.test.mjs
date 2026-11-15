@@ -1,3 +1,4 @@
+// @test-kind compatibility: the AMQP 1.0 types, transport and security byte layouts (OASIS) that the codec must read and write.
 // AMQP 1.0 encoder, decoder and frame writer (mirage/lib/amqp-client.mjs) against byte layouts from the OASIS specification
 // (types 1.6, transport 2.2-2.3, security 5.2), independent of the fake broker that shares the codec.
 import test from 'node:test';
@@ -157,4 +158,41 @@ test('golden performative bytes: the client encodes them, and both codecs read e
   assert.equal(hex(wide.subarray(0, 11)), '00' + '800000000000000013' + 'd0', 'descriptor 0x13 as ulong, then list32');
   assert.equal(wide[1], 0x80, 'the fake encodes the descriptor as a full ulong');
   assert.deepEqual(plain(decode(wide)[0].value), GOLDEN[1].fields);
+});
+
+test('valid arrays, lists and maps of every element width decode to the same values and offsets', () => {
+  const cases = [
+    [[0xe0, 0x02, 0x03, 0x40], [null, null, null], 4],
+    [[0xe0, 0x02, 0x01, 0x40], [null], 4],
+    [[0xe0, 0x01, 0x00], [], 3],
+    [[0xe0, 0x04, 0x02, 0x50, 0x07, 0x09], [7, 9], 6],
+    [[0xe0, 0x04, 0x02, 0x56, 0x01, 0x00], [true, false], 6],
+    [[0xe0, 0x02, 0x02, 0x41], [true, true], 4],
+    [[0xe0, 0x02, 0x02, 0x43], [0, 0], 4],
+    [[0xe0, 0x02, 0x02, 0x44], [0, 0], 4],
+    [[0xe0, 0x02, 0x01, 0x45], [[]], 4],
+    [[0xe0, 0x06, 0x02, 0x60, 0x01, 0x02, 0x03, 0x04], [258, 772], 8],
+    [[0xe0, 0x05, 0x02, 0xa1, 0x01, 0x61, 0x00], ['a', ''], 7],
+    [[0xe0, 0x05, 0x01, 0xa3, 0x02, 0x6f, 0x6b], ['ok'], 7],
+    [[0xf0, 0, 0, 0, 13, 0, 0, 0, 2, 0x70, 0, 0, 0, 1, 0, 0, 0, 2], [1, 2], 18],
+    [[0xf0, 0, 0, 0, 5, 0, 0, 0, 0, 0x40], [], 10],
+    [[0xf0, 0, 0, 0, 5, 0, 0, 0, 3, 0x40], [null, null, null], 10],
+    [[0xc0, 0x03, 0x02, 0x40, 0x40], [null, null], 5],
+    [[0xd0, 0, 0, 0, 6, 0, 0, 0, 2, 0x40, 0x40], [null, null], 11],
+    [[0xd0, 0, 0, 0, 4, 0, 0, 0, 0], [], 9],
+    [[0xc1, 0x06, 0x02, 0xa1, 0x01, 0x61, 0x50, 0x01], { a: 1 }, 8],
+  ];
+  for (const [bytes, value, next] of cases) {
+    assert.deepEqual(decode(Buffer.from(bytes)), [value, next], hex(bytes));
+  }
+});
+
+// @test-kind security: a count taken from the wire must fit the bytes its declared size covers before anything is allocated.
+test('an array or list count that cannot fit its declared size throws before any element is decoded', () => {
+  // array32 with size 5 covers the count and one null constructor: zero-width elements carry no bytes, so the count is bounded.
+  assert.throws(() => decode(Buffer.from([0xf0, 0, 0, 0, 5, 0xff, 0xff, 0xff, 0xff, 0x40])), RangeError);
+  // array8 of three ubytes whose size 4 covers only two data bytes; the third byte lies outside the declared size.
+  assert.throws(() => decode(Buffer.from([0xe0, 0x04, 0x03, 0x50, 0x01, 0x02, 0x03])), RangeError);
+  // list32 of 255 items whose size 5 covers one byte after the count.
+  assert.throws(() => decode(Buffer.from([0xd0, 0, 0, 0, 5, 0, 0, 0, 0xff, 0x40])), RangeError);
 });

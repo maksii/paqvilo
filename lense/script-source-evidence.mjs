@@ -11,14 +11,14 @@ export function scriptSourceBody(bytes, file, { sourceMaps = true, responseBody 
   const body = responseBody ?? (sourceMaps ? withFileSourceMap(bytes, file) : bytes);
   if (bytes.length > 8 * 1024 * 1024 || body.length > 16 * 1024 * 1024) return body;
   const raw = bytes.toString('utf8'),
-    sourceStart = raw.charCodeAt(0) === 0xfeff ? 1 : 0;
+    sourceStart = raw.charCodeAt(0) === 0xfeff ? 1 : 0; // NOSONAR: UTF-16 code unit semantics are required
   const decoded = body.toString('utf8').replace(/^\uFEFF/, '');
   if (!decoded.startsWith(raw.slice(sourceStart))) return body;
   const lineStarts = [0];
   let linesTruncated = false;
   for (let index = 0; index < decoded.length; index++) {
-    const code = decoded.charCodeAt(index);
-    if (code === 13 && decoded.charCodeAt(index + 1) === 10) index++;
+    const code = decoded.charCodeAt(index); // NOSONAR: UTF-16 code unit semantics are required
+    if (code === 13 && decoded.charCodeAt(index + 1) === 10) index++; // NOSONAR: UTF-16 code unit semantics are required
     if ([10, 13, 0x2028, 0x2029].includes(code)) {
       if (lineStarts.length >= 16384) {
         linesTruncated = true;

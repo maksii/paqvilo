@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "scope": "Exact matching source-ETag conditional GETs on CSDL and the service document. Retained ETag, empty304 body and selected safe header presence are qualified. Wildcard/list/weak validators and concurrent metadata publication are not proven by these cases. Native epochs and origins remain private source inputs.",
+  "producerSha256": "fe875d8c8dbf1880f5361f9cf222ee7ee00c5aee285cbf15ad23755eb9322b86",
+  "captures": [
+    {
+      "source": "dataverse-native-1794159885404",
+      "runSha256": "a764bf42b66e2c0c5557ea2874c48d088fbebd75fd85c965092e0c5614cf354c",
+      "planSha256": "2137db49d4db6ce082b5ec4703ed32b06400e90325946b864a70073f7cb1b63a",
+      "collectorSha256": "449c16bca00e409826567ac2e8cbb3679b1e08d31e88bd0d426aa76051e64fae",
+      "cases": [
+        {
+          "kind": "metadata",
+          "firstBodySha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+          "conditionalBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "firstEtagSha256": "7dc304ee96efaff99d32c8f279909c75934ef224bd14929b0b0577dfc943b2ae",
+          "facts": {
+            "firstStatus": 200,
+            "matchingConditionalStatus": 304,
+            "conditionalBytes": 0,
+            "conditionalRetainsSameEtag": true,
+            "conditionalContentType": "text/html; charset=utf-8",
+            "conditionalHasODataVersion": false,
+            "allow": "OPTIONS,GET,HEAD,POST"
+          }
+        },
+        {
+          "kind": "service",
+          "firstBodySha256": "2bd0c64b630c051e03aa22c0b60887eeb20f6ab6280f708bcb629a73346de8f0",
+          "conditionalBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "firstEtagSha256": "7dc304ee96efaff99d32c8f279909c75934ef224bd14929b0b0577dfc943b2ae",
+          "facts": {
+            "firstStatus": 200,
+            "matchingConditionalStatus": 304,
+            "conditionalBytes": 0,
+            "conditionalRetainsSameEtag": true,
+            "conditionalContentType": "text/html; charset=utf-8",
+            "conditionalHasODataVersion": false,
+            "allow": "OPTIONS,GET,HEAD,POST"
+          }
+        }
+      ]
+    },
+    {
+      "source": "dataverse-native-1794159894571",
+      "runSha256": "023c9efd95e3bdfff1def088cb20bf873a8d4016b23cdcccdd0f0af58bfa0876",
+      "planSha256": "2137db49d4db6ce082b5ec4703ed32b06400e90325946b864a70073f7cb1b63a",
+      "collectorSha256": "449c16bca00e409826567ac2e8cbb3679b1e08d31e88bd0d426aa76051e64fae",
+      "cases": [
+        {
+          "kind": "metadata",
+          "firstBodySha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+          "conditionalBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "firstEtagSha256": "7dc304ee96efaff99d32c8f279909c75934ef224bd14929b0b0577dfc943b2ae",
+          "facts": {
+            "firstStatus": 200,
+            "matchingConditionalStatus": 304,
+            "conditionalBytes": 0,
+            "conditionalRetainsSameEtag": true,
+            "conditionalContentType": "text/html; charset=utf-8",
+            "conditionalHasODataVersion": false,
+            "allow": "OPTIONS,GET,HEAD,POST"
+          }
+        },
+        {
+          "kind": "service",
+          "firstBodySha256": "2bd0c64b630c051e03aa22c0b60887eeb20f6ab6280f708bcb629a73346de8f0",
+          "conditionalBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "firstEtagSha256": "7dc304ee96efaff99d32c8f279909c75934ef224bd14929b0b0577dfc943b2ae",
+          "facts": {
+            "firstStatus": 200,
+            "matchingConditionalStatus": 304,
+            "conditionalBytes": 0,
+            "conditionalRetainsSameEtag": true,
+            "conditionalContentType": "text/html; charset=utf-8",
+            "conditionalHasODataVersion": false,
+            "allow": "OPTIONS,GET,HEAD,POST"
+          }
+        }
+      ]
+    }
+  ]
+}

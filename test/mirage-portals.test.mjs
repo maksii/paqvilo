@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage catalogue ownership records preserve all concurrent process identities
 // mirage init/start/status/stop for every catalogue site (portals=all): one project and one
 // runtime per site.
 import { test } from 'node:test';
@@ -7,9 +8,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createFixture } from './fixture.mjs';
-import { severalPortals } from '../lense/commands/mirage.mjs';
+import { createFixture, tempDirSync, withoutToolkitEnvironment } from './fixture.mjs';
+import { codeAppRuntimeOrigin, mirageStartUrl, severalPortals } from '../lense/commands/mirage.mjs';
+import { adminServes } from '../mirage/lib/admin-origin.mjs';
+import { devStartUrl } from '../lense/commands/dev.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const ENHANCED = fs.realpathSync.native(fileURLToPath(new URL('../test-browser/fixtures/enhanced/', import.meta.url)));
@@ -17,9 +24,14 @@ const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
 );
 function run(...args) {
-  return spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 });
+  return spawnSync(process.execPath, [cli, ...args], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
 }
-// Independent refusals run concurrently: each CLI process costs a quarter of a second to start.
+// Independent commands run concurrently: each CLI process costs a quarter of a second to start.
 function runAsync(...args) {
   return withProcessSlot(
     () =>
@@ -27,7 +39,7 @@ function runAsync(...args) {
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 },
+          { env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         );
       }),
@@ -42,7 +54,7 @@ const json = (result) => JSON.parse(result.stdout);
  */
 function isolatedFixture() {
   const fixture = createFixture();
-  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portals-')));
+  const container = tempDirSync('paqvilo-portals-');
   const dir = path.join(container, 'portal');
   fs.cpSync(fixture.dir, dir, { recursive: true });
   fixture.cleanup();
@@ -66,138 +78,156 @@ test('portals=all reaches every catalogue site for dev and start; init and stop 
   assert.equal(severalPortals(all, {}, 'status'), false);
 });
 
-test(
-  'mirage with portals=all writes one project per site, starts one runtime per site, labels them in status and stops them together',
-  { timeout: 300_000 },
-  async () => {
-    const classic = isolatedFixture();
-    const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-portals-')));
-    const config = path.join(work, 'paqvilo.config.yml');
-    const project = (site) => path.join(work, `${site}.project.yml`);
-    fs.writeFileSync(
-      config,
-      JSON.stringify(
-        {
-          defaultSite: 'classic',
-          portals: 'all',
-          sites: {
-            classic: {
-              source: classic.dir,
-              defaultEnv: 'dev',
-              environments: { dev: 'https://classic.example.com' },
-              mirage: { port: 0, project: project('classic') },
-            },
-            enhanced: {
-              source: ENHANCED,
-              defaultEnv: 'dev',
-              environments: { dev: 'https://enhanced.example.com' },
-              mirage: { port: 0, project: project('enhanced') },
-            },
+// A portals=all catalogue of two sites, each with its project file. Each test below starts at most one group of
+// runtimes, so the per-test limit covers a bounded number of CLI processes.
+function allPortalsCatalogue(t) {
+  const classic = isolatedFixture();
+  const work = tempDirSync('paqvilo-mirage-portals-');
+  // Removed after the runtimes the test started have been ended.
+  ownedFixture(t).remove(() => {
+    classic.cleanup();
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const config = path.join(work, 'paqvilo.config.yml');
+  const project = (site) => path.join(work, `${site}.project.yml`);
+  fs.writeFileSync(
+    config,
+    JSON.stringify(
+      {
+        defaultSite: 'classic',
+        portals: 'all',
+        sites: {
+          classic: {
+            source: classic.dir,
+            defaultEnv: 'dev',
+            environments: { dev: 'https://classic.example.com' },
+            mirage: { port: 0, project: project('classic') },
+          },
+          enhanced: {
+            source: ENHANCED,
+            defaultEnv: 'dev',
+            environments: { dev: 'https://enhanced.example.com' },
+            mirage: { port: 0, project: project('enhanced') },
           },
         },
-        null,
-        2,
-      ),
+      },
+      null,
+      2,
+    ),
+  );
+  const init = run('mirage', 'init', '--config', config, '--json');
+  assert.equal(init.status, 0, init.stdout + init.stderr);
+  assert.deepEqual(
+    json(init).projects.map((item) => [item.site, item.file]),
+    [
+      ['classic', project('classic')],
+      ['enhanced', project('enhanced')],
+    ],
+  );
+  assert.ok(fs.existsSync(project('classic')) && fs.existsSync(project('enhanced')));
+  return { work, config };
+}
+
+test('mirage with portals=all refuses misplaced options and shared ports without starting anything', async (t) => {
+  const { work, config } = allPortalsCatalogue(t);
+  // A catalogue that puts two sites on one port is refused before anything starts.
+  const clash = path.join(work, 'clash.config.yml');
+  const catalogue = JSON.parse(fs.readFileSync(config, 'utf8'));
+  catalogue.sites.classic.mirage.port = 18797;
+  catalogue.sites.enhanced.mirage.port = 18797;
+  fs.writeFileSync(clash, JSON.stringify(catalogue));
+  const [reinit, conflict, misplaced, ...refusals] = await Promise.all([
+    runAsync('mirage', 'init', '--config', config, '--site', 'classic', '--json'),
+    runAsync('mirage', 'start', '--config', config, '--portal', 'classic', '--json'),
+    runAsync('mirage', 'status', '--config', config, '--allow-live-writes', '--json'),
+    runAsync('mirage', 'start', '--config', clash, '--json'),
+    runAsync('mirage', 'start', '--config', clash, '--port', '018797', '--json'),
+  ]);
+  for (const start of [conflict, ...refusals]) ownStartedRuntimes(t, start.stdout);
+  // With --site, init stays with that site (and refuses to overwrite silently).
+  assert.match(json(reinit).error.message, /already exists/);
+
+  // --port, --state, --preset and --solution-root apply to the selected site; options that name
+  // one runtime of a project, or one source, do not fit several catalogue portals.
+  assert.equal(conflict.status, 1);
+  assert.match(
+    json(conflict).error.message,
+    /--portal applies to a single runtime\. \(--port, --state, --preset, --preset-mode, --solution-root apply to the selected site\.\)/,
+  );
+  assert.equal(misplaced.status, 1);
+  assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);
+
+  for (const refused of refusals) {
+    assert.equal(refused.status, 1);
+    assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
+  }
+  // The refusals changed nothing: no runtime of either catalogue is left to stop.
+  for (const file of [config, clash]) {
+    const stopped = run('mirage', 'stop', '--config', file, '--json');
+    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    assert.deepEqual(json(stopped).stopped, []);
+  }
+});
+
+test('mirage with portals=all starts one runtime per site, labels them in status and stops them together', async (t) => {
+  const { config } = allPortalsCatalogue(t);
+  let started = null;
+  try {
+    started = await runAsync('mirage', 'start', '--config', config, '--startup-timeout', '120000', '--json');
+    ownStartedRuntimes(t, started.stdout);
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    const portals = json(started).portals;
+    assert.deepEqual(
+      portals.map((item) => item.site),
+      ['classic', 'enhanced'],
     );
-    let started = null;
-    try {
-      const init = run('mirage', 'init', '--config', config, '--json');
-      assert.equal(init.status, 0, init.stdout + init.stderr);
-      assert.deepEqual(
-        json(init).projects.map((item) => [item.site, item.file]),
-        [
-          ['classic', project('classic')],
-          ['enhanced', project('enhanced')],
-        ],
-      );
-      assert.ok(fs.existsSync(project('classic')) && fs.existsSync(project('enhanced')));
-      const [reinit, conflict, misplaced] = await Promise.all([
-        runAsync('mirage', 'init', '--config', config, '--site', 'classic', '--json'),
-        runAsync('mirage', 'start', '--config', config, '--portal', 'classic', '--json'),
-        runAsync('mirage', 'status', '--config', config, '--allow-live-writes', '--json'),
-      ]);
-      // With --site, init stays with that site (and refuses to overwrite silently).
-      assert.match(json(reinit).error.message, /already exists/);
-
-      // --port, --state, --preset and --solution-root apply to the selected site; options that name
-      // one runtime of a project, or one source, do not fit several catalogue portals.
-      assert.equal(conflict.status, 1);
-      assert.match(
-        json(conflict).error.message,
-        /--portal applies to a single runtime\. \(--port, --state, --preset, --preset-mode, --solution-root apply to the selected site\.\)/,
-      );
-      assert.equal(misplaced.status, 1);
-      assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);
-
-      started = run('mirage', 'start', '--config', config, '--startup-timeout', '120000', '--json');
-      assert.equal(started.status, 0, started.stdout + started.stderr);
-      const portals = json(started).portals;
-      assert.deepEqual(
-        portals.map((item) => item.site),
-        ['classic', 'enhanced'],
-      );
-      assert.ok(
-        portals.every(
-          (item) =>
-            item.started &&
-            /^http:\/\/127\.0\.0\.1:\d+$/.test(item.url) &&
-            item.adminUrl === new URL('/_sim/', item.url).href,
-        ),
-      );
-      assert.notEqual(portals[0].url, portals[1].url);
-
-      const status = json(run('mirage', 'status', '--config', config, '--json')).sessions;
-      for (const item of portals) {
-        const listed = status.find((session) => session.pid === item.pid);
-        assert.ok(listed, `status lists ${item.site}`);
-        assert.deepEqual([listed.site, listed.ready, listed.owned], [item.site, true, true]);
-      }
-
-      // Starting again reuses both runtimes.
-      const again = json(run('mirage', 'start', '--config', config, '--json')).portals;
-      assert.deepEqual(
-        again.map((item) => [item.pid, item.started]),
-        portals.map((item) => [item.pid, false]),
-      );
-
-      // A catalogue that puts two sites on one port is refused before anything starts.
-      const clash = path.join(work, 'clash.config.yml');
-      const catalogue = JSON.parse(fs.readFileSync(config, 'utf8'));
-      catalogue.sites.classic.mirage.port = 18797;
-      catalogue.sites.enhanced.mirage.port = 18797;
-      fs.writeFileSync(clash, JSON.stringify(catalogue));
-      const refusals = await Promise.all([
-        runAsync('mirage', 'start', '--config', clash, '--json'),
-        runAsync('mirage', 'start', '--config', clash, '--port', '018797', '--json'),
-      ]);
-      for (const refused of refusals) {
-        assert.equal(refused.status, 1);
-        assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
-      }
-    } finally {
-      const stopped = run('mirage', 'stop', '--config', config, '--json');
-      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
-      if (started?.status === 0) {
-        const report = json(stopped);
-        assert.deepEqual(
-          report.stopped.map((item) => item.pid).sort(),
-          json(started)
-            .portals.map((item) => item.pid)
-            .sort(),
-        );
-        assert.equal(report.remaining.length, 0);
-      }
-      classic.cleanup();
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    assert.ok(portals.every((item) => item.started && /^http:\/\/127\.0\.0\.1:\d+$/.test(item.url)));
+    for (const item of portals) {
+      // The printed administration address is the one the runtime reports on its own admin port.
+      const reported = await (await fetch(new URL('/_sim/api/status', item.url))).json();
+      assert.equal(item.adminUrl, reported.adminUrl);
+      assert.notEqual(new URL(item.adminUrl).port, new URL(item.url).port);
     }
-  },
-);
+    assert.notEqual(portals[0].url, portals[1].url);
 
-test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async () => {
+    // Status only reads the runtimes; starting again reuses both.
+    const [listing, repeated] = await Promise.all([
+      runAsync('mirage', 'status', '--config', config, '--json'),
+      runAsync('mirage', 'start', '--config', config, '--json'),
+    ]);
+    ownStartedRuntimes(t, repeated.stdout);
+    const status = json(listing).sessions;
+    for (const item of portals) {
+      const listed = status.find((session) => session.pid === item.pid);
+      assert.ok(listed, `status lists ${item.site}`);
+      assert.deepEqual([listed.site, listed.ready, listed.owned], [item.site, true, true]);
+    }
+    assert.deepEqual(
+      json(repeated).portals.map((item) => [item.pid, item.started]),
+      portals.map((item) => [item.pid, false]),
+    );
+  } finally {
+    const stopped = run('mirage', 'stop', '--config', config, '--json');
+    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    if (started?.status === 0) {
+      const report = json(stopped);
+      assert.deepEqual(
+        report.stopped.map((item) => item.pid).sort(),
+        json(started)
+          .portals.map((item) => item.pid)
+          .sort(),
+      );
+      assert.equal(report.remaining.length, 0);
+    }
+  }
+});
+
+test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async (t) => {
+  withoutToolkitEnvironment(t);
   const { loadConfig } = await import('../lense/config.mjs');
   const { portalSelection } = await import('../lense/commands/mirage.mjs');
   const classic = isolatedFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portal-selection-')));
+  const work = tempDirSync('paqvilo-portal-selection-');
   try {
     const config = path.join(work, 'paqvilo.config.yml');
     fs.writeFileSync(
@@ -273,7 +303,7 @@ test('the dev selection offers one local target per running Mirage first, the se
 
 test('doctor --all warns when catalogue sites share a Mirage port', () => {
   const classic = isolatedFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portal-doctor-')));
+  const work = tempDirSync('paqvilo-portal-doctor-');
   try {
     const config = path.join(work, 'paqvilo.config.yml');
     fs.writeFileSync(
@@ -310,121 +340,132 @@ test('doctor --all warns when catalogue sites share a Mirage port', () => {
   }
 });
 
-test(
-  'a project with several portals starts one runtime per portal on consecutive ports and stops them together',
-  { timeout: 300_000 },
-  async () => {
-    const classic = isolatedFixture();
-    const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-project-')));
-    const config = path.join(work, 'paqvilo.config.yml');
-    const projectFile = path.join(work, 'workspace.project.json');
-    fs.writeFileSync(
+// A catalogue site and a project of two portals. Each test below starts at most one group of runtimes.
+function severalPortalProject(t) {
+  const classic = isolatedFixture();
+  const work = tempDirSync('paqvilo-mirage-project-');
+  // Removed after the runtimes the test started have been ended.
+  ownedFixture(t).remove(() => {
+    classic.cleanup();
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const config = path.join(work, 'paqvilo.config.yml');
+  const projectFile = path.join(work, 'workspace.project.json');
+  fs.writeFileSync(
+    config,
+    JSON.stringify(
+      {
+        defaultSite: 'classic',
+        sites: { classic: { source: classic.dir, environments: { dev: 'https://classic.example.com' } } },
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    projectFile,
+    JSON.stringify(
+      {
+        version: 1,
+        defaultPortal: 'enhanced',
+        portals: [
+          { id: 'classic', path: classic.dir },
+          { id: 'enhanced', path: ENHANCED },
+        ],
+        solutions: [],
+        references: [],
+      },
+      null,
+      2,
+    ),
+  );
+  return { work, config, projectFile };
+}
+
+test('a project with several portals refuses one state file and invalid port ranges without starting any portal', async (t) => {
+  const { work, config, projectFile } = severalPortalProject(t);
+  const ports = ['', ' ', '-1', '0x1000', '1e3', '65536', '65535'];
+  const [state, ...invalid] = await Promise.all([
+    runAsync(
+      'mirage',
+      'start',
+      '--config',
       config,
-      JSON.stringify(
-        {
-          defaultSite: 'classic',
-          sites: { classic: { source: classic.dir, environments: { dev: 'https://classic.example.com' } } },
-        },
-        null,
-        2,
-      ),
-    );
-    fs.writeFileSync(
+      '--project',
       projectFile,
-      JSON.stringify(
-        {
-          version: 1,
-          defaultPortal: 'enhanced',
-          portals: [
-            { id: 'classic', path: classic.dir },
-            { id: 'enhanced', path: ENHANCED },
-          ],
-          solutions: [],
-          references: [],
-        },
-        null,
-        2,
-      ),
+      '--state',
+      path.join(work, 'one.json'),
+      '--json',
+    ),
+    ...ports.map((port) =>
+      runAsync('mirage', 'start', '--config', config, '--project', projectFile, `--port=${port}`, '--json'),
+    ),
+  ]);
+  for (const start of [state, ...invalid]) ownStartedRuntimes(t, start.stdout);
+  assert.match(json(state).error.message, /keeps a state file per portal/);
+  ports.forEach((port, index) => {
+    assert.equal(invalid[index].status, 1, invalid[index].stdout + invalid[index].stderr);
+    assert.match(
+      json(invalid[index]).error.message,
+      port === '65535' ? /exceeds the available port range/ : /--port must be an integer/,
+      `--port=${port}`,
     );
-    let started = null;
-    try {
-      const ports = ['', ' ', '-1', '0x1000', '1e3', '65536', '65535'];
-      const [state, ...invalid] = await Promise.all([
-        runAsync(
-          'mirage',
-          'start',
-          '--config',
-          config,
-          '--project',
-          projectFile,
-          '--state',
-          path.join(work, 'one.json'),
-          '--json',
-        ),
-        ...ports.map((port) =>
-          runAsync('mirage', 'start', '--config', config, '--project', projectFile, `--port=${port}`, '--json'),
-        ),
-      ]);
-      assert.match(json(state).error.message, /keeps a state file per portal/);
-      ports.forEach((port, index) => {
-        assert.equal(invalid[index].status, 1, invalid[index].stdout + invalid[index].stderr);
-        assert.match(
-          json(invalid[index]).error.message,
-          port === '65535' ? /exceeds the available port range/ : /--port must be an integer/,
-          `--port=${port}`,
-        );
-      });
+  });
+  assert.deepEqual(
+    json(run('mirage', 'status', '--config', config, '--json')).sessions,
+    [],
+    'invalid project range must not start any portal',
+  );
+});
+
+test('a project with several portals starts one runtime per portal on consecutive ports and stops them together', async (t) => {
+  const { config, projectFile } = severalPortalProject(t);
+  let started = null;
+  try {
+    started = run(
+      'mirage',
+      'start',
+      '--config',
+      config,
+      '--project',
+      projectFile,
+      '--port',
+      '0',
+      '--startup-timeout',
+      '120000',
+      '--json',
+    );
+    ownStartedRuntimes(t, started.stdout);
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    const portals = json(started).portals;
+    assert.deepEqual(
+      portals.map((item) => item.site),
+      ['classic', 'enhanced'],
+    );
+    assert.ok(portals.every((item) => item.started && item.url));
+    assert.match(json(started).stop, /^node -e /);
+    const status = json(run('mirage', 'status', '--config', config, '--json')).sessions;
+    assert.deepEqual(
+      portals.map((item) => status.find((session) => session.pid === item.pid)?.portal),
+      ['classic', 'enhanced'],
+    );
+  } finally {
+    const stopped = run('mirage', 'stop', '--config', config, '--project', projectFile, '--json');
+    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    if (started?.status === 0)
       assert.deepEqual(
-        json(run('mirage', 'status', '--config', config, '--json')).sessions,
-        [],
-        'invalid project range must not start any portal',
+        json(stopped)
+          .stopped.map((item) => item.pid)
+          .sort(),
+        json(started)
+          .portals.map((item) => item.pid)
+          .sort(),
       );
-      started = run(
-        'mirage',
-        'start',
-        '--config',
-        config,
-        '--project',
-        projectFile,
-        '--port',
-        '0',
-        '--startup-timeout',
-        '120000',
-        '--json',
-      );
-      assert.equal(started.status, 0, started.stdout + started.stderr);
-      const portals = json(started).portals;
-      assert.deepEqual(
-        portals.map((item) => item.site),
-        ['classic', 'enhanced'],
-      );
-      assert.ok(portals.every((item) => item.started && item.url));
-      assert.match(json(started).stop, /^node -e /);
-      const status = json(run('mirage', 'status', '--config', config, '--json')).sessions;
-      assert.deepEqual(
-        portals.map((item) => status.find((session) => session.pid === item.pid)?.portal),
-        ['classic', 'enhanced'],
-      );
-    } finally {
-      const stopped = run('mirage', 'stop', '--config', config, '--project', projectFile, '--json');
-      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
-      if (started?.status === 0)
-        assert.deepEqual(
-          json(stopped)
-            .stopped.map((item) => item.pid)
-            .sort(),
-          json(started)
-            .portals.map((item) => item.pid)
-            .sort(),
-        );
-      classic.cleanup();
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    }
-  },
-);
+  }
+});
 
 test('Mirage ownership records survive concurrent updates from several toolkit processes', async () => {
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-ownership-')));
+  const work = tempDirSync('paqvilo-ownership-');
   try {
     const ownershipFile = path.join(work, 'mirage', 'sessions.json');
     const module = new URL('../lense/commands/mirage.mjs', import.meta.url).href;
@@ -443,12 +484,16 @@ test('Mirage ownership records survive concurrent updates from several toolkit p
         child.stderr.on('data', (chunk) => {
           stderr += chunk;
         });
-        child.on('exit', (status) => (status === 0 ? resolve() : reject(new Error(stderr))));
+        child.on('close', (status) => (status === 0 ? resolve() : reject(new Error(stderr))));
       });
     await Promise.all([1, 2, 3, 4].map(writer));
     const sessions = JSON.parse(fs.readFileSync(ownershipFile, 'utf8')).sessions;
     assert.equal(sessions.length, 100, "no process lost another process's records");
     assert.equal(new Set(sessions.map((item) => item.pid)).size, 100);
+    assert.deepEqual(
+      sessions.map((item) => item.pid).sort((left, right) => left - right),
+      [1, 2, 3, 4].flatMap((block) => Array.from({ length: 25 }, (_, index) => block * 1000 + index)),
+    );
     assert.equal(fs.existsSync(`${ownershipFile}.lock`), false, 'the lock is released');
   } finally {
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -545,7 +590,7 @@ test('every Mirage started from the catalogue reads the catalogue file and check
 
 test('mirage stop keeps the record of a live process whose start identity cannot be verified, and never signals it', async (t) => {
   const { stopOwnedSessions, ownedSessions, processIdentity, isAlive } = await import('../lense/commands/mirage.mjs');
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-unverified-')));
+  const root = tempDirSync('paqvilo-mirage-unverified-');
   const paths = {
     discoveryRoot: path.join(root, 'simulator'),
     ownershipFile: path.join(root, 'mirage', 'sessions.json'),
@@ -556,7 +601,7 @@ test('mirage stop keeps the record of a live process whose start identity cannot
     spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
   const unreadable = idle(),
     unrecorded = idle();
-  t.after(() => {
+  ownedFixture(t).add(() => {
     for (const child of [unreadable, unrecorded]) {
       try {
         child.kill();
@@ -564,8 +609,8 @@ test('mirage stop keeps the record of a live process whose start identity cannot
         /* exited */
       }
     }
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
+  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await Promise.all([unreadable, unrecorded].map((child) => new Promise((resolve) => child.once('spawn', resolve))));
   const sourceDir = path.join(root, 'portal');
   const record = (child, processIdentity) => ({
@@ -588,7 +633,7 @@ test('mirage stop keeps the record of a live process whose start identity cannot
   // The first identity cannot be read now (PowerShell timing out on a busy machine, say); the
   // second was never recorded. Neither is proof of a reused process ID, nor safe to signal.
   const identityOf = (pid) => (pid === unreadable.pid ? null : processIdentity(pid));
-  const report = await stopOwnedSessions({ paths, sourceDir, deadline: 2000, identityOf });
+  const report = await stopOwnedSessions({ paths, sourceDir, identityOf });
   assert.deepEqual([report.stopped, report.pruned, report.remaining], [[], [], []]);
   assert.deepEqual(
     report.unverified.map((item) => [item.pid, item.reason]),
@@ -605,7 +650,7 @@ test('mirage stop keeps the record of a live process whose start identity cannot
   );
 
   // Once the identity can be read again, stop ends that process.
-  const again = await stopOwnedSessions({ paths, sourceDir, deadline: 5000 });
+  const again = await stopOwnedSessions({ paths, sourceDir });
   assert.deepEqual(
     again.stopped.map((item) => item.pid),
     [unreadable.pid],
@@ -615,4 +660,110 @@ test('mirage stop keeps the record of a live process whose start identity cannot
     again.unverified.map((item) => item.pid),
     [unrecorded.pid],
   );
+});
+
+// @test-kind contract: the printed app link of a model-driven runtime names the apps origin the runtime reports, and the portal origin for a record without one
+test('the printed model-driven app link opens the apps origin the runtime reports', async () => {
+  const { printStandalonePortalSessions } = await import('../lense/commands/mirage.mjs');
+  const lines = [];
+  const original = console.log;
+  console.log = (line) => lines.push(line);
+  try {
+    const cfg = { runtime: { kind: 'model-driven' } };
+    printStandalonePortalSessions(
+      [{ site: 'alpha', cfg, session: { url: 'http://127.0.0.1:4100', appsUrl: 'http://127.0.0.1:4101/' } }],
+      [],
+    );
+    printStandalonePortalSessions([{ site: 'beta', cfg, session: { url: 'http://127.0.0.1:4200' } }], []);
+  } finally {
+    console.log = original;
+  }
+  assert.match(lines[0], /^app +alpha +http:\/\/127\.0\.0\.1:4101\/main\.aspx \(model-driven;/);
+  assert.match(lines[1], /^app +beta +http:\/\/127\.0\.0\.1:4200\/main\.aspx \(model-driven;/);
+});
+
+test('a Mirage start URL opens app and administration paths on the origin the runtime reports for them', () => {
+  const session = {
+    url: 'http://127.0.0.1:8787',
+    appsUrl: 'http://127.0.0.1:8788',
+    adminUrl: 'http://127.0.0.1:8789/_sim/',
+  };
+  assert.equal(mirageStartUrl(session, '/main.aspx'), 'http://127.0.0.1:8788/main.aspx');
+  assert.equal(mirageStartUrl(session, '/_apps/code/'), 'http://127.0.0.1:8788/_apps/code/');
+  assert.equal(mirageStartUrl(session, '/_sim/'), 'http://127.0.0.1:8789/_sim/');
+  assert.equal(mirageStartUrl(session, '/_setup/'), 'http://127.0.0.1:8789/_setup/');
+  assert.equal(
+    mirageStartUrl(session, '/_apps/portal-documents/a.pdf'),
+    'http://127.0.0.1:8787/_apps/portal-documents/a.pdf',
+  );
+  assert.equal(mirageStartUrl(session, '/home'), 'http://127.0.0.1:8787/home');
+  assert.equal(mirageStartUrl(session), 'http://127.0.0.1:8787/');
+});
+
+test('a Mirage start URL opens a path on the administration origin exactly when adminServes serves it', () => {
+  const session = {
+    url: 'http://127.0.0.1:8787',
+    appsUrl: 'http://127.0.0.1:8788',
+    adminUrl: 'http://127.0.0.1:8789/_sim/',
+  };
+  const portal = 'http://127.0.0.1:8787';
+  const apps = 'http://127.0.0.1:8788';
+  const admin = 'http://127.0.0.1:8789';
+  const table = [
+    ['/_sim/', admin],
+    ['/_sim/x?y#z', admin],
+    ['/__sim/api/status', admin],
+    ['/_setup/', admin],
+    ['/', portal],
+    ['/main.aspx', apps],
+    ['/_apps/code/', apps],
+    // Portal pages under the administration prefix stay with the portal listener.
+    ['/__sim/sign-in', portal],
+  ];
+  for (const [startPath, origin] of table) {
+    assert.equal(mirageStartUrl(session, startPath), origin + startPath, startPath);
+    const pathname = startPath.split(/[?#]/, 1)[0];
+    assert.equal(adminServes(pathname), origin === admin, `adminServes(${pathname})`);
+  }
+});
+
+test('a Code App dev server is given the origin that serves the Code Apps surface when the runtime reports one', () => {
+  const withApps = { url: 'http://127.0.0.1:8787/', appsUrl: 'http://127.0.0.1:8788/' };
+  assert.equal(codeAppRuntimeOrigin(withApps), 'http://127.0.0.1:8788');
+  assert.equal(codeAppRuntimeOrigin({ url: 'http://127.0.0.1:8787/' }), 'http://127.0.0.1:8787');
+});
+
+test('a Mirage start URL keeps the query and fragment of the start path exactly', () => {
+  const session = {
+    url: 'http://127.0.0.1:8787',
+    appsUrl: 'http://127.0.0.1:8788',
+    adminUrl: 'http://127.0.0.1:8789/_sim/',
+  };
+  assert.equal(mirageStartUrl(session, '/_apps/code/?a=1#frag'), 'http://127.0.0.1:8788/_apps/code/?a=1#frag');
+  assert.equal(mirageStartUrl(session, '/_sim/?b=2#c'), 'http://127.0.0.1:8789/_sim/?b=2#c');
+  assert.equal(mirageStartUrl(session, '/home?x=1#top'), 'http://127.0.0.1:8787/home?x=1#top');
+});
+
+test('a Mirage start URL without reported apps or admin URLs stays on the portal address', () => {
+  const portalOnly = { url: 'http://127.0.0.1:8787' };
+  assert.equal(mirageStartUrl(portalOnly, '/_apps/code/'), 'http://127.0.0.1:8787/_apps/code/');
+  assert.equal(mirageStartUrl(portalOnly, '/_sim/?a=1#f'), 'http://127.0.0.1:8787/_sim/?a=1#f');
+  assert.equal(
+    mirageStartUrl({ ...portalOnly, appsUrl: 'http://127.0.0.1:8788' }, '/_sim/'),
+    'http://127.0.0.1:8787/_sim/',
+  );
+  assert.equal(
+    mirageStartUrl({ ...portalOnly, adminUrl: 'http://127.0.0.1:8789/_sim/' }, '/main.aspx'),
+    'http://127.0.0.1:8787/main.aspx',
+  );
+});
+
+test('the development opening line prints the start URL it was given; a plain development start is unchanged', () => {
+  const config = { origin: 'https://portal.invalid', site: { startPath: '/_apps/code/' } };
+  assert.equal(
+    devStartUrl({ ...config, startUrl: 'http://127.0.0.1:8788/_apps/code/?a=1#f' }),
+    'http://127.0.0.1:8788/_apps/code/?a=1#f',
+  );
+  assert.equal(devStartUrl(config), 'https://portal.invalid/_apps/code/');
+  assert.equal(devStartUrl({ origin: 'https://portal.invalid', site: {} }), 'https://portal.invalid/');
 });

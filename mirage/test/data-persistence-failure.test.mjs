@@ -4,10 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 for (const isolated of [false, true])
   test(`legacy persistence failure does not retry an elastic commit or publish events (isolated=${isolated})`, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-elastic-save-fault-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-elastic-save-fault-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const file = path.join(directory, 'state.json'),
       state = emptyState();
