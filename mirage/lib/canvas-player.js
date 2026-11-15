@@ -1063,6 +1063,39 @@
       // Unavailable storage: the banner stays dismissed for this page only.
     }
   }
+  // The Resolution choice for this app in this tab: 'browser' or WIDTHxHEIGHT, kept in sessionStorage.
+  const resolutionKey = `paqvilo-canvas-resolution:${app}`;
+  function savedResolution() {
+    try {
+      return sessionStorage.getItem(resolutionKey);
+    } catch {
+      return null;
+    }
+  }
+  function rememberResolution(value) {
+    try {
+      sessionStorage.setItem(resolutionKey, value);
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
+  // A saved choice is 'browser' or a size with both sides from 1 to 8192; anything else is ignored.
+  function validSavedResolution() {
+    const saved = savedResolution();
+    if (saved === 'browser') return saved;
+    const match = /^(\d{1,4})x(\d{1,4})$/.exec(saved ?? '');
+    if (!match || match.slice(1).some((side) => Number(side) < 1 || Number(side) > 8192)) return null;
+    return saved;
+  }
+  function selectResolution(width, height) {
+    const selected = `${width}x${height}`;
+    if (![...resolution.options].some((option) => option.value === selected)) {
+      const option = node('option', `${width} × ${height}`);
+      option.value = selected;
+      resolution.append(option);
+    }
+    resolution.value = selected;
+  }
   // Milliseconds a notification has left, measured on the server's clock (snapshot.now); Infinity when its Timeout is 0.
   const noticeRemaining = (item) => (item.timeout === 0 ? Infinity : item.timeout - (snapshot.now - item.createdAt));
   function removeNotice(id) {
@@ -1265,6 +1298,7 @@
   start.addEventListener('click', launch);
   restart.addEventListener('click', launch);
   resolution.addEventListener('change', () => {
+    rememberResolution(resolution.value);
     const [width, height] = logicalViewport();
     if (snapshot && snapshot.started !== false) void act({ action: 'resize', width, height });
     else sizeIdleStage();
@@ -1358,15 +1392,18 @@
       source = inventory;
       snapshot = state;
       announceNotices(false);
-      if (state.viewport && !inventory.app?.display?.scaleToFit && !inventory.app?.display?.lockOrientation) {
-        const { width, height } = state.viewport;
-        const selected = `${width}x${height}`;
-        if (![...resolution.options].some((option) => option.value === selected)) {
-          const option = node('option', `${width} × ${height}`);
-          option.value = selected;
-          resolution.append(option);
-        }
-        resolution.value = selected;
+      // The running instance's size, else the size chosen earlier for this app in this tab, else the app's design size.
+      const declared = inventory.app?.display;
+      const saved = validSavedResolution();
+      if (state.viewport && !declared?.scaleToFit && !declared?.lockOrientation) {
+        selectResolution(state.viewport.width, state.viewport.height);
+      } else if (saved === 'browser') {
+        resolution.value = saved;
+      } else if (saved) {
+        const [width, height] = saved.split('x').map(Number);
+        selectResolution(width, height);
+      } else if (Number.isInteger(declared?.designWidth) && Number.isInteger(declared?.designHeight)) {
+        selectResolution(declared.designWidth, declared.designHeight);
       }
       start.disabled = false;
       resolution.disabled = false;

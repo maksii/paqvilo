@@ -258,6 +258,9 @@ for (const type of ['mouseover', 'focusin'])
 // Delegated events reach the active view module first; `handle` returns true when it consumed the event.
 for (const type of ['click', 'submit', 'change', 'input', 'keydown'])
   document.addEventListener(type, (event) => {
+    // The one write of a table's rows per page: every table, Activity included, whose view may consume the change.
+    if (type === 'change' && event.target?.dataset?.tableSize)
+      rememberRows(event.target.dataset.tableSize, event.target.value);
     const module = moduleFor(activeView);
     if (!module?.handle || !$('#content')?.contains(event.target)) return;
     if (module.handle(ctx, event) === true) event.stopImmediatePropagation();
@@ -332,8 +335,11 @@ function staffSessionPanel() {
   const current = staffSession?.current;
   let currentLabel = 'Session unavailable';
   if (current?.kind === 'staff') currentLabel = 'Staff user';
+  else if (current?.kind === 'unavailable') currentLabel = 'Selection unavailable';
   else if (current) currentLabel = 'Local administrator';
+  const unavailable = current?.kind === 'unavailable';
   const errorNotice = staffSessionError ? `<div class="notice warning">${escape(staffSessionError)}</div>` : '';
+  const unavailableNotice = unavailable ? `<div class="notice warning">${escape(current.message)}</div>` : '';
   const userOptions =
     (staffSession?.users ?? [])
       .map(
@@ -341,8 +347,8 @@ function staffSessionPanel() {
           `<option value="${escape(user.id)}" ${current?.id === user.id ? 'selected' : ''}>${escape(user.name)} · ${escape((user.roles ?? []).join(', ') || 'No roles')}</option>`,
       )
       .join('') || '<option>No eligible staff users; create an interactive user below.</option>';
-  return `<section class="panel section-gap" data-panel="staff-session"><div class="panel-heading"><h2>Model-driven staff session</h2>${badge(currentLabel, current?.kind === 'staff' ? '' : 'amber')}</div>${panelHelp('dataverse.staff-session', 'the staff session')}${errorNotice}${
-    current
+  return `<section class="panel section-gap" data-panel="staff-session"><div class="panel-heading"><h2>Model-driven staff session</h2>${badge(currentLabel, current?.kind === 'staff' ? '' : 'amber')}</div>${panelHelp('dataverse.staff-session', 'the staff session')}${errorNotice}${unavailableNotice}${
+    current && !unavailable
       ? facts([
           ['Current identity', `<strong>${escape(current.name)}</strong>`],
           ['Roles', escape((current.roles ?? []).join(', ') || 'No roles')],
@@ -570,11 +576,28 @@ let shellCaptureResult;
 let shellCapturePath = '/';
 let managedControlPath = '';
 const browsers = new Map();
+// Rows per page of a table, remembered in this browser (a per-browser convenience; unavailable storage keeps the default).
+const rowsKey = (key) => `paqvilo.sim.rows.${key}`;
+const storedRows = (key) => {
+  try {
+    const size = Number(localStorage.getItem(rowsKey(key)));
+    return kit.PAGE_SIZES.includes(size) ? size : null;
+  } catch {
+    return null;
+  }
+};
+const rememberRows = (key, size) => {
+  try {
+    localStorage.setItem(rowsKey(key), String(size));
+  } catch {
+    /* storage unavailable: the choice lasts this page */
+  }
+};
 const browserFor = (key) => {
   if (!browsers.has(key))
     browsers.set(key, {
       page: 1,
-      size: key === 'records' ? 20 : 10,
+      size: storedRows(key) ?? (key === 'records' ? 20 : 10),
       search: '',
     });
   return browsers.get(key);
@@ -4344,10 +4367,16 @@ function renderView(view) {
   for (const [selector, key] of [
     ['#open-portal', 'powerPages'],
     ['#open-model-driven', 'modelDriven'],
+    ['#open-canvas', 'canvas'],
   ]) {
     const anchor = $(selector);
     if (anchor) {
-      anchor.hidden = key === 'powerPages' ? !powerPages() : capabilities().modelDriven === false;
+      const hidden = {
+        powerPages: !powerPages(),
+        modelDriven: capabilities().modelDriven === false,
+        canvas: !links.canvas,
+      };
+      anchor.hidden = hidden[key];
       if (links[key]) anchor.href = links[key];
     }
   }
@@ -5345,28 +5374,7 @@ for (const selector of ['#editor-close', '#editor-cancel'])
   $(selector).addEventListener('click', () => $('#editor').close());
 $('#confirm-cancel').addEventListener('click', () => $('#confirm').close());
 $('#refresh').addEventListener('click', () => refresh({ announce: true }));
-// Below 760 px the sidebar collapses behind Menu (shell.css); choosing a view closes it again.
-const setNavOpen = (open) => {
-  $('.sidebar')?.classList.toggle('is-open', open);
-  $('#nav-toggle')?.setAttribute('aria-expanded', String(open));
-};
-$('#nav-toggle')?.addEventListener('click', () => setNavOpen(!$('.sidebar').classList.contains('is-open')));
-globalThis.addEventListener('hashchange', () => setNavOpen(false));
-// Below 760 px the top bar's apps and actions are one menu (DV-N4b-9); a choice or a click elsewhere closes it.
-const setTopMenu = (open) => {
-  $('.topbar')?.classList.toggle('is-open', open);
-  $('#top-more')?.setAttribute('aria-expanded', String(open));
-};
-$('#top-more')?.addEventListener('click', () => setTopMenu(!$('.topbar').classList.contains('is-open')));
-document.addEventListener('click', (event) => {
-  if (!event.target.closest?.('#top-more') && ($('.topbar')?.classList.contains('is-open') ?? false)) setTopMenu(false);
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && $('.topbar')?.classList.contains('is-open')) {
-    setTopMenu(false);
-    $('#top-more')?.focus();
-  }
-});
+// The sidebar and top-bar menus are in shell-menu.js (a classic script loaded before this module).
 // Views that summarize live runtime state fetch it again when they are opened.
 const FRESH_VIEWS = new Set([
   'home',

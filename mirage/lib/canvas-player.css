@@ -8,7 +8,7 @@ body {
     sans-serif;
   color: var(--ui-ink);
 }
-header {
+.canvas-toolbar {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -16,17 +16,17 @@ header {
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
-header label {
+.canvas-toolbar label {
   margin-bottom: 0;
 }
 h1 {
   font-size: 1.1rem;
   margin: 0;
 }
-body > p {
+main > p {
   margin: 0.5rem 1rem;
 }
-main {
+.canvas-main {
   display: flex;
   gap: 1rem;
   align-items: flex-start;
@@ -108,12 +108,12 @@ main {
   cursor: default;
   opacity: 1;
 }
-aside {
+.canvas-main aside {
   width: 330px;
   max-height: 80vh;
   overflow: auto;
 }
-aside pre {
+.canvas-main aside pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -180,13 +180,13 @@ button {
   height: 100%;
 }
 @media (max-width: 800px) {
-  main {
+  .canvas-main {
     display: block;
   }
   .stage-scroll {
     max-width: 100%;
   }
-  aside {
+  .canvas-main aside {
     width: auto;
   }
 }

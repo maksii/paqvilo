@@ -1,6 +1,6 @@
 // @test-kind contract: Dataverse CLI argument, stream and access-boundary contracts
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -36,13 +36,17 @@ const commands = {
   'data-query': ['--catalogue', '--connection'],
 };
 
-// @test-kind security: invalid Dataverse command lines must not invoke the PAC executable
-test('Dataverse help and invalid arguments preserve CLI contracts without invoking PAC', async (t) => {
+// One PAC sentinel for the file: a preload that records any node entry other than the CLI and the positive harness.
+// Each command's test spawns at most five CLI processes (each starts bin/paqvilo.mjs and its dataverse child), so the
+// runner's --test-timeout stays a hang guard however slow process start-up is on a loaded host.
+const sentinel = {};
+before(async () => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pac-sentinel-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  sentinel.root = root;
   const preload = path.join(root, 'pac-sentinel-preload.mjs');
   const harness = path.join(root, 'pac-sentinel-positive.mjs');
   const marker = path.join(root, 'pac-invoked.marker');
+  sentinel.marker = marker;
   const dataverseCli = fileURLToPath(new URL('../lense/dataverse/cli.mjs', import.meta.url));
   const allowed = [path.resolve(cli), path.resolve(dataverseCli), path.resolve(harness)];
   await fs.writeFile(
@@ -71,13 +75,14 @@ test('Dataverse help and invalid arguments preserve CLI contracts without invoki
     PAQVILO_PAC_ALLOWED_CLI: allowed[1],
     PAQVILO_PAC_ALLOWED_HARNESS: allowed[2],
   });
-  const run = (...args) =>
+  sentinel.run = (...args) =>
     spawnSync(process.execPath, [cli, 'dataverse', ...args], {
       env: testEnvironment,
       encoding: 'utf8',
       timeout: CLI_HANG_GUARD_MS,
       windowsHide: true,
     });
+  // The sentinel is proven to fire before any test relies on its silence.
   const positive = spawnSync(process.execPath, [harness], {
     env: testEnvironment,
     encoding: 'utf8',
@@ -87,7 +92,14 @@ test('Dataverse help and invalid arguments preserve CLI contracts without invoki
   assert.equal(positive.status, 0, positive.stderr);
   assert.equal(await fs.readFile(marker, 'utf8'), 'PAC invocation intercepted\n');
   await fs.rm(marker);
-  for (const [command, required] of Object.entries(commands)) {
+});
+after(() => sentinel.root && fs.rm(sentinel.root, { recursive: true, force: true }));
+const pacNotInvoked = () => assert.rejects(fs.access(sentinel.marker), { code: 'ENOENT' });
+
+// @test-kind security: invalid Dataverse command lines must not invoke the PAC executable
+for (const [command, required] of Object.entries(commands))
+  test(`Dataverse help and invalid arguments preserve CLI contracts without invoking PAC: ${command}`, async () => {
+    const { run } = sentinel;
     const help = run(command, '--help');
     assert.equal(help.status, 0, command);
     assert.match(help.stdout, /paqvilo dataverse/);
@@ -110,13 +122,18 @@ test('Dataverse help and invalid arguments preserve CLI contracts without invoki
       assert.equal(missing.status, 1, `${command} ${omitted}`);
       assert.match(missing.stderr, new RegExp(omitted), command);
     }
-  }
+    await pacNotInvoked();
+  });
+
+// @test-kind security: unknown Dataverse commands and a terminated --help must not invoke the PAC executable
+test('Dataverse unknown commands and a terminated --help preserve CLI contracts without invoking PAC', async () => {
+  const { run } = sentinel;
   for (const command of ['invented', 'constructor', '__proto__']) {
     const unknown = run(command, '--connection', 'missing.json');
     assert.match(unknown.stderr, /Unknown dataverse command/);
   }
   assert.equal(run('verify', '--connection', 'missing.json', '--', '--help').status, 1);
-  await assert.rejects(fs.access(marker), { code: 'ENOENT' });
+  await pacNotInvoked();
 });
 
 // @test-kind contract: Dataverse diagnostics use the requested stream and retain the JSON error payload

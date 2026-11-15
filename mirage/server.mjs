@@ -2450,6 +2450,8 @@ export async function createSimulator(options = {}) {
       administration: '/_sim/',
       setup: '/_setup/',
       modelDriven: modelDrivenSettingsValue.enabled === false ? null : `${appsOrigin}/main.aspx`,
+      canvas:
+        organizationHost.canvas.enabled && organizationHost.canvasApps().length ? `${appsOrigin}/_apps/canvas/` : null,
       powerPages: '/',
       dataverseApi: dataverse?.origin ?? null,
     },
@@ -5844,8 +5846,8 @@ export async function createSimulator(options = {}) {
       });
       return res.end(await fs.readFile(path.join(ROOT, 'admin/index.html')));
     }
-    // Admin assets by pattern (runtime-admin.mjs adminAssetFile): mirage/admin/<name>.mjs|css and the shared lib modules.
-    const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css))$/.exec(url.pathname);
+    // Admin assets by pattern (runtime-admin.mjs adminAssetFile): mirage/admin/<name>.mjs|css|js and the shared lib modules.
+    const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css|js))$/.exec(url.pathname);
     const adminFile = adminAsset && ['GET', 'HEAD'].includes(req.method) ? await adminAssetFile(adminAsset[1]) : null;
     if (adminFile) {
       res.writeHead(200, {
@@ -6535,6 +6537,7 @@ export async function createSimulator(options = {}) {
             context: submission.context,
             values: submission.body.values,
             observed: config().observed ?? portal.observed,
+            portal,
           });
           trace.getStore().error = cause;
           recordDiagnostic({
@@ -6543,6 +6546,7 @@ export async function createSimulator(options = {}) {
               message: cause.message,
             }),
             path: url.pathname,
+            ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
           });
         }
         if (response.location) return postbackRedirect(res, response, portal);
@@ -6597,6 +6601,9 @@ export async function createSimulator(options = {}) {
       const headers = {
         'content-type': 'text/html; charset=utf-8',
         ...PAGE_HEADERS,
+        ...(trace.getStore()?.nativePostbackState?.outcome?.requestId
+          ? { 'x-ms-request-id': trace.getStore().nativePostbackState.outcome.requestId }
+          : {}),
       };
       Object.assign(headers, siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }));
       res.writeHead(200, headers);
@@ -6971,6 +6978,7 @@ export async function createSimulator(options = {}) {
           context: submission.context,
           values: submission.body.values,
           observed: config().observed ?? portal.observed,
+          portal,
         });
         nativeContext.error = cause;
         recordDiagnostic({
@@ -6979,6 +6987,7 @@ export async function createSimulator(options = {}) {
             message: cause.message,
           }),
           path: url.pathname,
+          ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
         });
       }
       if (response.location) return postbackRedirect(res, response, portal);
@@ -7033,6 +7042,9 @@ export async function createSimulator(options = {}) {
       'content-type': contentType,
       ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...(nativeContext?.nativePostbackState?.outcome?.requestId
+        ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
+        : {}),
     };
     // A redirecting page answer has no Vary header (live sign-in redirect).
     if (route?.kind === 'redirect') {
@@ -7128,7 +7140,10 @@ export async function createSimulator(options = {}) {
   };
   const writeRequestError = (err, req, res) => {
     const status = requestErrorStatus(err);
-    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/'))
+    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/')) {
+      const postback = req.url.startsWith('/__sim/forms/entityform/')
+        ? formWriteError(err, config().observed ?? portal.observed, 'entityform', portal)
+        : null;
       return void json(res, status, {
         error: {
           code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
@@ -7137,10 +7152,9 @@ export async function createSimulator(options = {}) {
             ? { validationErrors: err.details.validationErrors }
             : {}),
         },
-        ...(req.url.startsWith('/__sim/forms/entityform/') && formWriteError(err, config().observed ?? portal.observed)
-          ? { postback: formWriteError(err, config().observed ?? portal.observed) }
-          : {}),
+        ...(postback ? { postback } : {}),
       });
+    }
     return writePageRequestError(err, req, res, status);
   };
   // A failure while answering a failed request must not reject the request: the caller still gets a 500.

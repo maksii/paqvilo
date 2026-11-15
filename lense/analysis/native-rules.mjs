@@ -1,5 +1,6 @@
 // Local native-source declarations only. No Expo config, Gradle, native compiler or bridge is executed.
 import { appRule, appJson, appObject, appPath, appEntryIndex, appPeer } from './app-common.mjs';
+import { structuredLocator } from './structured-location.mjs';
 import path from 'node:path';
 
 const extensionReference =
@@ -125,7 +126,7 @@ function inspectExtension(entry, manifest, emit) {
     new Set(names).size !== names.length ||
     manifest.receivers.some((receiver) => new Set(receiver.methods).size !== receiver.methods.length)
   )
-    emit('NATIVE-EXT-002', entry, 'receivers');
+    emit('NATIVE-EXT-002', structuredLocator(entry, manifest)(manifest, 'receivers'), 'receivers');
   emit('NATIVE-EXT-003', entry);
   return true;
 }
@@ -138,7 +139,8 @@ const nativeDependencies = (manifest) => ({
 function inspectMobilePackage(entry, manifest, context) {
   const { index, emit } = context;
   const dependencies = nativeDependencies(manifest);
-  if (!dependencies['react-native']) emit('MOBILE-APP-001', entry, 'dependencies');
+  if (!dependencies['react-native'])
+    emit('MOBILE-APP-001', structuredLocator(entry, manifest)(manifest, 'dependencies'), 'dependencies');
   if (
     !['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock'].some((name) =>
       appPeer(index, entry, name),
@@ -169,7 +171,11 @@ function inspectNativeConfiguration(configEntry, context) {
       !appObject(native.nativeRuntimeVersions) ||
       Object.values(native.nativeRuntimeVersions).some((version) => !Number.isInteger(version) || version < 1))
   )
-    emit('MOBILE-APP-003', configEntry, 'powerappsNative');
+    emit(
+      'MOBILE-APP-003',
+      structuredLocator(configEntry, config)(config.expo.extra, 'powerappsNative'),
+      'powerappsNative',
+    );
   reviewedConfigurations.set(configEntry, true);
   return true;
 }

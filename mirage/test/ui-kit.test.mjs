@@ -9,6 +9,7 @@ import {
   pageItems,
   tableTools,
   table,
+  tableFoot,
   section,
   help,
   fieldHelp,
@@ -297,5 +298,17 @@ test('dataTable: the bottom bar on one page, Filters for column filters, filterI
   assert.doesNotMatch(
     kit.dataTable({ id: 'main', columns, items: [], search: true, filters: {}, bar: false }),
     /ui-table-bar/,
+  );
+});
+
+// @test-kind contract: the table foot prints the caller's count note
+test('the table foot prints the caller’s count note', () => {
+  assert.match(
+    tableFoot('k', { total: 2, pages: 1, page: 1, size: 10, note: ' of 5 retained' }),
+    /<span class="ui-table-count">2 results of 5 retained<\/span>/,
+  );
+  assert.match(
+    tableFoot('k', { total: 2, pages: 1, page: 1, size: 10 }),
+    /<span class="ui-table-count">2 results<\/span>/,
   );
 });

@@ -1,5 +1,6 @@
 import YAML from 'yaml';
 import { parseSolutionXml } from '../../mirage/lib/solution-xml.mjs';
+import { structuredLocator } from './structured-location.mjs';
 import { classifyYamlPath, yamlNode, YAML_ROOTS } from '../../mirage/lib/solution-yaml.mjs';
 
 const folders = new Set([
@@ -175,7 +176,7 @@ export function readDataverseDocument(entry) {
         format: 'xml',
       };
   }
-  return { entry, value, format: 'object' };
+  return { entry, value, format: 'object', at: structuredLocator(entry, value) };
 }
 
 export function sourceAt(document, node) {

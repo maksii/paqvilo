@@ -1237,7 +1237,26 @@ test('the Why line names the first failed or denied step, before anything else (
     whyOf({ trace: { status: 'ok', durationMs: 9 }, root: { attributes: { statusCode: 200 } }, spans: [] }).text,
     'Ended ok with HTTP 200 in 9.00 ms; no step failed.',
   );
-  assert.equal(whyOf({ trace: { status: 'running' }, spans: [{}, {}] }).text, 'Still running: 2 steps so far.');
+  assert.equal(
+    whyOf({ trace: { status: 'running', result: 'running' }, spans: [{}, {}] }).text,
+    'Still running: 2 steps so far.',
+  );
+  // A browser probe that missed a file is an ok activity: its failed root is not a failed step (T1).
+  const probeMiss = {
+    spanId: 'fx-probe-root',
+    kind: 'http',
+    name: 'GET /favicon.ico',
+    status: 'error',
+    depth: 0,
+    sequence: 1,
+  };
+  const why = whyOf({
+    trace: { status: 'error', result: 'ok', failed: false, durationMs: 1 },
+    root: { attributes: { browserProbe: true, statusCode: 404 } },
+    spans: [probeMiss],
+  });
+  assert.equal(why.tone, 'ok');
+  assert.match(why.text, /a browser probe of a missing file is not a failure\.$/);
   // In the detail pane the Why line is the first thing under the heading, linking to its step.
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams(), [traceId]);
@@ -1730,6 +1749,73 @@ test('one click on Errors & denied filters the failed activities, shows a chip a
   });
 });
 
+// @test-kind contract: a More filters section with a set filter stays open, and its toggle flips it only when none is set (T10)
+test('More filters stays open while one of its filters is set, and a toggle click flips what is shown (T10)', async () => {
+  const ctx = activityContext();
+  activity.route(ctx, new URLSearchParams());
+  await activity.load(ctx);
+  assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="false"/);
+  await withDom(async () => {
+    activity.handle(ctx, click('[data-activity-action]', { activityAction: 'more' }));
+    assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="true"/);
+    const kind = (value) =>
+      uiEvent('change', {
+        '[data-activity-filters] [data-activity-select]': {},
+        '[data-activity-select]': { name: 'kind', value },
+      });
+    activity.handle(ctx, kind('plugin-step'));
+    await ctx.data.activity.reloading;
+    assert.match(
+      activity.render(ctx),
+      /id="activity-more" data-activity-action="more" aria-expanded="true" aria-controls="activity-more-filters" aria-disabled="true"/,
+    );
+    // The filter was set from inside the section, so clearing it there leaves the section open.
+    activity.handle(ctx, kind(''));
+    await ctx.data.activity.reloading;
+    assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="true"/);
+    activity.handle(ctx, click('[data-activity-action]', { activityAction: 'more' }));
+    assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="false"/);
+  });
+});
+
+// @test-kind contract: a More filters section that the address opens with a filter set stays open when that filter is cleared (T10)
+test('More filters opened from an address with a filter set stays open when the filter is cleared (T10)', async () => {
+  const ctx = activityContext();
+  activity.route(ctx, new URLSearchParams('kind=plugin-step'));
+  await activity.load(ctx);
+  assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="true"/);
+  await withDom(async () => {
+    activity.handle(
+      ctx,
+      uiEvent('change', {
+        '[data-activity-filters] [data-activity-select]': {},
+        '[data-activity-select]': { name: 'kind', value: '' },
+      }),
+    );
+    await ctx.data.activity.reloading;
+    assert.match(activity.render(ctx), /id="activity-more" data-activity-action="more" aria-expanded="true"/);
+  });
+});
+
+// @test-kind contract: the Activities count names the retained total and the start of a time range (T11)
+test('the Activities count says how many retained activities a filter or time range keeps and from when (T11)', async () => {
+  const ctx = activityContext({
+    responses: activityResponses({ '/trace': { ...activityQuery, total: 3, retained: 3 } }),
+  });
+  activity.route(ctx, new URLSearchParams({ range: '1h' }));
+  await activity.load(ctx);
+  assert.match(
+    activity.render(ctx),
+    /<span class="ui-table-count">3 results of 3 retained since <time [^>]*>\d\d:\d\d:\d\d\.\d{3}<\/time>/,
+  );
+  activity.route(ctx, new URLSearchParams());
+  await activity.load(ctx);
+  assert.match(activity.render(ctx), /<span class="ui-table-count">3 results<\/span>/);
+  activity.route(ctx, new URLSearchParams({ table: 'x_item' }));
+  await activity.load(ctx);
+  assert.match(activity.render(ctx), /<span class="ui-table-count">3 results of 3 retained<\/span>/);
+});
+
 test('the Log stream has a one-click Startup filter in place of Errors & denied; the breakdown has a bottom bar (T7, DV-N4d-3)', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ tab: 'log' }));
@@ -2090,6 +2176,44 @@ test('Log & findings lists the trace lines of the steps oldest first, each linke
   );
 });
 
+// @test-kind contract: a CLR trace line is listed once, under its step, and the tab count is what the tab lists (P3)
+test('Log & findings lists a CLR trace line once, and its count is what it lists (P3)', async () => {
+  const tree = structuredClone(traceTree);
+  for (const span of tree.spans) span.events = (span.events ?? []).filter((event) => event.type !== 'trace');
+  const step = tree.spans.find((span) => span.spanId === stepSpan.spanId);
+  step.events = [{ offsetMs: 5, type: 'trace', message: 'inv clr line' }];
+  const logItems = activitySample.logs.items;
+  const request = logItems.find((item) => item.type === 'request');
+  const diagnostic = logItems.find((item) => item.type === 'diagnostic');
+  const ctx = activityContext({
+    responses: activityResponses({
+      [`/trace/id/${traceId}`]: tree,
+      '/logs': {
+        items: [
+          { ...request, sequence: 1 },
+          { ...diagnostic, sequence: 2 },
+        ],
+      },
+      '/diagnostics': {
+        diagnostics: [
+          { code: 'PLUGIN_CLR_TRACE', message: 'inv clr line', spanId: stepSpan.spanId, traceId },
+          { code: 'PLUGIN_STEP_REJECTED', severity: 'error', message: 'inv refused', spanId: stepSpan.spanId, traceId },
+          { code: 'PLUGIN_CLR_TRACE', message: 'inv orphan line', spanId: 'inv-dropped', traceId },
+        ],
+        requests: [],
+      },
+    }),
+  });
+  activity.route(ctx, new URLSearchParams({ detail: 'log' }), [traceId]);
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  safeMarkup(html);
+  assert.equal(count(html, /inv clr line/g), 1);
+  assert.match(html, /<h4>Findings \(2\)<\/h4>/);
+  assert.match(html, /<h4>Log lines \(1\)<\/h4>/);
+  assert.match(html, /Log (?:&amp;|&) findings \(4\)/);
+});
+
 test('the Related list of an activity links its page load when the root names a parent request (T3)', async () => {
   const tree = structuredClone(traceTree);
   tree.root = {
@@ -2105,19 +2229,53 @@ test('the Related list of an activity links its page load when the root names a 
   );
 });
 
-test('a row of an activity whose step failed shows the failure count although its root result is ok (T4)', async () => {
+// @test-kind contract: a failed step makes its activity's result error, with the root's own result beside it (T4)
+test('a row of an activity whose step failed reads error with its root’s own ok beside it (T4)', async () => {
   const items = activityQuery.items.map((item) =>
-    item.traceId === traceId ? { ...item, status: 'ok', failed: true, errorCount: 1, deniedCount: 0 } : item,
+    item.traceId === traceId
+      ? { ...item, status: 'ok', result: 'error', failed: true, errorCount: 1, deniedCount: 0 }
+      : item,
   );
-  const ctx = activityContext({ responses: activityResponses({ '/trace': { ...activityQuery, items } }) });
+  // A browser probe of a missing icon: its root is an error that is not a failure, so its result is ok.
+  const probe = { ...items[0], traceId: 'fx-probe', status: 'error', result: 'ok', failed: false, errorCount: 0 };
+  probe.root = { ...items[0].root, attributes: { browserProbe: true, statusCode: 404 } };
+  const probeTree = {
+    ...traceTree,
+    trace: { ...traceTree.trace, traceId: 'fx-probe', status: 'error', result: 'ok', failed: false },
+    root: { ...traceTree.root, status: 'error', attributes: { browserProbe: true, statusCode: 404 } },
+  };
+  const ctx = activityContext({
+    responses: activityResponses({
+      '/trace': { ...activityQuery, items: [...items, probe] },
+      '/trace/id/fx-probe': probeTree,
+    }),
+  });
   activity.route(ctx, new URLSearchParams(), [traceId]);
   await activity.load(ctx);
   const html = activity.render(ctx);
   const start = html.indexOf(`<tr data-activity-row="${traceId}"`);
   assert.ok(start >= 0, 'the row is listed');
   const row = html.slice(start, html.indexOf('</tr>', start));
-  assert.match(row, /<span class="ui-badge ui-tone-ok">ok<\/span>/);
-  assert.match(row, /<span class="ui-badge ui-tone-bad">1 error<\/span>/);
+  assert.match(
+    row,
+    /<span class="ui-badge ui-tone-bad">error<\/span> <span class="ui-badge ui-tone-neutral">root ok<\/span>/,
+  );
+  assert.doesNotMatch(row, /ui-tone-ok">ok</);
+  const probeStart = html.indexOf('<tr data-activity-row="fx-probe"');
+  assert.ok(probeStart >= 0, 'the probe row is listed');
+  const probeRow = html.slice(probeStart, html.indexOf('</tr>', probeStart));
+  assert.match(
+    probeRow,
+    /<span class="ui-badge ui-tone-ok">ok<\/span> <span class="ui-badge ui-tone-neutral">browser probe<\/span>/,
+  );
+  assert.match(probeRow, /<span class="ui-badge ui-tone-warn">HTTP 404<\/span>/);
+  // The detail header shows the same badges.
+  activity.route(ctx, new URLSearchParams(), ['fx-probe']);
+  await activity.load(ctx);
+  assert.match(
+    activity.render(ctx),
+    /<span class="ui-badge ui-tone-ok">ok<\/span> <span class="ui-badge ui-tone-neutral">browser probe<\/span> <span class="ui-badge ui-tone-warn">HTTP 404<\/span>/,
+  );
 });
 
 test('Export bundle follows the filters; the activity files remain as other formats (D-M-3)', async () => {
@@ -2520,7 +2678,7 @@ test('an activity no longer retained says so; a slow load never overwrites a new
   safeMarkup(html);
   assert.match(
     html,
-    /No retained activity has the id fx-gone \(it never existed or was dropped as the least recently active beyond the limit\)\./,
+    /No retained activity has the id fx-gone\. Activities live in this runtime’s memory: a restart or Clear drops them all, and the least recently active are dropped beyond the limit\./,
   );
   assert.match(html, /data-activity-action="close-trace"/);
 

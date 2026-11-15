@@ -743,3 +743,43 @@ test('a Dataverse XML finding points at the child element its field names, else 
   assert.deepEqual([stage.line, stage.column, stage.field], [3, 3, 'stage']);
   assert.deepEqual([filtering.line, filtering.column], [2, 1]);
 });
+
+// @test-kind contract: findings over Dataverse object documents point at the value or member they name.
+test('a deployment setting literal and a spec minimum point at the member they name', () => {
+  const secretDefinition = xml(
+    '<environmentvariabledefinition schemaname="invented_secret"><type>100000000</type></environmentvariabledefinition>',
+    'environmentvariabledefinitions/invented_secret/environmentvariabledefinition.xml',
+  );
+  const settingsText = JSON.stringify(
+    { EnvironmentVariables: [{ SchemaName: 'invented_secret', Value: 'invented-literal' }], ConnectionReferences: [] },
+    null,
+    2,
+  );
+  const settings = [];
+  analyzeDataverse([secretDefinition, entry('deploymentSettings.json', settingsText)], (ruleId, source, field) => {
+    if (ruleId === 'DV-ENV-001') settings.push({ line: source.line, exact: source.exactLocation, field });
+  });
+  assert.deepEqual(settings, [
+    { line: settingsText.slice(0, settingsText.indexOf('"Value"')).split('\n').length, exact: true, field: 'value' },
+  ]);
+
+  const specText = JSON.stringify(
+    {
+      entities: [
+        {
+          schemaName: 'invented_table',
+          columns: [{ schemaName: 'invented_number', minValue: 5, maxValue: 2 }],
+        },
+      ],
+    },
+    null,
+    2,
+  );
+  const minimum = [];
+  analyzeDataverse([entry('app-spec.json', specText)], (ruleId, source, field) => {
+    if (ruleId === 'DV-SCHEMA-001') minimum.push({ line: source.line, exact: source.exactLocation, field });
+  });
+  assert.deepEqual(minimum, [
+    { line: specText.slice(0, specText.indexOf('"minValue"')).split('\n').length, exact: true, field: 'minValue' },
+  ]);
+});

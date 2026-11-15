@@ -897,7 +897,12 @@ export const modelDrivenAppsOf = (metadata) =>
  * Canvas apps for /_apps/canvas/ (canvas-http.mjs) from the inventory's canvasapp records; `tree` (canvas-source.mjs
  * canvasTree: screens and components with their controls) is what canvas-runtime.mjs hosts.
  */
-function canvasAppsOf(records = []) {
+function canvasAppsOf(records = [], projectRoot = process.cwd()) {
+  // A file path is served relative to the project, with / separators.
+  const originPath = (file) =>
+    typeof file === 'string' && path.isAbsolute(file)
+      ? path.relative(projectRoot, file).split(path.sep).join('/')
+      : (file ?? null);
   return records
     .filter((record) => record.component === 'canvasapp' && record.name)
     .map((record) => ({
@@ -907,6 +912,11 @@ function canvasAppsOf(records = []) {
           name: record.displayName ?? record.name,
           version: record.version ?? null,
           schemaVersion: record.canvas?.schemaVersion ?? null,
+          // A configured source's format is directory or msapp; a Solution record carries its layer format (xml or yaml).
+          origin: ['directory', 'msapp'].includes(record.format)
+            ? { kind: 'canvas.sources', path: originPath(record.source), format: record.format }
+            : { kind: 'solution', path: originPath(record.sources?.[0] ?? record.source) },
+          ...(record.canvas?.display ? { display: record.canvas.display } : {}),
         },
         screens: record.tree?.screens ?? (record.canvas?.screens ?? []).map((name) => ({ name })),
         components: record.tree?.components ?? (record.canvas?.components ?? []).map((name) => ({ name })),
@@ -1118,7 +1128,7 @@ function assembleOrganizationHost(c, options) {
     /** Project canvas state: { enabled, records, diagnostics }. */
     canvas: c.canvas,
     /** Canvas apps for /_apps/canvas/: Solution inventory and project canvas.sources records. */
-    canvasApps: () => canvasAppsOf(c.allInventory()),
+    canvasApps: () => canvasAppsOf(c.allInventory(), c.projectRoot ?? process.cwd()),
     /** The host's capability registry (memoised with the catalogues). */
     capabilities: () => {
       const current = c.registry();

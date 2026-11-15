@@ -23,6 +23,10 @@ function ciFixture(t) {
     'scripts/ci-workspace-lease.mjs',
     'scripts/npm-cli.mjs',
     '.github/scripts/change-scope.mjs',
+    // The lense leaves scripts/ci.mjs imports (the process identity and lane stop helpers).
+    'lense/process-identity.mjs',
+    'lense/code-app-dev-stop.mjs',
+    'lense/signal-forwarding.mjs',
   ])
     write(file, fs.readFileSync(new URL(`../${file}`, import.meta.url)));
   write(

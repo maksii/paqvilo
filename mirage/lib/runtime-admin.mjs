@@ -33,7 +33,7 @@ export const diagnosticsOfTrace = (answer, traceId) => {
  */
 export async function adminAssetFile(name) {
   if (SHARED_ADMIN_MODULES.has(name)) return new URL(`./${name}`, import.meta.url);
-  if (!/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return null;
+  if (!/^[a-z0-9-]+\.(?:mjs|css|js)$/.test(name)) return null;
   const file = new URL(`../admin/${name}`, import.meta.url);
   return fs.access(file).then(
     () => file,
@@ -43,7 +43,7 @@ export async function adminAssetFile(name) {
 /** Content type of an admin asset; modules are text/javascript. */
 export const adminAssetType = (name) => {
   if (name.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (name.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
+  if (name.endsWith('.mjs') || name.endsWith('.js')) return 'text/javascript; charset=utf-8';
   return 'text/html; charset=utf-8';
 };
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
@@ -245,7 +245,7 @@ export function createRuntimeAdminRouter({
               .then(shutdown)
               .catch(() => {});
           });
-          json(c.res, 200, { stopped: true });
+          json(c.res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
           return true;
         }),
     ],

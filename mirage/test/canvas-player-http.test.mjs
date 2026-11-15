@@ -6,6 +6,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
+import { canvasPlayerPage } from '../lib/canvas-player.mjs';
+import { appsShellPage } from '../lib/apps-shell.mjs';
 import { createCanvasRuntime } from '../lib/canvas-runtime.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { readCanvasSource } from '../lib/canvas-source.mjs';
@@ -368,6 +370,17 @@ test('the canvas app list and the player use the admin sheets from the canvas pr
   assert.ok(playerHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_ui-kit.css">'));
   assert.ok(playerHtml.includes('<link rel="stylesheet" href="/_apps/canvas/_shell.css">'));
   assert.ok(playerHtml.indexOf('_shell.css') < playerHtml.indexOf('_player.css'));
+  for (const html of [listHtml, playerHtml]) {
+    for (const marker of ['class="shell"', 'class="sidebar"', 'class="topbar"', 'href="/_sim/"'])
+      assert.ok(html.includes(marker), marker);
+  }
+  // The app list is static (no script, no Menu); the player keeps the shell's script.
+  assert.match(listHtml, /<body class="shell-static">/);
+  assert.doesNotMatch(listHtml, /<script/i);
+  assert.ok(playerHtml.includes('<script defer src="/_apps/canvas/_shell-menu.js">'));
+  const menu = await fetch(`${listUrl}/_apps/canvas/_shell-menu.js`);
+  assert.equal(menu.status, 200);
+  assert.match(menu.headers.get('content-type'), /^text\/javascript/);
   const policy = list.headers.get('content-security-policy');
   assert.match(policy, /style-src 'self'/);
   assert.doesNotMatch(policy, /unsafe-inline|unsafe-eval/);
@@ -458,4 +471,81 @@ test('the canvas start CSRF header is compared exactly and each variant is refus
   assert.equal(starts, 0);
   assert.equal((await start('token')).status, 200);
   assert.equal(starts, 1);
+});
+
+// @test-kind contract: Paqvilo explains which source a Canvas app is served from
+test('the app list and the player say whether an app comes from canvas.sources or the packed Solution', async (t) => {
+  const app = (uniqueName, origin) => ({
+    uniqueName,
+    source: {
+      app: { name: uniqueName, origin },
+      screens: [{ name: 'Home', controls: [] }],
+      formulas: [],
+      diagnostics: [],
+    },
+  });
+  const packed = app('packed', { kind: 'solution', path: 'CanvasApps/x.msapp' });
+  const configured = app('y', { kind: 'canvas.sources', path: 'apps/y', format: 'directory' });
+  const origin = await serveHandler(
+    t,
+    createCanvasHandler({
+      apps: () => [packed, configured],
+      csrf: () => 'token',
+      principal: () => ({ kind: 'staff', principalId: 'local' }),
+      runtime: { existing: () => null, session: async () => ({ observe: async () => ({}) }) },
+    }),
+  );
+  const listHtml = await (await fetch(`${origin}/_apps/canvas/`)).text();
+  assert.match(listHtml, /<th>Source<\/th>/);
+  assert.ok(listHtml.includes('Packed in the Solution: CanvasApps/x.msapp'));
+  assert.ok(listHtml.includes('canvas.sources: apps/y'));
+  const listed = await (await fetch(`${origin}/_apps/canvas/`, { headers: { accept: 'application/json' } })).json();
+  assert.deepEqual(
+    listed.apps.map((entry) => entry.origin),
+    [packed.source.app.origin, configured.source.app.origin],
+  );
+  const packedPlayer = await (await fetch(`${origin}/_apps/canvas/packed`)).text();
+  assert.ok(packedPlayer.includes("Served from the Solution's packed app CanvasApps/x.msapp"));
+  assert.ok(packedPlayer.includes("add the app's extracted folder, named packed, to canvas.sources"));
+  const configuredPlayer = await (await fetch(`${origin}/_apps/canvas/y`)).text();
+  assert.ok(configuredPlayer.includes('Served from canvas.sources: apps/y. Saved edits reload the app'));
+});
+
+test('the player page has no Apps & actions menu without actions, and its origin sentence has no path when none is recorded', () => {
+  const app = (origin) => ({
+    uniqueName: 'packed',
+    source: {
+      app: { name: 'Packed', origin },
+      screens: [{ name: 'Home', controls: [] }],
+      formulas: [],
+      diagnostics: [],
+    },
+  });
+  const packed = canvasPlayerPage(app({ kind: 'solution', path: 'CanvasApps/x.msapp' }), 'token');
+  assert.ok(!packed.includes('id="top-more"'));
+  assert.ok(!packed.includes('id="top-actions"'));
+  assert.ok(packed.includes("Served from the Solution's packed app CanvasApps/x.msapp. To make source edits"));
+  const unpathed = canvasPlayerPage(app({ kind: 'solution' }), 'token');
+  assert.ok(
+    unpathed.includes(
+      "Served from the Solution's packed app. To make source edits reload the app, add the app's extracted folder, named packed, to canvas.sources.",
+    ),
+  );
+  assert.ok(!unpathed.includes('packed app .'));
+  const sourced = canvasPlayerPage(app({ kind: 'canvas.sources' }), 'token');
+  assert.ok(sourced.includes('Served from canvas.sources. Saved edits reload the app; Start runs the new version.'));
+  assert.ok(!sourced.includes('canvas.sources: .'));
+});
+
+test('the shell renders the Apps & actions menu only with extra top-bar actions', () => {
+  const shell = (actions) =>
+    appsShellPage({ title: 'Shell', prefix: '/_apps/canvas/', crumbs: [['Shell']], body: '', actions });
+  assert.ok(!shell({}).includes('id="top-more"'));
+  const withActions = shell({ extra: '<a class="button" href="/_apps/canvas/">Canvas apps</a>' });
+  assert.ok(withActions.includes('id="top-more"'));
+  assert.ok(
+    withActions.includes(
+      '<div class="top-actions" id="top-actions"><a class="button" href="/_apps/canvas/">Canvas apps</a></div>',
+    ),
+  );
 });

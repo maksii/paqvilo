@@ -320,6 +320,7 @@ async function staffRequest(options = {}) {
   });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error?.message ?? 'Staff session unavailable.');
+  if (body.current?.kind === 'unavailable') throw Object.assign(new Error(body.current.message), { session: body });
   return body;
 }
 function renderStaffSession(session) {
@@ -347,7 +348,7 @@ async function loadStaffSession() {
     return true;
   } catch (error) {
     if (token !== staffSessionGeneration) return false;
-    staffSession = undefined;
+    staffSession = error.session;
     staffIdentity = undefined;
     staffSessionError = error.message;
     $('#staff-profile').title = 'Staff session unavailable. Select an identity explicitly.';

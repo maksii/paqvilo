@@ -406,6 +406,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
     administration: '/_sim/',
     setup: '/_setup/',
     modelDriven: caps.modelDriven ? '/main.aspx' : null,
+    canvas: organizationHost.canvas.enabled && organizationHost.canvasApps().length ? '/_apps/canvas/' : null,
     powerPages: null,
     dataverseApi: dataverse?.origin ?? null,
   });

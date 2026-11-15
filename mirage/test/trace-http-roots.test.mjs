@@ -819,6 +819,7 @@ test('a browser probe of a missing icon is a traced 404 root that is not failed,
     const { root } = await ended(sim.trace, traceId);
     assert.deepEqual([root.status, root.attributes.browserProbe, root.attributes.statusCode], ['error', true, 404]);
     assert.equal(sim.trace.query({ traceId }).items[0].failed, false, 'a probe is not a failed activity');
+    assert.equal(sim.trace.query({ traceId }).items[0].result, 'ok');
   }
   const findings = (await (await fetch(sim.url + '/_sim/api/diagnostics')).json()).diagnostics;
   const probed = findings.filter((item) => item.code === 'PAGE_NOT_FOUND' && item.path === '/favicon.ico');
@@ -839,6 +840,7 @@ test('a missing page requested twice records a finding each time, and each of it
     const { root } = await ended(sim.trace, traceId);
     assert.deepEqual([root.status, root.attributes.browserProbe], ['error', undefined]);
     assert.equal(sim.trace.query({ traceId }).items[0].failed, true);
+    assert.equal(sim.trace.query({ traceId }).items[0].result, 'error');
   }
   const findings = (await (await fetch(sim.url + '/_sim/api/diagnostics')).json()).diagnostics;
   assert.equal(findings.filter((item) => item.path === '/inv-missing-page').length, 2);

@@ -7,7 +7,7 @@ import { makeFixtureDirectory, send, startDryRunSimulator, writeFixtureFiles } f
 
 const TOKEN = /^[a-f0-9]{64}$/;
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const root = await makeFixtureDirectory(t, 'standalone-admin-listener-');
   await writeFixtureFiles(path.join(root, 'solution'), {
     'Other/Solution.xml':
@@ -15,7 +15,7 @@ async function fixture(t) {
     'Entities/x_item/Entity.xml':
       '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
   });
-  return startDryRunSimulator(t, root, { runtime: { kind: 'model-driven' } });
+  return startDryRunSimulator(t, root, { runtime: { kind: 'model-driven' }, ...options });
 }
 
 const codeOf = (response) => response.json?.error?.code;
@@ -152,6 +152,22 @@ test('a Host header naming the portal is refused by the admin listener', async (
   const response = await send(sim.adminOrigin, { target: '/_sim/', headers: { host: new URL(sim.url).host } });
   assert.equal(response.status, 403);
   assert.equal(codeOf(response), 'RuntimeRequestInvalid');
+});
+
+// @test-kind contract: a standalone runtime acknowledges its shutdown request with 202 as the Power Pages host does
+test('a shutdown request on the admin origin is accepted with 202 and then the runtime stops', async (t) => {
+  let stopping;
+  const stopped = new Promise((resolve) => {
+    stopping = resolve;
+  });
+  const sim = await fixture(t, { onShutdown: stopping });
+  const response = await send(
+    sim.adminOrigin,
+    browserWrite(sim.adminOrigin, sim.csrf, { target: '/_sim/api/shutdown' }),
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(response.json, { accepted: true, message: 'Mirage shutdown accepted.' });
+  await stopped;
 });
 
 test('after close the admin listener refuses connections', async (t) => {

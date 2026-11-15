@@ -96,8 +96,15 @@ const pageLine = (page) =>
   `Page ${page.page} of ${page.pageCount}; ${page.total} matching, ${page.retained} retained, ${page.dropped} dropped.`;
 const spanLine = (span) =>
   `${span.startedAt}  ${span.kind}  ${span.status}  ${ms(span.durationMs)}  ${span.name}${span.entity ? ' (' + span.entity + ')' : ''}  trace ${span.traceId}`;
+// An activity's result, and the root's own status when it differs: `error (root ok)`; a probe miss `ok (browser probe)`.
+const resultText = (trace, root = trace.root) => {
+  if (trace.result === trace.status) return trace.result;
+  return `${trace.result} (${root?.attributes?.browserProbe === true ? 'browser probe' : 'root ' + trace.status})`;
+};
+const IN_MEMORY =
+  "Traces live in the runtime's memory: a restart or trace clear drops them all, and the least recently active are dropped beyond the traces limit.";
 const traceLine = (trace) =>
-  `${trace.startedAt}  ${trace.status}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${plural(trace.errorCount, 'error')}  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
+  `${trace.startedAt}  ${resultText(trace)}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${plural(trace.errorCount, 'error')}  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
 const statusLines = (status) => {
   const persistence = () => (status.persist.enabled ? 'on, ' + (status.persist.directory ?? 'no state folder') : 'off');
   return [
@@ -121,7 +128,7 @@ const figuresLine = (label, value, unit, failed = null) => {
 function humanTrace(result) {
   const { trace } = result,
     lines = [
-      `Trace ${trace.traceId}: ${trace.status}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${plural(trace.spanCount, 'span')}, ${plural(trace.errorCount, 'error')}, ${trace.deniedCount} denied.`,
+      `Trace ${trace.traceId}: ${resultText(trace, result.root)}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${plural(trace.spanCount, 'span')}, ${plural(trace.errorCount, 'error')}, ${trace.deniedCount} denied.`,
     ];
   const walk = (node, depth) => {
     const entity = () => (node.entity ? ' ' + node.entity : '');
@@ -142,7 +149,7 @@ function human(action, result, { utc = false } = {}) {
     return [
       ...table(result.items, [
         startedColumn(utc, (t) => t.startedAt),
-        ['STATUS', (t) => (traceFailed(t) && t.status === 'ok' ? 'ok (failed steps)' : t.status)],
+        ['RESULT', (t) => resultText(t)],
         ['DURATION', (t) => ms(t.durationMs)],
         ['TOTAL', (t) => ms(t.totalDurationMs)],
         ['SPANS', (t) => t.spanCount],
@@ -232,7 +239,7 @@ function frameResultMatches(filters, span, trace, lower) {
         .toLowerCase()
         .split(',')
         .map((value) => value.trim())
-        .includes(lower(trace ? trace.status : span.status))) &&
+        .includes(lower(trace ? trace.result : span.status))) &&
     (filters.traceId === undefined || span.traceId === filters.traceId) &&
     (filters.parentSpanId === undefined || span.parentSpanId === filters.parentSpanId) &&
     (filters.depth === undefined || span.depth === Number(filters.depth))
@@ -400,7 +407,10 @@ async function traceRequest(client, action, rest, filters, change) {
 async function showTree(client, id, filters) {
   const treeOf = async (traceId) => {
     const tree = await client.trace.tree(traceId);
-    if (!tree) throw Object.assign(new Error(`No retained trace has the id ${traceId}.`), { code: 'TraceNotFound' });
+    if (!tree)
+      throw Object.assign(new Error(`No retained trace has the id ${traceId}. ${IN_MEMORY}`), {
+        code: 'TraceNotFound',
+      });
     return tree;
   };
   if (id && UUID.test(id)) return treeOf(id);
@@ -412,7 +422,7 @@ async function showTree(client, id, filters) {
   const [newest] = page.items;
   if (!newest)
     throw Object.assign(
-      new Error(id ? `No retained trace has the id ${id}.` : 'No retained trace matches the filters.'),
+      new Error(id ? `No retained trace has the id ${id}. ${IN_MEMORY}` : 'No retained trace matches the filters.'),
       { code: 'TraceNotFound' },
     );
   return treeOf(newest.traceId);

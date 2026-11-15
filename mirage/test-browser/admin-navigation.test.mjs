@@ -3,9 +3,9 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { serveAdminFile } from './shared-browser.mjs';
 
 test('admin paginates large tables, lazily inspects details and never requests the audit', async (t) => {
   const mappings = Array.from({ length: 85 }, (_, i) => ({
@@ -68,19 +68,7 @@ test('admin paginates large tables, lazily inspects details and never requests t
         res.writeHead(404).end('{}');
         return;
       }
-      const file = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
-      res.setHeader(
-        'content-type',
-        file.endsWith('.mjs') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html',
-      );
-      res.end(
-        await fs.readFile(
-          new URL(
-            `../${['persona-search.mjs', 'persona-picker-view.mjs'].includes(file) ? 'lib' : 'admin'}/${file}`,
-            import.meta.url,
-          ),
-        ),
-      );
+      await serveAdminFile(res, url);
     } catch (error) {
       res.writeHead(500).end(JSON.stringify({ error: error.message }));
     }

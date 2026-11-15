@@ -140,12 +140,16 @@ export async function servePcfResource(req, res, { assets, key, fail }) {
   );
 }
 
+/** The source's Display settings with the observed ones overriding per field; undefined when neither has one. */
+const mergedDisplay = (source, observed) => (source || observed ? { ...source, ...observed } : undefined);
+
 /** Prepare scopes once before mapping the expanded instance names to manifest descriptors. */
 export function canvasPcfApps(apps, catalog, options = {}) {
   return apps.map((app) => {
     const raw = app.source,
       key = raw.tree ?? raw.screens ?? raw;
-    const display = options.display?.[app.uniqueName];
+    const observed = options.display?.[app.uniqueName];
+    const display = mergedDisplay(raw.app?.display, observed);
     const signature = JSON.stringify([
       app.uniqueName,
       raw.app,
@@ -174,7 +178,10 @@ export function canvasPcfApps(apps, catalog, options = {}) {
           codeComponents[control.name] = canvasCodeComponent(control, catalog, options);
     const facts = {
       ...source,
-      app: { ...source.app, ...(display ? { display, displayEvidence: options.displayEvidence ?? null } : {}) },
+      app: {
+        ...source.app,
+        ...(display ? { display, ...(observed ? { displayEvidence: options.displayEvidence ?? null } : {}) } : {}),
+      },
       codeComponents,
     };
     const digest = createHash('sha256').update(

@@ -9,9 +9,13 @@ organization's metadata. Large datasets use far less memory.
 
 ### New
 
-- **Request tracing and Monitor.** Each request becomes one tree of steps: the HTTP call, portal Web API,
-  table permissions, the Dataverse operation, plug-in stages and steps with their trace lines, web hooks, jobs,
-  workflows, cloud flow runs and connectors, and the page render. The `_sim` **Monitor** has **Health** and
+- **Request tracing and Monitor.** Each request becomes one tree of steps, and its shape follows the request. A portal Web API call records the HTTP
+  request, its Web API step, the Dataverse operation, and the plug-in stages and steps. A basic or advanced form submit
+  records the HTTP request, the page render, and the form step with its Dataverse operation and plug-in steps. A page
+  load records the render with its templates and Liquid reads. Table-permission decisions and plug-in trace lines are
+  events on the step where they happened, and a denial outside any step is a permission step of its own. Web hooks,
+  jobs, workflows, cloud flow runs and connector calls that a request starts join its tree. An activity whose plug-in
+  refused the save reads `error` even when its page answered HTTP 200. The `_sim` **Monitor** has **Health** and
   **Activity** views with filters, step search, side-by-side comparison and stats. Read traces with
   `paqvilo mirage trace`, `/_sim/api/trace` or `connectRuntime().trace`, and export JSON, NDJSON or OTLP.
   `mirage.trace.level` sets the level: `off`, `summary` (default) or `full` with redacted payloads. See
@@ -27,8 +31,8 @@ organization's metadata. Large datasets use far less memory.
   [static analysis](static-analysis.md).
 - **Canvas player.** `/_apps/canvas/<app>` runs a Canvas app from its exported source: controls, Power Fx,
   components, PCF, media, galleries and local data, with an inspector for source locations, state and errors.
-  The Zoom setting fits the stage to the window by default. By default a text input's `Text` follows typing, and
-  `OnChange` runs when the entry is committed. Source edits reload the app, and a `canvas.sources` folder or `.msapp`
+  The Zoom setting fits the stage to the window by default. The Resolution list opens at the app's own screen size and keeps the size you choose across reloads. By default a text input's `Text` follows typing, and
+  `OnChange` runs when the entry is committed. Edits to a `canvas.sources` folder reload the app (the app list and the player say which source an app comes from), and a `canvas.sources` folder or `.msapp`
   whose unique name matches a Solution canvas app replaces that app. Start opens a new instance, `Notify` honours its timeout and survives reload, the
   native `Form.Unsaved` is true only after input, and PCF resources are served from the apps address at
   `/_apps/canvas/pcf/<token>/`. A visitor without a Dataverse user answers 401 `CanvasPrincipalRequired`.
@@ -158,7 +162,7 @@ organization's metadata. Large datasets use far less memory.
   report a diagnostic. `request.params` includes cookies, and the renderer uses the runtime clock. A file name
   outside Latin-1 uploads intact through `x-ms-file-name-encoding: uri-component`. A basic form's declared
   validation message is inserted without HTML encoding, with summary links on or off, as observed on a native site.
-  A plug-in exception shows the generic submission error unless `observed.formSubmissionErrorMessage` is set.
+  A plug-in's `InvalidPluginExecutionException` on a basic-form save shows `An unknown failure has occurred. Error ID # [<id>]`, with the same id in the `x-ms-request-id` header, or the plug-in's message when `Site/EnableCustomPluginError` is `true`, as observed on a native site.
 - **Plug-ins.** A pooled C# host that died while idle is replaced on the next call. `RelatedEntitiesQuery` and
   N:1 related queries survive the `Retrieve` pipeline, a Delete step runs as the SYSTEM user, and queue sequence
   numbers are kept per entity in `paqvilo_queuesequence`.
@@ -446,6 +450,9 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 - Parity captures retry a step only when the browser reports that the page's execution context was lost (destroyed,
   not found, or its target navigated or closed). A crashed page or another navigation failure fails the step. A page
   evaluation that does not finish is reported as `PAGE_UNRESPONSIVE`.
+- `mirage stop` of a runtime started by `mirage dev` also ends that dev command, its app servers and its owned
+  browser. A standalone runtime acknowledges `/_sim/api/shutdown` with 202 and stops gracefully instead of being
+  ended by the stop.
 
 ### Upgrade notes
 

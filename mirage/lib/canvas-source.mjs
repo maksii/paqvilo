@@ -28,11 +28,15 @@ const FX_YAML = /\.fx\.ya?ml$/i;
 const DATA_SOURCE_JSON = /^DataSources\/[^/]+\.json$/i;
 const LEGACY_COMPONENT_JSON = /^Src\/Components\/[^/]+\.json$/i;
 const LEGACY_MANIFEST_JSON = /^CanvasManifest\.json$/i;
+// Path identity of a canvas source: case-insensitive on Windows only.
+const pathKey = (file) => (process.platform === 'win32' ? file.toLowerCase() : file);
+const ROOT_PROPERTIES_JSON = /^Properties\.json$/i;
 const wanted = (name) =>
   PA_YAML.test(name) ||
   FX_YAML.test(name) ||
   DATA_SOURCE_JSON.test(name.replaceAll('\\', '/')) ||
   LEGACY_MANIFEST_JSON.test(name.replaceAll('\\', '/')) ||
+  ROOT_PROPERTIES_JSON.test(name.replaceAll('\\', '/')) ||
   LEGACY_COMPONENT_JSON.test(name.replaceAll('\\', '/'));
 // `.fx.yaml` control keys: `Name As type[.variant]`; a quoted name keeps its spaces.
 function /* NOSONAR */ fxControlTypeStarts(text, end) {
@@ -372,6 +376,70 @@ function processCanvasYamlSource({
   return unknownVersion;
 }
 
+const isDisplaySize = (value) => Number.isInteger(value) && value >= 1 && value <= 8192;
+const isFlag = (value) => typeof value === 'boolean';
+// Properties.json DocumentLayout keys and the display fields they map to (the rules of canvas-display.mjs validateCanvasPolicy).
+const LAYOUT_KEYS = [
+  ['DocumentLayoutWidth', 'designWidth', isDisplaySize],
+  ['DocumentLayoutHeight', 'designHeight', isDisplaySize],
+  ['DocumentLayoutScaleToFit', 'scaleToFit', isFlag],
+  ['DocumentLayoutMaintainAspectRatio', 'lockAspectRatio', isFlag],
+  ['DocumentLayoutLockOrientation', 'lockOrientation', isFlag],
+];
+
+// Copies the valid Display settings of one Properties object into `layout`; each rejected key is named in `invalid`.
+function copyLayoutSettings(values, layout, invalid) {
+  for (const [key, field, valid] of LAYOUT_KEYS) {
+    if (values[key] === undefined) continue;
+    if (valid(values[key])) layout[field] = values[key];
+    else invalid.push(key);
+  }
+  if (values.DocumentLayoutOrientation !== undefined)
+    copyOrientation(values.DocumentLayoutOrientation, layout, invalid);
+}
+
+function copyOrientation(orientation, layout, invalid) {
+  if (typeof orientation === 'string' && /^(landscape|portrait)$/i.test(orientation))
+    layout.orientation = orientation.toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait';
+  else invalid.push('DocumentLayoutOrientation');
+}
+
+/**
+ * The app's Display settings from the root Properties.json, or from the Properties object of the retired CanvasManifest.json
+ * when there is none. A key with a wrong type or range, or invalid JSON, is one CANVAS_SOURCE_LAYOUT_INVALID warning and
+ * leaves the key out. Undefined when no setting remains.
+ */
+async function readCanvasLayout(files, diagnostic) {
+  const properties = files.find((file) => ROOT_PROPERTIES_JSON.test(file.name));
+  const file = properties ?? files.find((item) => LEGACY_MANIFEST_JSON.test(item.name));
+  if (!file) return undefined;
+  let json;
+  try {
+    json = JSON.parse(await file.read());
+  } catch {
+    diagnostic(
+      'CANVAS_SOURCE_LAYOUT_INVALID',
+      `${file.name} is not valid JSON; the app's Display settings are not read.`,
+      file.name,
+      'warning',
+    );
+    return undefined;
+  }
+  const values = properties ? json : json?.Properties;
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return undefined;
+  const layout = {};
+  const invalid = [];
+  copyLayoutSettings(values, layout, invalid);
+  if (invalid.length)
+    diagnostic(
+      'CANVAS_SOURCE_LAYOUT_INVALID',
+      `${file.name} has Display settings that are not valid and are left out: ${invalid.join(', ')}.`,
+      file.name,
+      'warning',
+    );
+  return Object.keys(layout).length ? layout : undefined;
+}
+
 /** Inventory one canvas app. Pass `msapp` (bytes) or `dir` (an extracted `.msapp`); `name`/`version` come from the Solution when known. */
 /* NOSONAR */ export async function readCanvasSource({ msapp, dir, name, version = null } = {}) {
   if ((msapp ? 1 : 0) === (dir ? 1 : 0)) throw new TypeError('readCanvasSource needs exactly one of msapp or dir.');
@@ -477,6 +545,8 @@ function processCanvasYamlSource({
         );
       }
     }
+    const layout = await readCanvasLayout(files, diagnostic);
+    if (layout) result.app.display = layout;
     return result;
   }
   if (legacy.length)
@@ -518,6 +588,8 @@ function processCanvasYamlSource({
       `pa.yaml schema v${unknownVersion} is not recognised; known: ${CANVAS_SCHEMA_VERSIONS.join(', ')}.`,
     );
   result.app.schemaVersion = unknownVersion ?? CANVAS_SCHEMA_VERSIONS.at(-1);
+  const layout = await readCanvasLayout(files, diagnostic);
+  if (layout) result.app.display = layout;
   return result;
 }
 
@@ -848,26 +920,72 @@ const canvasTree = (source) => ({
   })),
 });
 
+/** The unique name of a configured Canvas source: the folder name, or the .msapp file name without .msapp. */
+export const canvasSourceName = (file) => path.basename(file).replace(/\.msapp$/i, '');
+
+// The parsed inventory of the canvas source at `file`: an extracted folder, or an .msapp archive read as bytes.
+async function readCanvasSourceAt(file, name) {
+  if ((await fs.stat(file)).isDirectory())
+    return { format: 'directory', parsed: await readCanvasSource({ dir: file, name }) };
+  const msapp = await readLocalFile(file, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes });
+  return { format: 'msapp', parsed: await readCanvasSource({ msapp, name }) };
+}
+
+// The parsed canvas facts that canvasAppsOf serves under /_apps/canvas/ for one source.
+function canvasFacts(parsed) {
+  return {
+    schemaVersion: parsed.app.schemaVersion,
+    screens: parsed.screens.map((screen) => screen.name),
+    components: parsed.components.map((component) => component.name),
+    dataSources: parsed.dataSources,
+    ...(parsed.enums ? { enums: parsed.enums } : {}),
+    formulas: parsed.formulas,
+    diagnostics: parsed.diagnostics,
+    ...(parsed.assetDiagnostics?.length ? { assetDiagnostics: parsed.assetDiagnostics } : {}),
+    ...(parsed.app.display ? { display: parsed.app.display } : {}),
+  };
+}
+
 /**
  * Inventory records of the project `canvas.sources` paths (an `.msapp` file or an extracted folder each), resolved against
  * projectRoot. A record carries the parsed `canvas` facts canvasAppsOf (organization-host.mjs) serves under /_apps/canvas/
  * and `source` = the configured path. A missing or unreadable path is CANVAS_SOURCE_MISSING (an error diagnostic, no record).
+ * A repeated path, or a later source with an earlier one's unique name, is CANVAS_SOURCE_DUPLICATE (a warning) and is not read.
  */
 export async function readCanvasSources(sources = [], { projectRoot = process.cwd() } = {}) {
   const records = [],
-    diagnostics = [];
+    diagnostics = [],
+    seenPaths = new Map(),
+    seenNames = new Map();
   for (const source of sources ?? []) {
     const file = path.resolve(projectRoot, source);
-    let stat, parsed;
-    const name = path.basename(file).replace(/\.msapp$/i, '');
+    // The path identity of standalone-runtime.mjs: case-insensitive on Windows only. Unique names are always
+    // case-insensitive (Dataverse semantics).
+    if (seenPaths.has(pathKey(file))) {
+      diagnostics.push({
+        code: 'CANVAS_SOURCE_DUPLICATE',
+        severity: 'warning',
+        source,
+        message: `Canvas source ${source} is listed more than once in canvas.sources; it is read once.`,
+      });
+      continue;
+    }
+    // Marked before the read, so a missing path listed twice reports CANVAS_SOURCE_MISSING once.
+    seenPaths.set(pathKey(file), source);
+    const name = canvasSourceName(file);
+    const nameKey = name.toLowerCase();
+    if (seenNames.has(nameKey)) {
+      diagnostics.push({
+        code: 'CANVAS_SOURCE_DUPLICATE',
+        severity: 'warning',
+        source,
+        message: `Canvas source ${source} is ignored: ${seenNames.get(nameKey)} earlier in canvas.sources has the same unique name ${name}.`,
+      });
+      continue;
+    }
+    let read;
     try {
-      stat = await fs.stat(file);
-      parsed = stat.isDirectory()
-        ? await readCanvasSource({ dir: file, name })
-        : await readCanvasSource({
-            msapp: await readLocalFile(file, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes }),
-            name,
-          });
+      read = await readCanvasSourceAt(file, name);
     } catch (error) {
       diagnostics.push({
         code: 'CANVAS_SOURCE_MISSING',
@@ -877,18 +995,10 @@ export async function readCanvasSources(sources = [], { projectRoot = process.cw
       });
       continue;
     }
+    seenNames.set(nameKey, source);
     records.push({
-      ...canvasInventoryRecord(parsed, { file: source, format: stat.isDirectory() ? 'directory' : 'msapp' }),
-      canvas: {
-        schemaVersion: parsed.app.schemaVersion,
-        screens: parsed.screens.map((screen) => screen.name),
-        components: parsed.components.map((component) => component.name),
-        dataSources: parsed.dataSources,
-        ...(parsed.enums ? { enums: parsed.enums } : {}),
-        formulas: parsed.formulas,
-        diagnostics: parsed.diagnostics,
-        ...(parsed.assetDiagnostics?.length ? { assetDiagnostics: parsed.assetDiagnostics } : {}),
-      },
+      ...canvasInventoryRecord(read.parsed, { file: source, format: read.format }),
+      canvas: canvasFacts(read.parsed),
     });
   }
   return { records, diagnostics };
@@ -900,9 +1010,9 @@ export async function readCanvasSources(sources = [], { projectRoot = process.cw
  */
 export function canvasSourceWatch(sources = [], projectRoot = process.cwd()) {
   const roots = (sources ?? []).map((source) => path.resolve(projectRoot, source));
-  const keys = roots.map((root) => root.toLowerCase());
+  const keys = roots.map(pathKey);
   const contains = (file) => {
-    const full = path.resolve(file).toLowerCase();
+    const full = pathKey(path.resolve(file));
     const base = keys.find((root) => full === root || full.startsWith(root + path.sep));
     return (
       Boolean(base) &&

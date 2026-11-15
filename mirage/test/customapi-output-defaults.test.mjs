@@ -239,6 +239,10 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
             ],
           ]),
         });
+        // The in-process sdk() calls below run CLR plug-ins synchronously on the main thread, so a pooled keep-alive
+        // connection can sit idle past the server's limit before the next HTTP call. Each HTTP call uses its own connection.
+        const request = f.request;
+        f.request = (method, route, body, headers) => request(method, route, body, { connection: 'close', ...headers });
         const sdk = async (Mode) =>
           store.transact(() =>
             service.executeMessageSync(name, null, { $type: 'ParameterCollection', values: Mode ? { Mode } : {} }),

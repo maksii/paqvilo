@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { warmState } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { canvasLocalIdentity, canvasPlayerFixture } from '../test/canvas-player-fixture.mjs';
 
 test('admin: record and configuration CRUD, routing, identity, presets, errors, safe diagnostics, responsive layout', async (t) => {
   const workspace = {
@@ -64,7 +65,7 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
         if (
           url.pathname === '/__sim/' ||
           // Admin assets by pattern, as both hosts serve them; the two shared lib modules by name.
-          (/^\/__sim\/[a-z0-9-]+\.(?:mjs|css)$/.test(url.pathname) &&
+          (/^\/__sim\/[a-z0-9-]+\.(?:mjs|css|js)$/.test(url.pathname) &&
             fs.existsSync(
               new URL(
                 `../${['persona-search.mjs', 'persona-picker-view.mjs'].includes(url.pathname.split('/').at(-1)) ? 'lib' : 'admin'}/${url.pathname.split('/').at(-1)}`,
@@ -75,7 +76,11 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
           const file = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
           res.setHeader(
             'Content-Type',
-            file.endsWith('.mjs') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html',
+            file.endsWith('.mjs') || file.endsWith('.js')
+              ? 'text/javascript'
+              : file.endsWith('.css')
+                ? 'text/css'
+                : 'text/html',
           );
           res.end(
             fs.readFileSync(
@@ -708,4 +713,87 @@ test('admin integrates with the simulator CSRF, persistence, plugin validation, 
   await portal.waitForFunction(() => window.portalRoles === 'Tester|Reviewer');
   assert.equal(await portal.locator('#userroles').inputValue(), 'Tester|Reviewer');
   assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: the administration links each app surface the runtime serves
+test('Apps & actions links the Canvas apps list only when the runtime serves Canvas apps', async (t) => {
+  const { createSimulator } = await import('../server.mjs');
+  const sim = await canvasPlayerFixture(t, 'directory');
+  const bare = await createSimulator({
+    sourceDir: path.join(sim.fixtureRoot, 'portal'),
+    stateFile: path.join(sim.fixtureRoot, 'bare-state.json'),
+    projectRoot: sim.fixtureRoot,
+    port: 0,
+    watch: false,
+    initial: canvasLocalIdentity(),
+  });
+  ownedFixture(t).add(() => bare.close());
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const openAdmin = async (simulator) => {
+    const page = await context.newPage();
+    await page.goto(`${simulator.url}/_sim/#home`);
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+    return page;
+  };
+  const withCanvas = await openAdmin(sim);
+  await withCanvas.locator('#open-canvas').waitFor({ state: 'visible' });
+  assert.match(await withCanvas.locator('#open-canvas').getAttribute('href'), /\/_apps\/canvas\/$/);
+  const withoutCanvas = await openAdmin(bare);
+  assert.equal(await withoutCanvas.locator('#open-canvas').isHidden(), true);
+});
+
+// @test-kind contract: the staff panel recovers from a selection made by an earlier runtime
+test('a staff selection the runtime cannot verify still lists the staff users and says why', async (t) => {
+  const sim = await canvasPlayerFixture(t, 'directory');
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const created = await fetch(`${sim.url}/__sim/api/dataverse/users`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    body: JSON.stringify({ fullname: 'Invented Staff', domainname: 'invented.staff@invented.test' }),
+  });
+  assert.equal(created.status, 201);
+  // A well-formed id with a signature this runtime never issued: the selection cannot be verified here.
+  await context.addCookies([
+    {
+      name: `paqvilo-mirage-staff-${new URL(sim.url).port}`,
+      value: '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f.not-this-runtime-signature',
+      url: sim.url,
+    },
+  ]);
+  const page = await context.newPage();
+  const session = page.waitForResponse((response) => response.url().endsWith('/__sim/api/dataverse/session'));
+  await page.goto(`${sim.url}/_sim/#dataverse`);
+  await session;
+  const panel = page.locator('[data-panel="staff-session"]');
+  await panel.getByText('Selection unavailable', { exact: true }).waitFor();
+  assert.match(await panel.innerText(), /earlier runtime/);
+  assert.doesNotMatch(await panel.innerText(), /Current identity/);
+  const staffUser = panel.locator('#staff-user');
+  assert.equal(await staffUser.isEnabled(), true);
+  await staffUser.selectOption({ index: 0 });
+  const chosen = page.waitForResponse(
+    (response) => response.url().endsWith('/__sim/api/dataverse/session') && response.request().method() === 'POST',
+  );
+  await panel.getByRole('button', { name: 'Use staff user', exact: true }).click();
+  await chosen;
+  await panel.getByText('Current identity', { exact: true }).waitFor();
+});
+
+// @test-kind contract: the Canvas app list is a static shell whose navigation shows at phone width without a script
+test('the Canvas app list shows its navigation at phone width, with no script and no Menu', async (t) => {
+  const sim = await canvasPlayerFixture(t, 'directory');
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 375, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${sim.url}/_apps/canvas/`);
+  const simulator = page.getByRole('link', { name: 'Simulator workspace', exact: true });
+  await simulator.waitFor();
+  assert.equal(await simulator.isVisible(), true);
+  assert.equal(await page.locator('#nav-toggle').count(), 0);
+  assert.equal(await page.locator('script').count(), 0);
 });

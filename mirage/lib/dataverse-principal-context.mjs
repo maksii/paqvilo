@@ -3,6 +3,8 @@ import { dataverseIdentity } from './dataverse-security.mjs';
 
 export const STAFF_UNAVAILABLE_MESSAGE =
   'The selected staff user is unavailable or disabled. Select a staff user or the local administrator in /_sim/.';
+export const STAFF_SELECTION_STALE_MESSAGE =
+  'The staff selection in this browser was made by an earlier runtime or is not valid here. Select a staff user or the local administrator in /_sim/.';
 
 /** Organization authorization remains with principals/FLS; admin only bypasses
  * the separate Power Pages visitor permission model in the shared row store. */

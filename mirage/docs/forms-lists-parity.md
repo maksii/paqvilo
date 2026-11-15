@@ -40,10 +40,19 @@ participate. Read-only, disabled and off-tab controls are not cleared. Boolean r
 controls decode their `1`/`0` values and reject invalid text; the JSON form API requires
 typed Boolean values. These rules do not coerce arbitrary direct DataStore writes.
 
-Permission failures use the existing portal access-denied wording. Other write failures use
-the toolkit fallback "An error occurred while processing your request. Please try again."
-until the site supplies `observed.formSubmissionErrorMessage` with `evidence`. This is plain
-text, escaped in HTML; it does not reproduce a native localized message or exception stack.
+Permission failures use the existing portal access-denied wording. When a plug-in refuses a basic form's save with an
+`InvalidPluginExecutionException` (a declarative rule, a step handler's `reject(message)`, a plug-in type handler's
+throw or a CLR plug-in), the response is 200 and the form is rendered again with the posted values. The message panel
+above the form shows `An unknown failure has occurred. Error ID # [<id>]`. `<id>` is a new GUID that the response
+also sends as `x-ms-request-id`, and the runtime diagnostic records it as `errorId`. When the site setting
+`Site/EnableCustomPluginError` is `true` (any letter case), the panel shows the plug-in's message instead, as escaped
+plain text. This matches native basic-form create and update. The trace and the runtime diagnostic always keep the
+plug-in's message. Other write failures, including an ordinary plug-in exception (0x80040224), use the toolkit
+fallback "An error occurred while processing your request. Please try again." unless the site supplies
+`observed.formSubmissionErrorMessage` with `evidence`. That setting does not change a plug-in refusal. Microsoft Learn
+also documents `Site/EnableCustomPluginError` for multistep forms and list retrieval. Mirage does not apply it there:
+a plug-in refusal of a multistep-form step answers the simulator's request error page with the error's status, and
+lists keep their own grid-service error message.
 
 Native form redirects include `Content-Type: text/html; charset=utf-8`, matching the hosted response header.
 

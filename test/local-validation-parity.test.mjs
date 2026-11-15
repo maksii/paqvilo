@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { classifyChanges } from '../.github/scripts/change-scope.mjs';
+import { acquireCiWorkspaceLease } from '../scripts/ci-workspace-lease.mjs';
 import {
   changedTests,
   localBrowserChannels,
@@ -142,9 +143,19 @@ test('a coverage run first removes the coverage directories earlier runs left be
   fs.writeFileSync(path.join(earlier, 'v8-coverage-left', 'coverage-1.json'), '{}');
   fs.mkdirSync(path.join(earlier, 'logs'));
   fs.writeFileSync(path.join(earlier, 'logs', 'unit.log'), 'evidence');
-  await runSteps([{ label: 'plain', commands: [['-e', '']] }], 1, { cwd: directory });
-  assert.equal(fs.existsSync(path.join(earlier, 'v8-coverage-left')), true, 'a run without coverage leaves them');
-  await runSteps([{ label: 'unit', commands: [{ args: ['-e', ''], coverage: true }] }], 1, { cwd: directory });
+  // Only the process that holds the checkout's lease removes leftovers, so the runs are made as that owner.
+  const environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  try {
+    await runSteps([{ label: 'plain', commands: [['-e', '']] }], 1, { cwd: directory, environment });
+    assert.equal(fs.existsSync(path.join(earlier, 'v8-coverage-left')), true, 'a run without coverage leaves them');
+    await runSteps([{ label: 'unit', commands: [{ args: ['-e', ''], coverage: true }] }], 1, {
+      cwd: directory,
+      environment,
+    });
+  } finally {
+    await release();
+  }
   assert.deepEqual(fs.readdirSync(earlier), ['logs'], 'the leftover is gone, the earlier logs stay');
   assert.equal(fs.readFileSync(path.join(earlier, 'logs', 'unit.log'), 'utf8'), 'evidence');
 });
@@ -158,11 +169,17 @@ test('a coverage directory that cannot be removed is left to the next run and do
     throw Object.assign(new Error('Invented busy directory'), { code: 'EBUSY' });
   };
   const lane = [{ label: 'unit', commands: [{ args: ['-e', ''], coverage: true }] }];
-  await runSteps(lane, 1, { cwd: directory, removeDirectory: busy });
-  assert.equal(attempts.length, 1);
-  assert.equal(fs.existsSync(attempts[0]), true, 'the directory stays for the next run');
-  await runSteps(lane, 1, { cwd: directory });
-  assert.equal(fs.existsSync(attempts[0]), false, 'the next coverage run removes it');
+  const environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  try {
+    await runSteps(lane, 1, { cwd: directory, removeDirectory: busy, environment });
+    assert.equal(attempts.length, 1);
+    assert.equal(fs.existsSync(attempts[0]), true, 'the directory stays for the next run');
+    await runSteps(lane, 1, { cwd: directory, environment });
+    assert.equal(fs.existsSync(attempts[0]), false, 'the next coverage run removes it');
+  } finally {
+    await release();
+  }
 });
 
 test('local validation runs the Security workflow CodeQL analysis first, except on hosted runners', () => {

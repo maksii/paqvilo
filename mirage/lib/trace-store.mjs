@@ -590,8 +590,8 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
   const flag = get('hasErrors');
   if (flag !== null && ![true, false, 'true', 'false', '1', '0'].includes(flag))
     throw invalid('hasErrors', 'must be true or false');
-  // result (D-M-2): a comma list of trace results; a trace matches when its summary status (running while a span runs,
-  // else the root's status) is one of them.
+  // result (D-M-2): a comma list of trace results; a trace matches when its activity result (summary.result: running
+  // while a span runs, else error or denied when the root or a step failed, else the root's status) is one of them.
   const resultList = text('result')
     ?.split(',')
     .map((value) => value.trim())
@@ -748,16 +748,29 @@ function traceTimeMatches(trace, f) {
   );
 }
 
-// The activity outcome: failed when the root or any step ended error or denied, except a browser probe's 404 root.
-// errorCount counts the root too, so a probe root's error is taken back out of it.
+// A browser probe's 404 root (decision 33): an expected answer, not a failure.
+const probeMiss = (root) =>
+  root !== null &&
+  root.attributes.browserProbe === true &&
+  root.attributes.statusCode === 404 &&
+  root.status === 'error';
+// The activity outcome: failed when the root or any step ended error or denied, a probe miss excepted. errorCount
+// counts the root too, so a probe miss is taken back out of it.
 const failedOf = (trace) => {
   const root = trace.root ? recordOf(trace.root) : null;
-  const probeMiss =
-    root !== null &&
-    root.attributes.browserProbe === true &&
-    root.attributes.statusCode === 404 &&
-    root.status === 'error';
-  return trace.errorCount + trace.deniedCount - (probeMiss ? 1 : 0) > 0;
+  return trace.errorCount + trace.deniedCount - (probeMiss(root) ? 1 : 0) > 0;
+};
+// The activity result (decision 32): running while a span runs; a failed activity reads its root's own error or
+// denied, else error when a step ended error, else denied; otherwise the root's status (ok for a probe miss).
+const resultOf = (trace) => {
+  if (trace.running) return 'running';
+  const root = recordOf(trace.root);
+  const miss = probeMiss(root);
+  if (!failedOf(trace)) return miss ? 'ok' : root.status;
+  if (!miss && (root.status === 'error' || root.status === 'denied')) return root.status;
+  const errors = trace.errorCount - (miss ? 1 : 0);
+  if (errors > 0) return 'error';
+  return 'denied';
 };
 
 // The outcome a trace summary carries (summary.failed): the activity-level meaning of hasErrors.
@@ -858,6 +871,7 @@ export function createTraceStore({
       // The root's audit entry (Power Pages: the X-Sim-Trace-Id of the request), or null.
       auditId: typeof rootRecord.attributes.auditId === 'string' ? rootRecord.attributes.auditId : null,
       status: trace.running ? 'running' : rootRecord.status,
+      result: resultOf(trace),
       ended: trace.running === 0,
       durationMs: rootRecord.durationMs,
       totalDurationMs: totalOf(trace),
@@ -1018,9 +1032,8 @@ export function createTraceStore({
     spans: (trace) => trace.spans.length,
     errors: (trace) => trace.errorCount * 1e6 + trace.deniedCount,
   };
-  // The result filter: the trace's summary status is one of the listed results.
-  const resultMatches = (trace, f) =>
-    !f.result || f.result.has(trace.running ? 'running' : recordOf(trace.root).status);
+  // The result filter: the trace's activity result (summary.result) is one of the listed results.
+  const resultMatches = (trace, f) => !f.result || f.result.has(resultOf(trace));
   // The matching traces (internal objects), sorted; summaries are built only for what a caller returns.
   function matchedTraces(f) {
     const rows = [];

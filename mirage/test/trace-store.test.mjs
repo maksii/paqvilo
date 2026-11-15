@@ -763,19 +763,28 @@ test('headers send x-sim-trace-id only as the audit id of the nearest audited sp
   for (const span of [write, api, child, root]) span.end();
 });
 
-test('result filters traces by their summary status, a comma list counted in the totals; status keeps matching any span', () => {
+// @test-kind contract+security: result filters on the activity result; the file-level security tag stays on this test
+test('result filters traces by their activity result, a comma list counted in the totals; status keeps matching any span', () => {
   const { traces } = store();
   const ok = traces.start({ kind: 'http', name: 'ok' });
   traces.run(ok, () => traces.start({ kind: 'internal', name: 'failed child' }).fail(new Error('inner')));
   ok.end({ status: 'ok' });
   traces.start({ kind: 'http', name: 'error' }).fail(new Error('outer'));
   traces.start({ kind: 'http', name: 'denied' }).end({ status: 'denied' });
+  traces.start({ kind: 'http', name: 'clean' }).end();
   const running = traces.start({ kind: 'http', name: 'running' });
   const names = (filters) => traces.query({ ...filters, order: 'asc' }).items.map((item) => item.root.name);
-  assert.deepEqual(names({ result: 'error,denied' }), ['error', 'denied'], 'the root result, not a failed child');
-  assert.deepEqual(names({ result: 'OK' }), ['ok']);
+  assert.deepEqual(
+    names({ result: 'error,denied' }),
+    ['ok', 'error', 'denied'],
+    'an ok root with a failed step reads error',
+  );
+  assert.deepEqual(names({ result: 'OK' }), ['clean']);
   assert.deepEqual(names({ result: 'running' }), ['running']);
-  assert.equal(traces.query({ result: 'error, denied', pageSize: 1 }).total, 2, 'the total counts every match');
+  assert.equal(traces.query({ result: 'error, denied', pageSize: 1 }).total, 3, 'the total counts every match');
+  const okItem = traces.query().items.find((item) => item.root.name === 'ok');
+  assert.equal(okItem.status, 'ok');
+  assert.equal(okItem.result, 'error');
   assert.deepEqual(names({ status: 'error' }), ['ok', 'error'], 'status still matches any span');
   assert.equal(traces.stats({ result: 'denied' }).roots.count, 1);
   assert.equal(traces.export({ result: 'ok' }).traces.length, 1);
@@ -1794,9 +1803,11 @@ test('a form save refused by a step is a failed activity though its root answere
   root.end({ attributes: { statusCode: 200 } });
   const names = (filters) => traces.query(filters).items.map((item) => item.root.name);
   assert.equal(traces.query().items[0].status, 'ok');
+  assert.equal(traces.query().items[0].result, 'error');
   assert.equal(traces.query().items[0].failed, true);
   assert.deepEqual(names({ hasErrors: true }), ['POST /form']);
-  assert.deepEqual(names({ result: 'error' }), [], 'the result still names the root status');
+  assert.deepEqual(names({ result: 'error' }), ['POST /form']);
+  assert.deepEqual(names({ result: 'ok' }), []);
   assert.equal(traces.stats({}).roots.failed, 1);
   assert.deepEqual(
     traces.spans({ hasErrors: true, order: 'asc' }).items.map((span) => span.name),
@@ -1811,18 +1822,64 @@ test('an activity whose only failure is a denied step is failed', () => {
   traces.run(root, () => traces.start({ kind: 'permission', name: 'Invented.Check' }).end({ status: 'denied' }));
   root.end({ attributes: { statusCode: 200 } });
   assert.equal(traces.query().items[0].failed, true);
+  assert.equal(traces.query().items[0].result, 'denied');
+  assert.equal(traces.query().items[0].status, 'ok');
   assert.equal(traces.query({ hasErrors: true }).total, 1);
+  assert.equal(traces.query({ result: 'denied' }).total, 1);
 });
 
-// @test-kind contract: one activity outcome (failed) for query, spans, stats and summary
-test('a browser probe that ends 404 is not a failed activity and stays in the error results', () => {
+// @test-kind contract: a browser probe's 404 is an expected answer; its activity result is ok
+test('a browser probe that ends 404 is not a failed activity and its result is ok', () => {
   const { traces } = store();
   const root = traces.start({ kind: 'http', name: 'GET /favicon.ico', attributes: { browserProbe: true } });
   root.end({ status: 'error', attributes: { statusCode: 404 } });
-  assert.equal(traces.query().items[0].failed, false);
+  const [item] = traces.query().items;
+  assert.equal(item.status, 'error');
+  assert.equal(item.result, 'ok');
+  assert.equal(item.failed, false);
   assert.equal(traces.query({ hasErrors: true }).total, 0);
-  assert.equal(traces.query({ result: 'error' }).total, 1);
+  assert.equal(traces.query({ result: 'error' }).total, 0);
+  assert.equal(traces.query({ result: 'ok' }).total, 1);
+  assert.equal(traces.query({ status: 'error' }).total, 1, 'the step filter still sees the 404 root');
   assert.equal(traces.stats({}).roots.failed, 0);
+});
+
+// @test-kind contract: the activity result follows its failed steps and reads running while it runs
+test("the activity result takes the root's own failure first, then error before denied, and running while a span runs", () => {
+  const { traces } = store();
+  const denied = traces.start({ kind: 'http', name: 'denied root' });
+  traces.run(denied, () => traces.start({ kind: 'internal', name: 'failed step' }).fail(new Error('x')));
+  denied.end({ status: 'denied' });
+  const cancelled = traces.start({ kind: 'http', name: 'cancelled with error' });
+  traces.run(cancelled, () => traces.start({ kind: 'internal', name: 'error step' }).fail(new Error('x')));
+  cancelled.end({ status: 'cancelled' });
+  traces.start({ kind: 'http', name: 'cancelled clean' }).end({ status: 'cancelled' });
+  const probe = traces.start({ kind: 'http', name: 'probe', attributes: { browserProbe: true } });
+  traces.run(probe, () => traces.start({ kind: 'internal', name: 'probe step' }).fail(new Error('x')));
+  probe.end({ status: 'error', attributes: { statusCode: 404 } });
+  const live = traces.start({ kind: 'http', name: 'live' });
+  traces.run(live, () => traces.start({ kind: 'internal', name: 'live step' }).fail(new Error('x')));
+  const byName = (name) => traces.query({ pageSize: 200 }).items.find((item) => item.root.name === name);
+  assert.equal(byName('denied root').result, 'denied');
+  assert.equal(byName('cancelled with error').result, 'error');
+  assert.equal(byName('cancelled clean').result, 'cancelled');
+  assert.equal(byName('cancelled clean').failed, false);
+  assert.equal(byName('probe').result, 'error');
+  assert.equal(byName('live').result, 'running');
+  assert.equal(byName('live').failed, true);
+  assert.equal(
+    traces.query({ hasErrors: true }).items.some((item) => item.root.name === 'live'),
+    true,
+  );
+  assert.equal(
+    traces.query({ result: 'error' }).items.some((item) => item.root.name === 'live'),
+    false,
+  );
+  live.end();
+  assert.equal(byName('live').result, 'error');
+  for (const item of traces.query({ pageSize: 200 }).items) {
+    if (item.result !== 'running') assert.equal(item.failed, ['error', 'denied'].includes(item.result), item.root.name);
+  }
 });
 
 // @test-kind contract: a traceId filter takes an 8-character prefix as the id filters do, and a shorter one matches nothing

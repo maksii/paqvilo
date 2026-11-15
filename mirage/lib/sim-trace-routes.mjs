@@ -389,6 +389,11 @@ function sendTraceTree(traces, res, canonicalId, shortId, json) {
   const id = segment(canonicalId ?? shortId);
   // /trace/<id> answers UUID-shaped ids only, so a trace id never competes with a named route.
   const tree = canonicalId || UUID.test(id) ? traces.tree(id) : null;
-  if (!tree) throw failure(404, 'TraceNotFound', 'No retained trace has this id; read a trace at /trace/id/<traceId>.');
+  if (!tree)
+    throw failure(
+      404,
+      'TraceNotFound',
+      "No retained trace has this id. Traces live in the runtime's memory: a restart or a clear drops them all, and the least recently active are dropped beyond the traces limit. Read a trace at /trace/id/<traceId>.",
+    );
   json(res, 200, tree);
 }

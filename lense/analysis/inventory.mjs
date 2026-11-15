@@ -229,7 +229,9 @@ function addSourceBytes(state, bytes, file, type, relativeFile = file, archiveDe
     return readArchive(state, bytes, file, archiveDepth, rootId, container);
   }
   const text = stripByteOrderMark(bytes.toString('utf8'));
-  state.inputs.push({ file, relativeFile, rootId, text, line: 1, column: 1, exactLocation: true });
+  const input = { file, relativeFile, rootId, text, line: 1, column: 1, exactLocation: true };
+  if (archiveDepth === 0) input.rootName = state.rootName;
+  state.inputs.push(input);
   const first = state.records.length;
   try {
     if (type.record) parseYaml(state, text, file, type.record);
@@ -430,21 +432,14 @@ export function collectAnalysisInputs(roots, overrides, { platform = true } = {}
   const selectedRoots = roots.slice(0, limits.roots);
   if (new Set(selectedRoots.map((root) => root?.id)).size !== selectedRoots.length)
     throw new Error('Static analysis source root identities must be unique');
-  const reals = selectedRoots.map((root) => {
-    try {
-      return fs.realpathSync.native(path.resolve(root.path));
-    } catch {
-      return null;
-    }
-  });
-  state.rootPaths = new Set(reals.filter(Boolean));
-  state.labelBase = roots.length > 1 ? commonDirectory(reals.map((real) => (real ? dirOf(real) : null))) : null;
+  const labels = analysisLabelRoots(selectedRoots);
+  state.rootPaths = new Set(labels.map((item) => item.real).filter(Boolean));
   for (const [index, selected] of roots.entries()) {
     if (index >= limits.roots) {
       skip(state, '.', 'root-count-limit');
       break;
     }
-    inspectRoot(state, selected, roots.length > 1, reals[index]);
+    inspectRoot(state, selected, labels[index].prefix, labels[index].real);
   }
   addEmbeddedUnits(state);
   if (!state.stats.files) skip(state, '.', 'no-supported-sources');
@@ -454,20 +449,21 @@ export function collectAnalysisInputs(roots, overrides, { platform = true } = {}
   delete state.rootId;
   delete state.prefix;
   delete state.rootPaths;
-  delete state.labelBase;
   delete state.currentRoot;
+  delete state.rootName;
   delete state.platform;
   delete state.gaps;
   return state;
 }
 
-function inspectRoot(state, selected, multiple, real) {
+function inspectRoot(state, selected, prefix, real) {
   const id = selected?.id;
   if (typeof id !== 'string' || !/^[a-z0-9-]{1,64}$/i.test(id) || typeof selected.path !== 'string')
     throw new Error('Invalid static analysis source root');
   state.rootId = id;
   state.currentRoot = real;
-  state.prefix = multiple ? rootPrefix(state.labelBase, real, id) : '';
+  state.rootName = real ? path.basename(real) : id;
+  state.prefix = prefix;
   const rootInfo = { id, kind: selected.kind ?? 'source', complete: true };
   state.roots.push(rootInfo);
   const skippedBefore = state.gaps;
@@ -530,10 +526,48 @@ function commonDirectory(dirs) {
   }
   return path.parse(base).root === base ? null : base;
 }
+/**
+ * Each root's label prefix and real path. With several roots, labels are relative to the common folder of the
+ * source roots; a project file is configuration and does not move that folder.
+ */
+export function analysisLabelRoots(roots) {
+  const reals = roots.map((root) => {
+    try {
+      return fs.realpathSync.native(path.resolve(root.path));
+    } catch {
+      return null;
+    }
+  });
+  const multiple = roots.length > 1;
+  const sources = reals.filter((_, index) => roots[index]?.kind !== 'project');
+  const base = multiple ? commonDirectory(sources.map((real) => (real ? dirOf(real) : null))) : null;
+  return roots.map((root, index) => ({
+    id: root?.id,
+    real: reals[index],
+    prefix: multiple ? rootPrefix(base, reals[index], root?.id) : '',
+  }));
+}
+/**
+ * The real path of the file a label names (for an archive member, of its outermost package), or null. The longest
+ * matching prefix names the most specific root; between equal prefixes, the root whose file exists wins.
+ */
+export function analysisLabelPath(labelRoots, label) {
+  const file = String(label).split('!/')[0];
+  const matches = labelRoots.filter(
+    (root) => root.real && file.startsWith(root.prefix) && file.length > root.prefix.length,
+  );
+  const longest = Math.max(-1, ...matches.map((root) => root.prefix.length));
+  const candidates = matches
+    .filter((root) => root.prefix.length === longest)
+    .map((root) => path.join(dirOf(root.real), file.slice(root.prefix.length)));
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0] ?? null;
+}
 // Several roots label files relative to their common folder; without one, each label starts with the root id.
+// A root outside that folder, such as a project file beside the sources, is labelled by its root id.
 function rootPrefix(base, real, id) {
   if (!base || !real) return id + '/';
   const relative = path.relative(base, dirOf(real)).replaceAll('\\', '/');
+  if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) return id + '/';
   return relative ? relative + '/' : '';
 }
 // A selected root nested in another selected root is read only as itself, whatever the order of roots.

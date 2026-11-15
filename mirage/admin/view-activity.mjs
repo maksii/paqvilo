@@ -371,6 +371,12 @@ const signed = (ms) =>
 /** The one time format of Monitor: local HH:MM:SS.mmm, the date and UTC on hover (ui-kit.mjs `time`). */
 const when = (iso) => kit.time(iso);
 const resultBadge = (result) => kit.badge(result ?? 'unknown', RESULT_TONES[result] ?? 'neutral');
+/** An activity's result badge, then the root step's own result when it differs (`root ok`), or `browser probe`. */
+const activityResult = (summary, root) => {
+  if (summary.result === summary.status) return resultBadge(summary.result);
+  const label = root?.attributes?.browserProbe === true ? 'browser probe' : 'root ' + summary.status;
+  return resultBadge(summary.result) + ' ' + kit.badge(label, 'neutral');
+};
 /** The HTTP status as a secondary badge (D-M-2); none without a status. */
 const httpBadge = (status) =>
   Number.isInteger(Number(status)) && status !== null && status !== ''
@@ -749,7 +755,13 @@ async function fetchList(ctx, d, now) {
   const answer = await get(ctx, `/trace?${query}`);
   if (answer.error || !Array.isArray(answer.items)) return { mode: 'trace', ...answer };
   const audit = await auditOf(ctx, answer.items, current);
-  return { mode: 'trace', ...answer, audit: audit?.byTrace ?? null, auditComplete: audit?.complete ?? true };
+  return {
+    mode: 'trace',
+    ...answer,
+    rangeFrom: RANGES[d.range] && !d.filters.from ? query.get('from') : null,
+    audit: audit?.byTrace ?? null,
+    auditComplete: audit?.complete ?? true,
+  };
 }
 /** The audit page as rows: more than one result, or a time range, narrow the page the audit answered. */
 function auditRows(d, items = []) {
@@ -1042,9 +1054,16 @@ function quickFilter(tab, d) {
     : '';
 }
 const RESULT_CHOICES = [['', 'Any result'], [FAILED, 'error or denied'], ...RESULTS.map((result) => [result, result])];
+/** More filters: `active` counts its set filters; it is open when asked, while one is set, or when one was refused. */
+function moreState(d) {
+  const names = [...MORE, ...AUDIT_ONLY];
+  const active = names.filter((name) => d.filters[name]).length;
+  const refused = refusedFilter(d)?.parameter;
+  return { active, open: d.more || active > 0 || names.includes(STORE_NAMES[refused] ?? refused) };
+}
 function filterBar(ctx, d) {
   const f = d.filters;
-  const more = [...MORE, ...AUDIT_ONLY].filter((name) => f[name]).length;
+  const { active, open: moreOpen } = moreState(d);
   const tip = { tip: true };
   const ranges = [
     ...Object.entries(RANGE_LABELS),
@@ -1100,10 +1119,10 @@ function filterBar(ctx, d) {
       anyOf('Any HTTP status', ['2xx', '3xx', '4xx', '5xx', 'pending']),
       f.httpStatus,
     );
-  // More filters opens on request, or when one of its filters was refused (the banner names it).
-  const refused = refusedFilter(d)?.parameter;
-  const moreOpen = d.more || more > 0 || [...MORE, ...AUDIT_ONLY].includes(STORE_NAMES[refused] ?? refused);
-  const toggle = `<button type="button" class="ui-link-button" id="activity-more" data-activity-action="more" aria-expanded="${moreOpen}" aria-controls="activity-more-filters">More filters${more ? ' (' + more + ')' : ''}</button>`;
+  // A set filter keeps the section open: its toggle says so and is disabled until the filters are cleared.
+  const clearHint = active ? ` aria-disabled="true" title="Clear its ${plural(active, 'filter')} to collapse"` : '';
+  const activeCount = active ? ' (' + active + ')' : '';
+  const toggle = `<button type="button" class="ui-link-button" id="activity-more" data-activity-action="more" aria-expanded="${moreOpen}" aria-controls="activity-more-filters"${clearHint}>More filters${activeCount}</button>`;
   // A choice applies at once, a text field when it changes or on Enter; Apply (the drawer's footer) submits the form.
   return (
     `<form id="${FILTER_FORM}" class="ui-form ui-activity-filters" data-activity-filters role="search" aria-label="Activity filters">` +
@@ -1196,7 +1215,9 @@ const sortColumn = (d, by, column) => ({ ...column, label: SORTS[by], sortKey: b
 /** The list's place in the bottom controls: the view's own actions, then the zone and count summary. */
 const footOf = (ctx, d, actions) => `${actions}<span class="ui-page-summary">${e(summaryText(ctx, d))}</span>`;
 /** Every result with its meaning: the (i) of the Result column (D-M-6: no permanent legend under the list). */
-const RESULT_HELP = RESULTS.map((result) => `${result}: ${RESULT_MEANINGS[result]}.`).join(' ');
+const RESULT_HELP =
+  RESULTS.map((result) => `${result}: ${RESULT_MEANINGS[result]}.`).join(' ') +
+  ' An activity reads error or denied when any of its steps did, even when its page answered HTTP 200; a second badge then names the root step’s own result (root ok). A browser’s own probe for a missing icon reads ok.';
 /** The audit facts of an activity: provider, rows returned, the portal error code (from its root audit entry). */
 function auditFacts(entries, auditId) {
   const root = entries?.find((entry) => entry.id === auditId) ?? entries?.find((entry) => !entry.parentId);
@@ -1325,7 +1346,17 @@ function activityListTable(ctx, d, list) {
     () => `Activities by ${SORTS[d.sort.by].toLowerCase()}, ${d.sort.order === 'asc' ? 'ascending' : 'descending'}`,
   );
   const rows = activityRows(d, list);
-  const paging = { total: list.total, pages: list.pageCount, page: list.page, size: list.pageSize, search: '' };
+  const paging = {
+    total: list.total,
+    pages: list.pageCount,
+    page: list.page,
+    size: list.pageSize,
+    search: '',
+    // The count says how many retained activities the filters or the time range keep, and from when.
+    note:
+      (filtered(d) && Number.isInteger(list.retained) ? ` of ${e(list.retained)} retained` : '') +
+      (list.rangeFrom ? ` since ${when(list.rangeFrom)}` : ''),
+  };
   // The table starts right under the toolbar (D-M-7); its tools, count and pager follow it.
   return (
     auditIncompleteNotice(list.auditComplete) +
@@ -1355,7 +1386,7 @@ function activityListTable(ctx, d, list) {
           render: (item) =>
             item.read
               ? resultBadge(OUTCOME_RESULT[item.read.outcome] ?? item.read.outcome)
-              : `${resultBadge(item.status)}${httpBadge(item.root?.attributes?.statusCode ?? item.facts.root?.status)}`,
+              : `${activityResult(item, item.root)}${httpBadge(item.root?.attributes?.statusCode ?? item.facts.root?.status)}`,
         },
         {
           label: 'Activity',
@@ -1869,17 +1900,19 @@ export function whyOf(tree) {
   const summary = tree?.trace ?? {};
   const spans = tree?.spans ?? [];
   const byId = new Map(spans.map((span) => [span.spanId, span]));
-  if (summary.status === 'running')
+  if (summary.result === 'running')
     return { tone: 'info', text: `Still running: ${plural(spans.length, 'step')} so far.`, spanId: null };
   const failedSpans = spans.filter((span) => span.status === 'error' || span.status === 'denied');
   const first =
-    byId.get(summary.firstError?.spanId) ??
-    [...failedSpans].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0) || a.sequence - b.sequence)[0];
+    summary.failed === false
+      ? null
+      : (byId.get(summary.firstError?.spanId) ??
+        [...failedSpans].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0) || a.sequence - b.sequence)[0]);
   if (!first) {
     const status = tree?.root?.attributes?.statusCode;
     return {
       tone: 'ok',
-      text: `Ended ${summary.status ?? 'ok'}${status ? ' with HTTP ' + status : ''} in ${duration(summary.durationMs)}; no step failed.`,
+      text: `Ended ${summary.result ?? summary.status ?? 'ok'}${status ? ' with HTTP ' + status : ''} in ${duration(summary.durationMs)}; ${tree?.root?.attributes?.browserProbe === true ? 'a browser probe of a missing file is not a failure' : 'no step failed'}.`,
       spanId: null,
     };
   }
@@ -2000,17 +2033,30 @@ function traceLinesPanel(d, lines) {
       : '<p class="ui-help">No step wrote a trace line (plug-in ITracingService, flow trace(), server logic Logger).</p>')
   );
 }
+/** What Log & findings lists: the trace lines, the log lines without finding lines (Findings lists those), and the
+ *  findings except a CLR trace line (PLUGIN_CLR_TRACE) its step already lists as a trace line. */
+function logTabParts(tree, answer) {
+  const traces = traceLines(tree);
+  const listed = new Set(traces.map(({ span, event }) => `${span.spanId}\n${event.message ?? ''}`));
+  const lines = Array.isArray(answer?.logs?.items)
+    ? answer.logs.items.filter((line) => line.type !== 'diagnostic').sort((a, b) => a.sequence - b.sequence)
+    : null;
+  const findings = Array.isArray(answer?.findings?.diagnostics)
+    ? answer.findings.diagnostics.filter(
+        (item) => !(item.code === 'PLUGIN_CLR_TRACE' && listed.has(`${item.spanId}\n${item.message ?? ''}`)),
+      )
+    : null;
+  return { traces, lines, findings };
+}
 function detailLogPanel(ctx, d, tree) {
   const answer = d.detailLog;
-  const parts = [traceLinesPanel(d, traceLines(tree))];
+  const tab = logTabParts(tree, answer);
+  const parts = [traceLinesPanel(d, tab.traces)];
   if (!answer)
     return parts.join('') + '<p role="status" class="ui-help">Loading the log lines and findings of this activity…</p>';
   if (answer.logs?.error) parts.push(kit.notice(`Log lines could not be read: ${failed(answer.logs)}`, 'warn'));
   else if (answer.logs) {
-    // Finding lines are listed once, under Findings below.
-    const lines = [...(answer.logs.items ?? [])]
-      .filter((line) => line.type !== 'diagnostic')
-      .sort((a, b) => a.sequence - b.sequence);
+    const lines = tab.lines ?? [];
     parts.push(
       `<h4>Log lines (${e(lines.length)})</h4>` +
         (lines.length
@@ -2020,7 +2066,7 @@ function detailLogPanel(ctx, d, tree) {
   } else parts.push('<p class="ui-help">This host keeps no log stream; the steps hold what was recorded.</p>');
   if (answer.findings?.error) parts.push(kit.notice(`Findings could not be read: ${failed(answer.findings)}`, 'warn'));
   else if (answer.findings) {
-    const items = answer.findings.diagnostics ?? [];
+    const items = tab.findings ?? [];
     parts.push(
       `<h4>Findings (${e(items.length)})</h4>` +
         (items.length
@@ -2226,11 +2272,11 @@ const detailTabs = (ctx, d, tree) => {
   const count = (items) => (Array.isArray(items) ? ` (${items.length})` : '');
   const rendered = (tree.spans ?? []).filter((span) => ['render', 'render-template', 'read'].includes(span.kind));
   const logs = d.detailLog;
-  const traces = traceLines(tree).length;
+  const tab = logTabParts(tree, logs);
   const loaded = Boolean(logs && !logs.logs?.error && !logs.findings?.error);
-  // The count covers the trace lines of the steps and, once loaded, the log lines and findings.
-  const loadedLines = loaded ? (logs.logs?.items?.length ?? 0) + (logs.findings?.diagnostics?.length ?? 0) : 0;
-  const logCount = loaded || traces ? ` (${traces + loadedLines})` : '';
+  // The count is what the tab lists: the trace lines of the steps and, once loaded, the log lines and findings.
+  const loadedLines = loaded ? (tab.lines ?? []).length + (tab.findings ?? []).length : 0;
+  const logCount = loaded || tab.traces.length ? ` (${tab.traces.length + loadedLines})` : '';
   return DETAIL_TABS.filter(([id]) => id !== 'log' || logServed(ctx) || served(ctx, '/diagnostics')).map(
     ([id, label]) => ({
       id,
@@ -2257,7 +2303,7 @@ function detailPanel(ctx, d) {
       title(`Activity <code>${e(short(d.traceId))}</code>`) +
       kit.notice(
         tree.status === 404
-          ? `No retained activity has the id ${d.traceId} (it never existed or was dropped as the least recently active beyond the limit).`
+          ? `No retained activity has the id ${d.traceId}. Activities live in this runtime’s memory: a restart or Clear drops them all, and the least recently active are dropped beyond the limit.`
           : `Activity ${d.traceId} could not be read: ${failed(tree)}`,
         'warn',
       ) +
@@ -2266,7 +2312,7 @@ function detailPanel(ctx, d) {
   const summary = tree.trace ?? {},
     root = tree.root ?? {};
   const head =
-    `<div class="ui-drawer-head">${title(e(root.name ?? summary.traceId))}${resultBadge(summary.status)}${httpBadge(root.attributes?.statusCode)}` +
+    `<div class="ui-drawer-head">${title(e(root.name ?? summary.traceId))}${activityResult(summary, root)}${httpBadge(root.attributes?.statusCode)}` +
     `<span class="ui-help">${e(duration(summary.durationMs))} · ${e(whoText(root.actor, root.session))}</span>` +
     '<button type="button" class="ui-button ui-small" data-activity-copy="id">Copy id</button>' +
     '<button type="button" class="ui-button ui-small" data-activity-copy="link">Copy link</button>' +
@@ -2734,7 +2780,7 @@ function pagesPanel(ctx, d) {
         const item = byRoute[page.route];
         const proof = evidence.path === page.route ? ` · ${evidenceBadge(evidence)}` : '';
         return item
-          ? `<a href="${e(openHref(d, item.traceId))}">${when(item.startedAt)}</a> ${resultBadge(item.status)} ${e(duration(item.durationMs))}${proof}`
+          ? `<a href="${e(openHref(d, item.traceId))}">${when(item.startedAt)}</a> ${activityResult(item, item.root)} ${e(duration(item.durationMs))}${proof}`
           : `<span class="ui-help">not opened yet</span>${proof}`;
       },
     },
@@ -3294,6 +3340,8 @@ export const view = {
     const traceId = segments[0] || params.get('traceId') || null;
     const before = { list: listKey(ctx, d), traceId: d.traceId };
     d.filters = filtersOf(params);
+    // A section the address opens with a More filter set stays open when that filter is cleared.
+    if (moreState(d).active > 0) d.more = true;
     const range = params.get('range');
     d.range = chooseLazy(
       Object.hasOwn(RANGES, range),
@@ -3534,6 +3582,7 @@ export const view = {
     const target = (selector) => event.target?.closest?.(selector);
     /** The list state changed: page 1, the address, then what the open tab shows. */
     const apply = (keepForm = false) => {
+      if (moreState(d).open) d.more = true;
       // A text field that applied on change keeps the form as typed (Enter submits it right after the change).
       if (!keepForm) ctx.forgetDraft?.(FILTER_FORM);
       ctx.pager('activity-list').page = 1;
@@ -3615,9 +3664,11 @@ export const view = {
       return true;
     }
     if (action === 'more') {
-      d.more = !d.more;
+      const { active, open } = moreState(d);
+      // A section with a set filter stays open; otherwise the toggle flips what is shown.
+      d.more = active > 0 || !open;
       ctx.render?.();
-      focus(d.more ? 'activity-kind' : 'activity-more');
+      focus(moreState(d).open ? 'activity-kind' : 'activity-more');
       return true;
     }
     if (action === 'settings') {

@@ -17,7 +17,15 @@ function analyze(entries) {
   const coverage = analyzeApps(entries, (ruleId, entry, field, offset) => {
     const rule = appRules.find((candidate) => candidate.id === ruleId);
     assert.ok(rule, `registered rule ${ruleId}`);
-    findings.push({ ...rule, file: entry.file, field, offset });
+    findings.push({
+      ...rule,
+      file: entry.file,
+      field,
+      offset,
+      line: entry.line,
+      column: entry.column,
+      exactLocation: entry.exactLocation,
+    });
   });
   return { findings, ...coverage };
 }
@@ -370,6 +378,23 @@ test('Code Apps SDK, build and separate CLI dependency are not interchangeable',
   assert.equal(has(result, 'APP-CODE-006'), false);
   assert.ok(has(analyze(codeFiles({ pkg: { ...packageValue(), devDependencies: {} } })), 'APP-CODE-006'));
   assert.ok(has(analyze([json('power.config.json', { environmentId: 'invented' })]), 'APP-CODE-004'));
+});
+// @test-kind contract: findings over Code Apps configuration and package files point at the member they name.
+test('Code Apps configuration and package findings point at the member', () => {
+  const config = '{\n  "appId": "invented",\n  "environmentId": ""\n}';
+  const pkgText = JSON.stringify({ ...packageValue(), scripts: [] }, null, 2);
+  const entries = codeFiles().map((entry) => {
+    if (entry.file === 'power.config.json') return source(entry.file, config);
+    if (entry.file === 'package.json') return source(entry.file, pkgText);
+    return entry;
+  });
+  const result = analyze(entries);
+  const environment = result.findings.find((finding) => finding.id === 'APP-CODE-003');
+  assert.equal(environment.line, 3);
+  assert.equal(environment.exactLocation, true);
+  const scripts = result.findings.find((finding) => finding.id === 'APP-DEPS-004' && finding.field === 'scripts');
+  assert.equal(scripts.line, pkgText.slice(0, pkgText.indexOf('"scripts"')).split('\n').length);
+  assert.equal(scripts.exactLocation, true);
 });
 test('app dependency and script maps reject structural type errors without resolving versions', () => {
   for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'scripts']) {

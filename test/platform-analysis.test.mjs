@@ -373,7 +373,7 @@ test('separate portal roots never borrow settings or default roles from one anot
   assert.ok(!report.findings.some((finding) => finding.ruleId === 'PP-ROLE-001' || finding.ruleId === 'PP-CONFIG-001'));
 });
 
-// @test-kind contract: file labels do not depend on how sources were selected
+// @test-kind contract: file labels do not depend on how sources were selected, and a project file does not move them
 test('file labels do not depend on how sources were selected', (t) => {
   const manifest = '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>';
   const step =
@@ -401,6 +401,23 @@ test('file labels do not depend on how sources were selected', (t) => {
     { id: 'solution-2', kind: 'solution', path: path.join(sibling, 'solution') },
   ];
   assert.deepEqual(stepFiles(analyzeProject(null, { sourceRoots: siblingRoots })), expected);
+  const project = fixture(t, {
+    'mirage.project.yml': 'version: 2\n',
+    'sources/portal/web-files/a.html': '<p>Invented content</p>',
+    'sources/solution/Other/Solution.xml': manifest,
+    'sources/solution/sdkmessageprocessingsteps/step.xml': step,
+  });
+  const projectRoots = [
+    { id: 'project-1', kind: 'project', path: path.join(project, 'mirage.project.yml') },
+    { id: 'portal-2', kind: 'portal', path: path.join(project, 'sources', 'portal') },
+    { id: 'solution-3', kind: 'solution', path: path.join(project, 'sources', 'solution') },
+  ];
+  assert.deepEqual(stepFiles(analyzeProject(null, { sourceRoots: projectRoots })), expected);
+  assert.ok(
+    collectAnalysisInputs(projectRoots)
+      .inputs.map(({ file }) => file)
+      .includes('project-1/mirage.project.yml'),
+  );
 });
 
 test('a declared Canvas package cannot borrow web-source completeness from an unrelated file', (t) => {
@@ -412,6 +429,55 @@ test('a declared Canvas package cannot borrow web-source completeness from an un
   assert.equal(report.complete, false);
   assert.equal(report.coverage.domains.find((domain) => domain.domain === 'canvas').status, 'partial');
   assert.ok(report.capabilities.find((capability) => capability.id === 'canvas-compile').applicable);
+});
+
+// @test-kind contract: an unpacked Canvas source supersedes the packed Solution copy of the same unique name
+test('a Solution Canvas package is not inspected when its unpacked source of the same name is analysed', (t) => {
+  const screen =
+    'Screens:\n  Home:\n    Children:\n      - Go:\n          Control: Classic/Button@2.2.0\n          Properties:\n            Text: ="Go"\n';
+  const manifest = '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>';
+  const packed = 'solution/CanvasApps/inv_app_abcde_DocumentUri.msapp';
+  const root = fixture(t, {
+    'canvas/inv_app_abcde/Src/Home.pa.yaml': screen,
+    [packed]: archive({ 'Src/Home.pa.yaml': screen }),
+    'solution/Other/Solution.xml': manifest,
+  });
+  const report = analyzeProject(root, { failOn: 'none' });
+  const canvas = report.coverage.domains.find((domain) => domain.domain === 'canvas');
+  const hints = (result) => result.findings.filter(({ ruleId }) => ruleId === 'APP-CANVAS-009').map(({ file }) => file);
+  assert.deepEqual(hints(report), ['canvas/inv_app_abcde/Src/Home.pa.yaml']);
+  assert.deepEqual(canvas.superseded, [{ file: packed, source: 'canvas/inv_app_abcde' }]);
+  const alone = fixture(t, {
+    'canvas/inv_app_abcde/Src/Home.pa.yaml': screen,
+    'solution/Other/Solution.xml': manifest,
+  });
+  assert.equal(report.complete, analyzeProject(alone, { failOn: 'none' }).complete);
+
+  const renamed = fixture(t, {
+    'canvas/inv_other/Src/Home.pa.yaml': screen,
+    [packed]: archive({ 'Src/Home.pa.yaml': screen }),
+    'solution/Other/Solution.xml': manifest,
+  });
+  const both = analyzeProject(renamed, { failOn: 'none' });
+  assert.deepEqual(hints(both).sort(), [packed + '!/Src/Home.pa.yaml', 'canvas/inv_other/Src/Home.pa.yaml'].sort());
+  assert.equal(both.coverage.domains.find((domain) => domain.domain === 'canvas').superseded, undefined);
+
+  const appFolder = fixture(t, {
+    'canvas/inv_app_abcde/Src/Home.pa.yaml': screen,
+    [packed]: archive({ 'Src/Home.pa.yaml': screen }),
+    'solution/Other/Solution.xml': manifest,
+  });
+  const byRoot = analyzeProject(null, {
+    failOn: 'none',
+    sourceRoots: [
+      { id: 'canvas-1', kind: 'canvas', path: path.join(appFolder, 'canvas', 'inv_app_abcde') },
+      { id: 'solution-2', kind: 'solution', path: path.join(appFolder, 'solution') },
+    ],
+  });
+  assert.deepEqual(hints(byRoot), ['canvas/inv_app_abcde/Src/Home.pa.yaml']);
+  assert.deepEqual(byRoot.coverage.domains.find((domain) => domain.domain === 'canvas').superseded, [
+    { file: 'solution/CanvasApps/inv_app_abcde_DocumentUri.msapp', source: 'canvas/inv_app_abcde' },
+  ]);
 });
 
 test('unreadable declared domains remain partial and retain their operation requirements', (t) => {

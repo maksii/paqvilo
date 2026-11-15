@@ -1,4 +1,4 @@
-// Explicit observed display settings only: unknown values do not become defaults.
+// Display settings from the app's Properties.json, overridden per field by observed settings; absent values do not become defaults.
 const fields = new Set([
   'designWidth',
   'designHeight',

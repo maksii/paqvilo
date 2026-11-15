@@ -249,8 +249,8 @@ test('a refused Web API collection read carries the permission deny event, like 
   assert.deepEqual([tree.root.status, tree.root.error.code], ['denied', 'PermissionDenied']);
 });
 
-// @test-kind contract: a refused save is a failed activity
-test('a refused basic-form save answers 200 with its message; its activity is failed though the root is ok', async () => {
+// @test-kind contract: a refused save is a failed activity whose result is error
+test('a refused basic-form save answers 200 with the unknown failure; its activity reads error though the root is ok', async () => {
   const controls = nativeFormControlIds('entityform', 'neworder');
   const response = await fetch(sim.url + '/refuse/', {
     method: 'POST',
@@ -264,7 +264,9 @@ test('a refused basic-form save answers 200 with its message; its activity is fa
     ]),
   });
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /Invented rule refused the order\./);
+  const body = await response.text();
+  assert.match(body, /An unknown failure has occurred\. Error ID # \[[0-9a-f-]{36}\]/);
+  assert.doesNotMatch(body, /Invented rule refused the order\./);
   const { root } = await treeOf(response);
   assert.equal(root.status, 'ok');
   const failed = sim.trace.query({ hasErrors: 'true' }).items;
@@ -274,9 +276,8 @@ test('a refused basic-form save answers 200 with its message; its activity is fa
     true,
     'the refused save is in the failed activities',
   );
-  assert.equal(
-    sim.trace.query({ result: 'error' }).items.some((item) => item.traceId === traceId),
-    false,
-    'the root answered ok, so no error result names it',
-  );
+  const activity = sim.trace.query({ result: 'error' }).items.find((item) => item.traceId === traceId);
+  assert.ok(activity, 'the refused save reads error');
+  assert.equal(activity.result, 'error');
+  assert.equal(activity.status, 'ok');
 });

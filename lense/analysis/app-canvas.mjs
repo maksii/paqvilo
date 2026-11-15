@@ -1,5 +1,8 @@
+import path from 'node:path';
 import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 import { appCoverage, appPath, appRule, atNode } from './app-common.mjs';
+import { canvasSourceName } from '../../mirage/lib/canvas-source.mjs';
+import { classifyInventoryPath } from '../../mirage/lib/solution-inventory.mjs';
 
 const yamlReference = 'https://learn.microsoft.com/power-apps/maker/canvas-apps/power-apps-yaml';
 const formulaReference = 'https://learn.microsoft.com/power-platform/power-fx/yaml-formula-grammar';
@@ -261,18 +264,50 @@ function inspectCanvas(entry, emit) {
   if (document.errors.length) emit('APP-CANVAS-001', entry);
   else inspectDocument(document.contents, entry, emit);
 }
+const canvasFile = /(?:^|\/)Src\/[^/]+\.(?:pa|fx)\.ya?ml$/i;
+const packageOf = (entry) => {
+  const at = entry.file.lastIndexOf('!/');
+  return at > 0 ? entry.file.slice(0, at) : null;
+};
+// The Solution's unique name of a packed app (classifyInventoryPath, as the runtime inventory names it), else null.
+function packedName(container) {
+  const parts = container.split('/');
+  const kind = classifyInventoryPath(
+    parts,
+    parts.map((part) => part.toLowerCase()),
+  );
+  return kind?.component === 'canvasapp' ? kind.componentName.toLowerCase() : null;
+}
+// Unpacked sources by unique name (canvasSourceName, the runtime's rule): the folder that holds Src/.
+function unpackedSources(entries) {
+  const sources = new Map();
+  for (const entry of entries) {
+    if (packageOf(entry) || !canvasFile.test(appPath(entry))) continue;
+    const folder = path.posix.dirname(path.posix.dirname(appPath(entry)));
+    const name = folder === '.' ? entry.rootName : canvasSourceName(folder);
+    const label = path.posix.dirname(path.posix.dirname(entry.file));
+    if (name && !sources.has(name.toLowerCase())) sources.set(name.toLowerCase(), label);
+  }
+  return sources;
+}
 export function analyzeCanvas(entries, emit) {
   let files = 0;
+  const sources = unpackedSources(entries);
+  const superseded = new Map();
   for (const entry of entries) {
-    if (/\.pa\.ya?ml$/i.test(appPath(entry))) {
-      files++;
-      inspectCanvas(entry, emit);
-    } else if (/\.fx\.ya?ml$/i.test(appPath(entry))) {
-      files++;
-      emit('APP-CANVAS-004', entry);
+    const pa = /\.pa\.ya?ml$/i.test(appPath(entry));
+    if (!pa && !/\.fx\.ya?ml$/i.test(appPath(entry))) continue;
+    const container = packageOf(entry);
+    const source = container ? sources.get(packedName(container)) : undefined;
+    if (source) {
+      superseded.set(container, source);
+      continue;
     }
+    files++;
+    if (pa) inspectCanvas(entry, emit);
+    else emit('APP-CANVAS-004', entry);
   }
-  return appCoverage(files, [
+  const coverage = appCoverage(files, [
     'native-canvas-compiler',
     'app-checker-and-accessibility-checker',
     'delegation-and-connector-runtime',
@@ -280,4 +315,7 @@ export function analyzeCanvas(entries, emit) {
     'interpolated-power-fx-not-pattern-scanned',
     'rendered-layout-and-control-versions',
   ]);
+  return superseded.size
+    ? { ...coverage, superseded: [...superseded].map(([file, source]) => ({ file, source })) }
+    : coverage;
 }

@@ -11,6 +11,7 @@ import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.m
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const APP = 'inv_inventedapp_1a2b3';
+const PACKED = 'inv_packedapp_9a8b7';
 const screen = (name, text) =>
   `Screens:\n  ${name}:\n    Children:\n      - ${name}Label:\n          Control: Label\n          Properties:\n            Text: ="${text}"\n`;
 
@@ -36,7 +37,11 @@ async function fixture(t, { portal }) {
       '<ImportExportXml><SolutionManifest><UniqueName>InventedApps</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/CanvasApps/inv_inventedapp_1a2b3.meta.xml': `<CanvasApp><Name>${APP}</Name><DisplayName>Invented app</DisplayName><CanvasAppId>77777777-7777-4777-8777-777777777778</CanvasAppId></CanvasApp>`,
     'solution/CanvasApps/inv_inventedapp_1a2b3.msapp': packed,
+    [`solution/CanvasApps/${PACKED}.meta.xml`]: `<CanvasApp><Name>${PACKED}</Name><DisplayName>Packed app</DisplayName><CanvasAppId>77777777-7777-4777-8777-777777777779</CanvasAppId></CanvasApp>`,
+    [`solution/CanvasApps/${PACKED}.msapp`]: packed,
     [`apps/${APP}/Src/HomeScreen.pa.yaml`]: screen('HomeScreen', 'Invented first'),
+    [`apps/${APP}/Properties.json`]: JSON.stringify({ DocumentLayoutWidth: 800, DocumentLayoutHeight: 600 }),
+    [`alt/${APP}/Src/HomeScreen.pa.yaml`]: screen('HomeScreen', 'Invented alt'),
     ...(portal ? portalFiles : {}),
   };
   for (const [relative, content] of Object.entries(files)) {
@@ -50,7 +55,7 @@ function options(root) {
   return {
     solutionRoots: [path.join(root, 'solution')],
     projectRoot: root,
-    canvas: { sources: [`apps/${APP}`] },
+    canvas: { sources: [`apps/${APP}`, `alt/${APP}`] },
     port: 0,
     watch: true,
   };
@@ -96,15 +101,19 @@ const getJson = async (url) => {
   return response.json();
 };
 
-// The shared body: one listed app, the folder's screens and label, watch facts, and a revision that follows an edit.
+// The shared body: one listed app per unique name (two folders share one), the folder's screens, label, origin and display
+// settings, watch facts, and a revision that follows an edit. The Solution app that is not configured keeps its origin.
 async function assertFolderIsSourceAndWatched(sim, root) {
   const listed = await getJson(`${sim.url}/_apps/canvas/`);
-  assert.deepEqual(
-    listed.apps.map((app) => app.uniqueName),
-    [APP],
-  );
-  assert.equal(listed.apps[0].name, 'Invented app');
+  assert.deepEqual(listed.apps.map((app) => app.uniqueName).sort(), [APP, PACKED]);
+  assert.equal(listed.apps.find((app) => app.uniqueName === APP).name, 'Invented app');
   const inspected = await getJson(`${sim.url}/_apps/canvas/api/${APP}`);
+  assert.deepEqual(inspected.app.origin, { kind: 'canvas.sources', path: `apps/${APP}`, format: 'directory' });
+  assert.deepEqual(inspected.app.display, { designWidth: 800, designHeight: 600 });
+  assert.doesNotMatch(JSON.stringify(inspected), /Invented alt/);
+  const solution = await getJson(`${sim.url}/_apps/canvas/api/${PACKED}`);
+  assert.equal(solution.app.origin.kind, 'solution');
+  assert.match(solution.app.origin.path ?? '', /\.msapp$/);
   assert.deepEqual(
     inspected.screens.map((item) => item.name),
     ['HomeScreen'],

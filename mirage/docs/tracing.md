@@ -379,11 +379,15 @@ heading to sort the list by it (`sort=` in the address, largest or newest first)
 The bottom bar under the list holds **Compare**, **Show reads**, the time zone, the count, **Rows** and paging. The Log
 stream, Findings, Pages & render and the Stats breakdown sort by any data column from its heading in the page (text
 order, numbers numeric). On a phone a log line takes two lines, with **Open activity →** under it. The
-result is `running` while any step runs, otherwise the root step's status; the (i) of the Result heading explains the
-five results. An activity is **failed** when its root or any of its steps ended `error` or `denied`, even when its
-result reads `ok`; the **Failed** filter and the **Errors & denied** quick filter select failed activities. A browser's
-own requests for `/favicon.ico`, the touch icons and the devtools manifest are traced with the attribute `browserProbe`,
-and a 404 answer to one is not a failed activity. **Who** is the actor and the session: `Ada Member · contact:1a2b3c4d` for a signed-in contact,
+result is `running` while any step runs. An ended activity reads `error` or `denied` when its root or any of its steps
+ended so: the root's own error or denial first, then `error` before `denied`. Otherwise it reads the root step's status.
+A page that answered HTTP 200 while a plug-in step refused the save therefore reads `error`, with a second badge
+`root ok` beside the HTTP 200. The (i) of the Result heading explains the five results. An activity is **failed** when
+its result is `error` or `denied`, or, while it runs, as soon as a step failed. The **Result** filter
+(`result=error,denied`), the **Failed** filter and the **Errors & denied** quick filter all select failed activities. A
+browser's own requests for `/favicon.ico`, the touch icons and the devtools manifest are traced with the attribute
+`browserProbe`. A 404 answer to one is not a failed activity: it reads `ok`, its row says `browser probe`, and its root
+step keeps `error` with HTTP 404. **Who** is the actor and the session: `Ada Member · contact:1a2b3c4d` for a signed-in contact,
 `Visitor accb980f` for a browser with the visitor cookie (its session key `visitor:<id>`), and `Anonymous` otherwise. Roots
 on the standalone host and on the Dataverse listener are `anonymous` with no session until they authenticate.
 
@@ -547,7 +551,7 @@ need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or 
 | `POST /trace/clear`       | Drops every retained trace and answers the store status.                                                                                                                                                                                                                                                                                              |
 | `POST /trace/flush`       | Waits until every queued persisted line is written and every live channel frame reached its client, then answers the store status. Running spans are not waited for.                                                                                                                                                                                  |
 
-A trace summary carries `status`, `durationMs`, `totalDurationMs`, the span, error and denied counts, `failed` (the activity outcome, see [reading a trace](#reading-a-trace)), the plug-in,
+A trace summary carries `status` (the root step's own status, `running` while a span runs), `result` (the activity result, see [reading a trace](#reading-a-trace)), `durationMs`, `totalDurationMs`, the span, error and denied counts, `failed` (true when the root or a step ended `error` or `denied`, a browser probe's 404 excepted; a running activity can be failed while its `result` is `running`), the plug-in,
 flow, connector and Dataverse counts, the kinds, tables and modules involved, the root span, `auditId` (the audit
 entry id its root names, or `null`) and, once a span ended `error` or `denied`, `firstError`:
 `{ spanId, kind, name, status, code, message }` of the first one.
@@ -582,8 +586,9 @@ ambiguous prefix matches every candidate. A shorter value matches exactly.
 | `bucketMs` | Stats timeline bucket; chosen automatically for at most 60 buckets when absent. |
 | `format`, `limit` | Export only: `json` (default), `ndjson` or `otlp`, and at most `limit` traces (default 200, 1 to 2000). |
 
-`result` keeps an activity whose own result is listed (`result=error,denied` lists the failed and refused requests),
-while `status` keeps one where any span has that status. `hasErrors` matches the activity; `status=error` matches single steps.
+`result` keeps an activity whose result is listed. `result=error,denied` lists the failed activities that ended, including a
+form save refused behind an HTTP 200 answer. `status` keeps one where any span has that status. `hasErrors` matches the
+activity; `status=error` matches single steps.
 
 A trace matches when one of its spans meets every span filter, so `kind=plugin-step&status=error` lists the traces with
 a failing plug-in step. An invalid value, including a `kind`, `status`, `result`, `sort`, `order` or `format` outside its list,
@@ -711,17 +716,20 @@ Assert on what a trace contains (the spans, their nesting, their status and erro
 way `connectRuntime` does, or with `--project FILE`, which finds the running runtime that serves that project. Give one
 selector only.
 
-| Action                                            | Prints                                                                                                                                                                                                                                                           |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`                                            | One row per trace: start, status, root duration, total duration, span, error and denied counts, host, actor, session, name, trace id. An activity whose root is `ok` but has failed steps prints `ok (failed steps)` as its status.                              |
-| `show TRACE_ID`, `show PREFIX` or `show --latest` | The trace summary and its span tree, one indented line per span, with errors. A prefix is at least 8 hexadecimal characters and must begin exactly one retained trace; `--latest` shows the newest activity the filters match.                                   |
-| `spans`                                           | One row per span: start, kind, status, duration, entity, record id, actor, name, span id.                                                                                                                                                                        |
-| `stats`                                           | The overall and root figures (count, errors, p50, p95, max; the Roots line also counts the failed activities), the same figures by kind, then the slowest spans. A percentile with no ended span prints `—`.                                                     |
-| `settings`                                        | The settings in force and the store status; `--level`, `--persist`, `--traces`, `--spans-per-trace` and `--payload-bytes` change them.                                                                                                                           |
-| `clear`                                           | Drops every retained trace.                                                                                                                                                                                                                                      |
-| `flush`                                           | Waits until the runtime wrote its queued persisted lines and live frames, then prints the store status.                                                                                                                                                          |
-| `export`                                          | The matching traces as the runtime streams them, in `--format json` (default), `ndjson` or `otlp`, at most `--limit N` (default 200, at most 2000); redirect to a file. `--format bundle` prints the [activity bundle](#activity-bundle), one document per line. |
-| `watch`                                           | One line per ended span as it happens, or per ended trace with `--trace-end`, until Ctrl+C, `--count N` lines or the runtime stopping.                                                                                                                           |
+| Action                                            | Prints                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`                                            | One row per trace: start, result (with the root's own status in brackets when it differs: `error (root ok)`, `ok (browser probe)`), root duration, total duration, span, error and denied counts, host, actor, session, name, trace id.                                               |
+| `show TRACE_ID`, `show PREFIX` or `show --latest` | The trace summary, whose header names the result the same way as `list`, and its span tree, one indented line per span, with errors. A prefix is at least 8 hexadecimal characters and must begin exactly one retained trace; `--latest` shows the newest activity the filters match. |
+| `spans`                                           | One row per span: start, kind, status, duration, entity, record id, actor, name, span id.                                                                                                                                                                                             |
+| `stats`                                           | The overall and root figures (count, errors, p50, p95, max; the Roots line also counts the failed activities), the same figures by kind, then the slowest spans. A percentile with no ended span prints `—`.                                                                          |
+| `settings`                                        | The settings in force and the store status; `--level`, `--persist`, `--traces`, `--spans-per-trace` and `--payload-bytes` change them.                                                                                                                                                |
+| `clear`                                           | Drops every retained trace.                                                                                                                                                                                                                                                           |
+| `flush`                                           | Waits until the runtime wrote its queued persisted lines and live frames, then prints the store status.                                                                                                                                                                               |
+| `export`                                          | The matching traces as the runtime streams them, in `--format json` (default), `ndjson` or `otlp`, at most `--limit N` (default 200, at most 2000); redirect to a file. `--format bundle` prints the [activity bundle](#activity-bundle), one document per line.                      |
+| `watch`                                           | One line per ended span as it happens, or per ended trace with `--trace-end`, until Ctrl+C, `--count N` lines or the runtime stopping.                                                                                                                                                |
+
+Traces live in the runtime's memory: stopping the runtime or `trace clear` drops every trace, and the least recently active
+are dropped beyond the `traces` limit, so an id copied from an earlier run answers `TraceNotFound`.
 
 `list` prints `DURATION` (the root span's) and `TOTAL` (first span start to last span end, what `--sort duration` sorts
 by). `list` and `spans` print local time (`YYYY-MM-DD HH:MM:SS.mmm`) with the UTC offset once in the `STARTED` header; `--utc` prints ISO UTC instead.
@@ -736,8 +744,7 @@ connects.
 
 `watch` takes the same filters except the paging and ordering flags, and applies them to each frame it receives: to
 the ended span, or with `--trace-end` to the ended trace. For a trace, `--kind`, `--module` and `--entity` match any
-span of it, `--status error` and `--status denied` match a trace with such a span, `--min-duration-ms` matches the whole trace, `--has-errors` matches a failed activity (the activity outcome, not the root's
-result), and the other filters match its root span. `--search` reads the same text as the
+span of it, `--status error` and `--status denied` match a trace with such a span, `--min-duration-ms` matches the whole trace, `--has-errors` matches a failed activity (the activity outcome), and the other filters match its root span. `--result` matches the activity result of a trace-end frame and the status of a span-end frame. `--search` reads the same text as the
 `search` filter, without payloads (frames carry none). When the runtime stops, or on Ctrl+C, `watch` prints
 `stream ended` on stderr and exits 0.
 
@@ -750,16 +757,16 @@ prints the message on stderr, as `<code>: <message>` when the runtime answered w
 `InvalidTraceFilter: limit must be an integer from 1 to 2000.`). A filter or setting that the command or the runtime
 refuses exits 2; every other failure exits 1:
 
-| Code                    | Exit | Meaning                                                                                                |
-| ----------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
-| `InvalidArguments`      | 1    | A flag, action, origin or argument the command refuses before it connects.                             |
-| `RuntimeUnreachable`    | 1    | No runtime answers at the origin.                                                                      |
-| `RuntimeConnectionLost` | 1    | The runtime accepted the connection and closed it before the response completed.                       |
-| `TraceNotFound`         | 1    | `show` names a trace, or a prefix or `--latest` filters, that match no retained trace.                 |
-| `AmbiguousTraceId`      | 1    | `show` names a prefix that begins more than one retained trace id; give more characters.               |
-| `InvalidTraceFilter`    | 2    | A filter, sort, format or limit is refused; `parameter` names it and the message starts with it.       |
-| `InvalidTraceSettings`  | 2    | The runtime refused a settings change.                                                                 |
-| `MIRAGE_FAILED`         | 1    | Any other failure. Other runtime codes, such as `TraceNotConfigured`, are passed through as they come. |
+| Code                    | Exit | Meaning                                                                                                                                                                                   |
+| ----------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `InvalidArguments`      | 1    | A flag, action, origin or argument the command refuses before it connects.                                                                                                                |
+| `RuntimeUnreachable`    | 1    | No runtime answers at the origin.                                                                                                                                                         |
+| `RuntimeConnectionLost` | 1    | The runtime accepted the connection and closed it before the response completed.                                                                                                          |
+| `TraceNotFound`         | 1    | `show` names a trace, or a prefix or `--latest` filters, that match no retained trace; traces live in the runtime's memory, so an id from before a restart or `trace clear` is not found. |
+| `AmbiguousTraceId`      | 1    | `show` names a prefix that begins more than one retained trace id; give more characters.                                                                                                  |
+| `InvalidTraceFilter`    | 2    | A filter, sort, format or limit is refused; `parameter` names it and the message starts with it.                                                                                          |
+| `InvalidTraceSettings`  | 2    | The runtime refused a settings change.                                                                                                                                                    |
+| `MIRAGE_FAILED`         | 1    | Any other failure. Other runtime codes, such as `TraceNotConfigured`, are passed through as they come.                                                                                    |
 
 ```sh
 node bin/paqvilo.mjs mirage trace list --origin http://127.0.0.1:8787 --has-errors true --sort duration

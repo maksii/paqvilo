@@ -4,6 +4,7 @@ import { expressionSegments, inspectFlowExpressions } from './flow-source-expres
 import { inspectConnectorSource } from './flow-source-connectors.mjs';
 import { inspectMcpTools } from './flow-source-mcp.mjs';
 import { unencryptedTarget } from './flow-source-common.mjs';
+import { structuredLocator } from './structured-location.mjs';
 
 const wdl = 'https://learn.microsoft.com/en-us/azure/logic-apps/workflow-definition-language-schema';
 const flowGuidance = 'https://learn.microsoft.com/power-automate/guidance/coding-guidelines/';
@@ -466,44 +467,50 @@ function cyclic(actions) {
   return queue.length !== degree.size;
 }
 
+// Each nested scope as its owner object and the scope value (`actions`) it holds.
 function nestedScopes(action) {
   const scopes = [];
-  if (Object.hasOwn(action, 'actions')) scopes.push(action.actions);
-  if (Object.hasOwn(action.else ?? {}, 'actions')) scopes.push(action.else.actions);
-  if (Object.hasOwn(action.default ?? {}, 'actions')) scopes.push(action.default.actions);
+  if (Object.hasOwn(action, 'actions')) scopes.push({ owner: action, actions: action.actions });
+  if (Object.hasOwn(action.else ?? {}, 'actions')) scopes.push({ owner: action.else, actions: action.else.actions });
+  if (Object.hasOwn(action.default ?? {}, 'actions'))
+    scopes.push({ owner: action.default, actions: action.default.actions });
   if (object(action.cases))
     for (const branch of Object.values(action.cases))
-      if (Object.hasOwn(branch ?? {}, 'actions')) scopes.push(branch.actions);
+      if (Object.hasOwn(branch ?? {}, 'actions')) scopes.push({ owner: branch, actions: branch.actions });
   return scopes;
 }
 
-function validNestedShape(action) {
-  if (['Scope', 'Foreach', 'Until', 'If'].includes(action.type) && !object(action.actions)) return false;
-  if (action.type === 'If' && Object.hasOwn(action, 'else') && !object(action.else?.actions)) return false;
-  if (action.type !== 'Switch') return true;
-  if (!object(action.cases)) return false;
-  if (Object.values(action.cases).some((branch) => !object(branch?.actions))) return false;
-  return !Object.hasOwn(action, 'default') || object(action.default?.actions);
+// The location of the first malformed nested scope, or undefined when every nested scope is well formed.
+function nestedShapeFault(action, at) {
+  if (['Scope', 'Foreach', 'Until', 'If'].includes(action.type) && !object(action.actions))
+    return at(action, 'actions');
+  if (action.type === 'If' && Object.hasOwn(action, 'else') && !object(action.else?.actions)) return at(action, 'else');
+  if (action.type !== 'Switch') return undefined;
+  if (!object(action.cases)) return at(action, 'cases');
+  for (const [name, branch] of Object.entries(action.cases))
+    if (!object(branch?.actions)) return at(action.cases, name);
+  if (Object.hasOwn(action, 'default') && !object(action.default?.actions)) return at(action, 'default');
+  return undefined;
 }
 
-function connectorHost(action, references, source, emit) {
+function connectorHost(action, references, emit, at) {
   if (!['OpenApiConnection', 'OpenApiConnectionWebhook'].includes(action.type)) return;
   const host = action.inputs?.host;
   if (!object(host) || !['apiId', 'operationId', 'connectionName'].every((key) => nonempty(host[key]))) {
-    emit('FLOW-CONNECTION-001', source, 'host');
+    emit('FLOW-CONNECTION-001', object(action.inputs) ? at(action.inputs, 'host') : at(action, 'inputs'), 'host');
     return;
   }
   if (object(references) && !Object.hasOwn(references, host.connectionName))
-    emit('FLOW-CONNECTION-002', source, 'connectionReferences');
+    emit('FLOW-CONNECTION-002', at(host, 'connectionName'), 'connectionReferences');
   const parameters = action.inputs?.parameters;
   if (
     object(parameters) &&
     (object(parameters.body) || Object.keys(parameters).some((key) => key.endsWith('@odata.bind')))
   )
-    emit('FLOW-CONNECTION-004', source, 'parameters');
+    emit('FLOW-CONNECTION-004', at(action.inputs, 'parameters'), 'parameters');
 }
 
-function credentialMember(action, key, member, source, emit) {
+function credentialMember(action, key, member, owner, emit, at) {
   if (
     !/^(?:authorization|password|clientsecret|client_secret|access_token|apikey|api-key)$/i.test(key) ||
     !nonempty(member)
@@ -511,14 +518,15 @@ function credentialMember(action, key, member, source, emit) {
     return;
   // A value with any expression segment, including interpolation inside a larger string, is dynamic.
   if (!expressionSegments(member).length) {
-    emit('FLOW-SEC-002', source, 'inputs');
+    emit('FLOW-SEC-002', at(owner, key), 'inputs');
     return;
   }
   const secured = action.runtimeConfiguration?.secureData?.properties;
-  if (!Array.isArray(secured) || !secured.includes('inputs')) emit('FLOW-SEC-003', source, 'runtimeConfiguration');
+  if (!Array.isArray(secured) || !secured.includes('inputs'))
+    emit('FLOW-SEC-003', at(action, 'runtimeConfiguration'), 'runtimeConfiguration');
 }
 
-function credentialInputs(action, source, emit) {
+function credentialInputs(action, emit, at) {
   const pending = [{ value: action.inputs, depth: 0 }];
   let count = 0;
   while (pending.length && count++ < nodeLimit) {
@@ -526,25 +534,28 @@ function credentialInputs(action, source, emit) {
     if (!object(value) || depth > 64) continue;
     for (const [key, member] of Object.entries(value)) {
       if (object(member)) pending.push({ value: member, depth: depth + 1 });
-      credentialMember(action, key, member, source, emit);
+      credentialMember(action, key, member, value, emit, at);
     }
   }
 }
 
-function inspectAction(action, references, source, emit) {
+// `here()` is the location of the action itself: its member in the enclosing scope or trigger map.
+function inspectAction(action, references, emit, at, here) {
   if (!object(action) || !nonempty(action.type)) {
-    emit('FLOW-DEF-002', source, 'type');
+    emit('FLOW-DEF-002', here(), 'type');
     return false;
   }
-  if (!validNestedShape(action)) emit('FLOW-DEF-002', source, 'actions');
-  connectorHost(action, references, source, emit);
-  credentialInputs(action, source, emit);
+  const shape = nestedShapeFault(action, at);
+  if (shape) emit('FLOW-DEF-002', shape, 'actions');
+  connectorHost(action, references, emit, at);
+  credentialInputs(action, emit, at);
   if (action.type === 'Http') {
-    if (unencryptedTarget(action.inputs?.uri)) emit('FLOW-SEC-001', source, 'uri');
-    if (!Object.hasOwn(action.inputs ?? {}, 'retryPolicy')) emit('FLOW-PERF-002', source, 'retryPolicy');
+    if (unencryptedTarget(action.inputs?.uri)) emit('FLOW-SEC-001', at(action.inputs, 'uri'), 'uri');
+    if (!Object.hasOwn(action.inputs ?? {}, 'retryPolicy'))
+      emit('FLOW-PERF-002', at(action.inputs, 'retryPolicy'), 'retryPolicy');
   }
   if (action.type === 'Foreach' && !Object.hasOwn(action.runtimeConfiguration ?? {}, 'concurrency'))
-    emit('FLOW-PERF-003', source, 'runtimeConfiguration');
+    emit('FLOW-PERF-003', at(action, 'runtimeConfiguration'), 'runtimeConfiguration');
   return true;
 }
 
@@ -553,38 +564,40 @@ function invokerReference(value) {
   return String(value?.runtimeSource ?? value?.source).toLowerCase() === 'invoker';
 }
 
-function inspectTriggers(definition, references, source, emit) {
-  for (const trigger of Object.values(definition.triggers)) {
-    inspectAction(trigger, references, source, emit);
+function inspectTriggers(definition, references, emit, at) {
+  for (const [name, trigger] of Object.entries(definition.triggers)) {
+    inspectAction(trigger, references, emit, at, () => at(definition.triggers, name));
     if (trigger?.type !== 'Request' || trigger.kind !== 'Http') continue;
-    emit('FLOW-SEC-004', source, 'triggers');
-    if (object(references) && Object.values(references).some(invokerReference))
-      emit('FLOW-CONNECTION-003', source, 'connectionReferences');
+    emit('FLOW-SEC-004', at(definition.triggers, name), 'triggers');
+    const invoker = object(references)
+      ? Object.entries(references).find(([, value]) => invokerReference(value))
+      : undefined;
+    if (invoker) emit('FLOW-CONNECTION-003', at(references, invoker[0]), 'connectionReferences');
   }
 }
 
 function inspectActionScope(actions, names, context) {
-  const { references, source, emit } = context,
+  const { references, emit, at } = context,
     children = [];
-  if (cyclic(actions)) emit('FLOW-GRAPH-002', source, 'runAfter');
+  if (cyclic(actions)) emit('FLOW-GRAPH-002', at(actions), 'runAfter');
   for (const [name, action] of Object.entries(actions)) {
     names.add(name);
-    if (!inspectAction(action, references, source, emit)) continue;
-    if (invalidAfter(action, actions)) emit('FLOW-GRAPH-001', source, 'runAfter');
+    if (!inspectAction(action, references, emit, at, () => at(actions, name))) continue;
+    if (invalidAfter(action, actions)) emit('FLOW-GRAPH-001', at(action, 'runAfter'), 'runAfter');
     children.push(...nestedScopes(action));
   }
   return children;
 }
 
-function collectActions(definition, references, source, emit, limited) {
-  const pending = [{ actions: definition.actions, depth: 0 }],
+function collectActions(definition, references, source, emit, limited, at) {
+  const pending = [{ owner: definition, actions: definition.actions, depth: 0 }],
     names = new Set();
   let count = 0,
     maxDepth = 0;
   while (pending.length) {
-    const { actions, depth } = pending.pop();
+    const { owner, actions, depth } = pending.pop();
     if (!object(actions)) {
-      emit('FLOW-DEF-002', source, 'actions');
+      emit('FLOW-DEF-002', at(owner, 'actions'), 'actions');
       continue;
     }
     if (depth > 64 || count + Object.keys(actions).length > actionLimit) {
@@ -594,14 +607,14 @@ function collectActions(definition, references, source, emit, limited) {
     }
     maxDepth = Math.max(maxDepth, depth);
     count += Object.keys(actions).length;
-    for (const child of inspectActionScope(actions, names, { references, source, emit }))
-      pending.push({ actions: child, depth: depth + 1 });
+    for (const child of inspectActionScope(actions, names, { references, emit, at }))
+      pending.push({ ...child, depth: depth + 1 });
   }
-  if (count > 50 || maxDepth > 4) emit('FLOW-PERF-001', source, 'actions');
+  if (count > 50 || maxDepth > 4) emit('FLOW-PERF-001', at(definition, 'actions'), 'actions');
   return names;
 }
 
-function inspectFlow(document, entry, emit, limited) {
+function inspectFlow(document, entry, emit, limited, at) {
   let flow;
   try {
     flow = unwrapFlow(document);
@@ -620,9 +633,9 @@ function inspectFlow(document, entry, emit, limited) {
     emit('FLOW-DEF-001', source);
     return true;
   }
-  inspectTriggers(definition, references, source, emit);
-  const names = collectActions(definition, references, source, emit, limited);
-  inspectFlowExpressions(definition, names, source, emit, limited);
+  inspectTriggers(definition, references, emit, at);
+  const names = collectActions(definition, references, source, emit, limited, at);
+  inspectFlowExpressions(definition, names, source, emit, limited, at);
   return true;
 }
 
@@ -666,17 +679,18 @@ function analyzeEntry(entry, emit, coverage) {
     if (kind) coverage.limited.push({ file: entry.file, reason: 'source-syntax-invalid' });
     return;
   }
+  const at = structuredLocator(entry, document);
   if (connectorDocument(document)) {
     coverage.sourceKinds.set(entry.file, 'connectors');
     coverage.files++;
     coverage.connectors++;
-    inspectConnectorSource(document, sourceAt(entry), emit, coverage.limited);
+    inspectConnectorSource(document, sourceAt(entry), emit, coverage.limited, at);
     return;
   }
   if (kind === 'flows' || flowDocument(document)) {
     coverage.sourceKinds.set(entry.file, 'flows');
     coverage.files++;
-    if (inspectFlow(document, entry, emit, coverage.limited)) coverage.flows++;
+    if (inspectFlow(document, entry, emit, coverage.limited, at)) coverage.flows++;
   } else if (kind === 'connectors') {
     emit('CONN-SOURCE-002', sourceAt(entry));
     coverage.limited.push({ file: entry.file, reason: 'connector-definition-unrecognized' });

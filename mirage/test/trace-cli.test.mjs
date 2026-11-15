@@ -23,6 +23,9 @@ const START = Date.parse('2026-02-01T10:00:00.000Z');
 const CONTACT = 'c0ffee00-0000-4000-8000-000000000001';
 const RECORD = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
 const UNKNOWN_ID = 'ffffffff-0000-4000-8000-000000000009';
+const NOT_RETAINED =
+  "Traces live in the runtime's memory: a restart or trace clear drops them all, and the least recently active are dropped beyond the traces limit.";
+const notRetained = (id) => `No retained trace has the id ${id}. ${NOT_RETAINED}`;
 const SHOW_USAGE =
   'trace show needs one TRACE_ID \\(or a unique prefix of at least 8 characters of the id\\), or --latest\\.';
 
@@ -91,6 +94,12 @@ async function fixture(t, { endStream = false, failures = false } = {}) {
       traces.start({ kind: 'job', name: 'Invented job', module: 'jobs', async: true }).end();
       // A browser probe answered 404 is an expected answer; the job step fails.
       if (failures) {
+        // A page that answers 200 while a plug-in step refuses the save: its activity fails though its root is ok.
+        const refused = traces.start({ kind: 'http', name: 'GET /refused', module: 'portal' });
+        traces.run(refused, () =>
+          traces.start({ kind: 'plugin-step', name: 'Invented refusing step' }).end({ status: 'error' }),
+        );
+        refused.end({ attributes: { statusCode: 200 } });
         traces
           .start({ kind: 'http', name: 'GET /probe', module: 'portal' })
           .end({ status: 'error', attributes: { browserProbe: true, statusCode: 404 } });
@@ -153,7 +162,7 @@ test('list, show, spans, stats and export read the runtime trace store in one en
 
   const human = await cli('list', '--origin', origin);
   assert.equal(human.status, 0, human.stderr);
-  assert.match(human.stdout, /^STARTED \(UTC[+-]\d\d:\d\d\)\s+STATUS\s+DURATION/m);
+  assert.match(human.stdout, /^STARTED \(UTC[+-]\d\d:\d\d\)\s+RESULT\s+DURATION/m);
   assert.match(human.stdout, new RegExp(`GET /invented\\s+${page.traceId}`));
   assert.match(human.stdout, /Page 1 of 1; 1 matching, 1 retained, 0 dropped\./);
 
@@ -196,7 +205,7 @@ test('list prints the total duration it sorts by, the actor, the session and the
   const [header, first, second] = listed.stdout.split('\n');
   assert.match(
     header,
-    /^STARTED \(UTC[+-]\d\d:\d\d\)\s+STATUS\s+DURATION\s+TOTAL\s+SPANS\s+ERRORS\s+DENIED\s+HOST\s+ACTOR\s+SESSION\s+NAME\s+TRACE$/,
+    /^STARTED \(UTC[+-]\d\d:\d\d\)\s+RESULT\s+DURATION\s+TOTAL\s+SPANS\s+ERRORS\s+DENIED\s+HOST\s+ACTOR\s+SESSION\s+NAME\s+TRACE$/,
   );
   const cells = (line) => line.split(/\s{2,}/);
   assert.deepEqual(cells(first).slice(1, 11), [
@@ -352,10 +361,10 @@ test('every failure names its code', async (t) => {
   ])
     assert.equal((await refusal('list', flag, 'bogus', '--origin', origin)).error.parameter, parameter);
   const unknown = await failure('show', UNKNOWN_ID, '--origin', origin);
-  assert.deepEqual(unknown.error, { code: 'TraceNotFound', message: `No retained trace has the id ${UNKNOWN_ID}.` });
+  assert.deepEqual(unknown.error, { code: 'TraceNotFound', message: notRetained(UNKNOWN_ID) });
   const human = await cli('show', UNKNOWN_ID, '--origin', origin);
   assert.equal(human.status, 1);
-  assert.match(human.stderr, new RegExp(`No retained trace has the id ${UNKNOWN_ID}`));
+  assert.ok(human.stderr.includes(notRetained(UNKNOWN_ID)), human.stderr);
   const loud = await refusal('settings', '--level', 'loud', '--origin', origin);
   assert.equal(loud.error.code, 'InvalidTraceSettings');
   assert.doesNotMatch(loud.error.message, /Local runtime request failed/, 'the runtime message itself');
@@ -426,11 +435,34 @@ test('watch prints ended spans or traces that match its filters and stops after 
 });
 
 // @test-kind contract: watch --has-errors reports failed steps, and a browser probe's 404 answer is not one
-test('watch --has-errors skips a browser probe answered 404 and shows the failed step', async (t) => {
+test('watch --has-errors skips a browser probe answered 404 and shows the failed steps', async (t) => {
   const { origin } = await fixture(t, { failures: true });
-  const failing = await cli('watch', '--count', '1', '--has-errors', 'true', '--origin', origin, '--json');
+  // Span-end frames carry no trace, so a step matches by its own status; the probe's 404 root is the one error it skips.
+  const failing = await cli('watch', '--count', '2', '--has-errors', 'true', '--origin', origin, '--json');
   assert.equal(failing.status, 0, failing.stderr);
-  assert.equal(JSON.parse(failing.stdout).result.span.name, 'Invented failing step');
+  const names = failing.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line).result.span.name);
+  assert.deepEqual(names, ['Invented refusing step', 'Invented failing step']);
+});
+
+// @test-kind contract: watch --trace-end --result error lists an ok-root activity with a failed step and skips a probe
+test('watch --trace-end --result error lists an ok-root activity with a failed step and skips a probe', async (t) => {
+  const { origin } = await fixture(t, { failures: true });
+  const failing = await cli('watch', '--trace-end', '--count', '2', '--result', 'error', '--origin', origin, '--json');
+  assert.equal(failing.status, 0, failing.stderr);
+  const traces = failing.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line).result.trace);
+  assert.deepEqual(
+    traces.map((trace) => [trace.root.name, trace.result, trace.status]),
+    [
+      ['GET /refused', 'error', 'ok'],
+      ['Invented failing step', 'error', 'error'],
+    ],
+  );
 });
 
 test('watch ends cleanly with one stream ended line when the runtime stops', async (t) => {
@@ -601,7 +633,7 @@ test('show resolves --latest, a unique id prefix and the filters, and refuses an
   assert.equal(ambiguousHuman.stderr, 'aaaaaaaa begins 2 retained trace ids; give more characters.\n');
   assert.deepEqual((await failure('show', 'bbbbbbbb', '--origin', origin)).error, {
     code: 'TraceNotFound',
-    message: 'No retained trace has the id bbbbbbbb.',
+    message: notRetained('bbbbbbbb'),
   });
   assert.deepEqual((await failure('show', '--latest', '--host', 'standalone', '--origin', origin)).error, {
     code: 'TraceNotFound',
@@ -629,6 +661,7 @@ test('--project reaches the runtime its discovery record names and refuses a pro
   });
 });
 
+// @test-kind contract: an activity with a failed step reads error and names its root status, in list and show
 test('a failed step fails its activity: stats count it in Roots and list shows the failed steps', async (t) => {
   const { origin, traces, page } = await fixture(t);
   traces
@@ -640,5 +673,13 @@ test('a failed step fails its activity: stats count it in Roots and list shows t
   const overall = /^Overall: (\d+) spans?, (\d+) errors?,/m.exec(failing.stdout);
   assert.ok(overall, failing.stdout);
   assert.ok(Number(overall[1]) > Number(overall[2]), failing.stdout);
-  assert.match((await cli('list', '--origin', origin)).stdout, /ok \(failed steps\)/);
+  const listed = await cli('list', '--origin', origin);
+  assert.match(listed.stdout.split('\n')[0], /\bRESULT\b/);
+  assert.match(listed.stdout, /^\S.*\berror \(root ok\)\s/m);
+  assert.match((await cli('show', page.traceId, '--origin', origin)).stdout, /^Trace [0-9a-f-]+: error \(root ok\), /m);
+  const failedActivities = await json('list', '--result', 'error', '--origin', origin);
+  const activity = failedActivities.items.find((item) => item.traceId === page.traceId);
+  assert.ok(activity, 'the failed activity is listed');
+  assert.equal(activity.result, 'error');
+  assert.equal(activity.status, 'ok');
 });

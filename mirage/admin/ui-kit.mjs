@@ -397,7 +397,7 @@ export function filterDrawer({ id, title = 'Filters', body = '', footer = '' }) 
 /** The bottom controls of a table: footer actions, the count, rows per page and Previous/Next. */
 export function tableFoot(key, result, { actions = '', sizes = PAGE_SIZES } = {}) {
   const k = e(key),
-    { total = 0, pages = 1, page = 1, size = sizes[0] } = result ?? {};
+    { total = 0, pages = 1, page = 1, size = sizes[0], note = '' } = result ?? {};
   const options = [...new Set([...sizes, size])]
     .map((value) => `<option value="${e(value)}"${value === size ? ' selected' : ''}>${e(value)}</option>`)
     .join('');
@@ -406,7 +406,7 @@ export function tableFoot(key, result, { actions = '', sizes = PAGE_SIZES } = {}
   const pageHtml = pages > 1 ? ` · Page ${e(page)} of ${e(pages)}` : '';
   return (
     `<div class="ui-table-foot">${actionsHtml}` +
-    `<span class="ui-table-count">${e(total)} ${noun}${pageHtml}</span>` +
+    `<span class="ui-table-count">${e(total)} ${noun}${note}${pageHtml}</span>` +
     `<label class="ui-table-size">Rows <select data-table-size="${k}" aria-label="Rows per page for ${k}">${options}</select></label>` +
     `<div class="ui-pager"><button type="button" class="ui-button ui-small" data-table-page="${k}" data-delta="-1"${page <= 1 ? ' disabled' : ''}>Previous</button>` +
     `<button type="button" class="ui-button ui-small" data-table-page="${k}" data-delta="1"${page >= pages ? ' disabled' : ''}>Next</button></div>` +

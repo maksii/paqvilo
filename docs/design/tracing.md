@@ -163,14 +163,17 @@ follow-up`, `When an order is created`, `Mass Calculate Rollup Fields`), with at
     exception to "no per-row spans" (see the [performance contract](#performance-contract)).
 32. **An activity fails with any of its steps.** The activity outcome `failed` is true when the root or any step ended
     `error` or `denied`, except a browser probe's 404 root (decision 33). Every trace summary carries `failed` and stats
-    carry `roots.failed`. `result` stays the root's own status, so an `ok` activity can be failed. The `hasErrors`
+    carry `roots.failed`. Every summary also carries `result`: `running` while a span runs; for a failed activity, the root's own
+    `error` or `denied`, else `error` when a step ended `error`, else `denied`; otherwise the root's status. `status`
+    stays the root's own status, so a refused form save has `status: 'ok'`, `result: 'error'`, `failed: true`. The
+    `result` filter matches `result` on every route. The `hasErrors`
     filter matches the activity on every route (`query`, `spans`, `stats`, `export`); `spans` and `stats` keep all spans
     of those activities. `status=error` selects single failed steps.
 33. **Browser probes are traced, not failures.** A request a browser makes on its own, GET or HEAD for `/favicon.ico`,
     `/apple-touch-icon.png` (with an optional `-<W>x<H>` size and a `-precomposed` suffix) or
     `/.well-known/appspecific/com.chrome.devtools.json`, opens its root with the attribute `browserProbe: true`. A 404
     answer to one is not a failed activity, and on the Power Pages host its Page Not Found finding is recorded once per
-    path. The HTTP answer is unchanged.
+    path. The HTTP answer is unchanged. Its result is `ok`; its root keeps `error` and the 404.
 
 ## Span model
 
@@ -244,6 +247,7 @@ A **trace summary** (the items of `query`) is:
   totalDurationMs, // first span start to last span end (a running span counts up to now)
   spanCount, droppedSpans, errorCount, deniedCount,
   failed,          // the activity outcome (decision 32): the root or a step ended error or denied, a browser probe's 404 excepted
+  result,          // the activity result (decision 32)
   firstError,      // only once a span ended error or denied: the first one, { spanId, kind, name, status, code, message }
   pluginCount /* plugin-step */, flowCount /* flow-run */, connectorCount, dataverseCount,
   kinds: { [kind]: count }, entities: [...], modules: [...],
@@ -771,7 +775,7 @@ executions of the run history, and `spansPerTrace` with the overflow handle boun
 - **CLI** `paqvilo mirage trace list|show <traceId>|<prefix>|--latest|spans|stats|settings [--level ...]|clear|flush|export|watch` with
   `--json` and the filters as flags (`--record-id` included). `list` prints the root `DURATION` and the `TOTAL` duration
   that `--sort duration` sorts by, the span, error and denied counts, the host, actor and session; `spans` prints the
-  record id and actor. `list` marks an activity whose root is `ok` but has failed steps as `ok (failed steps)`, and `stats`
+  record id and actor. `list` prints the result, with the root's own status in brackets when it differs (`error (root ok)`, `ok (browser probe)`), and `stats`
   prints the failed activities on its Roots line. `show` takes a full trace id, a prefix of at least 8 hexadecimal
   characters (several matches answer `AmbiguousTraceId`) or `--latest` with the filters; `--project FILE` selects the
   running runtime of a project, as `--origin` and `--config`/`--site` do. The CLI checks its filters with `checkTraceFilters` before it connects; a filter or setting that
@@ -811,7 +815,7 @@ data side (D-M-4) links; it does not merge. These are its decisions.
    `auditId` is a span filter (exact) of the store, the routes, the testing client and the bundle: a span matches when it
    names that entry, a trace when any of its spans does. `GET /_sim/api/audit` and `/audit/export` take `traceId`: one id
    or a comma list of at most 200 (more is 400 `InvalidAuditFilter`), so a page of activities joins its entries in one call.
-   The Monitor's result filter is `result` (summary status, comma list); `status` keeps matching any span. Its Failed
+   The Monitor's result filter is `result` (the activity result, comma list); `status` keeps matching any span. Its Failed
    filter and quick filter is `hasErrors` (decision 32); the Health tile **Failed** links to `#activity?hasErrors=true`.
 2. **`X-Sim-Trace-Id` is an audit id, permanently.** Response headers keep their meaning (`X-Sim-Trace-Id` the audit id,
    `X-Trace-Id`/`X-Sim-Span-Id` the trace). Inbound, only `X-Trace-Id` names a trace; `fromHeaders` resolves

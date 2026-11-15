@@ -9,9 +9,8 @@ import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
 import YAML from 'yaml';
 import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
-import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
-import { printAnalysis, analysisFailure } from './analyze.mjs';
-import { configuredAnalysisRoots } from '../analysis/project.mjs';
+import { validateAnalysisPolicy } from '../analysis/index.mjs';
+import { analyzeConfigured, printAnalysis, analysisFailure, withLabelRoots } from './analyze.mjs';
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
@@ -252,10 +251,12 @@ async function portalDoctorReport(cfg, args, dependencies, failOn) {
 
 function addProjectAnalysis(report, cfg, failOn) {
   try {
-    report.analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots: configuredAnalysisRoots(cfg) });
-    report.analysisReady = report.analysis.ready;
-    if (!report.analysis.ready) report.errors.push(analysisFailure(report.analysis));
-    report.ready = report.ready && report.analysis.ready;
+    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+    report.analysis = analysis;
+    withLabelRoots(report, labelRoots);
+    report.analysisReady = analysis.ready;
+    if (!analysis.ready) report.errors.push(analysisFailure(analysis));
+    report.ready = report.ready && analysis.ready;
   } catch {
     report.analysisReady = false;
     const error = {
@@ -373,7 +374,7 @@ function printDoctorItem(item, args, catalogue) {
   for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
   for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
   for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
-  if (item.analysis) printAnalysis(item.analysis);
+  if (item.analysis) printAnalysis(item.analysis, item.labelRoots);
   if (item.analysisApplicable === false) console.log('  analysis: not applicable to this standalone runtime');
   const mirage = item.mirage;
   if (mirage) printMirageDetails(mirage, catalogue);
