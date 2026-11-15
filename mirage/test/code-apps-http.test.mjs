@@ -244,6 +244,16 @@ test('workbench serves bounded assets, sanitized inventory and redirect-free rea
   assert.equal(probes, 1, 'a redirect response is reported without following it');
 });
 
+// @test-kind contract: the runtime serves the gesture helper to app clients
+test('the runtime serves the gesture helper as static code without a session and answers nothing for a neighbour', async (t) => {
+  const { request } = await fixture(t);
+  const helper = await request('/_apps/code/_assets/trace-gesture.js', { staff: null });
+  assert.equal(helper.status, 200);
+  assert.equal(helper.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  assert.match(await helper.text(), /createGestureTrace/);
+  assert.equal((await request('/_apps/code/_assets/trace-gesture-other.js', { staff: null })).status, 404);
+});
+
 test('token audience is the local Dataverse origin only, with CSRF, and carries expiry', async (t) => {
   const { request, calls } = await fixture(t);
   assert.equal(

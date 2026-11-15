@@ -94,7 +94,7 @@ test('draft text, cancel confirmation, retained edits and reopen reset match the
       read: (key) => field(key).inputValue(),
       maxLength: (key) => field(key).evaluate((node) => node.maxLength),
       write: async (key, value) => {
-        await field(key).fill(value);
+        await action(() => field(key).fill(value));
         await action(() => field(key).press('Tab'));
       },
       cancel: () => action(() => control('CancelDraft').click()),

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { tempDirSync } from './fixture.mjs';
 import { analyzeProject, analysisRules, validateAnalysisPolicy } from '../lense/analysis/index.mjs';
-import { ANALYSIS_LIMITS, collectAnalysisInputs } from '../lense/analysis/inventory.mjs';
+import { ANALYSIS_LIMITS, analysisLabelPath, collectAnalysisInputs } from '../lense/analysis/inventory.mjs';
 
 function project(t, files = {}) {
   const root = tempDirSync('paq-analysis-');
@@ -61,6 +61,17 @@ test('empty and unsupported source trees cannot produce a complete clean assessm
       { file: '.', reason: Object.keys(files).length ? 'no-recognized-platform-sources' : 'no-supported-sources' },
     ]);
   }
+});
+
+test('analysis verdict is ready, error or incomplete, and only the gate result stays ready under none', (t) => {
+  const clean = project(t, { 'body.html': '<p>review</p>' });
+  assert.equal(analyzeProject(clean, { failOn: 'error' }).verdict, 'ready');
+  const hinted = project(t, { 'body.html': '<img>' });
+  assert.equal(analyzeProject(hinted, { failOn: 'hint' }).verdict, 'error');
+  assert.equal(analyzeProject(hinted, { failOn: 'hint' }).ready, false);
+  const unsupported = project(t, { 'export.json': '{"unknownExport":true}' });
+  for (const failOn of ['error', 'none']) assert.equal(analyzeProject(unsupported, { failOn }).verdict, 'incomplete');
+  assert.equal(analyzeProject(unsupported, { failOn: 'none' }).ready, true);
 });
 
 test('repeated review has deterministic identities, canonical relative locations and source digest', (t) => {
@@ -561,4 +572,30 @@ test('a BOM-prefixed YAML list setting reports the same line and column as its B
     located(project(t, { 'list.sitesetting.yml': `\uFEFF${block}` })),
     located(project(t, { 'list.sitesetting.yml': block })),
   );
+});
+
+test('a label resolves through its longest matching root prefix, and an equal prefix goes to the root holding the file', (t) => {
+  const root = tempDirSync('paq-label-path-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const outer = path.join(root, 'outer');
+  const alpha = path.join(root, 'alpha');
+  const beta = path.join(root, 'beta');
+  for (const dir of [outer, alpha, beta]) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(beta, 'Workflows'));
+  fs.writeFileSync(path.join(beta, 'Workflows', 'flow.json'), '{}');
+  const labelRoots = [
+    { id: 'source-1', real: outer, prefix: '' },
+    { id: 'solution-2', real: alpha, prefix: 'solution/' },
+    { id: 'solution-3', real: beta, prefix: 'solution/' },
+  ];
+  // Equal prefixes name the same label; the root that holds the file is the one it names.
+  assert.equal(
+    analysisLabelPath(labelRoots, 'solution/Workflows/flow.json'),
+    path.join(beta, 'Workflows', 'flow.json'),
+  );
+  // Without a file under either equal prefix, the first matching root is named, as it is for every label.
+  assert.equal(analysisLabelPath(labelRoots, 'solution/Other.json'), path.join(alpha, 'Other.json'));
+  // A longer prefix beats the empty prefix of the outer root.
+  assert.equal(analysisLabelPath(labelRoots.slice(0, 2), 'solution/Other.json'), path.join(alpha, 'Other.json'));
+  assert.equal(analysisLabelPath(labelRoots, 'Notes/readme.md'), path.join(outer, 'Notes', 'readme.md'));
 });

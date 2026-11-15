@@ -2,6 +2,8 @@ import { loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
 import { PortalModel } from '../portal-model.mjs';
 import { auditResources } from '../resource-audit.mjs';
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 // A Mirage-only site has no portal export to audit; under --all it is reported as skipped when the catalogue has a portal.
 function skippedReport(site) {
   return {
@@ -44,7 +46,7 @@ function printReports(reports) {
     }
     let summary = 'inventory failed';
     if (item.totals)
-      summary = `${item.totals.mapped}/${item.totals.resources} mapped, ${item.totals.blocked} blocked, ${item.totals.gaps} gaps, ${item.totals.inactive} inactive, ${item.totals.deployment} deployment metadata, ${item.totals.disabled} disabled`;
+      summary = `${item.totals.mapped}/${item.totals.resources} mapped, ${item.totals.blocked} blocked, ${plural(item.totals.gaps, 'gap')}, ${item.totals.inactive} inactive, ${item.totals.deployment} deployment metadata, ${item.totals.disabled} disabled`;
     console.log(`\n${item.site}: ${summary}`);
     for (const resource of item.resources.filter((entry) => entry.status === 'gap' || entry.status === 'blocked'))
       console.log(`  ${resource.status.toUpperCase()}: ${resource.id}: ${resource.reason}`);
@@ -69,9 +71,10 @@ export default async function audit(_cfg, args) {
   const errors = reports.flatMap((report) => report.errors ?? []);
   if (args.strict && !complete) {
     const total = (key) => reports.reduce((sum, report) => sum + (report.totals?.[key] ?? 0), 0);
+    const diagnostics = reports.reduce((sum, report) => sum + (report.diagnostics?.length ?? 0), 0);
     errors.push({
       code: 'strict_failed',
-      message: `Strict source audit failed: ${total('blocked')} blocked resources, ${total('gaps')} gaps and ${reports.reduce((sum, report) => sum + (report.diagnostics?.length ?? 0), 0)} diagnostics; inventory is incomplete or coverage needs attention.`,
+      message: `Strict source audit failed: ${plural(total('blocked'), 'blocked resource')}, ${plural(total('gaps'), 'gap')} and ${plural(diagnostics, 'diagnostic')}; inventory is incomplete or coverage needs attention.`,
       blocked: total('blocked'),
       gaps: total('gaps'),
     });

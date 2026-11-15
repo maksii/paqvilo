@@ -15,18 +15,20 @@ For installed projects, use `npx --no-install paqvilo`. The `lense analyze` spel
 
 `--fail-on` accepts `none`, `error`, `warning` or `hint`. Doctor defaults to `none`, keeping its existing operational verdict independent from source advice. `analyze` defaults to `error`. A selected threshold fails for findings at that level or above, or incomplete supported-source inspection. `none` remains advisory and does not certify incomplete input.
 
+Each analysis result has a `verdict`: `ready` when the inspection is complete and no finding reaches the threshold, `incomplete` when supported-source inspection did not finish (whatever the threshold), and `error` when a finding reaches the threshold. The text output prints the verdict as each report's heading (READY, INCOMPLETE or ERROR); a report that fails before analysis, such as a configuration error, keeps the heading ERROR. `ready` remains the gate result, so it is true under `--fail-on none` even when the inspection is incomplete.
+
 - **Error:** a proven invalid local source contract.
 - **Warning:** a concrete risk or inconsistency requiring review; intended configurations may be valid.
 - **Hint:** a possible improvement, missing contextual evidence or unresolved dependency.
 
-Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation, remediation and references. Messages omit source excerpts, setting values, action names, source URLs and parser error text. Validated metadata GUIDs can identify portal records. Paths remain visible; keep private-project reports under the project's ignored `.paqvilo/`. Human-readable paths escape terminal controls.
+Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation, remediation and references. Messages omit source excerpts, setting values, action names, source URLs and parser error text. Validated metadata GUIDs can identify portal records. Paths remain visible; keep private-project reports under the project's ignored `.paqvilo/`. Human-readable paths escape terminal controls. The text report prints each finding's, skipped file's and not-inspected file's path relative to the current working directory, so a terminal can open it as a link; a line that names only a root keeps its root id. `--json` keeps the root-relative label.
 
 `PAQ-SOURCE-001` identifies syntax that cannot be parsed, including malformed XML or embedded JSON. A readable
 enhanced component envelope with absent, empty or unsupported record content receives `PAQ-SOURCE-002` and
 incomplete coverage instead. Optional or withheld settings do not require disclosing secret values; an explicitly
 empty/null setting inside a supported record payload is valid input.
 
-Locations are exact where direct text/YAML positions are available. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. IDs depend on rule and location; they are not waivers and can change when source moves.
+Locations are exact where direct text/YAML positions are available. A finding over a JSON or YAML document read as data (flows, connectors, MCP registrations, Code Apps, package and mobile configuration, Dataverse deployment settings and specs) points at the value its `field` names, or at the object that lacks it; values decoded from an embedded JSON string, such as a flow's `clientdata`, keep the file's approximate anchor. A value reached through a YAML alias or merge key (`<<: *anchor`) is located at the anchor's own position. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. A Dataverse XML finding points at the child element its `field` names when that element is present, otherwise at the owning element, and the position is approximate. IDs depend on rule and location; they are not waivers and can change when source moves.
 
 ## Source domains
 
@@ -52,11 +54,13 @@ Some recommendations need context. Public access may be deliberate; view-based W
 
 ## Bounded local inventory
 
-All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. Overlapping files are not read twice; root labels disambiguate relative locations.
+All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. With several roots, a file is labelled by its path relative to the common folder of the source roots (a project file does not count); a selected root nested in another is read as its own root; a root outside that folder, or roots without one, fall back to a `<root id>/` prefix.
 
 Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted. Member paths, CRCs, counts and inflated sizes are checked. Compressed and selected inflated bytes share the budget, including nested packages up to three archive levels. Larger/unsupported packages are incomplete; supply unpacked sources when appropriate.
 
-Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions and web resource content in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
+When an unpacked Canvas source (`Src/*.pa.yaml`) has the same unique name as a Solution's packed app, the packed copy is not inspected and is listed under the Canvas domain's `superseded`; the unique name follows the [Canvas apps](../mirage/docs/canvas-apps.md) rule (the folder name, compared without case). A source folder named differently is a separate app.
+
+Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions, web resource content, Custom API request parameters and response properties, and table chart definitions in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
 
 `complete` describes bounded supported-source inspection. It does not mean every compiler, security, accessibility or runtime check passed. `sourceDigest` fingerprints paths and original bytes actually processed; partial input yields a partial fingerprint, not a deployment receipt. Reports preserve skips, rule execution, domain limitations and operations not performed.
 
@@ -69,7 +73,7 @@ const report = analyzeProject('/absolute/project', {
 });
 ```
 
-For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
+For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. File labels follow the rule above. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
 
 ## Extending quality coverage
 

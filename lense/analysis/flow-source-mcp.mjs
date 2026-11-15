@@ -1,4 +1,5 @@
 // Inspect registration metadata and paired source presence. Never import the paired JavaScript.
+import { structuredLocator } from './structured-location.mjs';
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const booleanHints = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
 const objectSchema = (value) => object(value) && value.type === 'object';
@@ -20,7 +21,7 @@ function closedSchemaProblem(schema) {
   return schema.required.some((name) => typeof name === 'string' && !Object.hasOwn(properties, name));
 }
 
-function inspectTool(tool, source, emit) {
+function inspectTool(tool, source, emit, at) {
   if (
     !identityValid(tool) ||
     !object(tool.annotations) ||
@@ -31,10 +32,12 @@ function inspectTool(tool, source, emit) {
     emit('MCP-META-001', source);
     return;
   }
-  if (tool.annotations.readOnlyHint && tool.annotations.destructiveHint) emit('MCP-META-002', source, 'annotations');
-  if (tool.annotations.openWorldHint) emit('MCP-META-003', source, 'annotations');
-  if (closedSchemaProblem(tool.inputSchema)) emit('MCP-SCHEMA-001', source, 'inputSchema');
-  if (Object.hasOwn(tool.outputSchema.properties ?? {}, '_meta')) emit('MCP-SCHEMA-002', source, 'outputSchema');
+  if (tool.annotations.readOnlyHint && tool.annotations.destructiveHint)
+    emit('MCP-META-002', at(tool.annotations, 'destructiveHint'), 'annotations');
+  if (tool.annotations.openWorldHint) emit('MCP-META-003', at(tool.annotations, 'openWorldHint'), 'annotations');
+  if (closedSchemaProblem(tool.inputSchema)) emit('MCP-SCHEMA-001', at(tool, 'inputSchema'), 'inputSchema');
+  if (Object.hasOwn(tool.outputSchema.properties ?? {}, '_meta'))
+    emit('MCP-SCHEMA-002', at(tool.outputSchema.properties, '_meta'), 'outputSchema');
 }
 
 export function inspectMcpTools(entries, emit) {
@@ -58,7 +61,7 @@ export function inspectMcpTools(entries, emit) {
       continue;
     }
     coverage.tools++;
-    inspectTool(tool, source, emit);
+    inspectTool(tool, source, emit, structuredLocator(entry, tool));
     if (!files.has(entry.file.slice(0, -5) + '.js')) {
       emit('MCP-PAIR-001', source);
       coverage.limited.push({ file: entry.file, reason: 'mcp-implementation-not-supplied' });

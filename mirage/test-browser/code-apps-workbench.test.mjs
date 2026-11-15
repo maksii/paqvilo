@@ -29,6 +29,7 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
       name: 'first',
       localAppUrl: app1 + '/',
       launchUrl: '/_apps/code/first/',
+      server: { state: 'reachable', status: 200 },
       diagnostics: [{ code: 'INVENTED', message: 'Review binding' }],
       connectionReferences: [{ key: 'ref', apiId: 'x_connector', dataSources: ['Source'] }],
       entitySets: { source: 'x_items' },
@@ -59,12 +60,18 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
     res.end(codeAppsWorkbenchHtml());
   });
   const page = await browser.page(t);
+  const initialProbe = page.waitForResponse((response) => response.url().endsWith('/_apps/code/_api/apps?probe=1'));
   await page.goto(origin + '/_apps/code/?app=first');
+  await initialProbe;
   await page.frameLocator('#preview').getByText('First local app').waitFor();
   assert.match(await page.locator('#diagnostics').innerText(), /INVENTED.*Review binding/);
   assert.match(await page.locator('#connections').innerText(), /ref.*x_connector/);
   assert.match(await page.locator('#mappings').innerText(), /x_items/);
   assert.equal(await page.locator('#connection').innerText(), 'Waiting for bridge');
+  assert.equal(
+    await page.locator('#server').innerText(),
+    'Server reachable (HTTP 200); app readiness is not verified.',
+  );
   await page.frameLocator('#preview').getByText('First local app').waitFor();
   const original = page.frame({ url: app1 + '/' });
   await original.evaluate(() => {
@@ -107,7 +114,9 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
       '*',
     ),
   );
-  await page.getByText('Bridge connected').waitFor();
+  // Not a substring match: the server line also contains "bridge connected".
+  await page.getByText('Bridge connected', { exact: true }).waitFor();
+  assert.equal(await page.locator('#server').innerText(), 'Server reachable; app loaded and bridge connected.');
   assert.match(await page.locator('#events').innerText(), /items\(\.\.\.\)/);
   assert.doesNotMatch(await page.locator('#events').innerText(), /not-visible|private-value|secret-id/);
   await frame1.evaluate(() =>

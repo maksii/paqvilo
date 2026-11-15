@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 
 /** Force the offline smoke settings without inherited npm configuration aliases. */
 export function offlineSmokeEnv(source = process.env) {
@@ -14,7 +15,7 @@ export function offlineSmokeEnv(source = process.env) {
 }
 
 /** Run the configured npm CLI and report its output or failure. */
-export function runSmokeNpm(npm, args, cwd, timeout = 120_000) {
+export function runSmokeNpm(npm, args, cwd, timeout = CHILD_HANG_GUARD_MS) {
   const env = args.includes('--offline') ? offlineSmokeEnv() : { ...process.env };
   const result = spawnSync(process.execPath, [npm, ...args], {
     cwd,

@@ -2084,7 +2084,7 @@ export function createDataverseHandler(deps) {
             contentType: req.headers['content-type'],
             contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
           },
-          ...(nested ? {} : { ...ANONYMOUS_ROOT, ...inbound }),
+          ...(nested ? { links: inbound.links } : { ...ANONYMOUS_ROOT, ...inbound }),
         })
       : null;
     // Every traced response names its trace (an overflow handle of a full trace names the trace only).
@@ -2317,6 +2317,12 @@ export async function startDataverseApi({
         },
       },
       clock,
+      onUnknownClient: ({ clientId, grant }) =>
+        log('dataverse token refused: unknown application', {
+          clientId,
+          grant,
+          hint: 'No application registration has this client id. Registrations made in /_sim/ in dry run are kept in memory and end with a restart; declare it in dataverse.applications or register it again.',
+        }),
     });
 
     const requests = [];

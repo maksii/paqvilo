@@ -6,9 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { acquireCiWorkspaceLease, assertOwnedCiState, processStartIdentity } from '../scripts/ci-workspace-lease.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState } from '../scripts/ci-workspace-lease.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
+import { processIdentity } from '../lense/process-identity.mjs';
 
 const variable = 'PAQ_CI_WORKSPACE_LEASE';
 function checkout(t) {
@@ -126,14 +127,21 @@ test('separate checkout leases and malformed inherited values do not bypass the 
   );
 });
 
-test('a terminated owner retains its lease until its workers can be inspected', async (t) => {
-  const directory = checkout(t);
+test('a terminated owner whose worker still runs retains its lease until the worker stops', async (t) => {
+  const directory = checkout(t),
+    lock = path.join(directory, '.paqvilo/ci/workspace.lock');
   const { child, closed } = await owner(t, directory);
   await assert.rejects(acquireCiWorkspaceLease(directory, {}), /already owns/);
+  const worker = await owner(t, directory, { [variable]: fs.readFileSync(path.join(lock, 'owner.json'), 'utf8') });
   child.kill();
   await closed;
   await assert.rejects(acquireCiWorkspaceLease(directory, {}), /verify its workers have stopped/);
-  assert.equal(fs.existsSync(path.join(directory, '.paqvilo/ci/workspace.lock/owner.json')), true);
+  assert.equal(fs.existsSync(path.join(lock, 'owner.json')), true);
+  worker.child.kill();
+  await worker.closed;
+  await (
+    await acquireCiWorkspaceLease(directory, {})
+  )();
 });
 
 test('releasing one generation cannot remove the next owner membership guard', async (t) => {
@@ -200,7 +208,7 @@ test('a worker record whose process ID now names another process does not retain
   const release = await acquireCiWorkspaceLease(directory, environment);
   ownedFixture(t).add(release);
   const members = path.join(directory, '.paqvilo/ci/workspace.lock/members'),
-    identity = processStartIdentity(process.pid);
+    identity = processIdentity(process.pid);
   assert.ok(identity, 'this process has a readable start identity');
   // A running process with this PID but a different start: the worker that recorded it has exited.
   fs.writeFileSync(path.join(members, 'reused.json'), JSON.stringify({ pid: process.pid, identity: `${identity}0` }));
@@ -211,4 +219,85 @@ test('a worker record whose process ID now names another process does not retain
   await (
     await acquireCiWorkspaceLease(directory, {})
   )();
+});
+
+// A child process that runs until stop(); its start identity is read while it is alive.
+async function idler(t) {
+  const child = spawn(process.execPath, ['--eval', 'console.log("ready");setInterval(()=>{},1000);'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+  });
+  const exited = once(child, 'exit');
+  ownedFixture(t).add(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
+  });
+  await new Promise((resolve, reject) => {
+    child.stdout.once('data', resolve);
+    child.once('error', reject);
+    child.once('exit', () => reject(new Error('Idle process exited before readiness')));
+  });
+  return {
+    pid: child.pid,
+    identity: processIdentity(child.pid),
+    async stop() {
+      child.kill();
+      await exited;
+    },
+  };
+}
+
+async function endedLeaseClaim(t, directory) {
+  const { child, closed } = await owner(t, directory);
+  child.kill();
+  await closed;
+  return `${path.join(directory, '.paqvilo/ci/workspace.lock')}.takeover`;
+}
+
+test('a takeover claim left by an ended process is removed and the takeover succeeds', async (t) => {
+  const directory = checkout(t);
+  const claim = await endedLeaseClaim(t, directory);
+  const taker = await idler(t);
+  const record = { pid: taker.pid, identity: taker.identity };
+  await taker.stop();
+  fs.mkdirSync(claim);
+  fs.writeFileSync(path.join(claim, 'owner.json'), JSON.stringify(record));
+  await (
+    await acquireCiWorkspaceLease(directory, {})
+  )();
+  assert.equal(fs.existsSync(claim), false);
+});
+
+test('a takeover claim held by a live process blocks the takeover until that process ends', async (t) => {
+  const directory = checkout(t);
+  const claim = await endedLeaseClaim(t, directory),
+    record = path.join(claim, 'owner.json');
+  const taker = await idler(t);
+  fs.mkdirSync(claim);
+  fs.writeFileSync(record, JSON.stringify({ pid: taker.pid, identity: taker.identity }));
+  await assert.rejects(acquireCiWorkspaceLease(directory, {}), /already owns/);
+  assert.equal(JSON.parse(fs.readFileSync(record, 'utf8')).pid, taker.pid);
+  // A record that cannot be read does not show that its owner has ended, so the claim is still held.
+  fs.writeFileSync(record, '{');
+  await assert.rejects(acquireCiWorkspaceLease(directory, {}), /already owns/);
+  await taker.stop();
+  fs.writeFileSync(record, JSON.stringify({ pid: taker.pid, identity: taker.identity }));
+  await (
+    await acquireCiWorkspaceLease(directory, {})
+  )();
+  assert.equal(fs.existsSync(claim), false);
+});
+
+test('a takeover claim whose PID now names another process does not block the takeover', async (t) => {
+  const directory = checkout(t);
+  const claim = await endedLeaseClaim(t, directory);
+  const taker = await idler(t);
+  assert.ok(taker.identity, 'the idle process has a readable start identity');
+  fs.mkdirSync(claim);
+  fs.writeFileSync(path.join(claim, 'owner.json'), JSON.stringify({ pid: taker.pid, identity: `${taker.identity}0` }));
+  await (
+    await acquireCiWorkspaceLease(directory, {})
+  )();
+  assert.equal(fs.existsSync(claim), false);
+  await taker.stop();
 });

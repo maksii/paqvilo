@@ -1,5 +1,6 @@
 import YAML from 'yaml';
 import { parseSolutionXml } from '../../mirage/lib/solution-xml.mjs';
+import { structuredLocator } from './structured-location.mjs';
 import { classifyYamlPath, yamlNode, YAML_ROOTS } from '../../mirage/lib/solution-yaml.mjs';
 
 const folders = new Set([
@@ -50,6 +51,9 @@ export function recognizedWithoutRules(file) {
   if (name === 'ribbondiff.xml') return 'ribbon definition';
   if (parts.includes('formulas') && /formuladefinitions\.ya?ml$/.test(name)) return 'formula definitions';
   if (parts.includes('webresources') && !name.endsWith('.data.xml')) return 'web resource content';
+  if (name === 'customapirequestparameter.xml') return 'custom API request parameter';
+  if (name === 'customapiresponseproperty.xml') return 'custom API response property';
+  if (parts.at(-2) === 'visualizations' && parts.includes('entities')) return 'chart definition';
   return null;
 }
 
@@ -172,12 +176,21 @@ export function readDataverseDocument(entry) {
         format: 'xml',
       };
   }
-  return { entry, value, format: 'object' };
+  return { entry, value, format: 'object', at: structuredLocator(entry, value) };
 }
 
 export function sourceAt(document, node) {
   if (!node?.region) return document.entry;
-  return { ...document.entry, line: node.region.line, column: node.region.column, exactLocation: false };
+  const fieldLocations = {};
+  for (const child of node.children ?? [])
+    if (child.region) fieldLocations[localName(child)] ??= { line: child.region.line, column: child.region.column };
+  return {
+    ...document.entry,
+    line: node.region.line,
+    column: node.region.column,
+    fieldLocations,
+    exactLocation: false,
+  };
 }
 
 export const rootKey = (entry) => String(entry.rootId ?? 'selected');

@@ -223,7 +223,7 @@ test('admin service views peek and purge, answer approvals, run preflight and ex
         res.writeHead(200, { 'content-type': 'text/javascript' });
         return res.end(HARNESS);
       }
-      const asset = /^\/__sim\/([a-z0-9-]+)\.(mjs|css)$/.exec(url.pathname);
+      const asset = /^\/__sim\/([a-z0-9-]+)\.(mjs|css|js)$/.exec(url.pathname);
       if (asset) {
         const file = await fs.readFile(new URL(`../admin/${asset[1]}.${asset[2]}`, import.meta.url));
         res.writeHead(200, { 'content-type': asset[2] === 'css' ? 'text/css' : 'text/javascript' });

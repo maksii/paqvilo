@@ -119,31 +119,33 @@ function childRole(role, key) {
 function addMembers(pending, value, depth, role) {
   for (const [key, member] of Object.entries(value)) {
     if (['definition', 'declaration'].includes(role) && ['metadata', 'description', 'summary'].includes(key)) continue;
-    pending.push({ value: member, depth: depth + 1, role: childRole(role, key) });
+    const index = Array.isArray(value) ? Number(key) : key;
+    pending.push({ value: member, owner: value, key: index, depth: depth + 1, role: childRole(role, key) });
   }
 }
 
-function inspectString(value, names, source, emit) {
+// `locate()` returns the string's location; it is only evaluated when a finding is reported.
+function inspectString(value, names, locate, emit) {
   for (const expression of expressionSegments(value)) {
     const result = checkExpression(expression, names);
-    if (result.invalid) emit('FLOW-EXPR-001', source, 'expression');
-    if (result.missing) emit('FLOW-EXPR-002', source, 'expression');
+    if (result.invalid) emit('FLOW-EXPR-001', locate(), 'expression');
+    if (result.missing) emit('FLOW-EXPR-002', locate(), 'expression');
   }
 }
 
 /** Only delimiter balance and literal references are asserted; unknown functions/types remain outside scope. */
-export function inspectFlowExpressions(definition, names, source, emit, limited) {
+export function inspectFlowExpressions(definition, names, source, emit, limited, at) {
   const pending = [{ value: definition, depth: 0, role: 'definition' }];
   let nodes = 0;
   while (pending.length) {
-    const { value, depth, role } = pending.pop();
+    const { value, owner, key, depth, role } = pending.pop();
     if (++nodes > 100000 || depth > 64) {
       emit('FLOW-SOURCE-003', source);
       limited.push({ file: source.file, reason: 'flow-expression-tree-budget' });
       break;
     }
     if (typeof value === 'string') {
-      inspectString(value, names, source, emit);
+      inspectString(value, names, () => at(owner, key), emit);
     } else if (value !== null && typeof value === 'object') {
       addMembers(pending, value, depth, role);
     }

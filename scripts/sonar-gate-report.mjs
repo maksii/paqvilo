@@ -1,18 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readApi } from './verify-sonar-branch.mjs';
-
-const MAX_LINE = 299;
-const MAX_MESSAGE = 200;
-
-function clip(text, max) {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function oneLine(value) {
-  return String(value ?? '-').replace(/\s+/g, ' ');
-}
+import { clip, issueLine, MAX_LINE, oneLine, readApi } from './verify-sonar-branch.mjs';
 
 function unexpectedShape() {
   return new Error('Sonar API returned an unexpected shape.');
@@ -21,13 +10,6 @@ function unexpectedShape() {
 // readApi errors carry fixed messages without the host or token; keep only the reason.
 function readReason(error) {
   return error.message.replace(/^Sonar API (returned )?/, '').replace(/\.$/, '');
-}
-
-function finding(rule, component, line, message, projectKey) {
-  const prefix = `${projectKey}:`;
-  const location = oneLine(component);
-  const file = location.startsWith(prefix) ? location.slice(prefix.length) : location;
-  return clip(`  ${oneLine(rule)} ${file}:${oneLine(line)} ${clip(oneLine(message), MAX_MESSAGE)}`, MAX_LINE);
 }
 
 function conditionLine(condition) {
@@ -52,7 +34,9 @@ async function issueLines(call, projectKey) {
     s: 'FILE_LINE',
   });
   if (!Number.isSafeInteger(data?.total) || !Array.isArray(data.issues)) throw unexpectedShape();
-  const items = data.issues.map((issue) => finding(issue.rule, issue.component, issue.line, issue.message, projectKey));
+  const items = data.issues.map((issue) =>
+    issueLine(issue.rule, issue.component, issue.line, issue.message, projectKey),
+  );
   return [`Open issues in new code: ${data.total}`, ...items];
 }
 
@@ -65,7 +49,13 @@ async function hotspotLines(call, projectKey) {
   });
   if (!Number.isSafeInteger(data?.paging?.total) || !Array.isArray(data.hotspots)) throw unexpectedShape();
   const items = data.hotspots.map((hotspot) =>
-    finding(hotspot.ruleKey ?? hotspot.securityCategory, hotspot.component, hotspot.line, hotspot.message, projectKey),
+    issueLine(
+      hotspot.ruleKey ?? hotspot.securityCategory,
+      hotspot.component,
+      hotspot.line,
+      hotspot.message,
+      projectKey,
+    ),
   );
   return [`Security hotspots to review in new code: ${data.paging.total}`, ...items];
 }

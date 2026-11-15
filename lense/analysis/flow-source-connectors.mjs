@@ -36,66 +36,75 @@ function resolves(document, reference) {
   return true;
 }
 
-function security(requirements, schemes, source, emit) {
+function security(requirements, schemes, emit, at) {
   if (!Array.isArray(requirements)) return;
   for (const requirement of requirements) {
     if (!object(requirement)) continue;
-    if (Object.keys(requirement).some((name) => !Object.hasOwn(schemes, name)))
-      emit('CONN-SEC-001', source, 'security');
+    const unknown = Object.keys(requirement).find((name) => !Object.hasOwn(schemes, name));
+    if (unknown !== undefined) emit('CONN-SEC-001', at(requirement, unknown), 'security');
   }
 }
 
-function inspectOperation(operation, operations, schemes, source, emit, responsesRequired) {
+function inspectOperation(operation, operations, schemes, emit, at, here, responsesRequired) {
   if (
     !object(operation) ||
     ((responsesRequired || Object.hasOwn(operation, 'responses')) && !object(operation.responses))
   ) {
-    emit('CONN-SOURCE-001', source, 'responses');
+    emit('CONN-SOURCE-001', object(operation) ? at(operation, 'responses') : here(), 'responses');
     return;
   }
   const id = operation.operationId;
-  if (typeof id !== 'string' || !id.trim()) emit('CONN-OP-002', source, 'operationId');
-  else if (operations.has(id)) emit('CONN-OP-001', source, 'operationId');
+  if (typeof id !== 'string' || !id.trim()) emit('CONN-OP-002', at(operation, 'operationId'), 'operationId');
+  else if (operations.has(id)) emit('CONN-OP-001', at(operation, 'operationId'), 'operationId');
   else operations.add(id);
-  security(operation.security, schemes, source, emit);
-  if (Array.isArray(operation.security) && operation.security.length === 0) emit('CONN-SEC-002', source, 'security');
+  security(operation.security, schemes, emit, at);
+  if (Array.isArray(operation.security) && operation.security.length === 0)
+    emit('CONN-SEC-002', at(operation, 'security'), 'security');
 }
 
-function inspectOperations(document, source, emit, responsesRequired) {
+function inspectOperations(document, emit, at, responsesRequired) {
   const operations = new Set();
   const schemes = document.securityDefinitions ?? document.components?.securitySchemes ?? {};
-  security(document.security, object(schemes) ? schemes : {}, source, emit);
+  security(document.security, object(schemes) ? schemes : {}, emit, at);
   for (const [route, item] of Object.entries(document.paths)) {
     if (route.startsWith('x-')) continue;
     if (!route.startsWith('/') || !object(item)) {
-      emit('CONN-SOURCE-001', source, 'paths');
+      emit('CONN-SOURCE-001', at(document.paths, route), 'paths');
       continue;
     }
     for (const [method, operation] of Object.entries(item)) {
       if (!methods.has(method)) continue;
-      inspectOperation(operation, operations, object(schemes) ? schemes : {}, source, emit, responsesRequired);
+      inspectOperation(
+        operation,
+        operations,
+        object(schemes) ? schemes : {},
+        emit,
+        at,
+        () => at(item, method),
+        responsesRequired,
+      );
     }
   }
 }
 
-function inspectNode(document, node, source, emit, changedResource) {
+function inspectNode(document, node, emit, at, changedResource) {
   let external = false;
   if (Object.hasOwn(node, '$dynamicRef')) {
-    emit('CONN-REF-002', source, '$ref');
+    emit('CONN-REF-002', at(node, '$dynamicRef'), '$ref');
     external = true;
   }
-  if (Object.hasOwn(node, '$ref') && typeof node.$ref !== 'string') emit('CONN-REF-001', source, '$ref');
+  if (Object.hasOwn(node, '$ref') && typeof node.$ref !== 'string') emit('CONN-REF-001', at(node, '$ref'), '$ref');
   if (typeof node.$ref === 'string') {
     const result = changedResource ? null : resolves(document, node.$ref);
-    if (result === false) emit('CONN-REF-001', source, '$ref');
-    if (result === null) emit('CONN-REF-002', source, '$ref');
+    if (result === false) emit('CONN-REF-001', at(node, '$ref'), '$ref');
+    if (result === null) emit('CONN-REF-002', at(node, '$ref'), '$ref');
     external = result === null || external;
   }
-  if (node.in === 'path' && node.required === false) emit('CONN-PARAM-001', source, 'required');
+  if (node.in === 'path' && node.required === false) emit('CONN-PARAM-001', at(node, 'required'), 'required');
   return external;
 }
 
-function inspectReferences(document, source, emit, limited) {
+function inspectReferences(document, source, emit, limited, at) {
   const pending = [{ node: document, depth: 0, namedMap: false, changedResource: false }];
   let nodes = 0;
   let external = false;
@@ -108,7 +117,7 @@ function inspectReferences(document, source, emit, limited) {
     }
     if (node === null || typeof node !== 'object') continue;
     const resource = changedResource || (node !== document && typeof node.$id === 'string');
-    const unresolvedExternal = !namedMap && inspectNode(document, node, source, emit, resource);
+    const unresolvedExternal = !namedMap && inspectNode(document, node, emit, at, resource);
     external = unresolvedExternal || external;
     for (const [key, member] of Object.entries(node)) {
       if (!namedMap && ['example', 'examples', 'default', 'enum'].includes(key)) continue;
@@ -133,37 +142,40 @@ function connectorDialect(document) {
   return 'unsupported';
 }
 
-function inspectConnectorStructure(document, source, emit, limited, dialect) {
+function inspectConnectorStructure(document, source, emit, limited, dialect, at) {
   const hasPaths = Object.hasOwn(document, 'paths');
-  if ((hasPaths || dialect === 'legacy') && !object(document.paths)) emit('CONN-SOURCE-001', source, 'paths');
+  if ((hasPaths || dialect === 'legacy') && !object(document.paths))
+    emit('CONN-SOURCE-001', at(document, 'paths'), 'paths');
   if (dialect === 'legacy') return;
   for (const key of ['components', 'webhooks'])
-    if (Object.hasOwn(document, key) && !object(document[key])) emit('CONN-SOURCE-001', source, key);
+    if (Object.hasOwn(document, key) && !object(document[key])) emit('CONN-SOURCE-001', at(document, key), key);
   if (!hasPaths || Object.hasOwn(document, 'webhooks')) {
     emit('CONN-SOURCE-002', source);
     limited.push({ file: source.file, reason: 'connector-operation-forms-not-inspected' });
   }
   if (!['paths', 'components', 'webhooks'].some((key) => Object.hasOwn(document, key)))
-    emit('CONN-SOURCE-001', source, 'paths');
+    emit('CONN-SOURCE-001', at(document, 'paths'), 'paths');
 }
 
-export function inspectConnectorSource(document, source, emit, limited) {
+export function inspectConnectorSource(document, source, emit, limited, at) {
   const dialect = connectorDialect(document);
   if (dialect === 'unsupported' || dialect === 'partial') {
     emit('CONN-SOURCE-002', source);
     limited.push({ file: source.file, reason: 'connector-version-not-fully-supported' });
     if (dialect === 'unsupported') return;
   }
-  inspectConnectorStructure(document, source, emit, limited, dialect);
-  if (object(document.paths)) inspectOperations(document, source, emit, dialect === 'legacy');
-  inspectReferences(document, source, emit, limited);
+  inspectConnectorStructure(document, source, emit, limited, dialect, at);
+  if (object(document.paths)) inspectOperations(document, emit, at, dialect === 'legacy');
+  inspectReferences(document, source, emit, limited, at);
   if (
     Array.isArray(document.schemes) &&
     document.schemes.length > 0 &&
     document.schemes.every((scheme) => scheme === 'http') &&
     (typeof document.host !== 'string' || unencryptedTarget(`http://${document.host}`))
   )
-    emit('CONN-SEC-003', source, 'schemes');
-  if (Array.isArray(document.servers) && document.servers.some((server) => unencryptedTarget(server?.url)))
-    emit('CONN-SEC-003', source, 'servers');
+    emit('CONN-SEC-003', at(document, 'schemes'), 'schemes');
+  const server = Array.isArray(document.servers)
+    ? document.servers.find((item) => unencryptedTarget(item?.url))
+    : undefined;
+  if (server !== undefined) emit('CONN-SEC-003', at(server, 'url'), 'servers');
 }

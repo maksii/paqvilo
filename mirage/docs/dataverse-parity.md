@@ -1,6 +1,6 @@
 # Dataverse simulation
 
-Mirage supports FetchXML, portal Web API and list OData contracts over local state. Queries use imported mappings, relationship metadata, column types and permission scopes. Results support platform-shaped choice/lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings fail with diagnostics rather than silently querying unrelated tables.
+Mirage supports FetchXML, portal Web API and list OData contracts over local state. Queries use imported mappings, relationship metadata, column types and permission scopes. Results support platform-shaped choice/lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings fail with diagnostics rather than silently querying unrelated tables. In FetchXML, `count` is the page length (capped at the page-size limit, 5,000 by default); `returntotalrecordcount="true"` reports the matching total independently of the page, capped at 5,000 by default with `total_record_count_limit_exceeded` true beyond it; `total_record_count` is -1 when it is not requested.
 
 The read-only SQL evaluator's `LIKE` uses the configured `CI_AI` or `CI_AS`
 text folding for literal characters and character sets. `ESCAPE` requires one

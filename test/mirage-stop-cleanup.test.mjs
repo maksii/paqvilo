@@ -13,6 +13,8 @@ import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  codeAppInterrupt,
+  endSessionOnRuntimeExit,
   isAlive,
   miragePaths,
   start,
@@ -24,7 +26,7 @@ import {
 import { guardShutdownSignals } from '../lense/signal-forwarding.mjs';
 import { workspace, cli, stopped } from './mirage-stop-workspace.mjs';
 import { processesNaming, trackedCliEnded } from './mirage-reaper.mjs';
-import { captureConsoleOutput } from './helpers/mirage-session-doubles.mjs';
+import { captureConsoleOutput, readyRuntime } from './helpers/mirage-session-doubles.mjs';
 
 const standalone = (directory) => [
   'mirage',
@@ -427,4 +429,231 @@ test('only the Ctrl+C reason of a Code App dev session counts as its interrupt',
   failed.controller.abort(new Error('Code App development stopped.'));
   assert.equal(failed.interrupted(), false, 'another error with the same text is a failure');
   assert.equal(failed.interrupted(new Error('Code App development stopped.')), false);
+});
+
+// @test-kind contract: the runtime-ended reason counts as a dev interrupt and is distinguishable from Ctrl+C
+test('the runtime-ended reason of a Code App dev session is an interrupt apart from Ctrl+C', async () => {
+  const { codeAppInterrupt } = await import('../lense/commands/mirage.mjs');
+  const ended = codeAppInterrupt();
+  ended.runtimeEnded();
+  assert.equal(ended.controller.signal.aborted, true);
+  assert.equal(ended.interrupted(), true);
+  assert.equal(ended.runtimeStopped(), true);
+  const ctrlC = codeAppInterrupt();
+  ctrlC.interrupt();
+  assert.equal(ctrlC.interrupted(), true);
+  assert.equal(ctrlC.runtimeStopped(), false);
+  const failed = codeAppInterrupt();
+  failed.controller.abort(new Error('The Mirage runtime of this development session stopped.'));
+  assert.equal(failed.interrupted(), false, 'another error with the same text is a failure');
+  assert.equal(failed.runtimeStopped(), false);
+});
+
+// @test-kind contract: a development session whose runtime already exited reports it stopped and keeps status 0
+test('a development session whose runtime already exited reports it stopped and keeps status 0', async (t) => {
+  const saved = process.exitCode;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-dev-gone-'));
+  t.after(() => {
+    process.exitCode = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  process.exitCode = undefined;
+  const reported = [];
+  const { output, restore } = captureConsoleOutput();
+  try {
+    await stopDevelopmentSession(
+      null,
+      { started: true, pid: 4321, url: 'http://127.0.0.1:4100/' },
+      miragePaths({ stateDir: dir }),
+      'hint',
+      {
+        stopSessions: async () => ({ stopped: [], remaining: [] }),
+        alive: () => false,
+        report: (line) => reported.push(line),
+      },
+    );
+  } finally {
+    restore();
+  }
+  assert.deepEqual(reported, []);
+  assert.deepEqual(output.logs, ['mirage   http://127.0.0.1:4100/ (pid 4321) already stopped']);
+  assert.equal(process.exitCode, undefined);
+});
+
+// @test-kind contract: a multi-portal development session whose runtime already exited reports it stopped and keeps status 0
+test('a stop of started portals whose runtime already exited reports it stopped and keeps status 0', async (t) => {
+  const saved = process.exitCode;
+  t.after(() => {
+    process.exitCode = saved;
+  });
+  process.exitCode = undefined;
+  const { output, restore } = captureConsoleOutput();
+  try {
+    await stopStarted(
+      [{ site: 'alpha', session: { started: true, pid: 4321, url: 'http://127.0.0.1:4100/' } }],
+      {},
+      async () => ({ stopped: [], remaining: [] }),
+      { source: new EventEmitter(), alive: () => false },
+    );
+  } finally {
+    restore();
+  }
+  assert.deepEqual(output.errors, []);
+  assert.deepEqual(output.logs, ['mirage   alpha http://127.0.0.1:4100/ (pid 4321) already stopped']);
+  assert.equal(process.exitCode, undefined);
+});
+
+// A started runtime whose exit the test controls. `exited` is what start() attaches to the session it returns.
+function startedRuntime() {
+  const child = new EventEmitter();
+  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  return {
+    child,
+    session: { started: true, pid: 4321, url: 'http://127.0.0.1:4100/', log: 'invented-startup.log', exited },
+  };
+}
+
+// @test-kind contract: a runtime that exits by itself ends its development session through the abort, and a zero exit keeps status 0
+test('a runtime that exits by itself ends its development session and keeps status 0', async (t) => {
+  const saved = process.exitCode;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-dev-self-exit-'));
+  t.after(() => {
+    process.exitCode = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  process.exitCode = undefined;
+  const { child, session } = startedRuntime();
+  const { controller, runtimeEnded, runtimeStopped } = codeAppInterrupt();
+  const runtime = endSessionOnRuntimeExit(session, controller, runtimeEnded);
+  const { output, restore } = captureConsoleOutput();
+  try {
+    child.emit('exit', 0, null);
+    await session.exited;
+  } finally {
+    restore();
+  }
+  assert.equal(controller.signal.aborted, true, 'the development run ends through its abort signal');
+  assert.equal(runtimeStopped(), true);
+  assert.deepEqual(runtime.exit, { code: 0, signal: null });
+  assert.deepEqual(output.logs, [
+    'mirage   http://127.0.0.1:4100/ (pid 4321) stopped; ending this development session',
+  ]);
+  assert.deepEqual(output.errors, []);
+  assert.equal(process.exitCode, undefined);
+  // The session's cleanup then runs for the ended runtime and reports it already stopped.
+  const reported = [];
+  const cleanup = captureConsoleOutput();
+  try {
+    await stopDevelopmentSession(null, session, miragePaths({ stateDir: dir }), 'hint', {
+      runtime,
+      stopSessions: async () => ({ stopped: [], remaining: [] }),
+      alive: () => false,
+      report: (line) => reported.push(line),
+    });
+  } finally {
+    cleanup.restore();
+  }
+  assert.deepEqual(reported, []);
+  assert.deepEqual(cleanup.output.logs, ['mirage   http://127.0.0.1:4100/ (pid 4321) already stopped']);
+  assert.equal(process.exitCode, undefined);
+});
+
+// @test-kind contract: a runtime that exits by itself with a failure reports its log and makes the development session fail
+for (const exit of [
+  { code: 3, signal: null },
+  { code: null, signal: 'SIGTERM' },
+])
+  test(`a runtime that exits by itself with ${exit.signal ?? `code ${exit.code}`} reports its log and fails the development session`, async (t) => {
+    const saved = process.exitCode;
+    t.after(() => {
+      process.exitCode = saved;
+    });
+    process.exitCode = undefined;
+    const { child, session } = startedRuntime();
+    const { controller, runtimeEnded, runtimeStopped } = codeAppInterrupt();
+    endSessionOnRuntimeExit(session, controller, runtimeEnded);
+    const { output, restore } = captureConsoleOutput();
+    try {
+      child.emit('exit', exit.code, exit.signal);
+      await session.exited;
+    } finally {
+      restore();
+    }
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(runtimeStopped(), true);
+    assert.deepEqual(output.logs, [
+      `mirage   http://127.0.0.1:4100/ (pid 4321) exited (${exit.signal ?? `code ${exit.code}`}); ending this development session`,
+      'mirage   see the runtime log: invented-startup.log',
+    ]);
+    assert.equal(process.exitCode, 1);
+  });
+
+// @test-kind contract: a runtime that exits during the development session's own teardown is expected, so it prints nothing and keeps status 0
+test('a runtime that exits during the development teardown prints nothing and keeps status 0', async (t) => {
+  const saved = process.exitCode;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-dev-teardown-exit-'));
+  t.after(() => {
+    process.exitCode = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  process.exitCode = undefined;
+  const { child, session } = startedRuntime();
+  const { controller, runtimeEnded } = codeAppInterrupt();
+  const runtime = endSessionOnRuntimeExit(session, controller, runtimeEnded);
+  const reported = [];
+  const { output, restore } = captureConsoleOutput();
+  try {
+    await stopDevelopmentSession(null, session, miragePaths({ stateDir: dir }), 'hint', {
+      runtime,
+      // The stop ends the runtime with SIGTERM, a non-zero exit, and the stop reports only after that exit is seen.
+      stopSessions: async () => {
+        child.emit('exit', null, 'SIGTERM');
+        await session.exited;
+        return { stopped: [{ pid: 4321 }], remaining: [] };
+      },
+      alive: () => false,
+      report: (line) => reported.push(line),
+    });
+  } finally {
+    restore();
+  }
+  assert.deepEqual(reported, []);
+  assert.deepEqual(output.errors, []);
+  assert.deepEqual(output.logs, ['mirage   stopped http://127.0.0.1:4100/ (pid 4321)']);
+  assert.equal(controller.signal.aborted, false, 'the teardown does not end the run as a runtime stop');
+  assert.equal(process.exitCode, undefined);
+});
+
+// @test-kind contract: a session that start() returns for a started runtime carries the runtime's exit as a non-enumerable promise
+test('a session started by start() carries the runtime exit as a non-enumerable promise', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-dev-started-exit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const paths = miragePaths({ stateDir: dir });
+  fs.mkdirSync(paths.discoveryRoot, { recursive: true });
+  const url = await readyRuntime(t, () => {});
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4343,
+    exitCode: null,
+    signalCode: null,
+    unref() {},
+    kill() {},
+  });
+  const session = await start(
+    { stateDir: dir, runtime: { kind: 'model-driven' }, siteName: 'invented' },
+    { port: '0' },
+    {
+      paths,
+      identityOf: async () => 'injected identity',
+      spawnRuntime() {
+        // The runtime publishes its discovery record as it starts; start() reads it on its first poll.
+        fs.writeFileSync(path.join(paths.discoveryRoot, 'session-4343.json'), JSON.stringify({ pid: 4343, url }));
+        return child;
+      },
+    },
+  );
+  assert.equal(session.started, true);
+  assert.equal(Object.keys(session).includes('exited'), false);
+  assert.equal(typeof session.exited?.then, 'function');
+  child.emit('exit', 0, null);
+  assert.deepEqual(await session.exited, { code: 0, signal: null });
 });

@@ -5,17 +5,21 @@ import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, parentProcessId } = workerData,
+const { port, signal, executable, parentProcessId, label } = workerData,
   flags = new Int32Array(signal);
 const active = new Map();
 let closed = false,
   child;
 try {
-  child = spawn(executable, ['--persistent', '--parent', String(parentProcessId)], {
-    shell: false,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  child = spawn(
+    executable,
+    ['--persistent', '--parent', String(parentProcessId), ...(label ? ['--label', label] : [])],
+    {
+      shell: false,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  );
 } catch (error) {
   // A start the system refuses outright throws here: no process exists, and the pool learns at once that it is gone.
   send({ kind: 'host-exited', hostExitCode: null });

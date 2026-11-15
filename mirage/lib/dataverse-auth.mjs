@@ -336,6 +336,8 @@ function aadError(
 
 // federatedIssuers() returns [{ issuer, jwks: { keys } }] for verifying federated client assertions.
 // signingKey: the token signing pair { privateKey, publicKey } (RSA KeyObjects); by default every authority generates its own.
+// onUnknownClient({ clientId, grant }): a diagnostic log hook called when a request names no registered application; its
+// errors are ignored, so the answer never depends on it.
 export function createAuthority({
   tenantId,
   applications,
@@ -344,6 +346,7 @@ export function createAuthority({
   clock = () => Date.now(),
   accessTokenLifetimeSeconds = 3600,
   signingKey = null,
+  onUnknownClient = () => {},
 }) {
   // A generated pair is created on first use: a 2048-bit key pair blocks the event loop, and many runtimes never issue
   // a token. A supplied pair is used as given.
@@ -381,6 +384,13 @@ export function createAuthority({
     ['common', 'organizations', 'consumers', tenantId.toLowerCase()].includes(String(segment).toLowerCase());
   const findApp = (clientId) =>
     applications().find((item) => item.appId.toLowerCase() === String(clientId).toLowerCase());
+  const reportUnknownClient = (clientId, grant) => {
+    try {
+      onUnknownClient({ clientId, grant });
+    } catch {
+      // A failing diagnostic hook never changes the answer.
+    }
+  };
   // Interactive users only: application users, non-interactive, disabled and oid-less rows cannot sign in or be picked.
   const interactive = (row) =>
     row &&
@@ -702,7 +712,8 @@ export function createAuthority({
   // Shared by GET and POST of /authorize: the client, redirect_uri, response_type and scope must all check out.
   const checkAuthorize = (origin, now, input) => {
     const app = findApp(input.client_id);
-    if (!app)
+    if (!app) {
+      reportUnknownClient(input.client_id, GRANT_TYPES.authorization_code);
       return {
         page: errorPage(
           origin,
@@ -711,6 +722,7 @@ export function createAuthority({
           `Application with identifier '${input.client_id}' was not found in the directory '${tenantId}'.`,
         ),
       };
+    }
     if (!redirectAllowed(app, input.redirect_uri))
       return {
         page: errorPage(
@@ -808,11 +820,13 @@ export function createAuthority({
       );
     if (!form.client_id) return fail(900144, "The request body must contain the following parameter: 'client_id'.");
     const app = findApp(form.client_id);
-    if (!app)
+    if (!app) {
+      reportUnknownClient(form.client_id, DEVICE_GRANT);
       return fail(
         700016,
         `Application with identifier '${form.client_id}' was not found in the directory '${tenantId}'.`,
       );
+    }
     if (!grantAllowed(app, DEVICE_GRANT))
       return fail(700016, `The client is not permitted to use the grant type '${DEVICE_GRANT}'.`);
     if (!scopeResource(form.scope, origin, false, applications())) return fail(70011, INVALID_SCOPE);
@@ -1078,6 +1092,7 @@ export function createAuthority({
       return { result: failure(900144, "The request body must contain the following parameter: 'client_id'.") };
     const app = findApp(clientId);
     if (!app) {
+      reportUnknownClient(clientId, form.grant_type);
       if (form.grant_type === JWT_BEARER)
         return {
           result: failure(

@@ -1,7 +1,11 @@
 // @test-kind contract: Owned offline source rules check supplied definitions, not native service behavior.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { tempDirSync } from './fixture.mjs';
 import { analyzeFlows, flowRules } from '../lense/analysis/flow-rules.mjs';
+import { analyzeProject } from '../lense/analysis/index.mjs';
 
 const entry = (file, value) => ({ file, text: typeof value === 'string' ? value : JSON.stringify(value) });
 const definition = (actions = {}) => ({ triggers: { manual: { type: 'Request', kind: 'Button' } }, actions });
@@ -493,4 +497,95 @@ test('credential values with interpolated expressions are dynamic and literal cr
   const literal = review([entry('Workflows/literal.json', definition({ Call: credential('Bearer abc') }))]);
   assert.equal(literal.ids.includes('FLOW-SEC-002'), true);
   assert.ok(!JSON.stringify(literal.findings).includes('Bearer abc'));
+});
+
+// Line and column (1-based) of a character offset in `text`.
+function positionAt(text, offset) {
+  const before = text.slice(0, offset).split('\n');
+  return { line: before.length, column: before.at(-1).length + 1 };
+}
+// Line and column of the first `needle` in `text`, moved forward by `delta` characters.
+function positionOf(text, needle, delta = 0) {
+  const offset = text.indexOf(needle);
+  assert.ok(offset >= 0, needle);
+  return positionAt(text, offset + delta);
+}
+// Every finding of one pass over the entries, with the position its source reports.
+function located(entries) {
+  const found = [];
+  analyzeFlows(entries, (ruleId, source) =>
+    found.push({ ruleId, line: source.line, column: source.column, exact: source.exactLocation }),
+  );
+  return found;
+}
+const httpAction = (uri) => ({ type: 'Http', inputs: { method: 'GET', uri }, runAfter: {} });
+
+// @test-kind contract: findings over parsed JSON and YAML point at the value their field names.
+test('JSON flow and connector findings point at the value they name', () => {
+  const flow = { properties: { definition: definition({ Call: httpAction('http://invented.example.test/') }) } };
+  const flowText = JSON.stringify(flow, null, 2);
+  const flowFindings = located([{ file: 'Workflows/http.json', text: flowText }]);
+  const uri = flowFindings.find((item) => item.ruleId === 'FLOW-SEC-001');
+  assert.deepEqual(uri, { ruleId: 'FLOW-SEC-001', ...positionOf(flowText, '"http://invented'), exact: true });
+  const inputs = flowFindings.find((item) => item.ruleId === 'FLOW-PERF-002');
+  assert.deepEqual(inputs, {
+    ruleId: 'FLOW-PERF-002',
+    ...positionOf(flowText, '"inputs": ', '"inputs": '.length),
+    exact: true,
+  });
+
+  const connector = {
+    swagger: '2.0',
+    info: { title: 'Invented', version: '1' },
+    host: 'invented.example.test',
+    schemes: ['http'],
+    paths: {},
+  };
+  const connectorText = JSON.stringify(connector, null, 2);
+  const schemes = located([{ file: 'connectors/apiDefinition.json', text: connectorText }]).find(
+    (item) => item.ruleId === 'CONN-SEC-003',
+  );
+  assert.deepEqual(schemes, {
+    ruleId: 'CONN-SEC-003',
+    ...positionOf(connectorText, '"schemes": ', '"schemes": '.length),
+    exact: true,
+  });
+
+  const yamlText =
+    'swagger: "2.0"\ninfo:\n  title: Invented\n  version: "1"\nhost: invented.example.test\nschemes:\n  - http\npaths: {}\n';
+  const yamlSchemes = located([{ file: 'connectors/apiDefinition.yaml', text: yamlText }]).find(
+    (item) => item.ruleId === 'CONN-SEC-003',
+  );
+  assert.deepEqual(yamlSchemes, { ruleId: 'CONN-SEC-003', ...positionOf(yamlText, '- http'), exact: true });
+});
+
+// @test-kind contract: findings over parsed JSON and YAML point at the value their field names.
+test('a flow wrapped in clientdata keeps the approximate anchor', () => {
+  const flow = { properties: { definition: definition({ Call: httpAction('http://invented.example.test/') }) } };
+  const wrapped = JSON.stringify({ clientdata: JSON.stringify(flow) }, null, 2);
+  const found = located([{ file: 'Workflows/wrapped.json', text: wrapped }]).find(
+    (item) => item.ruleId === 'FLOW-SEC-001',
+  );
+  assert.equal(found.exact, false);
+});
+
+// @test-kind contract: each located value is its own finding.
+test('two insecure HTTP actions are two findings at their own lines', (t) => {
+  const root = tempDirSync('paq-flow-located-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'Workflows'));
+  const body = {
+    properties: {
+      definition: definition({
+        First: httpAction('http://invented.example.test/first'),
+        Second: httpAction('http://invented.example.test/second'),
+      }),
+    },
+  };
+  fs.writeFileSync(path.join(root, 'Workflows', 'two.json'), JSON.stringify(body, null, 2));
+  const findings = analyzeProject(root, { failOn: 'none' }).findings.filter((item) => item.ruleId === 'FLOW-SEC-001');
+  assert.equal(findings.length, 2);
+  assert.notEqual(findings[0].line, findings[1].line);
+  assert.notEqual(findings[0].id, findings[1].id);
+  assert.ok(findings.every((item) => item.exactLocation === true));
 });

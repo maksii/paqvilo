@@ -27,7 +27,7 @@ npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal -
 
 Close the dedicated browser or use Ctrl+C to end the dev session. Browser interactions use the online backend and can affect live data; use authorized environments and actions.
 
-The dedicated profile keeps the portal's session cookies in `<profile>.session.<hash>.json`, next to the profile folder, with one file for each set of portal hosts; only cookies whose domain belongs to those hosts are kept, so identity providers on other hosts are not stored. The tool never deletes a session file of another portal scope, so removing a profile means deleting its folder and its `.session.*.json` files.
+The dedicated profile keeps the portal's session cookies in `<profile>.session.<hash>.json`, next to the profile folder, with one file for each set of portal hosts; only cookies whose domain belongs to those hosts are kept, so identity providers on other hosts are not stored. The session file never keeps Mirage staff-selection cookies, because they belong to one runtime process. The tool never deletes a session file of another portal scope, so removing a profile means deleting its folder and its `.session.*.json` files.
 
 A newly opened tab can load before interception finishes attaching. Lense repairs a clean initial document with
 one GET so local sources apply, without replaying a form submission. Edited controls or observed rich-text edits

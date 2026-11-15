@@ -509,6 +509,94 @@ test('CLI: serve reports an apps address on a port of its own, and it answers ma
   assert.equal(code, 0, output.stderr);
 });
 
+// @test-kind contract: the startup preset comes from the command line, else the project file
+test('the startup preset comes from the command line, else the project file', async (t) => {
+  const directory = await fixture(t, {
+    'project.json': JSON.stringify({
+      version: 2,
+      runtime: { kind: 'model-driven' },
+      solutions: [],
+      preset: 'invented-preset',
+    }),
+  });
+  const project = path.join(directory, 'project.json');
+  const fromProject = await run(t, ['inspect', '--project', project, '--json'], directory);
+  assert.equal(fromProject.code, 0, fromProject.stderr);
+  assert.deepEqual(JSON.parse(fromProject.stdout).startupPreset, {
+    name: 'invented-preset',
+    mode: 'always',
+    from: 'project',
+  });
+  const fromCli = await run(t, ['inspect', '--project', project, '--preset', 'other-one', '--json'], directory);
+  assert.equal(fromCli.code, 0, fromCli.stderr);
+  assert.deepEqual(JSON.parse(fromCli.stdout).startupPreset, { name: 'other-one', mode: 'always', from: 'cli' });
+});
+
+// @test-kind contract: a default startup preset applies to serve only
+test('a default startup preset applies to serve only: render shows the exported state until --preset names the preset', async (t) => {
+  const directory = await fixture(t, {
+    'portal/website.yml':
+      'adx_name: Invented site\nadx_websiteid: site\nadx_defaultlanguage: lang-en\nadx_website_language: 1033',
+    'portal/websitelanguage.yml': '- adx_websitelanguageid: lang-en\n  adx_name: English',
+    'portal/web-pages/home/Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
+    'portal/page-templates/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
+    'portal/web-templates/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
+    'portal/web-templates/Main.webtemplate.source.html':
+      '<p>Invented page</p>{% fetchxml widgets %}<fetch><entity name="widget"><attribute name="name"/></entity></fetch>{% endfetchxml %}{% for row in widgets.results.entities %}<li>{{ row.name }}</li>{% endfor %}',
+    'pack.mjs': `export default {
+  id: 'inv_tiny',
+  name: 'Invented tiny',
+  description: 'Synthetic preset',
+  matches: () => true,
+  presets: () => ({
+    inv_tiny: {
+      name: 'Invented tiny',
+      mappings: { widget: { idColumn: 'widgetid', entitySet: 'widgets' } },
+      tables: { widget: [{ widgetid: 'seed', name: 'Invented seed row' }] },
+      settings: { permissionMode: 'permissive' },
+    },
+  }),
+};
+`,
+    'catalogue.json': JSON.stringify({
+      sites: {
+        fixture: {
+          source: './portal',
+          environments: { dev: 'https://invented.example.test' },
+          mirage: { port: 0, preset: 'inv_tiny', solutionRoots: [], dataPacks: ['./pack.mjs'] },
+        },
+      },
+    }),
+  });
+  const config = path.join(directory, 'catalogue.json');
+  const render = (name, extra = []) =>
+    run(
+      t,
+      [
+        'render',
+        '--config',
+        config,
+        '--site',
+        'fixture',
+        '--path',
+        '/',
+        '--output',
+        path.join(directory, `${name}.html`),
+        '--state',
+        path.join(directory, `${name}-state.json`),
+        ...extra,
+      ],
+      directory,
+    );
+  const defaulted = await render('defaulted');
+  assert.equal(defaulted.code, 0, defaulted.stderr);
+  assert.doesNotMatch(await fs.readFile(path.join(directory, 'defaulted.html'), 'utf8'), /Invented seed row/);
+  const explicit = await render('explicit', ['--preset', 'inv_tiny']);
+  assert.equal(explicit.code, 0, explicit.stderr);
+  assert.match(await fs.readFile(path.join(directory, 'explicit.html'), 'utf8'), /Invented seed row/);
+});
+
 // @test-kind contract: CLI: a standalone runtime has no apps address, so its startup JSON carries no appsUrl key
 test('CLI: a standalone serve reports no apps address', async (t) => {
   const directory = await fixture(t, {});

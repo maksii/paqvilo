@@ -153,6 +153,10 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
           },
         },
       });
+      // The in-process executeMessageSync calls below run the CLR plug-in synchronously on the main thread, so a pooled
+      // keep-alive connection can sit idle past the server's limit before the next HTTP call. Each HTTP call uses its own connection.
+      const request = f.request;
+      f.request = (method, route, body, headers) => request(method, route, body, { connection: 'close', ...headers });
       const principal = {
         userId: f.store.tableRows('systemuser').find((row) => row.applicationid).systemuserid,
         evidence: 'Invented local message caller',

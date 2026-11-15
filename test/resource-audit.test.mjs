@@ -219,6 +219,41 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
   assert.deepEqual(refusal(run('--all', '--site', 'first')), [1, ['invalid_argument']]);
 });
 
+// @test-kind contract: the audit summary line is readable
+test('the audit summary line spells every count with its label and a space after each comma', (t) => {
+  const fx = fixture(t);
+  fx.write(
+    'catalogue.yml',
+    'sites:\n  first:\n    source: .\n    environments:\n      local: https://portal.invalid\n',
+  );
+  const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
+  const human = spawnSync(process.execPath, [cli, 'audit', '--config', fx.file('catalogue.yml'), '--all'], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  assert.equal(human.status, 0, human.stderr);
+  const totals = JSON.parse(
+    spawnSync(process.execPath, [cli, 'audit', '--config', fx.file('catalogue.yml'), '--all', '--json'], {
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    }).stdout,
+  ).reports[0].totals;
+  const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  assert.ok(
+    human.stdout
+      .split('\n')
+      .includes(
+        `first: ${totals.mapped}/${totals.resources} mapped, ${totals.blocked} blocked, ${plural(totals.gaps, 'gap')}, ${totals.inactive} inactive, ${totals.deployment} deployment metadata, ${totals.disabled} disabled`,
+      ),
+    human.stdout,
+  );
+});
+
 test('duplicate active page URLs warn once and inactive single-extension web files stay inactive in dotted source roots', (t) => {
   const fx = fixture(t);
   for (const id of ['a', 'b'])

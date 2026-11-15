@@ -398,6 +398,8 @@ public static class PaqviloPluginHost {
  static long CreatorId(){var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
+  // A trailing `--label <text>` names the host in a debugger's process picker; the host ignores its value.
+  if(args.Length>=2&&args[args.Length-2]=="--label")System.Array.Resize(ref args,args.Length-2);
   // An owned host binds a running parent process, not just a PID, and exits when its input closes: only the parent holds
   // the input's write end, so an abrupt parent death ends the host even while plugin threads still run.
   if(args.Length==2&&args[0]=="--process-start"){int id;if(!Int32.TryParse(args[1],out id)||id<=0)return 73;try{using(var parent=Process.GetProcessById(id))Console.Write(parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture));return 0;}catch{return 73;}}

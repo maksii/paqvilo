@@ -103,7 +103,7 @@ test('failed input without a snapshot restores the last observed control value',
   const input = page.locator('[data-control="SearchBox"]');
   await input.waitFor();
   await page.route('**/_apps/api/canvas/invented', async (route) => {
-    if (route.request().method() === 'POST' && route.request().postDataJSON()?.action === 'input') {
+    if (route.request().method() === 'POST' && ['input', 'text'].includes(route.request().postDataJSON()?.action)) {
       return route.fulfill({ status: 403, json: { error: { code: 'Refused', message: 'Invented refusal' } } });
     }
     await route.continue();

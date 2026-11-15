@@ -427,6 +427,49 @@ test('owned profiles save and restore only the session cookies of the portal ori
   );
 });
 
+// @test-kind security: the process-local Mirage staff-selection cookie is never written to or restored from an owned session file
+test('owned profiles neither restore, keep nor save the process-local Mirage staff-selection cookie', async (t) => {
+  const dir = tempDirSync('paqvilo-cookie-staff-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  const cookie = (name, domain = '127.0.0.1') => ({ name, domain, path: '/', expires: -1, value: 'invented' });
+  const staff = [cookie('paqvilo-mirage-staff-9000'), cookie('paqvilo-mirage-staff')];
+  const ordinary = cookie('session');
+  fs.writeFileSync(file, JSON.stringify([...staff, ordinary]));
+  let live = [...staff];
+  const removed = [];
+  const restored = [];
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => live,
+    clearCookies: async (match) => {
+      removed.push(match.name);
+      live = live.filter((c) => !(c.name === match.name && c.domain === match.domain));
+    },
+    addCookies: async (values) => {
+      restored.push(...values);
+      live.push(...values);
+    },
+  });
+  const stop = await keepSessionCookies(context, file, { origins: ['http://127.0.0.1:9000'] });
+  // (a) and (b): the stored and the live staff-selection cookies are gone before the next runtime sees them
+  assert.deepEqual(
+    restored.map((item) => item.name),
+    ['session'],
+  );
+  assert.deepEqual(removed, ['paqvilo-mirage-staff-9000', 'paqvilo-mirage-staff']);
+  assert.deepEqual(
+    live.map((item) => item.name),
+    ['session'],
+  );
+  // (c): a staff-selection cookie set during this runtime is absent from the written file
+  live.push(...staff);
+  await stop();
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(file, 'utf8')).map((item) => item.name),
+    ['session'],
+  );
+});
+
 // Fake browser context: `live` is what the browser holds, and `restored` collects the cookies put back into it.
 function fakeSessionContext(live) {
   const context = Object.assign(new EventEmitter(), {

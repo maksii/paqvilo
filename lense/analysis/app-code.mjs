@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { structuredLocator } from './structured-location.mjs';
 import {
   appCoverage,
   appDirectory,
@@ -174,7 +175,7 @@ function inspectConfig(entry, emit) {
   if (invalid || (raw.appSettings != null && !appObject(raw.appSettings))) emit('APP-CODE-001', entry);
   if (invalidReference(raw)) emit('APP-CODE-002', entry);
   if (raw.environmentId == null || (typeof raw.environmentId === 'string' && !raw.environmentId.trim()))
-    emit('APP-CODE-003', entry, 'environmentId');
+    emit('APP-CODE-003', structuredLocator(entry, raw)(raw, 'environmentId'), 'environmentId');
 }
 function supportedLock(index, entry, parsedLocks) {
   for (const name of [
@@ -201,7 +202,7 @@ function supportedLock(index, entry, parsedLocks) {
   }
   return null;
 }
-function inspectLock(pkg, entry, lock, emit) {
+function inspectLock(pkg, entry, lock, emit, at) {
   if (!/(?:^|\/)(?:package-lock|npm-shrinkwrap)\.json$/i.test(appPath(lock.entry))) return;
   const parsed = lock.parsed ?? appJson(lock.entry);
   if (!parsed) {
@@ -217,7 +218,7 @@ function inspectLock(pkg, entry, lock, emit) {
       Object.keys(declared).length !== Object.keys(recorded).length ||
       Object.entries(declared).some(([name, value]) => recorded[name] !== value)
     ) {
-      emit('APP-DEPS-002', entry, key);
+      emit('APP-DEPS-002', at(pkg, key), key);
       return;
     }
   }
@@ -228,24 +229,28 @@ function inspectPackage(entry, index, parsedLocks, codeApp, emit) {
     emit('APP-DEPS-003', entry);
     return;
   }
-  const declared = dependencies(pkg);
+  const declared = dependencies(pkg),
+    at = structuredLocator(entry, pkg);
   for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'scripts']) {
     if (
       pkg[field] != null &&
       (!appObject(pkg[field]) || Object.values(pkg[field]).some((value) => typeof value !== 'string'))
     ) {
-      emit('APP-DEPS-004', entry, field);
+      emit('APP-DEPS-004', at(pkg, field), field);
     }
   }
   const lock = supportedLock(index, entry, parsedLocks);
   if (!lock) emit('APP-DEPS-001', entry);
-  else inspectLock(pkg, entry, lock, emit);
+  else inspectLock(pkg, entry, lock, emit, at);
   if (!codeApp) return;
   if (!Object.hasOwn(declared, '@microsoft/power-apps')) emit('APP-CODE-004', entry);
-  if (typeof pkg.scripts?.build !== 'string' || !pkg.scripts.build.trim()) emit('APP-CODE-005', entry, 'scripts');
+  if (typeof pkg.scripts?.build !== 'string' || !pkg.scripts.build.trim())
+    emit('APP-CODE-005', appObject(pkg.scripts) ? at(pkg.scripts, 'build') : at(pkg, 'scripts'), 'scripts');
   if (!Object.hasOwn(declared, '@microsoft/power-apps-cli')) emit('APP-CODE-006', entry);
-  if (appObject(pkg.scripts) && Object.values(pkg.scripts).some(sdkCliInvocation))
-    emit('APP-CODE-007', entry, 'scripts');
+  const sdkScript = appObject(pkg.scripts)
+    ? Object.keys(pkg.scripts).find((name) => sdkCliInvocation(pkg.scripts[name]))
+    : undefined;
+  if (sdkScript !== undefined) emit('APP-CODE-007', at(pkg.scripts, sdkScript), 'scripts');
   inspectTypeScript(entry, index, emit);
 }
 function sdkCliInvocation(command) {

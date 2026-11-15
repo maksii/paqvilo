@@ -374,8 +374,20 @@ test('a Web API GET with an out-of-range character reference in FetchXML answers
   }
 });
 
-test('FetchXML count="0" is refused with the same 400 as page="0"', () => {
-  for (const attribute of ['count="0"', 'page="0"']) {
+test('count returns the page length and returntotalrecordcount reports the total apart from the page', () => {
+  const three = store({ accounts: 3, contactsPerAccount: 0 });
+  const page = three.fetchXml(
+    '<fetch count="1" returntotalrecordcount="true"><entity name="account"><attribute name="name"/></entity></fetch>',
+    { admin: true },
+  );
+  assert.equal(page.entities.length, 1);
+  assert.equal(page.total_record_count, 3);
+  assert.equal(page.total_record_count_limit_exceeded, false);
+  assert.equal(page.more_records, true);
+});
+
+test('FetchXML count and page must be positive integers: 0, negative, fractional and non-numeric values are a 400', () => {
+  for (const attribute of ['count="0"', 'count="-1"', 'count="1.5"', 'count="abc"', 'count=""', 'page="0"']) {
     assert.throws(
       () =>
         planFetch(

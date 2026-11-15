@@ -117,10 +117,76 @@ test('polls its exact compute task until analysis completes', async (t) => {
 
 test('reads every page before rejecting unresolved findings', async (t) => {
   const f = await fixture(t, { total: 101 });
-  await assert.rejects(f.run(), /101 unresolved/);
+  await assert.rejects(f.run(), (error) => {
+    const lines = error.message.split('\n');
+    return (
+      lines[0] === 'Full-source Sonar analysis has 101 unresolved issue(s):' &&
+      lines.length === 52 &&
+      lines.at(-1) === '  … and 51 more'
+    );
+  });
   assert.deepEqual(
     f.calls.filter((url) => url.pathname.endsWith('/search')).map((url) => url.searchParams.get('p')),
     ['1', '2'],
+  );
+});
+
+test('names each unresolved issue in the rejection message', async () => {
+  const host = 'https://sonar.example.test';
+  const issues = [
+    {
+      key: 'issue-a',
+      project: 'paqvilo',
+      branch,
+      rule: 'invented:rule-one',
+      component: 'paqvilo:lib/a.mjs',
+      line: 4,
+      message: 'Remove\n the   unused value.',
+    },
+    {
+      key: 'issue-b',
+      project: 'paqvilo',
+      branch,
+      rule: 'invented:rule-two',
+      component: 'paqvilo:lib/b.mjs',
+      message: 'Name the helper better.',
+    },
+  ];
+  const data = { total: 2, p: 1, ps: 100, paging: { pageIndex: 1, pageSize: 100, total: 2 }, issues };
+  const fetchImpl = async (url) => {
+    const requested = new URL(url);
+    const body =
+      requested.pathname === '/api/ce/task'
+        ? {
+            task: {
+              id: 'task-1',
+              type: 'REPORT',
+              status: 'SUCCESS',
+              componentKey: 'paqvilo',
+              branch,
+              analysisId: 'a1',
+            },
+          }
+        : data;
+    return { ok: true, status: 200, json: async () => body };
+  };
+  await assert.rejects(
+    verifySonarBranch({
+      report: `projectKey=paqvilo\nserverUrl=${host}\nceTaskId=task-1\n`,
+      host,
+      token: secret,
+      branch,
+      revision,
+      fetchImpl,
+      checkGit: () => {},
+    }),
+    (error) =>
+      error.message ===
+      [
+        'Full-source Sonar analysis has 2 unresolved issue(s):',
+        '  invented:rule-one lib/a.mjs:4 Remove the unused value.',
+        '  invented:rule-two lib/b.mjs:- Name the helper better.',
+      ].join('\n'),
   );
 });
 

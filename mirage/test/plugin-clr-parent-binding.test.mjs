@@ -63,6 +63,23 @@ test(
   },
 );
 
+// @test-kind contract: a trailing --label is ignored by the host
+test('a CLR host ignores a trailing --label and refuses it anywhere else', { skip: CLR_SKIP }, async (t) => {
+  const { runtime } = await bareRuntime(t);
+  // The label only names the host in a debugger's process picker: a labelled live parent binds as an unlabelled one does.
+  assert.equal(
+    run(runtime.executable, ['--parent', String(process.pid), '--label', 'invented@1']).status,
+    0,
+    'a labelled live parent binds',
+  );
+  assert.equal(run(runtime.executable, ['--label', 'invented@1']).status, 73, 'a label without a parent is refused');
+  assert.equal(
+    run(runtime.executable, ['--label', 'invented@1', '--parent', String(process.pid)]).status,
+    73,
+    'a label before the parent is refused',
+  );
+});
+
 test('a CLR host bound by PID and start time refuses a parent that has exited', { skip: CLR_SKIP }, async (t) => {
   const { root, runtime } = await bareRuntime(t);
   // The PID and start time name the exited process exactly; it is refused because it is no longer running.

@@ -12,6 +12,7 @@ import {
   adminAssetFile,
   adminAssetType,
   diagnosticsByCode,
+  diagnosticsOfTrace,
 } from './lib/runtime-admin.mjs';
 import { hostnameOf } from './lib/dataverse-webhooks.mjs';
 import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './lib/sim-dashboard-routes.mjs';
@@ -205,6 +206,7 @@ import {
 import { createCanvasHandler } from './lib/canvas-http.mjs';
 import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
 import { canvasPcfApps, PORTAL_PCF, servePcfResource } from './lib/canvas-pcf.mjs';
+import { canvasSourceWatch } from './lib/canvas-source.mjs';
 import { createCodeAppsHandler, authorityTokenIssuer } from './lib/code-apps-http.mjs';
 import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
 import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
@@ -214,7 +216,7 @@ import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from '.
 import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
 import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
 import { recordHttpError, statusFromHttp } from './lib/trace-store.mjs';
-import { setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
+import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
@@ -2448,6 +2450,8 @@ export async function createSimulator(options = {}) {
       administration: '/_sim/',
       setup: '/_setup/',
       modelDriven: modelDrivenSettingsValue.enabled === false ? null : `${appsOrigin}/main.aspx`,
+      canvas:
+        organizationHost.canvas.enabled && organizationHost.canvasApps().length ? `${appsOrigin}/_apps/canvas/` : null,
       powerPages: '/',
       dataverseApi: dataverse?.origin ?? null,
     },
@@ -4107,10 +4111,12 @@ export async function createSimulator(options = {}) {
       });
     }
     if (method === 'GET' && relative === '/diagnostics') {
-      // traceId (optional): the findings and portal requests of one trace (D-M-4).
-      const traceId = url.searchParams.get('traceId')?.trim();
-      const of = (items) => (traceId ? items.filter((item) => item.traceId === traceId) : items);
-      return json(res, 200, { diagnostics: of(allDiagnostics()), requests: of(requests) });
+      // traceId (optional): the findings and portal requests of one trace (D-M-4). The answer keeps its two fields.
+      const answer = diagnosticsOfTrace(
+        { diagnostics: allDiagnostics(), requests },
+        url.searchParams.get('traceId')?.trim(),
+      );
+      return json(res, 200, { diagnostics: answer.diagnostics, requests: answer.requests });
     }
     if (method === 'GET' && relative === '/logs') return json(res, 200, logHistory(url.searchParams));
     if (method === 'GET' && relative === '/render-sources')
@@ -5840,8 +5846,8 @@ export async function createSimulator(options = {}) {
       });
       return res.end(await fs.readFile(path.join(ROOT, 'admin/index.html')));
     }
-    // Admin assets by pattern (runtime-admin.mjs adminAssetFile): mirage/admin/<name>.mjs|css and the shared lib modules.
-    const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css))$/.exec(url.pathname);
+    // Admin assets by pattern (runtime-admin.mjs adminAssetFile): mirage/admin/<name>.mjs|css|js and the shared lib modules.
+    const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css|js))$/.exec(url.pathname);
     const adminFile = adminAsset && ['GET', 'HEAD'].includes(req.method) ? await adminAssetFile(adminAsset[1]) : null;
     if (adminFile) {
       res.writeHead(200, {
@@ -6531,6 +6537,7 @@ export async function createSimulator(options = {}) {
             context: submission.context,
             values: submission.body.values,
             observed: config().observed ?? portal.observed,
+            portal,
           });
           trace.getStore().error = cause;
           recordDiagnostic({
@@ -6539,6 +6546,7 @@ export async function createSimulator(options = {}) {
               message: cause.message,
             }),
             path: url.pathname,
+            ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
           });
         }
         if (response.location) return postbackRedirect(res, response, portal);
@@ -6593,6 +6601,9 @@ export async function createSimulator(options = {}) {
       const headers = {
         'content-type': 'text/html; charset=utf-8',
         ...PAGE_HEADERS,
+        ...(trace.getStore()?.nativePostbackState?.outcome?.requestId
+          ? { 'x-ms-request-id': trace.getStore().nativePostbackState.outcome.requestId }
+          : {}),
       };
       Object.assign(headers, siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }));
       res.writeHead(200, headers);
@@ -6908,7 +6919,11 @@ export async function createSimulator(options = {}) {
     if (route?.kind === 'error') throw error(route.message, route.status, route.code);
     if (route) {
       const message = `${route.message ? route.message + ' ' : ''}Rendered the ${route.page.name} page with HTTP ${route.status}.`;
-      recordDiagnostic({ code: route.code ?? 'PAGE_NOT_FOUND', path: url.pathname, message });
+      const code = route.code ?? 'PAGE_NOT_FOUND';
+      // A browser's own probe of a missing path (favicon, touch icon, devtools manifest) is one finding per path.
+      const probeRepeat =
+        browserProbe(req.method, url.pathname) && diagnostics.some((d) => d.code === code && d.path === url.pathname);
+      if (!probeRepeat) recordDiagnostic({ code, path: url.pathname, message });
       // The error page answers its own status: its root names why (D-R3-4).
       const routed = trace.getStore();
       if (routed) routed.httpError = { code: route.code ?? 'PAGE_NOT_FOUND', message };
@@ -6963,6 +6978,7 @@ export async function createSimulator(options = {}) {
           context: submission.context,
           values: submission.body.values,
           observed: config().observed ?? portal.observed,
+          portal,
         });
         nativeContext.error = cause;
         recordDiagnostic({
@@ -6971,6 +6987,7 @@ export async function createSimulator(options = {}) {
             message: cause.message,
           }),
           path: url.pathname,
+          ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
         });
       }
       if (response.location) return postbackRedirect(res, response, portal);
@@ -7025,6 +7042,9 @@ export async function createSimulator(options = {}) {
       'content-type': contentType,
       ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...(nativeContext?.nativePostbackState?.outcome?.requestId
+        ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
+        : {}),
     };
     // A redirecting page answer has no Vary header (live sign-in redirect).
     if (route?.kind === 'redirect') {
@@ -7120,7 +7140,10 @@ export async function createSimulator(options = {}) {
   };
   const writeRequestError = (err, req, res) => {
     const status = requestErrorStatus(err);
-    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/'))
+    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/')) {
+      const postback = req.url.startsWith('/__sim/forms/entityform/')
+        ? formWriteError(err, config().observed ?? portal.observed, 'entityform', portal)
+        : null;
       return void json(res, status, {
         error: {
           code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
@@ -7129,10 +7152,9 @@ export async function createSimulator(options = {}) {
             ? { validationErrors: err.details.validationErrors }
             : {}),
         },
-        ...(req.url.startsWith('/__sim/forms/entityform/') && formWriteError(err, config().observed ?? portal.observed)
-          ? { postback: formWriteError(err, config().observed ?? portal.observed) }
-          : {}),
+        ...(postback ? { postback } : {}),
       });
+    }
     return writePageRequestError(err, req, res, status);
   };
   // A failure while answering a failed request must not reject the request: the caller still gets a 500.
@@ -7271,7 +7293,12 @@ export async function createSimulator(options = {}) {
           portal: portalTraceName(),
           preset: cfg.activeExperiment?.id ?? null,
         },
-        attributes: { kindHint: kind, provider, ...requestAttributes(req, url) },
+        attributes: {
+          kindHint: kind,
+          provider,
+          ...requestAttributes(req, url),
+          ...(browserProbe(req.method, url.pathname) ? { browserProbe: true } : {}),
+        },
         ...inbound,
       });
     };
@@ -7740,19 +7767,7 @@ export async function createSimulator(options = {}) {
     ];
     const pluginSourceKeys = new Set(pluginSources.map((file) => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
-    const canvasSources = (settingOptionsRest.canvas?.sources ?? []).map((source) => path.resolve(projectRoot, source));
-    const canvasKeys = canvasSources.map((source) => source.toLowerCase());
-    const isCanvasSource = (file) => {
-      const full = path.resolve(file).toLowerCase();
-      const base = canvasKeys.find((root) => full === root || full.startsWith(root + path.sep));
-      return (
-        Boolean(base) &&
-        !full
-          .slice(base.length)
-          .split(path.sep)
-          .some((part) => /^(?:\.git|node_modules|\.paqvilo|bin|obj)$/i.test(part))
-      );
-    };
+    const canvasWatch = canvasSourceWatch(settingOptionsRest.canvas?.sources, projectRoot);
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
     const ignoreSource = solutionWatchFilter({
       sourceDir,
@@ -7764,11 +7779,11 @@ export async function createSimulator(options = {}) {
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
     watcher = sourceWatcher(
-      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources],
+      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots],
       {
         ignoreInitial: true,
         ignored: (file, stats) =>
-          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
+          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || canvasWatch.contains(file)
             ? false
             : ignoreSource(file, stats),
         awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },

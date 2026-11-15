@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 
 const DOCUMENTATION_ASSETS = new Set([
   'docs/assets/overview.svg',
@@ -496,7 +497,7 @@ export function validateReleaseFiles(files) {
     /^mirage\/lib\/[a-z0-9-]+\.(?:mjs|js|css|json)$/,
     /^mirage\/lib\/bootstrap-fonts\/glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)$/,
     /^mirage\/lib\/bootstrap-fonts\/LICENSE-bootstrap\.txt$/,
-    /^mirage\/admin\/[a-z0-9-]+\.(?:html|mjs|css)$/,
+    /^mirage\/admin\/[a-z0-9-]+\.(?:html|mjs|css|js)$/,
     /^mirage\/testing\/[a-z0-9-]+\.mjs$/,
     /^mirage\/docs\/(?:README|[a-z0-9-]+)\.md$/,
     /^mirage\/docs\/baseline\/[a-z0-9-]+\.md$/,
@@ -693,7 +694,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       cwd: root,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CHILD_HANG_GUARD_MS,
     });
     if (packed.status !== 0) throw new Error(packed.error?.message ?? packed.stderr.trim());
     const report = JSON.parse(packed.stdout)[0];

@@ -363,7 +363,7 @@ assembly and static state.
 2. Open the original C# source and set breakpoints, including in constructors.
    Trigger the operation from the local app, portal or Dataverse client. The
    terminal prints the owned `paqvilo-plugin-host.exe` PID. Execution waits
-   before constructing the plug-in until a managed debugger attaches.
+   before constructing the plug-in until a managed debugger attaches. Each host's command line ends with `--label <project folder>@<runtime port>`; the process picker shows it and the debugger line prints it.
 3. Run **Mirage plug-in: attach .NET Framework** from VS Code's Run and Debug
    menu and select that PID. `paqvilo init --refresh-editor` generates this
    configuration and recommends Microsoft's C# extension. In an existing
@@ -456,6 +456,8 @@ To test rejection, use:
 ```
 
 Project packs register `pluginSteps` handlers by exact step ID. A synchronous handler receives `step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `identity`, `changedAttributes`, `sharedVariables` and `reject(message)`. Return `{target:{...}}` to apply a patch. Context records are cloned; editing them alone does not change the store. `sharedVariables` is the operation's shared variables collection (the one a plug-in type handler reads as `context.SharedVariables`), not a copy: later steps of the operation (JavaScript or CLR) see what a handler sets there; the request `tag` is re-projected between steps. Async handlers are rejected. Stage 40 Target patches remain available to later steps as context state and do not change the saved row. Delete target patches are refused.
+
+On a Power Pages basic form, a `reject(message)` or another `InvalidPluginExecutionException` is shown as [Forms and lists](forms-lists-parity.md) describes: the plug-in's message appears only when `Site/EnableCustomPluginError` is `true`.
 
 Local Create, Update and Delete run supported synchronous stages in stage/rank/ID order. Update filtering uses columns present in the current Target before each step, including unchanged authored values and columns added by earlier steps. Create filtering attributes apply too: a Create step fires only when the created Target carries one of its filtering columns, and native does not run such a step for a POST without them (`Probe: Create 20 filter text`); whether it fires when the column is present is not captured. The table-level Create grant gate precedes all handlers. Create then runs stages 10 and 20, declarative rules and their secondary effects, the row-scoped permission check, then stage 40. Scoped denials report the permission name, scope and relationship in their details and runtime diagnostic. Mirage checks portal row scope after stage 20 so local rules can establish a relationship first, and a row-scope denial revokes this request's independent PreValidation SDK writes so a denied portal write leaves no side effects. For other rejections, top-level PreValidation SDK writes commit independently and remain saved after a later caller rejection; nested PreValidation and stages 20/40 participate in their caller's transaction. Each asynchronous SDK request is independent. See Microsoft's [event framework](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework), [database transactions](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/scalable-customization-design/database-transactions) and [registration reference](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in).
 

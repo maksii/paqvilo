@@ -521,9 +521,9 @@ export function createDomProvenanceTransport(context, configs) {
           for (const record of contexts.values())
             if (record.frameId === frame.id && record.loaderId && record.loaderId !== frame.loaderId)
               record.closed = true;
-          // A committed document requests its scripts after this event: acknowledgements still waiting in this frame
-          // belong to the replaced document.
-          acknowledgements.forget(frame.id);
+          // Acknowledgements still waiting in this frame are kept: Fetch answers in the browser process, so the new
+          // document's own script can be acknowledged before this renderer notification arrives. Each one is admitted
+          // into the document its request notification names.
           loaders.set(frame.id, frame.loaderId);
           for (const record of contexts.values())
             if (record.frameId === frame.id && !record.loaderId) {
@@ -555,7 +555,13 @@ export function createDomProvenanceTransport(context, configs) {
       };
       const acknowledgements = createResponseProofQueue({
         requests,
-        admit: ingest,
+        // An acknowledgement that leaves the queue may name a replaced document: the frame's waiting callsites
+        // receive their verdict now.
+        admit: (frameId, loaderId, descriptor, request) => {
+          const admitted = ingest(frameId, loaderId, descriptor, request);
+          for (const record of contexts.values()) if (record.frameId === frameId) flush(record).catch(() => {});
+          return admitted;
+        },
         // A discarded acknowledgement is a lost proof: report it and give the frame's waiting callsites their verdict.
         evicted: (frameId) => {
           lost(new Error('a script provenance acknowledgement was discarded at the queue limit'));

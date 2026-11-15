@@ -2,12 +2,12 @@
 // differs between the merge base and the working tree (untracked files included) is linted with the
 // eslint-plugin-sonarjs recommended rules whose SonarJS scope covers it: the scope each rule declares in the package's
 // generated metadata (Main for sources, Tests for test files, All for both), as the server applies a rule only to the
-// files of its scope. Sources also get the eslint-plugin-unicorn rules and the typed promise and optional-chain rules
-// that matched server findings on sources. Only findings that exist in the current version alone are reported; the
-// base version (the renamed-from path for a rename) is linted only when the current version has findings. A finding is
-// keyed by its rule and the trimmed text of its line, so a moved line is not new. A line carrying NOSONAR is skipped,
-// as the server skips it. Rules that need the server's data-flow analysis have no ESLint counterpart and stay
-// server-only.
+// files of its scope. Sources also get the eslint-plugin-unicorn rules, a `typeof` check for S7764 and the typed
+// promise and optional-chain rules that matched server findings on sources. Only findings that exist in the current
+// version alone are reported; the base version (the renamed-from path for a rename) is linted only when the current
+// version has findings. A finding is keyed by its rule and the trimmed text of its line, so a moved line is not new.
+// A line carrying NOSONAR is skipped, as the server skips it. Rules that need the server's data-flow analysis have no
+// ESLint counterpart and stay server-only.
 //   node scripts/sonar-rules.mjs [--base <rev>]   the repository of the working directory against <rev> (merge base;
 //                                                 default origin/main)
 import fs from 'node:fs';
@@ -32,6 +32,8 @@ const UNICORN_RULES = [
   'prefer-dom-node-dataset',
   'catch-error-name',
   'prefer-top-level-await',
+  'prefer-global-this',
+  'prefer-includes',
 ];
 
 /** The SonarJS key (S<number>) of a sonarjs rule, from its documentation link; undefined for other plugins. */
@@ -141,6 +143,15 @@ function lintOptions(cwd, profile) {
     main: () => ({
       ...sonarjsRules('Main'),
       ...Object.fromEntries(UNICORN_RULES.map((rule) => [`unicorn/${rule}`, 'error'])),
+      // unicorn/prefer-global-this leaves `typeof window` alone; SonarQube S7764 reports it.
+      // ponytail: selector is scope-blind (a local named window/self/global is reported too); a scope-aware rule if that ever happens.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "UnaryExpression[operator='typeof'] > Identifier.argument[name=/^(?:window|self|global)$/]",
+          message: 'S7764: prefer `globalThis.window` (or `self`, `global`) over a bare `typeof` of the global.',
+        },
+      ],
     }),
     typed: () => ({
       '@typescript-eslint/no-floating-promises': 'error',

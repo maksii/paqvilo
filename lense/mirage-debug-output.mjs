@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { open } from 'node:fs/promises';
 
 const instruction =
-  /^Mirage plug-in debugger: attach to paqvilo-plugin-host\.exe PID [1-9]\d* \([_a-z][\w.+`]{0,249}\)\. Waiting before plug-in construction; local debug deadline is 30 minutes\.$/i;
+  /^Mirage plug-in debugger: attach to paqvilo-plugin-host\.exe PID [1-9]\d*(?: --label [\w.@-]{1,80})? \([_a-z][\w.+`]{0,249}\)\. Waiting before plug-in construction; local debug deadline is 30 minutes\.$/i;
 
 /** Forward only the owned daemon's bounded debugger instruction, never its general log. */
 export function mirageDebugOutput(log, output = (line) => process.stderr.write(line + '\n')) {

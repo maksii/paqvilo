@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 
 /** Compare the actual state location without accepting a linked escape or rejecting an aliased project. */
 export function consumerStateIsOwned(project, file) {
@@ -21,7 +22,7 @@ export function verifyConsumerToolOwnership(bin, project, site = 'example') {
         cwd: path.dirname(project),
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 60000,
+        timeout: CHILD_HANG_GUARD_MS,
         maxBuffer: 8 * 1024 * 1024,
       },
     );

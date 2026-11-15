@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { consumerStateIsOwned, verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
-import { assertSmokeProcess } from './smoke-process.mjs';
+import { assertSmokeProcess, CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,7 +97,7 @@ function bootstrapConsumer(consumer, npm, npmLogs) {
     },
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 120000,
+    timeout: CHILD_HANG_GUARD_MS,
     maxBuffer: 4 * 1024 * 1024,
   });
   assertSmokeProcess(result, `Installed consumer bootstrap failed (npm logs: ${npmLogs})`);
@@ -124,7 +124,7 @@ function smokeConsumerTemplates({ work, bootstrap, archive, npm, run }) {
         '--json',
         ...options,
       ],
-      { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+      { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: CHILD_HANG_GUARD_MS },
     );
     if (init.status !== 0 || !JSON.parse(init.stdout).ok)
       throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
@@ -146,7 +146,7 @@ function installProject({ work, bootstrap, archive, run }) {
   const scaffold = spawnSync(
     process.execPath,
     [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'mirage', 'demo', '--scaffold', '--dir', project],
-    { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 120_000 },
+    { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: CHILD_HANG_GUARD_MS },
   );
   if (scaffold.status !== 0 || !scaffold.stdout.includes('No runtime was started.'))
     throw new Error(`Installed scaffold failed: ${scaffold.stdout}\n${scaffold.stderr}`);
@@ -166,7 +166,7 @@ function projectCli(installed, project) {
       cwd: project,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 120_000,
+      timeout: CHILD_HANG_GUARD_MS,
       maxBuffer: 4 * 1024 * 1024,
     });
     if (result.status !== 0)
@@ -185,7 +185,7 @@ function assertInstalledProject({ installed, project, cli }) {
       cwd: project,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CHILD_HANG_GUARD_MS,
     });
     if (help.status !== 0 || !help.stdout.toLowerCase().includes(product))
       throw new Error(`Installed ${product} help failed: ${help.stderr}`);
@@ -194,7 +194,7 @@ function assertInstalledProject({ installed, project, cli }) {
     cwd: project,
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 30_000,
+    timeout: CHILD_HANG_GUARD_MS,
   });
   if (demoHelp.status !== 0 || !demoHelp.stdout.includes('Copies a populated'))
     throw new Error(`Installed demo command is missing: ${demoHelp.stderr}`);
@@ -294,7 +294,7 @@ function standaloneCliFor({ installed, standalone, file, kind }) {
       cwd: standalone,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 120_000,
+      timeout: CHILD_HANG_GUARD_MS,
       maxBuffer: 4 * 1024 * 1024,
     });
     if (result.status !== 0)
@@ -433,7 +433,7 @@ function runProjectChecks({ run, project, installed }) {
     env: { ...process.env, PAQVILO_DEMO_CLI: installed },
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 120_000,
+    timeout: CHILD_HANG_GUARD_MS,
     maxBuffer: 1024 * 1024,
   });
   if (workspace.status !== 0)

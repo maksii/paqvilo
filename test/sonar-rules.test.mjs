@@ -156,3 +156,31 @@ test('a test that asserts only through an arrow-function helper is reported, as 
 
   assert.deepEqual(await reported('HEAD', 1), ['test/helper.test.mjs:4 sonarjs/assertions-in-tests']);
 });
+
+// @test-kind tooling: a bare typeof of window, self or global in a source is reported as SonarQube S7764 reports it
+test('a bare typeof of window, self or global in a source is reported; globalThis members and NOSONAR lines are not', async (t) => {
+  const { write, commit, reported } = gitFixture(t);
+  write('README.md', 'Fixture\n');
+  commit('base');
+  write(
+    'lib/page.mjs',
+    [
+      "export const a = typeof window !== 'undefined';",
+      'export const b = typeof globalThis.window;',
+      'export const c = typeof self; // NOSONAR: invented',
+      '',
+    ].join('\n'),
+  );
+  write(
+    'test/page.test.mjs',
+    [
+      "import assert from 'node:assert/strict';",
+      "import test from 'node:test';",
+      "export const a = typeof window !== 'undefined';",
+      "test('page', () => assert.equal(typeof a, 'boolean'));",
+      '',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(await reported('HEAD', 2), ['lib/page.mjs:1 no-restricted-syntax']);
+});

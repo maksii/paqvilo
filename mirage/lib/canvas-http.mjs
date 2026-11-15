@@ -13,6 +13,8 @@ import { CANVAS_PCF, PORTAL_PCF, servePcfResource } from './canvas-pcf.mjs';
 // Mount before the model-driven handler: that handler answers 404 for every other `/_apps/*` path.
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { canvasPlayerAsset, canvasPlayerPage } from './canvas-player.mjs';
+import { appsShellPage } from './apps-shell.mjs';
+import { escapeHtml } from '../admin/ui-kit.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { sameToken } from './admin-origin.mjs';
 
@@ -27,14 +29,14 @@ const CSP =
 const BODY_LIMIT = 64 * 1024;
 const IMAGE_BODY_LIMIT = 1_500_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']); // NOSONAR: version string or loopback address, not a network target
-const escapeHtml = (value) =>
-  String(value ?? '').replace(
-    /[&<>"']/g,
-    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
-  );
 // An app is hosted (behaviour) when this host wires the runtime and the app has readable screens; else inventory.
 const levelOf = (source, hosted) =>
   hosted && source.screens.length && !canvasSourceCoverageGaps(source).length ? 'behaviour' : 'inventory';
+// Where an app is served from: a canvas.sources folder or the Solution's packed app (the list's Source column).
+const sourceLabel = (origin) => {
+  if (origin?.kind === 'canvas.sources') return `canvas.sources: ${origin.path}`;
+  return origin?.kind === 'solution' ? `Packed in the Solution: ${origin.path}` : '';
+};
 const reasonOf = (hosted) => (hosted ? 'CANVAS_RENDERING_BASELINE' : 'CANVAS_HOST_NOT_IMPLEMENTED');
 
 function send(res, status, type, body) {
@@ -57,9 +59,20 @@ const bannerOf = (hosted, playerList) => {
   if (!hosted) return INVENTORY_BANNER;
   return playerList ? PLAYER_BANNER : BANNER;
 };
-const page = (title, body, hosted, playerList = false) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><link rel="icon" href="data:,"></head>` +
-  `<body><p role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}</body></html>`;
+const page = (
+  title,
+  body,
+  hosted,
+  playerList = false,
+  crumbs = [['Simulator', '/_sim/'], ['Canvas apps', PREFIX], [title]],
+) =>
+  appsShellPage({
+    title,
+    prefix: PREFIX,
+    crumbs,
+    script: false,
+    body: `<p class="notice" role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}`,
+  });
 const summary =
   (hosted) =>
   ({ uniqueName, source }) => ({
@@ -70,6 +83,7 @@ const summary =
     formulas: source.formulas.length,
     diagnostics: source.diagnostics.length,
     level: levelOf(source, hosted),
+    origin: source.app.origin ?? null,
     ...(canvasSourceCoverageGaps(source).length ? { reason: canvasSourceCoverageGaps(source)[0].code } : {}),
   });
 const failure = (status, code, message) => Object.assign(new Error(message), { status, code });
@@ -584,14 +598,15 @@ export function createCanvasHandler({
         'text/html; charset=utf-8',
         page(
           'Canvas apps',
-          `<h1>Canvas apps</h1><ul>${list
+          `<h1>Canvas apps</h1><div class="table-wrap"><table><thead><tr><th>App</th><th>Unique name</th><th>Level</th><th>Source</th></tr></thead><tbody>${list
             .map(
               (app) =>
-                `<li><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a> (${escapeHtml(app.uniqueName)})</li>`,
+                `<tr><td><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a></td><td>${escapeHtml(app.uniqueName)}</td><td><span class="badge">${escapeHtml(levelOf(app.source, Boolean(runtime)))}</span></td><td>${escapeHtml(sourceLabel(app.source.app.origin))}</td></tr>`,
             )
-            .join('')}</ul>`,
+            .join('')}</tbody></table></div>`,
           Boolean(runtime),
           true,
+          [['Simulator', '/_sim/'], ['Canvas apps']],
         ),
       );
     }

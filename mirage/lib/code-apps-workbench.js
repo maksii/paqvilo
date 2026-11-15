@@ -9,6 +9,8 @@ let frame = $('preview'),
   selected = null,
   selectedOrigin = null;
 const parameters = new Map();
+const BRIDGE_CONNECTED = 'Server reachable; app loaded and bridge connected.';
+const APP_LOADED = 'Server reachable; app loaded.';
 const clear = (element) => element.replaceChildren();
 // Every launch gets a new frame element: a reload the previous document starts while the next launch is
 // in flight (a dev server's full-reload broadcast) would otherwise replace that launch with its own URL.
@@ -109,7 +111,8 @@ function choose(name, { keepFrame = false } = {}) {
     serverText = `Server reachable${httpStatus}; app readiness is not verified.`;
   } else if (selected.server?.state === 'unavailable')
     serverText = 'Server unavailable. Start the app dev server and check its local URL, then refresh.';
-  $('server').textContent = serverText;
+  // A refresh of the app still shown keeps the bridge state: its document is not reloaded, so it does not post again.
+  if (!(keepFrame && $('server').textContent === BRIDGE_CONNECTED)) $('server').textContent = serverText;
   renderList('app-settings', selected.appSettingNames ?? [], 'No app settings declared.');
   $('parameters').value = parameters.get(selected.name) ?? '';
   $('open').href = selected.launchUrl;
@@ -146,6 +149,11 @@ $('apply').addEventListener('click', () => {
   if (selected) parameters.set(selected.name, $('parameters').value);
   launch();
 });
+// Once the bridge has connected, the server line keeps saying so; a later app event does not replace it.
+function serverEventText(kind) {
+  if (kind === 'bridge-ready') $('server').textContent = BRIDGE_CONNECTED;
+  else if ($('server').textContent !== BRIDGE_CONNECTED) $('server').textContent = APP_LOADED;
+}
 window.addEventListener('message', (message) => {
   const payload = message.data,
     event = payload?.event;
@@ -163,6 +171,7 @@ window.addEventListener('message', (message) => {
   const path = safePath(event.path);
   const prefix = `/_apps/code/${encodeURIComponent(selected.name)}/`;
   if (event.path != null && !path?.startsWith(prefix)) return;
+  serverEventText(event.kind);
   if (event.kind === 'bridge-ready') status.textContent = 'Bridge connected'; // NOSONAR: deprecated API kept for compatibility
   if (event.kind === 'bridge-error') status.textContent = 'Bridge initialization failed; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility
   if (event.kind === 'app-error') status.textContent = 'App error; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility
@@ -214,4 +223,4 @@ async function refreshApps(probe = false) {
   }
 }
 $('refresh').addEventListener('click', () => void refreshApps(true));
-await refreshApps();
+await refreshApps(true);

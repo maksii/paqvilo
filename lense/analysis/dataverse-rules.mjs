@@ -309,25 +309,32 @@ function collectXmlBindings(document, state) {
   }
 }
 
+// An object-form row keeps its original object as `owner`, so a finding can point at the member it names.
+const objectRow = (document, owner, fields = metadataFields(owner)) => ({
+  fields,
+  source: document.entry,
+  owner,
+  at: document.at,
+});
+const placed = (row, key) => (row.at ? row.at(row.owner, key) : row.source);
+
 function addObjectEnvironment(document, state) {
   const value = document.value,
     fields = metadataFields(value);
   if (fields.environmentvariabledefinition)
     for (const row of objectRows(fields.environmentvariabledefinition))
-      state.definitions.push({ fields: metadataFields(row), source: document.entry });
-  if (fields.schemaname && fields.type !== undefined) state.definitions.push({ fields, source: document.entry });
+      state.definitions.push(objectRow(document, row));
+  if (fields.schemaname && fields.type !== undefined) state.definitions.push(objectRow(document, value, fields));
   for (const row of objectRows(
     fields.environmentvariablevalues?.environmentvariablevalue ??
       fields.environmentvariablevalues ??
       fields.environmentvariablevalue,
   ))
-    state.values.push({ fields: metadataFields(row), source: document.entry });
-  for (const row of objectRows(value?.EnvironmentVariables))
-    state.values.push({ fields: metadataFields(row), source: document.entry });
-  for (const row of objectRows(value?.environmentVariables))
-    state.definitions.push({ fields: metadataFields(row), source: document.entry });
+    state.values.push(objectRow(document, row));
+  for (const row of objectRows(value?.EnvironmentVariables)) state.values.push(objectRow(document, row));
+  for (const row of objectRows(value?.environmentVariables)) state.definitions.push(objectRow(document, row));
   if (environmentValueFolder(document.entry) && fields.value !== undefined)
-    state.values.push({ fields, source: document.entry });
+    state.values.push(objectRow(document, value, fields));
 }
 
 function environmentValueFolder(source) {
@@ -339,13 +346,14 @@ function addObjectBindings(document, state) {
   const value = document.value,
     fields = metadataFields(value);
   if (Array.isArray(value)) {
-    for (const row of value) state.values.push({ fields: metadataFields(row), source: document.entry });
+    for (const row of value) state.values.push(objectRow(document, row));
     return;
   }
   addObjectEnvironment(document, state);
   const connections = objectRows(fields.connectionreferences ?? fields.connectionreference);
   if (fields.connectionreferencelogicalname) connections.push(value);
-  for (const row of connections) if (hasValue(metadataFields(row).connectionid)) state.connections.push(document.entry);
+  for (const row of connections)
+    if (hasValue(metadataFields(row).connectionid)) state.connections.push(document.at(row, 'connectionid'));
 }
 
 function bindingName(fields, source) {
@@ -408,7 +416,7 @@ function inspectEnvironmentValue(definition, selected, emit, cache) {
   const value = selected.length ? selected[0].fields.value : fields.defaultvalue;
   const field = selected.length ? 'value' : 'defaultvalue';
   if (!hasValue(value)) {
-    if (actualBoolean(fields.isrequired)) emit('DV-ENV-002', source);
+    if (actualBoolean(fields.isrequired)) emit('DV-ENV-002', placed(definition));
     return;
   }
   if (externalValue(value)) return;
@@ -417,9 +425,9 @@ function inspectEnvironmentValue(definition, selected, emit, cache) {
     secret =
       ['secret', '100000005'].includes(type) ||
       /(?:secret|password|apikey|api_key|access_token|connectionstring)/i.test(name);
-  if (secret && !facts.secretReference) emit('DV-ENV-001', selected[0]?.source ?? source, field);
+  if (secret && !facts.secretReference) emit('DV-ENV-001', placed(selected[0] ?? definition, field), field);
   if (['json', '100000003'].includes(type) && !facts.jsonValid)
-    emit('DV-ENV-003', selected[0]?.source ?? source, field);
+    emit('DV-ENV-003', placed(selected[0] ?? definition, field), field);
 }
 
 function inspectEnvironment(state, emit) {
@@ -431,7 +439,7 @@ function inspectEnvironment(state, emit) {
     const selected = values.get(JSON.stringify([rootKey(source), name])) ?? [];
     const distinct = new Set(selected.map((row) => row.fields.value));
     if (distinct.size > 1) {
-      emit('DV-ENV-004', source);
+      emit('DV-ENV-004', placed(definition));
       continue;
     }
     inspectEnvironmentValue(definition, selected, emit, cache);
@@ -494,7 +502,12 @@ function inspectCustomApi(document, node, emit) {
 function inspectObjectManifest(document, emit) {
   const fields = metadataFields(document.value),
     manifest = metadataFields(fields.solutionmanifest ?? fields.solution ?? fields);
-  if (hasValue(manifest.version) && !validVersion(manifest.version)) emit('DV-SOLUTION-001', document.entry, 'version');
+  if (hasValue(manifest.version) && !validVersion(manifest.version))
+    emit(
+      'DV-SOLUTION-001',
+      document.at(fields.solutionmanifest ?? fields.solution ?? document.value, 'version'),
+      'version',
+    );
 }
 
 function collectDocuments(entries, state, emit) {

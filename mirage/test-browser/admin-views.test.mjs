@@ -658,6 +658,32 @@ test('old addresses land on the view that replaced them, with filters in the Act
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: rows per page is a per-browser preference that survives a reload (T8)
+test('the Rows choice of a table survives a reload', async (t) => {
+  const traces = createTraceStore({ settings: { level: 'summary' } });
+  recordTraffic(traces);
+  const { origin } = await host(t, {
+    state: structuredClone(MONITOR_STATE),
+    status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
+    traces,
+  });
+  const { page, errors } = await open(t, origin, '#activity');
+  const rows = page.locator('select[data-table-size="activity-list"]');
+  await rows.waitFor();
+  const sized = page.waitForRequest(
+    (request) => request.url().includes('/trace?') && new URL(request.url()).searchParams.get('pageSize') === '50',
+  );
+  await page.selectOption('select[data-table-size="activity-list"]', '50');
+  await sized;
+  const reloaded = page.waitForRequest(
+    (request) => request.url().includes('/trace?') && new URL(request.url()).searchParams.get('pageSize') === '50',
+  );
+  await page.reload();
+  await reloaded;
+  assert.equal(await rows.inputValue(), '50');
+  assert.deepEqual(errors, []);
+});
+
 test('Home guides the first run, Health counters and the places that change things link into Activity', async (t) => {
   const traces = createTraceStore({ settings: { level: 'summary' } });
   recordTraffic(traces);
@@ -1354,7 +1380,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
   });
   const { page, errors } = await open(t, origin, '#health');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const strip = page.locator('.dm-strip a[href="#activity?result=error"] strong');
+  const strip = page.locator('.dm-strip a[href="#activity?hasErrors=true"] strong');
   await strip.waitFor();
   assert.equal(await strip.innerText(), '1', 'one failed activity, not four failed steps');
   assert.equal(

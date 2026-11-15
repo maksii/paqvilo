@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 
 export function cacheSpecs(lock, example) {
   return [
@@ -40,7 +41,7 @@ function main() {
     const result = spawnSync(process.execPath, [npmCli, 'cache', 'add', spec], {
       stdio: 'inherit',
       windowsHide: true,
-      timeout: 120_000,
+      timeout: CHILD_HANG_GUARD_MS,
     });
     if (result.status !== 0)
       throw new Error(result.error?.message ?? `Cannot prepare offline package metadata for ${spec}`);
@@ -66,7 +67,7 @@ function prepareConsumerCache(preparation, npmCli) {
       cwd,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 120_000,
+      timeout: CHILD_HANG_GUARD_MS,
       maxBuffer: 4 * 1024 * 1024,
     });
     if (result.status !== 0)

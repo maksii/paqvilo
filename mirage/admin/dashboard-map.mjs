@@ -1475,7 +1475,8 @@ const flowRuns = (flows) =>
   );
 // KPI tiles. counter: cumulative since start (the sparkline plots the change per refresh); gauge: a current level.
 // `activity`: the Activity filter of what the tile counts (the tile links to `#activity?<filter>`, its failures to the
-// same filter with result=error); `link`: the view that manages a count Activity has no steps for. `errors`: failures.
+// same filter with status=error, the failed steps); `link`: the view that manages a count Activity has no steps for.
+// `errors`: failures.
 export const KPIS = Object.freeze([
   {
     key: 'requests',
@@ -1570,7 +1571,7 @@ const KPI_HINT = Object.freeze({
 });
 /** Where a KPI tile leads: its Activity filter, else the view that manages the count. */
 const kpiHref = (kpi, { errors = false } = {}) => {
-  if (kpi.activity) return `#activity?${kpi.activity}${errors ? '&result=error' : ''}`;
+  if (kpi.activity) return `#activity?${kpi.activity}${errors ? '&status=error' : ''}`;
   return errors ? null : (kpi.link ?? null);
 };
 
@@ -1788,7 +1789,7 @@ function healthFacts(payload, { stats, preflight, site, now }) {
   else if (readiness === 'degraded') readinessTitle = 'Some components report errors or are missing';
   const strip = [
     ['Requests', num(activity.requests?.total), '#activity?host=power-pages'],
-    ['Errors', num(stats?.roots?.errors), '#activity?result=error'],
+    ['Failed', num(stats?.roots?.failed), '#activity?hasErrors=true'],
     ['p95', stats?.roots?.p95 ?? null, '#activity?tab=stats', ms],
     ['Plug-in step runs', num(activity.plugins?.executions), '#activity?kind=plugin-step'],
     ['Flow runs', activity.flows ? flowRuns(activity.flows) : null, '#activity?kind=flow-run'],

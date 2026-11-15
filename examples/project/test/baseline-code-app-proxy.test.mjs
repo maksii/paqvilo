@@ -130,3 +130,24 @@ test('code app proxy cancels upstream when the client disconnects before headers
   request.destroy();
   assert.equal(await responseClosed, true, 'the upstream response was closed when the client went away');
 });
+
+// @test-kind contract: the example app server serves every module its page imports
+test('the example app server serves every relative module its page imports', async (t) => {
+  // The modules are served locally; the upstream is never contacted by this test.
+  const { port } = await startCodeApp(t, { MIRAGE_URL: 'http://127.0.0.1:9', CODE_APP_PORT: '0' });
+  const origin = `http://127.0.0.1:${port}`;
+  const queue = ['/mirage-client.js', '/app.js'];
+  const served = new Set();
+  while (queue.length) {
+    const path = queue.shift();
+    if (served.has(path)) continue;
+    served.add(path);
+    const response = await fetch(origin + path);
+    assert.equal(response.status, 200, `${path} is served`);
+    assert.match(response.headers.get('content-type'), /^text\/javascript/, `${path} is a module`);
+    const body = await response.text();
+    for (const [, specifier] of body.matchAll(/\bimport\s+(?:[^'"()]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g))
+      queue.push(new URL(specifier, origin + path).pathname);
+  }
+  assert.ok(served.has('/mirage-client.js') && served.has('/app.js'));
+});

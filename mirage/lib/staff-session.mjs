@@ -2,13 +2,14 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCookies } from './auth-session.mjs';
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
+import { STAFF_SELECTION_STALE_MESSAGE, STAFF_UNAVAILABLE_MESSAGE } from './dataverse-principal-context.mjs';
 import { TIME_ZONE_IDS } from './platform-time-zones.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { sameToken } from './admin-origin.mjs';
 import { missingCsrfToken } from './runtime-admin.mjs';
 
-const unavailable = () =>
-  new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
+const unavailable = () => new DataError(STAFF_UNAVAILABLE_MESSAGE, 401, 'StaffPrincipalUnavailable');
+const stale = () => new DataError(STAFF_SELECTION_STALE_MESSAGE, 401, 'StaffPrincipalUnavailable');
 const GUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const bare = (value) =>
   String(value?.id ?? value ?? '')
@@ -283,17 +284,21 @@ export function createStaffSessions({ organization, port = () => '', secret = ra
   const core = () => (typeof organization === 'function' ? organization() : organization);
   const name = () => (port() ? `paqvilo-mirage-staff-${port()}` : 'paqvilo-mirage-staff');
   const sign = (value) => createHmac('sha256', secret).update(value).digest('base64url');
-  const selected = (req) => {
+  const live = () => {
     const runtime = core();
     if (!runtime) throw new DataError('The organization runtime is unavailable.', 503, 'OrganizationUnavailable');
+    return runtime;
+  };
+  const selected = (req) => {
+    const runtime = live();
     const raw = parseCookies(req.headers?.cookie)[name()];
     if (raw === undefined)
       return { principalId: uuidV5(runtime.organizationId, 'systemuser:SYSTEM'), kind: 'local-admin' };
     const [id, signature, extra] = raw.split('.');
-    if (extra !== undefined || !GUID.test(id ?? '') || typeof signature !== 'string') throw unavailable();
+    if (extra !== undefined || !GUID.test(id ?? '') || typeof signature !== 'string') throw stale();
     const actual = Buffer.from(signature),
       expected = Buffer.from(sign(id));
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw unavailable();
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw stale();
     const user = runtime.principals.byId(id);
     if (!user || user.isdisabled === true || user.applicationid || user.accessmode === 4) throw unavailable();
     return { principalId: user.systemuserid, kind: 'staff' };
@@ -303,9 +308,7 @@ export function createStaffSessions({ organization, port = () => '', secret = ra
     return `${name()}=${value}; Path=/; HttpOnly; SameSite=Lax${id ? '' : '; Max-Age=0'}`;
   };
   const describe = (req) => {
-    const runtime = core(),
-      current = selected(req),
-      user = runtime.principals.byId(current.principalId);
+    const runtime = live();
     const users = runtime.store
       .tableRows('systemuser')
       .filter(
@@ -320,6 +323,27 @@ export function createStaffSessions({ organization, port = () => '', secret = ra
         name: row.fullname ?? row.domainname ?? row.systemuserid,
         roles: runtime.principals.roles(row).map((role) => role.name),
       }));
+    // An unverifiable or disabled selection is reported so the browser can choose again; data requests still refuse it.
+    let current;
+    try {
+      current = selected(req);
+    } catch (error) {
+      if (error.code !== 'StaffPrincipalUnavailable') throw error;
+      return {
+        current: {
+          kind: 'unavailable',
+          id: null,
+          principalId: null,
+          name: null,
+          roles: [],
+          code: error.code,
+          message: error.message,
+        },
+        users,
+        default: { kind: 'local-admin', name: 'Local administrator' },
+      };
+    }
+    const user = runtime.principals.byId(current.principalId);
     return {
       current: {
         ...current,

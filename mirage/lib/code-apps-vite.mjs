@@ -81,6 +81,23 @@ function localOrigin(value) {
   return url.origin;
 }
 
+const MISSING_SOURCES = /^Sourcemap for "(.+)" points to missing source files$/;
+// eslint-disable-next-line no-control-regex -- Vite colours its messages; the escape sequence is matched only to be removed.
+const ANSI_COLOUR = /\u001b\[[0-9;]*m/g;
+/** Vite's missing-source warnings for dependency modules are dropped; the app's own sources keep theirs. */
+export function quietDependencySourcemaps(logger) {
+  if (!logger) return;
+  for (const method of ['warn', 'warnOnce']) {
+    if (typeof logger[method] !== 'function') continue;
+    const write = logger[method].bind(logger);
+    logger[method] = (message, options) => {
+      const file = MISSING_SOURCES.exec(String(message).replace(ANSI_COLOUR, ''))?.[1];
+      if (file && /[\\/]node_modules[\\/]/.test(file)) return;
+      write(message, options);
+    };
+  }
+}
+
 /** Development-only public SDK integration. Native serve/build configurations remain unchanged. */
 export function codeApps(options = {}) {
   let app, origin, nativeApp, root, configFile;
@@ -123,6 +140,7 @@ export function codeApps(options = {}) {
       };
     },
     configResolved(config) {
+      quietDependencySourcemaps(config.logger);
       root = config.root;
       configFile = path.resolve(root, options.config ?? 'power.config.json');
       if (config.plugins?.some((plugin) => plugin.name === 'powerApps'))

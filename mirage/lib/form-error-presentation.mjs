@@ -1,19 +1,43 @@
+import { randomUUID } from 'node:crypto';
+import { siteSetting } from './redirects.mjs';
+
+const INVALID_PLUGIN = 'InvalidPluginExecutionException';
+const UNKNOWN_FAILURE = (id) => `An unknown failure has occurred. Error ID # [${id}]`;
+
+/** An InvalidPluginExecutionException: the pipeline's fault identity, else the 0x80040265 code, else a plug-in refusal code. */
+function pluginRefusal(error) {
+  if (error.traceError?.type) return error.traceError.type === INVALID_PLUGIN;
+  const inner = error.details?.innerCode;
+  if (typeof inner === 'string') return inner.toLowerCase() === '0x80040265';
+  return error.code === 'PluginValidation' || error.pluginFault === INVALID_PLUGIN;
+}
+
+const customPluginErrors = (portal) =>
+  String(siteSetting(portal ?? {}, 'Site/EnableCustomPluginError') ?? '')
+    .trim()
+    .toLowerCase() === 'true';
+
 /** A write failed after source-bound controls were validated. Transport and
  * malformed/forged control failures keep their original error response. */
-export function formWriteError(error, observed, kind = 'entityform') {
-  // Advanced forms use the LiquidServerControl inline save-error contract.
-  // Basic Form.aspx documents use the error MessagePanel postback.
+export function formWriteError(error, observed, kind = 'entityform', portal = null) {
+  // Advanced forms keep their own failure path; Basic Form.aspx documents use the error MessagePanel postback.
   if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
-  // A plugin's InvalidPluginExecutionException message (a handler's reject(message)) is shown as thrown.
-  return {
-    type: 'error',
-    ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}),
-    message: observed?.formSubmissionErrorMessage ?? fallbackErrorMessage(error),
-  };
+  const markup = observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {};
+  // A plug-in's InvalidPluginExecutionException (observed natively, basic-form create and update): the generic text with
+  // an Error ID that is the response's x-ms-request-id, or the plug-in's message when Site/EnableCustomPluginError is true.
+  if (pluginRefusal(error)) {
+    const requestId = randomUUID();
+    return {
+      type: 'error',
+      ...markup,
+      message: customPluginErrors(portal) ? String(error.message) : UNKNOWN_FAILURE(requestId),
+      requestId,
+    };
+  }
+  return { type: 'error', ...markup, message: observed?.formSubmissionErrorMessage ?? fallbackErrorMessage(error) };
 }
 
 function fallbackErrorMessage(error) {
-  if (error.code === 'PluginValidation' && error.details?.declaredValidationMessage === true) return error.message;
   if (error.code === 'PermissionDenied') return "You don't have the appropriate permissions.";
   return 'An error occurred while processing your request. Please try again.';
 }

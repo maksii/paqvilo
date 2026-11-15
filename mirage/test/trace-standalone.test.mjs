@@ -109,3 +109,27 @@ test('simulator.trace exposes flush, which settles once the store has written wh
   assert.equal(typeof sim.trace.flush, 'function');
   assert.equal(await sim.trace.flush(), undefined);
 });
+
+// @test-kind contract: the standalone host exports the activity bundle
+test('the standalone host exports the activity bundle, and lists the route in its status', async () => {
+  const sim = await runtime();
+  const response = await fetch(sim.url + '/_sim/api/activity/export?format=bundle');
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  const documents = text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const kinds = documents.map((document) => document.kind);
+  assert.equal(kinds[0], 'bundle');
+  assert.equal(kinds.at(-1), 'end');
+  assert.ok(kinds.includes('activity'), 'the bundle carries the activities of the runtime');
+  assert.deepEqual(
+    kinds.slice(1, -1).filter((kind) => kind !== 'activity' && kind !== 'finding'),
+    [],
+    'between the bundle and the end only activities and findings are written',
+  );
+  assert.equal(documents.at(-1).counts.audit, 0, 'a standalone host has no audit trail to export');
+  const { answer: status } = await simApi('GET', '/status');
+  assert.ok(status.routes.includes('/activity'), 'the status lists the activity route');
+});

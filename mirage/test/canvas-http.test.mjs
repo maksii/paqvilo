@@ -114,9 +114,13 @@ test('canvas list and inventory API answer inventory without the runtime and beh
         formulas: 1,
         diagnostics: 0,
         level: 'inventory',
+        origin: null,
       },
     ],
   });
+  const listHtml = await (await fetch(url + '/_apps/canvas/')).text();
+  assert.doesNotMatch(listHtml, /<script/i);
+  assert.match(listHtml, /<a class="nav-item" href="\/_sim\/">/);
   const hosted = createCanvasHandler({
     apps: () => [{ uniqueName: 'fx_inventedcanvas', source: source('Invented Canvas') }],
     runtime: {

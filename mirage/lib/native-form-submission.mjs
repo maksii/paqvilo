@@ -221,9 +221,9 @@ const nativeValidationCodes = new Set([
 ]);
 
 /** Only native field validators have an observed successful HTML response status. */
-export function nativePostbackResponse({ result, error, context, values, observed }) {
+export function nativePostbackResponse({ result, error, context, values, observed, portal }) {
   if (error) {
-    const presentation = formWriteError(error, observed, context?.kind);
+    const presentation = formWriteError(error, observed, context?.kind, portal);
     if (presentation) return { status: 200, state: { ...context, values, outcome: presentation } };
     const errors = error.details?.validationErrors;
     if (

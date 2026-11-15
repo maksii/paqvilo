@@ -9,8 +9,11 @@ import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
 import { ensureVerifiedArchive } from './verified-download.mjs';
-import { acquireCiWorkspaceLease, assertOwnedCiState } from './ci-workspace-lease.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState, leaseAcquiredHere } from './ci-workspace-lease.mjs';
 import { npmCliPath } from './npm-cli.mjs';
+import { isAlive, processIdentity, processIdentityAsync } from '../lense/process-identity.mjs';
+import { stopCodeAppDevServer } from '../lense/code-app-dev-stop.mjs';
+import { guardShutdownSignals } from '../lense/signal-forwarding.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SDK_VERSION = '9.0.2.60'; // NOSONAR: version string or loopback address, not a network target
@@ -808,11 +811,24 @@ export function validationJobs(env = process.env, configured = gitConfig('paqvil
 export async function runSteps(
   steps,
   jobs,
-  { cwd = root, logs, cpus = availableParallelism(), removeDirectory = removeCoverageDirectory } = {},
+  {
+    cwd = root,
+    logs,
+    cpus = availableParallelism(),
+    removeDirectory = removeCoverageDirectory,
+    identityOf = processIdentity,
+    stopTree = endLaneTree,
+    laneIdentity = processIdentityAsync,
+    environment = process.env,
+  } = {},
 ) {
   const parallel = jobs > 1 && steps.length > 1;
   const coverage = steps.some((step) => step.commands.some((command) => command.coverage));
-  if (coverage) removeLeftoverCoverage(assertOwnedCiState(cwd, 'runs'), removeDirectory);
+  // Only the process that acquired the checkout's lease removes what an earlier run left in it. A member that
+  // inherited the lease shares the owner's run folder, where the owner's lanes and coverage directories are live.
+  const owner = leaseAcquiredHere(environment);
+  if (coverage && owner) removeLeftoverCoverage(assertOwnedCiState(cwd, 'runs'), removeDirectory);
+  if (owner) await reapLanes(assertOwnedCiState(cwd, 'runs'), { identityOf, stopTree });
   if (!logs) {
     if (parallel || coverage) {
       const parent = assertOwnedCiState(cwd, 'runs');
@@ -839,7 +855,7 @@ export async function runSteps(
       ...step,
       env: { PAQ_TEST_PROCESS_SLOTS: String(budget), ...step.env },
     };
-    const code = await executeStepCommands(boundedStep, output, cwd, logError, run, removeDirectory);
+    const code = await executeStepCommands(boundedStep, output, cwd, logError, run, removeDirectory, laneIdentity);
     reportStepResult(step, code, start, log, parallel, failed, timings);
   });
   if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);
@@ -882,8 +898,9 @@ function openStepLog(parallel, log) {
   return { output, logError };
 }
 
-async function executeStepCommands(step, output, cwd, logError, run, removeDirectory) {
+async function executeStepCommands(step, output, cwd, logError, run, removeDirectory, laneIdentity) {
   let code = 0;
+  const lane = { file: path.join(run, LANE_RECORD), label: step.label, identity: laneIdentity };
   try {
     for (const command of step.commands) {
       // A command is node arguments, or { args, env, cwd, coverage } for one lane's browser channel, package
@@ -892,9 +909,9 @@ async function executeStepCommands(step, output, cwd, logError, run, removeDirec
       const environment = { ...process.env, ...step.env, ...env };
       code = command.coverage
         ? await withCoverageDirectory(run, environment, removeDirectory, () =>
-            spawnStepCommand(args, directory, environment, output),
+            spawnStepCommand(args, directory, environment, output, lane),
           )
-        : await spawnStepCommand(args, directory, environment, output);
+        : await spawnStepCommand(args, directory, environment, output, lane);
       if (code !== 0) break;
     }
   } catch (error) {
@@ -953,17 +970,214 @@ function removeLeftoverCoverage(runs, removeDirectory) {
   }
 }
 
-function spawnStepCommand(args, cwd, env, output) {
+const LANE_RECORD = 'lanes.json';
+const SHUTDOWN_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
+// The lane processes this process started and has not seen close, by PID.
+const liveLanes = new Map();
+
+/** The root processes of one run folder's lanes with their start identities, until each lane closes. A record file
+ * that cannot be parsed is logged and removed: the processes it named cannot be identified, so none is ended. */
+function laneRecords(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  let records = null;
+  try {
+    records = JSON.parse(text);
+  } catch {
+    /* reported below as unreadable */
+  }
+  if (Array.isArray(records)) return records.filter((record) => Number.isInteger(record?.pid) && record.pid > 0);
+  console.log(`[ci] Lane record ${file} is unreadable; the processes it named cannot be identified, so none is ended.`);
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* the next run reports it again */
+  }
+  return [];
+}
+
+/** Writes a run folder's lane records; an empty list removes the file. */
+function writeLaneRecords(file, records) {
+  if (records.length) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(records));
+  } else fs.rmSync(file, { force: true });
+}
+
+function forgetLane(file, pid) {
+  try {
+    writeLaneRecords(
+      file,
+      laneRecords(file).filter((record) => record.pid !== pid),
+    );
+  } catch {
+    /* A record that stays is dropped by the next run's reaper once its PID has ended or changed identity. */
+  }
+}
+
+/** Tracks a lane at once, and records it when its start identity has been read. The read runs off the event loop; a
+ * lane that closes before it resolves is not recorded, and a lane whose identity cannot be read is never recorded,
+ * because a later run could only end it by PID alone. */
+function trackLane(lane, child, closed) {
+  const entry = { child, closed, file: lane.file, label: lane.label };
+  liveLanes.set(child.pid, entry);
+  Promise.resolve()
+    .then(() => lane.identity(child.pid))
+    .then((identity) => {
+      if (liveLanes.get(child.pid) !== entry) return;
+      if (identity === null) {
+        console.log(
+          `[ci] Lane "${lane.label}" is not recorded (its start identity cannot be read); a later run cannot end it.`,
+        );
+        return;
+      }
+      writeLaneRecords(lane.file, [...laneRecords(lane.file), { pid: child.pid, identity, label: lane.label }]);
+    })
+    .catch((error) => {
+      console.log(
+        `[ci] Lane "${lane.label}" is not recorded (${error.code ?? error.message}); a later run cannot end it.`,
+      );
+    });
+}
+
+function untrackLane(lane, pid) {
+  liveLanes.delete(pid);
+  forgetLane(lane.file, pid);
+}
+
+function spawnStepCommand(args, cwd, env, output, lane) {
+  // On POSIX the lane leads its own process group, so one signal ends its whole tree. A terminal interrupt reaches
+  // only the runner, which ends the lanes it started (endOnShutdown).
   const child = spawn(process.execPath, args, {
     cwd,
     env,
     stdio: ['ignore', output, output],
     windowsHide: true,
+    detached: process.platform !== 'win32',
   });
+  const closed = new Promise((resolve) => child.once('close', (status, signal) => resolve(status ?? signal)));
+  if (child.pid) trackLane(lane, child, closed);
+  return new Promise((resolve, reject) => {
+    child.once('error', () => {
+      untrackLane(lane, child.pid);
+      resolve('spawn error');
+    });
+    closed
+      .then((code) => {
+        untrackLane(lane, child.pid);
+        resolve(code);
+      })
+      .catch(reject);
+  });
+}
+
+/** Ends the tree of a lane process that this run did not start, known only by its PID. */
+export function endLaneTree(pid) {
+  return stopCodeAppDevServer({ pid, exitCode: null, signalCode: null }, exitedPromise(pid));
+}
+
+function exitedPromise(pid) {
   return new Promise((resolve) => {
-    child.once('error', () => resolve('spawn error'));
-    child.once('close', (status, signal) => resolve(status ?? signal));
+    const poll = setInterval(() => {
+      if (!isAlive(pid)) {
+        clearInterval(poll);
+        resolve();
+      }
+    }, 100);
+    poll.unref();
   });
+}
+
+/** Ends the lane trees that an interrupted earlier run of this checkout left running. A record ends only while its PID
+ * still has the start identity recorded for it; a PID that now belongs to something else is dropped, not signalled.
+ * Lanes that this process still runs are left alone. */
+export async function reapLanes(runs, { identityOf = processIdentity, stopTree = endLaneTree } = {}) {
+  for (const file of laneRecordFiles(runs))
+    for (const record of laneRecords(file)) await reapLane(file, record, identityOf, stopTree);
+}
+
+/** The lane record files of a runs folder: its own, and one per run folder. */
+function laneRecordFiles(runs) {
+  const files = [path.join(runs, LANE_RECORD)];
+  for (const entry of fs.readdirSync(runs, { withFileTypes: true }))
+    if (entry.isDirectory() && entry.name.startsWith('run-')) files.push(path.join(runs, entry.name, LANE_RECORD));
+  return files;
+}
+
+/** Ends one recorded lane tree when its PID still has the recorded start identity. Any other record is dropped without
+ * signalling its PID: a record without an identity, a root that has already ended (its descendants cannot be identified
+ * from the record) and a PID that now has another start identity. */
+async function reapLane(file, { pid, identity, label }, identityOf, stopTree) {
+  if (liveLanes.has(pid)) return;
+  if (typeof identity !== 'string') {
+    console.log(`[ci] lane record "${label}" (pid ${pid}) has no start identity; its process is not ended`);
+    forgetLane(file, pid);
+    return;
+  }
+  if (!isAlive(pid)) {
+    console.log(
+      `[ci] lane "${label}" (pid ${pid}) left by an earlier run has already ended; any descendants it left running cannot be identified from its record`,
+    );
+    forgetLane(file, pid);
+    return;
+  }
+  if (identityOf(pid) !== identity) {
+    console.log(`[ci] lane record "${label}" (pid ${pid}) names a process that has since changed; it is not ended`);
+    forgetLane(file, pid);
+    return;
+  }
+  try {
+    await stopTree(pid);
+    console.log(`[ci] ended lane "${label}" (pid ${pid}) left running by an earlier run`);
+    forgetLane(file, pid);
+  } catch (error) {
+    console.log(
+      `[ci] lane "${label}" (pid ${pid}) left running by an earlier run did not end (${error.message}); the next run retries it.`,
+    );
+  }
+}
+
+/** Ends every lane tree this process started and has not seen close. A tree that ends loses its record; one that does
+ * not end keeps it, so the next run ends it. */
+async function endLiveLanes() {
+  const lanes = [...liveLanes];
+  const results = await Promise.allSettled(lanes.map(([, { child, closed }]) => stopCodeAppDevServer(child, closed)));
+  lanes.forEach(([pid, { file, label }], index) => {
+    if (results[index].status === 'rejected') {
+      console.log(
+        `[ci] lane "${label}" (pid ${pid}) did not end (${results[index].reason.message}); the next run ends it`,
+      );
+      return;
+    }
+    liveLanes.delete(pid);
+    forgetLane(file, pid);
+  });
+}
+
+/** Until the returned function runs, SIGINT or SIGTERM ends this process's lane trees, then runs `release` (the
+ * workspace lease) and exits with that signal's code. The first signal starts the stop; guardShutdownSignals absorbs
+ * the signals that follow it. */
+export function endOnShutdown(release) {
+  let stopping = false;
+  const onSignal = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    guardShutdownSignals(async () => {
+      await endLiveLanes();
+      await release();
+    })
+      .catch((error) => console.log(`[ci] shutdown did not finish cleanly (${error.message})`))
+      .finally(() => process.exit(SHUTDOWN_EXIT_CODES[signal]));
+  };
+  const listeners = Object.keys(SHUTDOWN_EXIT_CODES).map((signal) => [signal, () => onSignal(signal)]);
+  for (const [signal, listener] of listeners) process.on(signal, listener);
+  return () => {
+    for (const [signal, listener] of listeners) process.off(signal, listener);
+  };
 }
 
 function reportStepResult(step, code, start, log, parallel, failed, timings) {
@@ -1435,15 +1649,20 @@ async function main() {
   }
   const inherit =
     command === 'sdk' || (command === 'verify' && args.includes('--prepared') && !args.includes('--full'));
-  const release = await acquireCiWorkspaceLease(root, process.env, { inherit });
+  const acquired = await acquireCiWorkspaceLease(root, process.env, { inherit });
+  // The lease is released once, by whichever ends the run: the normal return or a shutdown signal.
+  let ended;
+  const endLease = () => (ended ??= acquired());
+  const stopShutdown = endOnShutdown(endLease);
   let failure;
   try {
     await runMain();
   } catch (error) {
     failure = error;
   }
+  stopShutdown();
   try {
-    await release();
+    await endLease();
   } catch (error) {
     if (failure)
       throw new AggregateError([failure, error], `${failure.message}; workspace cleanup failed: ${error.message}`, {

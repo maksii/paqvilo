@@ -135,8 +135,14 @@ test('the real Mirage verify lane executes volume and toolkit files once on shar
     'scripts/ci-workspace-lease.mjs',
     'scripts/npm-cli.mjs',
     '.github/scripts/change-scope.mjs',
-  ])
+    // The lense leaves scripts/ci.mjs imports.
+    'lense/process-identity.mjs',
+    'lense/code-app-dev-stop.mjs',
+    'lense/signal-forwarding.mjs',
+  ]) {
+    fs.mkdirSync(path.dirname(path.join(fixtureRoot, file)), { recursive: true });
     fs.copyFileSync(path.join(root, file), path.join(fixtureRoot, file));
+  }
   fs.copyFileSync(path.join(root, 'global.json'), path.join(fixtureRoot, 'global.json'));
   fs.writeFileSync(
     path.join(fixtureRoot, 'mirage/package.json'),

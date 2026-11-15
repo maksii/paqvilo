@@ -5,6 +5,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveGitExecutable } from './trusted-git.mjs';
 
+export const MAX_LINE = 299;
+const MAX_MESSAGE = 200;
+const MAX_LISTED = 50;
+
+export function clip(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function oneLine(value) {
+  return String(value ?? '-').replace(/\s+/g, ' ');
+}
+
+/** One issue as `  <rule> <file>:<line> <message>`; the component's project prefix is dropped. */
+export function issueLine(rule, component, line, message, projectKey) {
+  const prefix = `${projectKey}:`;
+  const location = oneLine(component);
+  const file = location.startsWith(prefix) ? location.slice(prefix.length) : location;
+  return clip(`  ${oneLine(rule)} ${file}:${oneLine(line)} ${clip(oneLine(message), MAX_MESSAGE)}`, MAX_LINE);
+}
+
 function cleanCandidate(revision) {
   const options = { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
   const git = resolveGitExecutable();
@@ -103,6 +123,7 @@ async function unresolvedIssues(base, token, branch, fetchImpl) {
   const pageSize = 100;
   let total;
   const seen = new Set();
+  const lines = [];
   for (let page = 1; ; page++) {
     const data = await readApi(
       base,
@@ -118,9 +139,17 @@ async function unresolvedIssues(base, token, branch, fetchImpl) {
       fetchImpl,
     );
     validateIssuePage(data, page, pageSize, total, branch, seen);
+    for (const issue of data.issues)
+      lines.push(issueLine(issue.rule, issue.component, issue.line, issue.message, 'paqvilo'));
     total = data.total;
-    if (seen.size === total) return total;
+    if (seen.size === total) return { total, lines };
   }
+}
+
+function unresolvedMessage(total, lines) {
+  const shown = lines.slice(0, MAX_LISTED);
+  if (lines.length > MAX_LISTED) shown.push(`  … and ${lines.length - MAX_LISTED} more`);
+  return [`Full-source Sonar analysis has ${total} unresolved issue(s):`, ...shown].join('\n');
 }
 
 /** Verify the completed full-branch task and every page of unresolved issues. */
@@ -149,9 +178,9 @@ export async function verifySonarBranch({
   // the result to the project and branch; analysis-history revision access requires
   // Sonar project administration and is intentionally not requested by CI.
   const task = await completedTask(base, token, scanner, branch, fetchImpl, wait);
-  const total = await unresolvedIssues(base, token, branch, fetchImpl);
+  const { total, lines } = await unresolvedIssues(base, token, branch, fetchImpl);
   checkGit(revision);
-  if (total !== 0) throw new Error(`Full-source Sonar analysis has ${total} unresolved issue(s).`);
+  if (total !== 0) throw new Error(unresolvedMessage(total, lines));
   return { analysisId: task.analysisId, branch, revision, unresolved: 0 };
 }
 

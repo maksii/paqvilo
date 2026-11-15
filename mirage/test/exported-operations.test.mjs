@@ -443,21 +443,34 @@ test('a limit that falls due while the answer is still queued leaves the call to
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const call = recordWorkerExit(t);
   const terminate = t.mock.method(Worker.prototype, 'terminate');
-  // The worker's result reaches the host only after its limit fell due, as when the main thread is busy past it.
-  const held = Promise.withResolvers();
+  // The worker's result, then its exit, reach the host only after its limit fell due, as when the main thread is busy
+  // past it. An ended worker delivers its queued messages and its 'exit' in one synchronous step and then removes those
+  // listeners, so both events are held with their listeners and delivered in that order after the limit, however the
+  // host thread was scheduled.
+  const answer = Promise.withResolvers();
+  const ended = Promise.withResolvers();
   const emit = Worker.prototype.emit;
   t.mock.method(Worker.prototype, 'emit', function (name, ...args) {
     if (name === 'message' && this === call.worker && args[0]?.kind === 'result') {
-      held.resolve(() => emit.call(this, name, ...args));
+      const listeners = this.listeners('message');
+      answer.resolve(() => listeners.forEach((listener) => listener.apply(this, args)));
+      return true;
+    }
+    if (name === 'exit' && this === call.worker) {
+      const listeners = this.listeners('exit');
+      ended.resolve(() => listeners.forEach((listener) => listener.apply(this, args)));
       return true;
     }
     return emit.call(this, name, ...args);
   });
   const { record } = await source(t, 'function get(){ return "answered in time"; }');
-  const run = runExportedServerLogic({ record, portal: {}, store: store(), timeout: 100 });
-  const deliver = await held.promise;
-  t.mock.timers.tick(400); // the execution limit: the 100 ms bound and its 300 ms grace
-  deliver();
+  // The bound is the platform default (120 s): the worker's own script limit is real time and a loaded host must never reach it.
+  const run = runExportedServerLogic({ record, portal: {}, store: store(), timeout: 120_000 });
+  const deliverAnswer = await answer.promise;
+  const deliverExit = await ended.promise;
+  t.mock.timers.tick(120_300); // the execution limit: the 120 s bound and its 300 ms grace
+  deliverAnswer();
+  deliverExit();
   assert.equal(await run, 'answered in time');
   assert.equal(terminate.mock.callCount(), 0, 'a worker that has answered is never terminated at its limit');
   assert.equal(await call.exited, 0);

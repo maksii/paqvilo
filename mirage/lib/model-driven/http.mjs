@@ -31,7 +31,10 @@ const assets = {
 };
 export const modelDrivenAssetNames = Object.keys(assets);
 // Shared lib modules that the browser modules import relatively: from /_apps/assets/ the path `../x.mjs` names these.
-const sharedModules = new Map([['/_apps/date-only-format.mjs', new URL('../date-only-format.mjs', import.meta.url)]]);
+const sharedModules = new Map([
+  ['/_apps/date-only-format.mjs', new URL('../date-only-format.mjs', import.meta.url)],
+  ['/_apps/trace-gesture.js', new URL('../trace-gesture.js', import.meta.url)],
+]);
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const decodeRecordId = (encodedId) => {
   try {

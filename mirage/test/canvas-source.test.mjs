@@ -115,6 +115,115 @@ test('configured canvas imports retain directory and archive inventories and dia
   );
 });
 
+// @test-kind contract: Paqvilo resolves duplicate canvas.sources entries deterministically
+test('readCanvasSources reads a repeated path once and serves the first of two sources with one unique name', async (t) => {
+  const root = await dirOf(t, {
+    ...Object.fromEntries(Object.entries(files).map(([name, body]) => ['a/app/' + name, body])),
+    ...Object.fromEntries(Object.entries(files).map(([name, body]) => ['b/app/' + name, body])),
+  });
+  const report = await readCanvasSources(['a/app', './a/app/', 'b/app'], { projectRoot: root });
+  assert.equal(report.records.length, 1);
+  assert.equal(report.records[0].source, 'a/app');
+  assert.deepEqual(
+    report.diagnostics.map((item) => [item.code, item.source]),
+    [
+      ['CANVAS_SOURCE_DUPLICATE', './a/app/'],
+      ['CANVAS_SOURCE_DUPLICATE', 'b/app'],
+    ],
+  );
+  assert.match(report.diagnostics[1].message, /a\/app/);
+  const missing = await readCanvasSources(['missing/app', 'b/app'], { projectRoot: root });
+  assert.deepEqual(
+    missing.diagnostics.map((item) => [item.code, item.source]),
+    [['CANVAS_SOURCE_MISSING', 'missing/app']],
+  );
+  assert.deepEqual(
+    missing.records.map((record) => record.source),
+    ['b/app'],
+  );
+  // A missing path listed twice is reported once as missing; its repeat is a duplicate, like a readable path's.
+  const repeated = await readCanvasSources(['missing/app', './missing/app/'], { projectRoot: root });
+  assert.deepEqual(
+    repeated.diagnostics.map((item) => [item.code, item.source]),
+    [
+      ['CANVAS_SOURCE_MISSING', 'missing/app'],
+      ['CANVAS_SOURCE_DUPLICATE', './missing/app/'],
+    ],
+  );
+  // Path identity follows the platform, as standalone-runtime.mjs does: case-insensitive on Windows only.
+  const cased = await readCanvasSources(['Missing/app', 'missing/app'], { projectRoot: root });
+  assert.deepEqual(
+    cased.diagnostics.map((item) => [item.code, item.source]),
+    process.platform === 'win32'
+      ? [
+          ['CANVAS_SOURCE_MISSING', 'Missing/app'],
+          ['CANVAS_SOURCE_DUPLICATE', 'missing/app'],
+        ]
+      : [
+          ['CANVAS_SOURCE_MISSING', 'Missing/app'],
+          ['CANVAS_SOURCE_MISSING', 'missing/app'],
+        ],
+  );
+});
+
+// @test-kind contract: Paqvilo maps the msapp Properties.json DocumentLayout keys to its display settings
+test("the app's display settings are read from Properties.json and from a legacy CanvasManifest.json", async (t) => {
+  const layout = {
+    DocumentLayoutWidth: 1024,
+    DocumentLayoutHeight: 768,
+    DocumentLayoutOrientation: 'landscape',
+    DocumentLayoutScaleToFit: false,
+    DocumentLayoutMaintainAspectRatio: true,
+    DocumentLayoutLockOrientation: false,
+  };
+  const display = {
+    designWidth: 1024,
+    designHeight: 768,
+    orientation: 'Landscape',
+    scaleToFit: false,
+    lockAspectRatio: true,
+    lockOrientation: false,
+  };
+  const source = await readCanvasSource({ msapp: msappOf({ ...files, 'Properties.json': JSON.stringify(layout) }) });
+  assertInventory(source);
+  assert.deepEqual(source.app.display, display);
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const record = await canvasMsappRecord(msappOf({ ...files, 'Properties.json': JSON.stringify(layout) }), {
+    name: 'example',
+  });
+  assert.deepEqual(record.canvas.display, display);
+  const invalid = await readCanvasSource({
+    msapp: msappOf({ ...files, 'Properties.json': JSON.stringify({ ...layout, DocumentLayoutWidth: 0 }) }),
+  });
+  assert.equal('designWidth' in invalid.app.display, false);
+  assert.equal(invalid.app.display.designHeight, 768);
+  assert.deepEqual(
+    invalid.diagnostics.map((item) => [item.code, item.severity]),
+    [['CANVAS_SOURCE_LAYOUT_INVALID', 'warning']],
+  );
+  const broken = await readCanvasSource({ msapp: msappOf({ ...files, 'Properties.json': '{' }) });
+  assert.equal(broken.app.display, undefined);
+  assert.deepEqual(
+    broken.diagnostics.map((item) => item.code),
+    ['CANVAS_SOURCE_LAYOUT_INVALID'],
+  );
+  assert.equal((await readCanvasSource({ msapp: msappOf(files) })).app.display, undefined);
+  const empty = await readCanvasSource({ msapp: msappOf({ ...files, 'Properties.json': '{}' }) });
+  assertInventory(empty);
+  assert.equal(empty.app.display, undefined);
+  const legacy = await readCanvasSource({
+    msapp: msappOf({
+      'Src/HomeScreen.fx.yaml': 'HomeScreen As screen:\n',
+      'CanvasManifest.json': JSON.stringify({ Properties: { DocumentLayoutWidth: 800, DocumentLayoutHeight: 600 } }),
+    }),
+  });
+  assert.deepEqual(legacy.app.display, { designWidth: 800, designHeight: 600 });
+  const directory = await readCanvasSource({
+    dir: await dirOf(t, { ...files, 'Properties.json': JSON.stringify(layout) }),
+  });
+  assert.deepEqual(directory.app.display, display);
+});
+
 async function dirOf(t, entries) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-source-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

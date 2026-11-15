@@ -8,8 +8,7 @@ import fsSync from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
@@ -22,6 +21,11 @@ import { mirageStopCommand, mirageCommandHint, listenerPort } from '../stop-comm
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
 import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
 import { guardShutdownSignals } from '../signal-forwarding.mjs';
+// Startup keeps its heartbeat and cancellation responsive while Windows resolves process ownership: it reads
+// identities through the awaited processIdentityAsync.
+import { isAlive, processIdentity, processIdentityAsync } from '../process-identity.mjs';
+
+export { isAlive, processIdentity, processIdentityAsync };
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -175,53 +179,6 @@ const loopbackUrl = (url) => {
   }
 };
 
-/** True when the process exists (EPERM: it exists but belongs to another account). */
-export function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
-  }
-}
-
-/** The process start time: a recorded PID only names our Mirage while this value is unchanged. */
-export function processIdentity(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  if (process.platform === 'win32') {
-    // PowerShell can start slowly on a busy machine: give it time and retry a read that timed
-    // out, because an unread identity must not be mistaken for a reused process ID.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = spawnSync(
-        'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`,
-        ],
-        { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
-      );
-      if (!result.error && result.signal == null) return result.status === 0 ? result.stdout.trim() || null : null;
-    }
-    return null;
-  }
-  try {
-    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[19] ?? null; // field 22: process start time since boot
-  } catch {
-    /* macOS and other proc-less systems */
-  }
-  /* NOSONAR */ const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 3000,
-  });
-  return result.status === 0 ? result.stdout.trim() || null : null;
-}
-
 /**
  * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
  * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
@@ -263,51 +220,6 @@ function storeWindowsProcessIdentities(stdout, unique, identities) {
     const match = /^(\d+)=(\d*)$/.exec(line.trim());
     if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
   }
-}
-
-// Startup must keep its heartbeat and cancellation responsive while Windows
-// resolves process ownership. The synchronous public helper remains for callers.
-const executeFile = promisify(execFile);
-/* NOSONAR */ export async function processIdentityAsync(pid, { signal } = {}) {
-  if (signal?.aborted) return null;
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  if (process.platform !== 'win32') {
-    try {
-      const stat = await fs.readFile(`/proc/${pid}/stat`, { encoding: 'utf8', signal });
-      return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
-    } catch {
-      if (signal?.aborted) return null;
-    }
-    try {
-      const { stdout } = await executeFile('ps', ['-o', 'lstart=', '-p', String(pid)], {
-        windowsHide: true,
-        timeout: 3000,
-        encoding: 'utf8',
-        signal,
-      });
-      return stdout.trim() || null;
-    } catch {
-      return null;
-    }
-  }
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const { stdout } = await executeFile(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`,
-        ],
-        { windowsHide: true, timeout: 15000, encoding: 'utf8', signal },
-      );
-      return stdout.trim() || null;
-    } catch (error) {
-      if (!error.killed) return null;
-    }
-  }
-  return null;
 }
 
 const UNIX_EPOCH_TICKS = 621_355_968_000_000_000n; // .NET ticks (100 ns since 0001-01-01) at 1970-01-01
@@ -1162,16 +1074,39 @@ export function codeAppStartupInterrupted(error, write = (line) => console.log(l
 }
 
 /**
- * The abort controller of a Code App dev session. Only the reason its own interrupt aborts with counts as an interrupt.
+ * The abort controller of a Code App dev session. Only the reasons its interrupt and its runtime's end abort with count.
  */
 export function codeAppInterrupt() {
   const controller = new AbortController();
   const reason = new Error('Code App development stopped.');
+  const ended = new Error('The Mirage runtime of this development session stopped.');
   return {
     controller,
     interrupt: () => controller.abort(reason),
-    interrupted: (error = controller.signal.reason) => error === reason,
+    runtimeEnded: () => controller.abort(ended),
+    interrupted: (error = controller.signal.reason) => error === reason || error === ended,
+    runtimeStopped: () => controller.signal.reason === ended,
   };
+}
+
+/**
+ * Ends a dev session when the runtime it started exits on its own, however it exits. `exit` holds the exit once it happened
+ * (null before). `ending` is set when the dev session starts its own teardown: the runtime's exit is then expected.
+ */
+export function endSessionOnRuntimeExit(session, controller, runtimeEnded) {
+  const state = { exit: null, ending: false };
+  session.exited?.then((exit) => {
+    state.exit = exit;
+    if (state.ending || controller.signal.aborted) return; // Ctrl+C, a failure or the teardown already ends the session.
+    const how = exit.code === 0 ? 'stopped' : `exited (${exit.signal ?? 'code ' + exit.code})`;
+    console.log(`mirage   ${session.url} (pid ${session.pid}) ${how}; ending this development session`);
+    if (exit.code !== 0) {
+      console.log(`mirage   see the runtime log: ${session.log}`);
+      process.exitCode ||= 1;
+    }
+    runtimeEnded();
+  });
+  return state;
 }
 
 async function startProjectCodeApps(cfg, launch, session, controller) {
@@ -1491,13 +1426,15 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   else stateFile = path.join(miragePaths(cfg, args).discoveryRoot, cfg.siteName, 'state.json');
   const solutionRoots = (await launchSolutionRoots(sourceDir, args, projectInfo)).map((item) => resolved(item));
   // The registered settings (mirage/lib/config-keys.mjs) as the Mirage CLI resolves them, then the command-line choices.
-  const { runtimeOptions, runtimeIdentity } = await import('../../mirage/lib/config-keys.mjs');
+  const { runtimeOptions, runtimeIdentity, startupPresetChoice } = await import('../../mirage/lib/config-keys.mjs');
   const options = runtimeOptions({
     project: projectInfo,
     portal: projectInfo?.portals.find((item) => item.id === portalId) ?? null,
     catalogue: cfg.mirageConfig,
   });
   options.runtime = runtime;
+  // The startup preset the child applies (the child is launched with --site, so the catalogue site is in scope too).
+  const startup = startupPresetChoice(args, { project: projectInfo, catalogue: cfg.mirageConfig });
   if (args.simulation) options.simulation = { level: args.simulation };
   const scope = catalogueIdentity(cfg);
   return {
@@ -1520,9 +1457,9 @@ async function launchIdentity(cfg, args, projectInfo = null) {
           }
         : null,
       stateFile: resolved(stateFile),
-      preset: args.preset ?? null,
-      presetMode: args['preset-mode'] ?? 'always',
-      presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+      preset: startup.preset,
+      presetMode: startup.presetMode,
+      presetConfiguration: startup.presetConfiguration,
       allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
       solutionRoots: [...solutionRoots],
@@ -1733,7 +1670,7 @@ export async function start(
       `Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`,
     );
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
-  let child;
+  let child, exited;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await pruneStartupLogs(paths, await ownedSessions(paths));
   await fs.mkdir(paths.logRoot, { recursive: true });
@@ -1753,6 +1690,7 @@ export async function start(
       windowsHide: true,
       env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime },
     });
+    exited = new Promise((resolve) => child.once?.('exit', (code, signal) => resolve({ code, signal })));
     startup.child(child);
   } catch (error) {
     await logHandle.close();
@@ -1891,7 +1829,7 @@ export async function start(
             { signal: startup.signal },
           );
           startup.check();
-          return {
+          const result = {
             ...session,
             owned: true,
             started: true,
@@ -1901,6 +1839,8 @@ export async function start(
               (file) => file && fsSync.existsSync(file),
             ),
           };
+          Object.defineProperty(result, 'exited', { value: exited, enumerable: false });
+          return result;
         }
       } catch {
         startup.check(); /* server has not written its discovery file yet */
@@ -2214,6 +2154,7 @@ async function matchingPacks(cfg, dataPacks) {
     '# Paths are relative to this file; the first reference is the selected environment. solutionOrder derived layers the',
     '# solutions in their dependency order (written in that order); explicit keeps the listed order.',
     '# Source import reads local files only; recording a reference origin does not connect to it.',
+    '# Set preset: <id> to apply a data preset at each start; --preset overrides it.',
   ].join('\n');
   await fs.mkdir(base, { recursive: true });
   const write = async () => {
@@ -2798,7 +2739,12 @@ export async function portalSelection(cfg, args, running) {
   return { selection: { mode: 'all', initial, targets: [...targets, ...live] }, live: live.length, note };
 }
 
-export async function stopStarted(portals, paths, stop = stopOwnedSessions, { source = process } = {}) {
+export async function stopStarted(
+  portals,
+  paths,
+  stop = stopOwnedSessions,
+  { source = process, alive = isAlive } = {},
+) {
   await guardShutdownSignals(
     async () => {
       for (const portal of portals.filter((item) => item.session?.started)) {
@@ -2806,9 +2752,11 @@ export async function stopStarted(portals, paths, stop = stopOwnedSessions, { so
           stopped: [],
           error,
         }));
-        if (report.stopped?.length)
-          console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
-        else {
+        if (stoppedOrGone(report, portal.session.pid, alive)) {
+          if (report.stopped?.length)
+            console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
+          else console.log(`mirage   ${portal.site} ${portal.session.url} (pid ${portal.session.pid}) already stopped`);
+        } else {
           let retry;
           try {
             retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
@@ -3545,9 +3493,10 @@ function validateAllowedOptions(args, action, allowedOptions) {
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
-      const { controller, interrupt, interrupted } = codeAppInterrupt();
+      const { controller, interrupt, runtimeEnded, interrupted } = codeAppInterrupt();
       process.once('SIGINT', interrupt);
       process.once('SIGTERM', interrupt);
+      const codeAppRuntime = endSessionOnRuntimeExit(session, controller, runtimeEnded);
       let servers;
       try {
         const started = await startProjectCodeApps(cfg, launch, session, controller);
@@ -3568,12 +3517,15 @@ function validateAllowedOptions(args, action, allowedOptions) {
       } finally {
         process.off('SIGINT', interrupt);
         process.off('SIGTERM', interrupt);
-        await guardShutdownSignals(() => stopDevelopmentSession(servers, session, paths, stop));
+        await guardShutdownSignals(() =>
+          stopDevelopmentSession(servers, session, paths, stop, { runtime: codeAppRuntime }),
+        );
       }
     }
-    const { controller, interrupt, interrupted } = codeAppInterrupt();
+    const { controller, interrupt, runtimeEnded, interrupted } = codeAppInterrupt();
     process.once('SIGINT', interrupt);
     process.once('SIGTERM', interrupt);
+    const runtime = endSessionOnRuntimeExit(session, controller, runtimeEnded);
     let codeAppServers;
     let codeApps;
     try {
@@ -3581,7 +3533,9 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } catch (error) {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      if (session.started) await guardShutdownSignals(() => stopOwnedSessions({ paths, pids: [session.pid] }));
+      runtime.ending = true;
+      if (session.started && !runtime.exit)
+        await guardShutdownSignals(() => stopOwnedSessions({ paths, pids: [session.pid] }));
       if (codeAppStartupInterrupted(error)) return 0;
       throw error;
     }
@@ -3641,7 +3595,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      await guardShutdownSignals(() => stopDevelopmentSession(codeAppServers, session, paths, stop));
+      await guardShutdownSignals(() => stopDevelopmentSession(codeAppServers, session, paths, stop, { runtime }));
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
@@ -3649,13 +3603,19 @@ function validateAllowedOptions(args, action, allowedOptions) {
   return 0;
 }
 
+/** A stop that found nothing to stop because the process had already exited stopped it. */
+const stoppedOrGone = (report, pid, alive = isAlive) =>
+  Boolean(report.stopped?.length) || (!report.error && !report.remaining?.length && !alive(pid));
+
 export async function stopDevelopmentSession(
   codeAppServers,
   session,
   paths,
   stop,
-  { stopSessions = stopOwnedSessions, report = console.error } = {},
+  { stopSessions = stopOwnedSessions, report = console.error, alive = isAlive, runtime } = {},
 ) {
+  // The teardown starts here: the runtime's exit from now on is expected, so its listener stays silent.
+  if (runtime) runtime.ending = true;
   try {
     await codeAppServers?.close();
   } finally {
@@ -3665,8 +3625,10 @@ export async function stopDevelopmentSession(
         remaining: [{ pid: session.pid }],
         error,
       }));
-      if (outcome.stopped.length) console.log(`mirage   stopped ${session.url} (pid ${session.pid})`);
-      else {
+      if (stoppedOrGone(outcome, session.pid, alive)) {
+        if (outcome.stopped.length) console.log(`mirage   stopped ${session.url} (pid ${session.pid})`);
+        else console.log(`mirage   ${session.url} (pid ${session.pid}) already stopped`);
+      } else {
         const errorMessage = outcome.error ? ': ' + outcome.error.message : '';
         report(`mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`);
         process.exitCode ||= 1;

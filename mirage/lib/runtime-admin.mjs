@@ -14,12 +14,26 @@ export const diagnosticsByCode = (entries) => {
   return counts;
 };
 /**
+ * The diagnostics answer narrowed to one trace (`GET /diagnostics?traceId=`): its findings, their counts per code and, when
+ * the answer lists them, its requests. Without a trace id the answer is returned unchanged.
+ */
+export const diagnosticsOfTrace = (answer, traceId) => {
+  if (!traceId) return answer;
+  const diagnostics = answer.diagnostics.filter((item) => item.traceId === traceId);
+  return {
+    ...answer,
+    diagnostics,
+    byCode: diagnosticsByCode(diagnostics),
+    ...(Array.isArray(answer.requests) ? { requests: answer.requests.filter((item) => item.traceId === traceId) } : {}),
+  };
+};
+/**
  * The file URL of the /_sim/<name> asset, or null (answer 404): a shared lib module, else `<name>.mjs|css` matching
  * ^[a-z0-9-]+$ that exists in mirage/admin/. `name` is the raw path segment after /_sim/, so an encoded separator never matches.
  */
 export async function adminAssetFile(name) {
   if (SHARED_ADMIN_MODULES.has(name)) return new URL(`./${name}`, import.meta.url);
-  if (!/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return null;
+  if (!/^[a-z0-9-]+\.(?:mjs|css|js)$/.test(name)) return null;
   const file = new URL(`../admin/${name}`, import.meta.url);
   return fs.access(file).then(
     () => file,
@@ -29,7 +43,7 @@ export async function adminAssetFile(name) {
 /** Content type of an admin asset; modules are text/javascript. */
 export const adminAssetType = (name) => {
   if (name.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (name.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
+  if (name.endsWith('.mjs') || name.endsWith('.js')) return 'text/javascript; charset=utf-8';
   return 'text/html; charset=utf-8';
 };
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
@@ -55,6 +69,7 @@ export function createRuntimeAdminRouter({
   configure,
   simulation,
   diagnostics,
+  activityExport,
   shutdown,
   dataverseAdmin,
   staffSession,
@@ -157,7 +172,20 @@ export function createRuntimeAdminRouter({
     ],
     [
       '/diagnostics',
-      diagnostics && ((c) => c.method === 'GET' && c.relative === '/diagnostics' && c.answer(diagnostics())),
+      diagnostics &&
+        ((c) =>
+          c.method === 'GET' &&
+          c.relative === '/diagnostics' &&
+          c.answer(diagnosticsOfTrace(diagnostics(), c.url.searchParams.get('traceId')?.trim()))),
+    ],
+    [
+      '/activity',
+      activityExport &&
+        (async (c) => {
+          if (c.method !== 'GET' || c.relative !== '/activity/export') return false;
+          await activityExport(c.url.searchParams, c.res);
+          return true;
+        }),
     ],
     [
       '/platform-settings',
@@ -217,7 +245,7 @@ export function createRuntimeAdminRouter({
               .then(shutdown)
               .catch(() => {});
           });
-          json(c.res, 200, { stopped: true });
+          json(c.res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
           return true;
         }),
     ],

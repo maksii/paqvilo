@@ -101,10 +101,14 @@ const ADMIN_LIB_MODULES = new Set(['persona-search.mjs', 'persona-picker-view.mj
  */
 export async function serveAdminFile(res, url) {
   const name = url.pathname === '/__sim/' ? 'index.html' : url.pathname.split('/').at(-1);
-  if (name !== 'index.html' && !/^[a-z0-9-]+\.(?:mjs|css)$/.test(name)) return res.writeHead(404).end();
+  if (name !== 'index.html' && !/^[a-z0-9-]+\.(?:mjs|css|js)$/.test(name)) return res.writeHead(404).end();
   res.setHeader(
     'content-type',
-    name.endsWith('.mjs') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html',
+    name.endsWith('.mjs') || name.endsWith('.js')
+      ? 'text/javascript'
+      : name.endsWith('.css')
+        ? 'text/css'
+        : 'text/html',
   );
   res.end(await fs.readFile(new URL(`../${ADMIN_LIB_MODULES.has(name) ? 'lib' : 'admin'}/${name}`, import.meta.url)));
 }

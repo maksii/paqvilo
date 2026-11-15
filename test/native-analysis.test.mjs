@@ -110,3 +110,26 @@ test('native configuration is recognized independently and malformed known confi
     [],
   );
 });
+
+// @test-kind contract: MOBILE-APP-003 points at the native configuration member it names.
+test('MOBILE-APP-003 points at powerappsNative', () => {
+  const text = JSON.stringify({ expo: { extra: { powerappsNative: { schemaVersion: 'future' } } } }, null, 2);
+  const found = [];
+  analyzeNative(
+    [
+      entry('package.json', {
+        dependencies: { '@microsoft/power-apps-native-host': '1.0.0', 'react-native': '1.0.0' },
+      }),
+      entry('app.json', text),
+    ],
+    (ruleId, source) => found.push({ ruleId, line: source.line, exact: source.exactLocation }),
+  );
+  assert.deepEqual(
+    found.find((item) => item.ruleId === 'MOBILE-APP-003'),
+    {
+      ruleId: 'MOBILE-APP-003',
+      line: text.slice(0, text.indexOf('"powerappsNative"')).split('\n').length,
+      exact: true,
+    },
+  );
+});

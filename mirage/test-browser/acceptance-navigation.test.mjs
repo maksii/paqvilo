@@ -58,10 +58,8 @@ async function navigationFixture(
     replacementRead = false,
     embedded = false,
     crossOrigin = false,
-    // The triggering click and its settlement default to the runner's action budget; tests about budgets set it.
-    timeout,
     // A test asserting that settlement fails sets only this, so the click keeps its own deadline.
-    settleTimeout = timeout,
+    settleTimeout,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
     controlledLateWrites = late,
@@ -287,7 +285,7 @@ async function navigationFixture(
           ...(child || embedded ? [{ action: 'visible', frame: '#child', selector: '#save' }] : []),
           // The budgets under test belong to the triggering action and its settlement; page loads and unbudgeted
           // steps keep the runner's action budget, so a slow cold load cannot consume them.
-          { action: 'click', selector: '#save', timeout, ...(embedded ? { frame: '#child' } : {}) },
+          { action: 'click', selector: '#save', ...(embedded ? { frame: '#child' } : {}) },
           { action: 'settle', timeout: settleTimeout },
           ...(!noCommit && !noContent && !resetNavigation && !noNavigation
             ? [{ action: 'visible', selector: '#done', ...(embedded ? { frame: '#child' } : {}) }]
@@ -624,17 +622,135 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       assert.equal(flow.navigationWaits[0].commitReserveMs, reserveFor(flow.navigationWaits[0]));
     });
 
-  test('a short action retains its half-budget bound when its replacement document cannot arrive within it', async (t) => {
-    // The writes never answer, so the hold ends at the reserve's deadline.
-    // The replacement document is never answered while the action runs, so it cannot fit however slow the host is.
-    const flow = await navigationFixture(t, { history: 'none', timeout: 4000, scheduleDocumentResponse: () => {} });
-    assert.equal(flow.passed, false);
-    assert.match(flow.error, /Timeout 4000ms/);
-    assert.ok(
-      flow.navigationWaits.some(
-        (wait) => wait.commitReservePolicy === 'bounded-write-fallback' && wait.commitReserveMs === reserveFor(wait),
-      ),
+  test('an action fails with its own timeout when its replacement document cannot arrive, and a navigation hold leaves it its reserve', async (t) => {
+    // The click starts two writes that never answer and asks the fixture when to submit the form. A waitRecord step
+    // then polls the simulator state until both writes and that request have arrived. The runner reads the state
+    // before it arms each step's budget, so the next step's read releases the submit and is answered only once the
+    // product holds that navigation: the asserted step's short budget starts after the hold exists, however slow the
+    // host is. The document is never answered, so that step must fail with its own timeout, and the hold must end by
+    // that step's deadline minus the hold's reserve, not by its own write allowance (half the hang-guard budget).
+    // The reserve's arithmetic is asserted in test/navigation-budget.test.mjs; that a released document still commits
+    // within the reserve is asserted by the slow-document tests above.
+    const WAIT_MS = 2000;
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
+    let flow;
+    ownedFixture(t).remove(async () => {
+      if (!t.passed && flow) {
+        const evidence = await preserveNavigationEvidence(root, flow);
+        t.diagnostic(`Preserved invented navigation diagnostics: ${evidence.files.join(', ')}`);
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    });
+    const fixtureEvents = [];
+    const navigationHeld = Promise.withResolvers();
+    let writes = 0;
+    let submitGate;
+    let armed = false;
+    const page = `<form action="/submit"><button id="save">Save</button></form><script>
+      const form = document.querySelector('form');
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        fetch('/slow-one', { method: 'PATCH' }).catch(() => {});
+        fetch('/slow-two', { method: 'POST' }).catch(() => {});
+        fetch('/submit-gate').then((response) => response.text()).then(() => form.submit());
+      });</script>`;
+    const server = http.createServer(async (req, res) => {
+      req.resume();
+      const url = new URL(req.url, 'http://fixture');
+      if (url.pathname.startsWith('/__sim/api/')) {
+        const state = url.pathname.endsWith('/state');
+        const records = [];
+        if (state && !url.searchParams.has('summary') && writes === 2 && submitGate) {
+          // The waitRecord step's poll: the click's requests have all arrived.
+          armed = true;
+          records.push({ ready: true });
+        } else if (state && armed) {
+          // The read before the asserted step arms its budget.
+          if (!submitGate.writableEnded) {
+            fixtureEvents.push('submit-released');
+            submitGate.end('go');
+          }
+          await navigationHeld.promise;
+          fixtureEvents.push('step-started');
+        }
+        res.setHeader('content-type', 'application/json');
+        return res.end(
+          JSON.stringify(
+            state
+              ? {
+                  config: { mode: 'local', pageMode: 'local', endpoints: [] },
+                  status: { sourceFingerprint: 'fixture', implementationFingerprint: 'fixture' },
+                  data: { gate: records },
+                }
+              : { events: [] },
+          ),
+        );
+      }
+      if (url.pathname.startsWith('/slow-')) {
+        writes++;
+        return fixtureEvents.push('write:' + url.pathname);
+      }
+      if (url.pathname === '/submit-gate') {
+        submitGate = res;
+        return fixtureEvents.push('submit-gated');
+      }
+      if (url.pathname === '/submit') return fixtureEvents.push('document-requested');
+      res.setHeader('content-type', 'text/html');
+      res.end(page);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    ownedFixture(t).add(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
+    const result = await runAcceptance({
+      localUrl: `http://127.0.0.1:${server.address().port}`,
+      outputDir: path.join(root, 'evidence'),
+      timeout: HANG_GUARD_ACTION_MS,
+      // Called for every held document request; only the submit's hold opens the asserted step.
+      onNavigationHold: ({ url }) => {
+        if (new URL(url).pathname !== '/submit') return;
+        fixtureEvents.push('navigation-held');
+        navigationHeld.resolve();
+      },
+      flows: [
+        {
+          name: 'Unanswered replacement document',
+          steps: [
+            { action: 'navigate', path: '/' },
+            { action: 'click', selector: '#save' },
+            { action: 'waitRecord', entity: 'gate', fields: { ready: true } },
+            // The only budget under test.
+            { action: 'visible', selector: '#done', timeout: WAIT_MS },
+          ],
+        },
+      ],
+    });
+    flow = { ...result.flows[0], fixtureEvents };
+    assert.equal(flow.passed, false, JSON.stringify(flow));
+    assert.match(flow.error, new RegExp(`Timeout ${WAIT_MS}ms`), JSON.stringify(flow));
+    assert.deepEqual(
+      flow.steps.map((step) => [step.action, step.passed]),
+      [
+        ['navigate', true],
+        ['click', true],
+        ['waitRecord', true],
+        ['visible', false],
+      ],
     );
+    assert.equal(flow.steps.at(-1).timeout, WAIT_MS);
+    assert.deepEqual(fixtureEvents.slice(fixtureEvents.indexOf('submit-released')).slice(0, 3), [
+      'submit-released',
+      'navigation-held',
+      'step-started',
+    ]);
+    // The writes never answer, so only a deadline ended the hold, and it ended while the asserted step ran.
+    assert.equal(flow.navigationWaits?.length, 1, JSON.stringify(flow));
+    const [wait] = flow.navigationWaits;
+    assert.equal(wait.settled, false);
+    assert.deepEqual(wait.writes.toSorted(), ['PATCH /slow-one', 'POST /slow-two']);
+    assert.equal(wait.commitReservePolicy, 'bounded-write-fallback');
+    assert.equal(wait.commitReserveMs, reserveFor(wait));
   });
   test('writes released by a navigation settle before an immediate redirect within an action budget', async (t) => {
     // The server cannot see the navigation while the product holds it: the document request is paused in the

@@ -1051,6 +1051,7 @@ export async function canvasMsappRecord(bytes, { name, size = bytes?.length ?? n
       formulas: source.formulas,
       diagnostics: source.diagnostics,
       ...(source.assetDiagnostics?.length ? { assetDiagnostics: source.assetDiagnostics } : {}),
+      ...(source.app.display ? { display: source.app.display } : {}),
     },
   };
 }

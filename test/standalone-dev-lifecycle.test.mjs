@@ -209,3 +209,66 @@ for (const closingFails of [false, true])
     assert.equal(page.listenerCount('close'), 0);
     assert.equal(context.listenerCount('close'), 0);
   });
+
+// @test-kind contract: an attached browser whose run is ended by the abort signal closes only the page the run opened
+test('an attached browser ended by the abort signal closes only its page, never the context or the browser', async () => {
+  const browser = new EventEmitter(),
+    context = new EventEmitter(),
+    page = new EventEmitter();
+  const controller = new AbortController();
+  let closed = false,
+    pageCloses = 0,
+    contextCloses = 0,
+    browserCloses = 0,
+    disconnected = 0,
+    reached;
+  const entered = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const pending = new Promise(() => {});
+  browser.isConnected = () => true;
+  browser.close = async () => {
+    browserCloses++;
+  };
+  context.browser = () => browser;
+  context.close = async () => {
+    contextCloses++;
+  };
+  context.newPage = async () => page;
+  page.context = () => context;
+  page.isClosed = () => closed;
+  page.url = () => 'http://127.0.0.1:1234/main.aspx';
+  page.goto = () => {
+    reached();
+    return pending;
+  };
+  page.close = async () => {
+    pageCloses++;
+    closed = true;
+    page.emit('close');
+  };
+  const run = developStandalone(
+    { runtime: { kind: 'model-driven' }, browser: {} },
+    { startup: startupProgress({ write() {} }) },
+    { url: 'http://127.0.0.1:1234' },
+    {
+      open: async () => ({
+        context,
+        attached: true,
+        close: async () => {
+          disconnected++;
+        },
+      }),
+      signal: controller.signal,
+    },
+  );
+  await entered;
+  controller.abort();
+  await run.catch((error) => assert.equal(error.name, 'AbortError'));
+  assert.equal(pageCloses, 1);
+  assert.equal(disconnected, 1);
+  assert.equal(contextCloses, 0);
+  assert.equal(browserCloses, 0);
+  assert.equal(browser.isConnected(), true);
+  assert.equal(context.listenerCount('close'), 0);
+});

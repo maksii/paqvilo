@@ -19,7 +19,8 @@ const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
-test('standalone dev starts configured apps, opens the workbench and closes only owned processes', async (t) => {
+// The projects, the external server and the start and launch steps every case of this file shares.
+async function devFixture(t) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-dev-cli-')));
   const owner = ownedFixture(t);
   // The development browser's profile and the app's server processes release this directory after they exit.
@@ -143,7 +144,7 @@ test('standalone dev starts configured apps, opens the workbench and closes only
       await writeProjects(port);
       return startOnFreePort((debugPort) => start(startPath, selectedProject, port, debugPort));
     }, appPortTaken);
-    const { port, debugPort, closed, output, match } = started;
+    const { port, debugPort, output, match } = started;
     const browser = (started.browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`));
     const context = browser.contexts()[0];
     const page = context.pages()[0];
@@ -183,19 +184,55 @@ test('standalone dev starts configured apps, opens the workbench and closes only
         .waitFor();
     }
     assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');
+    return started;
+  }
+  // Closing the browser is the stop. A start-up that was still waiting for the page's resources ends with its own line;
+  // one that had completed prints none.
+  async function endByBrowser({ browser, closed, output }) {
     const cdp = await browser.newBrowserCDPSession();
     await cdp.send('Browser.close').catch(() => {});
     const [code] = await closed;
     assert.equal(code, 0, output.text);
     assert.match(output.text, /^mirage +stopped http:\/\/127\.0\.0\.1:\d+ \(pid \d+\)$/m, output.text);
     assert.doesNotMatch(output.text, /could not stop pid/, output.text);
-    // Closing the browser is the stop. A start-up that was still waiting for the page's resources ends with its own line;
-    // one that had completed prints none.
     const startupCompleted = /document and initial resources loaded/.test(output.text);
     assert.equal(/browser closed before start-up finished/.test(output.text), !startupCompleted, output.text);
     assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');
   }
-  await launch();
-  await launch('/_sim/?example=1#section');
-  await launch(undefined, portalProject);
+  return { dir, external, project, portalProject, launch, endByBrowser };
+}
+
+test('standalone dev starts configured apps, opens the workbench and closes only owned processes', async (t) => {
+  const { portalProject, launch, endByBrowser } = await devFixture(t);
+  await endByBrowser(await launch());
+  await endByBrowser(await launch('/_sim/?example=1#section'));
+  await endByBrowser(await launch(undefined, portalProject));
+});
+
+// @test-kind contract: mirage stop of a dev session's runtime ends the dev command with its app servers and owned browser
+test('mirage stop of a dev session runtime ends the dev command with its app servers and owned browser', async (t) => {
+  const { dir, external, project, launch } = await devFixture(t);
+  const { port, browser, closed, output } = await launch();
+  const disconnected = once(browser, 'disconnected');
+  const stop = spawn(process.execPath, [cli, 'mirage', 'stop', '--project', project], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  const stopOutput = childOutput(stop);
+  const [stopCode] = await once(stop, 'close');
+  assert.equal(stopCode, 0, stopOutput.text);
+  assert.doesNotMatch(stopOutput.text, /\(forced\)/, stopOutput.text);
+  const [code] = await closed;
+  assert.equal(code, 0, output.text);
+  assert.match(
+    output.text,
+    /^mirage +http:\/\/127\.0\.0\.1:\d+ \(pid \d+\) stopped; ending this development session$/m,
+    output.text,
+  );
+  assert.match(output.text, /already stopped/, output.text);
+  assert.doesNotMatch(output.text, /could not stop/, output.text);
+  await disconnected;
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/env-check`));
+  assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');
 });

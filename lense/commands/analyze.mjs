@@ -1,5 +1,6 @@
 import { CONFIGURATION_ERROR_CODES, loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
 import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
+import { analysisLabelPath, analysisLabelRoots } from '../analysis/inventory.mjs';
 import { configuredAnalysisRoots } from '../analysis/project.mjs';
 import { standaloneCatalogueConfiguration } from '../standalone-mirage.mjs';
 import path from 'node:path';
@@ -12,30 +13,71 @@ const displayPath = (value) =>
       (character) => String.raw`\u${character.codePointAt(0).toString(16).padStart(4, '0')}`,
     );
 
-export function printAnalysis(analysis) {
-  console.log(
-    `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${analysis.counts.error} errors, ${analysis.counts.warning} warnings, ${analysis.counts.hint} hints (fail on ${analysis.failOn})`,
-  );
-  for (const finding of analysis.findings) {
-    const field = finding.field ? ` (${finding.field})` : '';
-    console.log(
-      `  ${finding.severity.toUpperCase()} [${finding.ruleId}] ${displayPath(finding.file)}:${finding.line}:${finding.column}${field}: ${finding.message}\n    ${finding.remediation}`,
-    );
-  }
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** Runs the analysis for a configuration; the label roots come back beside it for the text report. */
+export function analyzeConfigured(cfg, failOn) {
+  const sourceRoots = configuredAnalysisRoots(cfg);
+  const analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots });
+  return { analysis, labelRoots: analysisLabelRoots(sourceRoots) };
+}
+
+// Label roots name absolute paths for the text report only: non-enumerable, so JSON.stringify leaves them out.
+export function withLabelRoots(item, labelRoots) {
+  return Object.defineProperty(item, 'labelRoots', { value: labelRoots, enumerable: false });
+}
+
+// A label becomes the file's path relative to the working directory, so a terminal can open it. A label that names
+// only a root, or the whole project ('.'), keeps its own text.
+function shownLabel(labelRoots, label) {
+  if (label === '.' || labelRoots.some((root) => root.id === label)) return label;
+  const absolute = analysisLabelPath(labelRoots, label);
+  if (!absolute) return label;
+  const member = label.includes('!/') ? label.slice(label.indexOf('!/')) : '';
+  return path.relative(process.cwd(), absolute).replaceAll('\\', '/') + member;
+}
+
+// Every line that names a file (finding, SKIPPED, NOT INSPECTED) prints it through this one helper.
+const fileText = (labelRoots) => (label) => displayPath(shownLabel(labelRoots, label));
+
+// Prints each skipped file once per reason, however many coverage entries name it.
+function skipReporter(shown) {
   const reported = new Set();
-  const skipLine = (skip) => {
+  return (skip) => {
     const key = JSON.stringify([skip.file, skip.reason]);
     if (reported.has(key)) return;
     reported.add(key);
-    console.log(`  SKIPPED: ${displayPath(skip.file)}: ${skip.reason}`);
+    console.log(`  SKIPPED: ${shown(skip.file)}: ${skip.reason}`);
   };
+}
+
+function printFinding(finding, shown) {
+  const field = finding.field ? ` (${finding.field})` : '';
+  console.log(
+    `  ${finding.severity.toUpperCase()} [${finding.ruleId}] ${shown(finding.file)}:${finding.line}:${finding.column}${field}: ${finding.message}\n    ${finding.remediation}`,
+  );
+}
+
+function printDomain(domain, shown, skipLine) {
+  if (domain.recognized > 0 || domain.files > 0)
+    console.log(`  ${domain.domain}: ${domain.status} (${domain.recognized} recognized inputs)`);
+  for (const skip of domain.skipped ?? []) skipLine(skip);
+  for (const item of domain.superseded ?? []) {
+    const source = item.source === '.' ? '.' : shown(item.source);
+    console.log(`  NOT INSPECTED: ${shown(item.file)}: packed copy of ${source}, whose source is analysed`);
+  }
+}
+
+export function printAnalysis(analysis, labelRoots) {
+  console.log(
+    `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${plural(analysis.counts.error, 'error')}, ${plural(analysis.counts.warning, 'warning')}, ${plural(analysis.counts.hint, 'hint')} (fail on ${analysis.failOn})`,
+  );
+  const shown = fileText(labelRoots);
+  for (const finding of analysis.findings) printFinding(finding, shown);
+  const skipLine = skipReporter(shown);
   for (const skip of analysis.coverage.skipped) skipLine(skip);
   if (analysis.coverage.findingsTruncated) console.log('  SKIPPED: finding limit reached; results are truncated.');
-  for (const domain of analysis.coverage.domains) {
-    if (domain.recognized > 0 || domain.files > 0)
-      console.log(`  ${domain.domain}: ${domain.status} (${domain.recognized} recognized inputs)`);
-    for (const skip of domain.skipped ?? []) skipLine(skip);
-  }
+  for (const domain of analysis.coverage.domains) printDomain(domain, shown, skipLine);
   console.log(
     '  Native builds, host/device tests, connector authorization and tenant/process evidence are separate checks; use --json for operation requirements.',
   );
@@ -65,13 +107,16 @@ async function analyzeSiteReport(catalogue, site, args, failOn) {
       ? standaloneCatalogueConfiguration(catalogue, name, {})
       : await loadConfig(analysisSiteArgs(catalogue, site, args));
     if (args.project) cfg.mirageConfig.project = path.resolve(args.project);
-    const analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots: configuredAnalysisRoots(cfg) });
-    return {
-      site: cfg.siteName,
-      analysis,
-      ready: analysis.ready,
-      errors: analysis.ready ? [] : [analysisFailure(analysis)],
-    };
+    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+    return withLabelRoots(
+      {
+        site: cfg.siteName,
+        analysis,
+        ready: analysis.ready,
+        errors: analysis.ready ? [] : [analysisFailure(analysis)],
+      },
+      labelRoots,
+    );
   } catch (error) {
     // Configuration and source-layout errors name their own problem; anything else is a failure of the command.
     if (!CONFIGURATION_ERROR_CODES.has(error?.code)) throw error;
@@ -82,8 +127,8 @@ async function analyzeSiteReport(catalogue, site, args, failOn) {
 function printAnalyzeReport(reports) {
   console.log('Offline Power Platform source analysis (no native build, live, rendered or authorization verification)');
   for (const item of reports) {
-    console.log(`\n${item.site}: ${item.ready ? 'READY' : 'ERROR'}`);
-    if (item.analysis) printAnalysis(item.analysis);
+    console.log(`\n${item.site}: ${item.analysis ? item.analysis.verdict.toUpperCase() : 'ERROR'}`);
+    if (item.analysis) printAnalysis(item.analysis, item.labelRoots);
     for (const error of item.errors) console.log(`  ERROR: ${error.message}`);
   }
 }
@@ -97,13 +142,16 @@ function localAnalysisReport(args, failOn) {
     configDir: projectFile ? path.dirname(projectFile) : process.cwd(),
     mirageConfig: { project: projectFile },
   };
-  const analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots: configuredAnalysisRoots(cfg) });
-  return {
-    site: 'local-project',
-    analysis,
-    ready: analysis.ready,
-    errors: analysis.ready ? [] : [analysisFailure(analysis)],
-  };
+  const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+  return withLabelRoots(
+    {
+      site: 'local-project',
+      analysis,
+      ready: analysis.ready,
+      errors: analysis.ready ? [] : [analysisFailure(analysis)],
+    },
+    labelRoots,
+  );
 }
 
 // Checked before any source is read, with the same message lense doctor gives for an unknown environment.

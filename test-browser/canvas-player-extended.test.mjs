@@ -1,23 +1,13 @@
 // @test-kind contract: local Canvas player controls, layout, timer ownership and source-watch lifecycle.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
-import { closeServer } from '../mirage/test-browser/shared-browser.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { stringify } from 'yaml';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
-import { createCanvasHandler } from '../mirage/lib/canvas-http.mjs';
-import { createCanvasRuntime } from '../mirage/lib/canvas-runtime.mjs';
-import { createPowerFxEvaluator } from '../mirage/lib/canvas-power-fx.mjs';
 import { observedConfig } from '../mirage/lib/project-config.mjs';
 import { fixtureApp } from '../mirage/test/canvas-runtime-fixture.mjs';
-
-const control = (name, type, properties, children = []) => ({
-  [name]: { Control: type, Properties: properties, ...(children.length ? { Children: children } : {}) },
-});
+import { canvasContext, control } from './support/canvas-player-page.mjs';
 
 function silentWav() {
   const length = 80000,
@@ -35,25 +25,6 @@ function silentWav() {
   buffer.write('data', 36);
   buffer.writeUInt32LE(length, 40);
   return buffer;
-}
-// Serves one Canvas app on a loopback port and opens a browser context for it; the server and browser close with the test.
-async function canvasContext(t, app) {
-  const runtime = createCanvasRuntime({ apps: () => [app], evaluator: createPowerFxEvaluator() });
-  const handler = createCanvasHandler({
-    apps: () => [app],
-    runtime,
-    principal: () => ({ kind: 'staff', principalId: 'local' }),
-    csrf: () => 'fixture-token',
-  });
-  const server = http.createServer((req, res) => {
-    if (!handler(req, res)) res.writeHead(404).end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => closeServer(server));
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext();
-  return { context, runtime, server };
 }
 async function player(t, { display, resolution, onDanger, watch, onRevision, onStart, assetWarnings } = {}) {
   const rows = Array.from({ length: 60 }, (_, i) => i + 1).join(',');
@@ -360,6 +331,17 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
   return page;
 }
 
+// Holds the player's next POST matching `matches` at the route until `release()` is called.
+async function holdAction(page, matches) {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  await page.route('**/_apps/api/canvas/*', async (route) => {
+    if (route.request().method() === 'POST' && matches(route.request().postDataJSON())) await held;
+    await route.continue();
+  });
+  return release;
+}
+
 test('player filters multi-select choices and pages gallery with row scope and auto layout', async (t) => {
   const page = await player(t);
   const combo = page.locator('[data-control="Search"]');
@@ -368,7 +350,9 @@ test('player filters multi-select choices and pages gallery with row scope and a
   await search.fill('a');
   await page.waitForFunction(
     () =>
-      document.activeElement?.getAttribute('aria-label') === 'Search search' && document.activeElement.value === 'a',
+      document.activeElement?.closest('[data-control="Search"]') &&
+      document.activeElement.matches('input[type="search"]') &&
+      document.activeElement.value === 'a',
   );
   await combo.locator('select').selectOption(['0', '1']);
   await page.waitForFunction(() => document.querySelector('[data-control="Chosen"]')?.textContent === 'Alpha,Beta');
@@ -448,13 +432,23 @@ test('local assets render and native media and accessible image actions reach th
   );
   const audio = page.locator('[data-control="Sound"]');
   assert.equal(await audio.evaluate((el) => el.tagName), 'AUDIO');
+  // A slow host can let the 10 s clip run out before the player's redraw: hold the play action until it has.
+  const release = await holdAction(page, (body) => body?.action === 'media' && body.event === 'play');
   const media = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'media',
   );
   await audio.evaluate((el) => {
     window.playingNode = el;
+    // The clip loops natively, so reaching its end is not a pause; the player never sets loop on a node.
+    el.loop = true;
+    window.clipEnded = new Promise((resolve) => {
+      el.addEventListener('seeked', resolve, { once: true }); // a native loop seeks back to 0
+      el.addEventListener('pause', resolve, { once: true }); // ended, or stopped by the player
+    });
     return el.play();
   });
+  await audio.evaluate(() => window.clipEnded);
+  release();
   assert.equal((await media).ok(), true);
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPlayed": true'),
@@ -547,6 +541,7 @@ test('observed display settings control logical size, letterboxing and orientati
     display: { designWidth: 800, designHeight: 400, scaleToFit: true, lockAspectRatio: true },
     resolution: '390x844',
   });
+  await page.getByTestId('canvas-zoom').selectOption('1');
   const stage = await page.getByTestId('canvas-stage').boundingBox();
   const surface = await page.locator('.canvas-surface').boundingBox();
   assert.ok(Math.abs(stage.width - 390) < 1 && Math.abs(stage.height - 195) < 1);
@@ -583,18 +578,29 @@ test('nested media keeps playing across unrelated snapshot redraws', async (t) =
   await page.locator('[data-control="ModernLabel"]').click();
   await audio.evaluate(async (element) => {
     window.nestedAudio = element;
+    element.loop = true;
+    window.nestedLooped = false;
+    window.clipEnded = new Promise((resolve) => {
+      element.addEventListener('seeked', () => resolve((window.nestedLooped = true)), { once: true });
+      element.addEventListener('pause', resolve, { once: true }); // ended, or stopped by the player
+    });
     await element.play();
   });
   await page.waitForFunction(() => document.querySelector('[data-control="NestedSound"]')?.currentTime > 0);
   const prior = await audio.evaluate((element) => element.currentTime);
+  // Hold the redraw until the clip has reached its end, as a slow host can.
+  const release = await holdAction(page, (body) => body?.control === 'ModernInput');
   const input = page.locator('[data-control="ModernInput"]');
   await input.fill('new value');
   await input.press('Tab');
+  await audio.evaluate(() => window.clipEnded);
+  release();
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernChanged": true'),
   );
   assert.equal(await audio.evaluate((element) => element === window.nestedAudio && !element.paused), true);
-  assert.ok((await audio.evaluate((element) => element.currentTime)) >= prior);
+  // Not restarted: the position only moves back when the native loop wrapped it.
+  assert.equal(await audio.evaluate((element, p) => window.nestedLooped || element.currentTime >= p, prior), true);
   await page.locator('[data-control="GoDetail"]').click();
   await page.locator('[data-control="DetailLabel"]').waitFor();
   assert.equal(await page.evaluate(() => !window.nestedAudio.isConnected && window.nestedAudio.paused), true);

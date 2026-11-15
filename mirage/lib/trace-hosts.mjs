@@ -24,6 +24,13 @@ export const ANONYMOUS_ROOT = Object.freeze({
   session: Object.freeze({ visitorId: null, sessionKey: null }),
 });
 
+// Requests a browser makes on its own, without the page asking for them.
+export const browserProbe = (method, pathname) =>
+  ['GET', 'HEAD'].includes(method) &&
+  /^\/(?:favicon\.ico|apple-touch-icon(?:-\d+x\d+)?(?:-precomposed)?\.png|\.well-known\/appspecific\/com\.chrome\.devtools\.json)$/i.test(
+    pathname,
+  );
+
 /**
  * Names the root's trace on the response: X-Trace-Id when the span has a trace (an overflow handle of a full trace has
  * one), X-Sim-Span-Id when it is a recorded span.
