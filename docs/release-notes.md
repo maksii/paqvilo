@@ -453,6 +453,8 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 - `mirage stop` of a runtime started by `mirage dev` also ends that dev command, its app servers and its owned
   browser. A standalone runtime acknowledges `/_sim/api/shutdown` with 202 and stops gracefully instead of being
   ended by the stop.
+- Lense attributes a script to its local source also when the browser acknowledges the local response before it
+  reports the navigation of the document that requested it.
 
 ### Upgrade notes
 

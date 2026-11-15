@@ -347,10 +347,10 @@ async function mirageDom(t) {
       },
     });
   };
-  const create = (id) =>
+  const create = (id, executionContextId = 9) =>
     session.cdp.emit('Runtime.bindingCalled', {
       name: binding,
-      executionContextId: 9,
+      executionContextId,
       payload: JSON.stringify({
         version: 1,
         secret,
@@ -368,7 +368,49 @@ async function mirageDom(t) {
       )
       .flatMap(({ params }) => params.arguments[0].value)
       .find((entry) => entry.id === id)?.proof;
-  return { session, browser, reports, attachment, serve, create, verdict };
+  /** The next document of the frame: its commit notification, what follows it, its context and claimed registry, and its parsed script. */
+  const commit = async (loaderId, executionContextId, afterCommit = () => {}) => {
+    session.cdp.emit('Page.frameNavigated', { frame: { id: 'main', loaderId } });
+    afterCommit();
+    session.navigate(loaderId);
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: executionContextId, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() =>
+      session.sent.some(
+        ({ method, params }) =>
+          method === 'Runtime.evaluate' &&
+          params.contextId === executionContextId &&
+          params.expression?.includes('claim'),
+      ),
+    );
+    await setImmediate();
+    session.cdp.emit('Debugger.scriptParsed', {
+      executionContextId,
+      scriptId: 'invented-script-id-' + executionContextId,
+      url: SCRIPT,
+      hash: HASH,
+      startLine: 0,
+      startColumn: 0,
+      endLine: 0,
+      endColumn: 100,
+    });
+  };
+  const requested = (requestId, loaderId) =>
+    session.cdp.emit('Network.requestWillBeSent', {
+      type: 'Script',
+      requestId,
+      frameId: 'main',
+      loaderId,
+      request: { url: SCRIPT },
+    });
+  /** A Lense script acknowledgement as the interception publishes it after Fetch.fulfillRequest answered. */
+  const acknowledge = (networkId) =>
+    attachment.publishProvenance(
+      { resourceType: 'Script', networkId, frameId: 'main', request: { url: SCRIPT } },
+      { ...scriptDescriptor, channel: 'lense-script-resource' },
+    );
+  return { session, browser, reports, attachment, serve, create, verdict, commit, requested, acknowledge };
 }
 
 test('a callsite whose script proof arrives after any amount of time is mapped, with nothing armed', async (t) => {
@@ -408,6 +450,39 @@ test('a callsite is unmapped at once when no read for its document can still pro
   assert.equal(dom.verdict('read-node')?.reason, 'script-callsite-unmapped', 'the only read settled without a proof');
   assert.deepEqual(dom.reports, []);
   assert.equal(live.size, 0, 'no timer decided either verdict');
+});
+
+test('a script acknowledged before its document commit notification proves the callsite of that document', async (t) => {
+  const dom = await mirageDom(t);
+  // The browser answers Fetch.fulfillRequest before the renderer's Page.frameNavigated and Network.requestWillBeSent
+  // of the document that requested the script arrive (the hosted order: acknowledgement, commit, request).
+  assert.equal(await dom.acknowledge('next-script'), true);
+  await dom.commit('next-loader', 10, () => dom.requested('next-script', 'next-loader'));
+  dom.create('next-node', 10);
+  await settle(() => dom.verdict('next-node'));
+  assert.equal(dom.verdict('next-node')?.reason, undefined, 'the acknowledgement was not discarded by the commit');
+  assert.deepEqual(
+    dom.verdict('next-node').sourceRefs.map((ref) => ref.id),
+    ['invented-ref'],
+  );
+  assert.equal(dom.verdict('next-node').facts[0].proof, 'observed-dom-callsite');
+  assert.deepEqual(dom.reports, []);
+});
+
+test('an acknowledgement that names the replaced document holds the next document only until its notification', async (t) => {
+  const dom = await mirageDom(t);
+  assert.equal(await dom.acknowledge('replaced-script'), true);
+  await dom.commit('next-loader', 10);
+  dom.create('next-node', 10);
+  // A verdict is sent within the microtasks of the binding event; one turn of the event loop has passed them.
+  await setImmediate();
+  assert.equal(dom.verdict('next-node'), undefined, 'an acknowledgement of this frame can still prove the node');
+  // Its notification names the replaced document: the proof stays there, and the waiting node receives its verdict.
+  dom.requested('replaced-script', 'document-loader');
+  await settle(() => dom.verdict('next-node'));
+  assert.equal(dom.verdict('next-node')?.reason, 'script-callsite-unmapped');
+  assert.deepEqual(dom.verdict('next-node').sourceRefs, []);
+  assert.deepEqual(dom.reports, []);
 });
 
 test('a script read that fails while its tab is live is reported and settles its callsites', async (t) => {

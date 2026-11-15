@@ -331,6 +331,17 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
   return page;
 }
 
+// Holds the player's next POST matching `matches` at the route until `release()` is called.
+async function holdAction(page, matches) {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  await page.route('**/_apps/api/canvas/*', async (route) => {
+    if (route.request().method() === 'POST' && matches(route.request().postDataJSON())) await held;
+    await route.continue();
+  });
+  return release;
+}
+
 test('player filters multi-select choices and pages gallery with row scope and auto layout', async (t) => {
   const page = await player(t);
   const combo = page.locator('[data-control="Search"]');
@@ -421,13 +432,23 @@ test('local assets render and native media and accessible image actions reach th
   );
   const audio = page.locator('[data-control="Sound"]');
   assert.equal(await audio.evaluate((el) => el.tagName), 'AUDIO');
+  // A slow host can let the 10 s clip run out before the player's redraw: hold the play action until it has.
+  const release = await holdAction(page, (body) => body?.action === 'media' && body.event === 'play');
   const media = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'media',
   );
   await audio.evaluate((el) => {
     window.playingNode = el;
+    // The clip loops natively, so reaching its end is not a pause; the player never sets loop on a node.
+    el.loop = true;
+    window.clipEnded = new Promise((resolve) => {
+      el.addEventListener('seeked', resolve, { once: true }); // a native loop seeks back to 0
+      el.addEventListener('pause', resolve, { once: true }); // ended, or stopped by the player
+    });
     return el.play();
   });
+  await audio.evaluate(() => window.clipEnded);
+  release();
   assert.equal((await media).ok(), true);
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPlayed": true'),
@@ -557,18 +578,29 @@ test('nested media keeps playing across unrelated snapshot redraws', async (t) =
   await page.locator('[data-control="ModernLabel"]').click();
   await audio.evaluate(async (element) => {
     window.nestedAudio = element;
+    element.loop = true;
+    window.nestedLooped = false;
+    window.clipEnded = new Promise((resolve) => {
+      element.addEventListener('seeked', () => resolve((window.nestedLooped = true)), { once: true });
+      element.addEventListener('pause', resolve, { once: true }); // ended, or stopped by the player
+    });
     await element.play();
   });
   await page.waitForFunction(() => document.querySelector('[data-control="NestedSound"]')?.currentTime > 0);
   const prior = await audio.evaluate((element) => element.currentTime);
+  // Hold the redraw until the clip has reached its end, as a slow host can.
+  const release = await holdAction(page, (body) => body?.control === 'ModernInput');
   const input = page.locator('[data-control="ModernInput"]');
   await input.fill('new value');
   await input.press('Tab');
+  await audio.evaluate(() => window.clipEnded);
+  release();
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernChanged": true'),
   );
   assert.equal(await audio.evaluate((element) => element === window.nestedAudio && !element.paused), true);
-  assert.ok((await audio.evaluate((element) => element.currentTime)) >= prior);
+  // Not restarted: the position only moves back when the native loop wrapped it.
+  assert.equal(await audio.evaluate((element, p) => window.nestedLooped || element.currentTime >= p, prior), true);
   await page.locator('[data-control="GoDetail"]').click();
   await page.locator('[data-control="DetailLabel"]').waitFor();
   assert.equal(await page.evaluate(() => !window.nestedAudio.isConnected && window.nestedAudio.paused), true);

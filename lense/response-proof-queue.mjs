@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto';
 /**
  * Network notifications can trail a successful Fetch.fulfillRequest acknowledgement. An acknowledgement waits for
  * the notification of its own request (network ID, frame and full URL), however late it arrives. The count and byte
- * bounds discard the oldest one (`evicted` receives its frame), forget() discards those of a frame whose document was
- * replaced, and clear() discards all.
+ * bounds discard the oldest one (`evicted` receives its frame), forget() discards those of a detached frame, and clear()
+ * discards all. A navigation does not discard them: the new document's own acknowledgement can precede its commit
+ * notification.
  */
 export function createResponseProofQueue({ requests, admit, evicted }) {
   const pending = new Map();
