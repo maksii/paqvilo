@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { acquireCiWorkspaceLease, assertOwnedCiState } from '../scripts/ci-workspace-lease.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState, leaseMemberAlive } from '../scripts/ci-workspace-lease.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
 import { processIdentity } from '../lense/process-identity.mjs';
@@ -300,4 +300,34 @@ test('a takeover claim whose PID now names another process does not block the ta
   )();
   assert.equal(fs.existsSync(claim), false);
   await taker.stop();
+});
+
+test('a recorded PID reused by a process that ended while its identity was read no longer holds the lease', () => {
+  const member = { pid: 4321, identity: 'recorded' };
+  const answers = [true, false];
+  assert.equal(
+    leaseMemberAlive(
+      member,
+      () => answers.shift(),
+      () => null,
+    ),
+    false,
+  );
+  // A running process whose identity cannot be read keeps the lease.
+  assert.equal(
+    leaseMemberAlive(
+      member,
+      () => true,
+      () => null,
+    ),
+    true,
+  );
+  assert.equal(
+    leaseMemberAlive(
+      member,
+      () => true,
+      () => 'another',
+    ),
+    false,
+  );
 });

@@ -15,14 +15,16 @@ const alive = (pid) => {
   }
 };
 // A member (or the owner) still owns the lease while its PID runs the process that joined. An identity that cannot be
-// read now keeps the lease: an unread identity is never taken for a reused PID.
-const memberAlive = (member) => {
+// read while the process runs keeps the lease: an unread identity is never taken for a reused PID. A PID that names no
+// process once the read has ended was reused by a process that ended during the read, so the recorded one has ended.
+export const leaseMemberAlive = (member, isAlive = alive, identityOf = processIdentity) => {
   if (!Number.isSafeInteger(member?.pid) || member.pid < 1) return true;
-  if (!alive(member.pid)) return false;
+  if (!isAlive(member.pid)) return false;
   if (typeof member.identity !== 'string') return true;
-  const current = processIdentity(member.pid);
-  return current === null || current === member.identity;
+  const current = identityOf(member.pid);
+  return current === null ? isAlive(member.pid) : current === member.identity;
 };
+const memberAlive = (member) => leaseMemberAlive(member);
 const valid = (owner) =>
   owner &&
   typeof owner.root === 'string' &&
