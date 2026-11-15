@@ -54,7 +54,7 @@ jobs:
             mirage/package-lock.json
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       # The code that decides which fixtures preparation downloads names the caches this lane restores.
@@ -156,7 +156,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
       - name: Analyze full source branch
         if: github.event_name == 'pull_request'
-        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -176,7 +176,7 @@ jobs:
           SONAR_FULL_BRANCH: ${{ github.head_ref }}
           SONAR_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha }}
         run: node scripts/verify-sonar-branch.mjs
-      - uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304
+      - uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
