@@ -300,3 +300,46 @@ test('transaction publication refuses an ancestor junction or directory link ins
   );
   assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
 });
+
+test('publication renames through a Windows sharing hold on a replaced file and still refuses other rename failures', async (t) => {
+  const f = await fixture(t);
+  const held = new Map([
+    [f.files[0], 2],
+    [f.journalFile, 2],
+  ]);
+  const io = {
+    ...fs,
+    rename: async (from, to) => {
+      // Another process (a scanner or indexer) holds the destination open without delete sharing.
+      if (held.get(to)) {
+        held.set(to, held.get(to) - 1);
+        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), {
+          code: 'EPERM',
+        });
+      }
+      return fs.rename(from, to);
+    },
+  };
+  const published = await publishTransactionalFiles({ entries: f.entries, journalFile: f.journalFile, io });
+  assert.deepEqual([...held.values()], [0, 0], 'each held destination was retried until released');
+  assert.deepEqual(
+    published.map(({ file }) => file),
+    f.files,
+  );
+  for (const [index, file] of f.files.entries())
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), f.entries[index].value);
+  await assert.rejects(fs.access(f.journalFile), { code: 'ENOENT' });
+
+  const g = await fixture(t);
+  const refusing = {
+    ...fs,
+    rename: async (from, to) => {
+      if (to === g.journalFile) throw Object.assign(new Error('Invented rename refusal'), { code: 'EXDEV' });
+      return fs.rename(from, to);
+    },
+  };
+  await assert.rejects(publishTransactionalFiles({ entries: g.entries, journalFile: g.journalFile, io: refusing }), {
+    code: 'EXDEV',
+  });
+  assert.deepEqual(await Promise.all(g.files.map((file) => fs.readFile(file, 'utf8'))), g.before);
+});

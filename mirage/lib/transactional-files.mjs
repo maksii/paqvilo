@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { writeJsonStream } from './state-stream.mjs';
 import { DataError } from './data-error.mjs';
+import { renameThroughSharingHoldsAsync } from './record-file-lease.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const samePath = (left, right) =>
@@ -160,7 +161,7 @@ async function durableWrite(file, value, io) {
           (await currentDigest(entry.file, io)) !== entry.after
         )
           throw failure('Pack recovery path changed before restoration.', 'PersistenceRecoveryRequired');
-        await io.rename(entry.temp, entry.file);
+        await renameThroughSharingHoldsAsync(io, entry.temp, entry.file);
       }
     }
   for (const entry of entries) {
@@ -321,7 +322,7 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
     for (const item of prepared) {
       if ((await currentDigest(item.file, io)) !== item.before)
         throw failure(`Data changed before publishing ${item.file}.`);
-      await io.rename(item.temp, item.file);
+      await renameThroughSharingHoldsAsync(io, item.temp, item.file);
     }
     const marker = companion(journalFile, token, 'tmp');
     await durableWrite(
@@ -329,7 +330,7 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
       JSON.stringify({ version: 2, token, phase: 'committed', entries: prepared, lockOwner: release.owner, lockFiles }),
       io,
     );
-    await io.rename(marker, journalFile);
+    await renameThroughSharingHoldsAsync(io, marker, journalFile);
     committed = true;
     return prepared.map((item) => ({ file: item.file, digest: item.after }));
   } catch (error) {

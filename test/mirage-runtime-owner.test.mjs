@@ -122,6 +122,21 @@ test('a runtime of the snapshot that outlived a stop which removed its record is
   await exited; // The process has gone: its exit was observed.
 });
 
+test('a listener behind open handles reports its port also when the test runs with forced colours', async (t) => {
+  // Hosted CI sets FORCE_COLOR, which children inherit: a number printed by console.log then arrives coloured.
+  const previous = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = '1';
+  let listener;
+  try {
+    listener = await listenerBehindOpenHandles(t);
+  } finally {
+    if (previous === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = previous;
+  }
+  assert.ok(Number.isInteger(listener.port) && listener.port > 0, `a port number was reported (${listener.port})`);
+  assert.equal((await portBinding(listener.port)).code, 'EADDRINUSE', 'the reported port is the one it listens on');
+});
+
 test('an ended runtime has released its port when the owner returns, also while its other handles are still closing', async (t) => {
   const token = newStartIdentity();
   const { child, port } = await listenerBehindOpenHandles(t, { startToken: startTokenOf(token) });

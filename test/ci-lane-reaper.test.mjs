@@ -16,7 +16,7 @@ import { isAlive, processIdentity, processIdentityAsync } from '../lense/process
 const LANE_ROOT = [
   "const { spawn } = require('node:child_process');",
   "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });",
-  'console.log(grandchild.pid);',
+  'console.log(String(grandchild.pid));',
   'setInterval(() => {}, 1000);',
 ].join('\n');
 

@@ -39,7 +39,7 @@ test('a child whose exit was observed is not signalled while its stream is held 
   // The child starts a grandchild that inherits its stdout, prints the grandchild's PID and exits. The grandchild is
   // detached so that it outlives the child, which holds the stream open until the grandchild ends: the child's close
   // is still pending when its exit has been observed.
-  const script = `const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit', detached: true }); console.log(g.pid); g.unref();`;
+  const script = `const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit', detached: true }); console.log(String(g.pid)); g.unref();`;
   const child = children.own(
     spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }),
   );

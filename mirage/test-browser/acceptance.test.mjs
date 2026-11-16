@@ -474,10 +474,27 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       assert.ok(flow.screenshots.length > 0, `${flow.name} records final screenshot evidence`);
       for (const image of flow.screenshots) assert.ok((await fs.stat(image)).size > 0);
     }
+    // The budget each screenshot runs under: its own timeout, else the page default when it was taken.
+    const screenshotBudgets = [];
     const failed = await runAcceptance({
       timeout: ACTION_BUDGET_MS,
       localUrl: app.url,
-      prepareContext,
+      prepareContext: async (context, origin) => {
+        context.on('page', (page) => {
+          let defaultTimeout;
+          const setDefaultTimeout = page.setDefaultTimeout.bind(page),
+            screenshot = page.screenshot.bind(page);
+          page.setDefaultTimeout = (ms) => {
+            defaultTimeout = ms;
+            setDefaultTimeout(ms);
+          };
+          page.screenshot = (options = {}) => {
+            screenshotBudgets.push({ file: path.basename(options.path), timeout: options.timeout ?? defaultTimeout });
+            return screenshot(options);
+          };
+        });
+        await prepareContext(context, origin);
+      },
       flows: [
         {
           name: 'Incorrect control expectation',
@@ -492,7 +509,11 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     });
     assert.equal(failed.passed, false);
     assert.match(failed.flows[0].error, /expected field value/i);
-    assert.ok(failed.flows[0].screenshots.length);
+    assert.ok(failed.flows[0].screenshots.length, JSON.stringify(failed.flows[0].screenshotError));
+    // The failed step spent its own 2000 ms; its failure screenshot is not cut to that deadline.
+    assert.deepEqual(screenshotBudgets, [
+      { file: '1-Incorrect-control-expectation-failure.png', timeout: ACTION_BUDGET_MS },
+    ]);
     assert.equal(app.state().data.contact.length, 1);
   });
 

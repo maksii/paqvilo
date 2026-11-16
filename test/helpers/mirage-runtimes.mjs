@@ -194,7 +194,7 @@ export async function listenerBehindOpenHandles(t, { startToken = null } = {}) {
       `const fs = require('node:fs'); globalThis.held = [];
        for (let index = 0; index < ${held}; index++) held.push(fs.openSync(process.execPath, 'r'));
        const server = require('node:http').createServer((request, response) => response.writeHead(503).end());
-       server.listen(0, '127.0.0.1', () => console.log(server.address().port));`,
+       server.listen(0, '127.0.0.1', () => console.log(String(server.address().port)));`,
       ...(startToken ? ['--', START_TOKEN_OPTION, startToken] : []),
     ],
     { detached: true, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },

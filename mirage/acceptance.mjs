@@ -1139,7 +1139,13 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           ...record,
           elapsedMs: Date.now() - record.started,
         }));
-        await capture('failure').catch(() => {});
+        // The failure evidence has the flow's budget: the failed step's own deadline is spent, often by that failure.
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
+        await capture('failure').catch((captureError) => {
+          observation.screenshotError = safeMessage(captureError.message);
+        });
       } finally {
         await Promise.allSettled(responseObservations);
         observation.finalUrl = safeUrl(page.url());
