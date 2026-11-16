@@ -637,7 +637,6 @@ export async function attachSession(context, session) {
 
 // a reload that has not got its document by then is given up on, so later saves still reload
 const RELOAD_TIMEOUT = 60_000;
-const STYLE_TIMEOUT = 5000;
 
 // Reload through an explicit GET. Chromium's reload() can repeat the POST that produced a
 // form result, so a local save must never use it to replay the user's last submission.
@@ -677,7 +676,7 @@ async function bounded(promise, ms, signal) {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(guardTimeoutError()), ms);
+        if (ms != null) timer = setTimeout(() => reject(guardTimeoutError()), ms);
         onAbort = () => reject(new Error('browser operation stopped'));
         if (signal?.aborted) onAbort();
         else signal?.addEventListener('abort', onAbort, { once: true });
@@ -842,9 +841,11 @@ export async function refreshPages(context, session, files, { force = false, out
         outcome.how = 'skipped';
         return;
       }
+      // A page that answers late still swaps: how long its renderer takes says nothing about whether the swap
+      // applies. Closing or navigating the page rejects the evaluation, and stopping the session ends the wait.
       const result = await bounded(
         p.evaluate(swapStyles, { urls: plan.cssUrls, styles: styles.map(({ before, after }) => ({ before, after })) }),
-        STYLE_TIMEOUT,
+        null,
         signal,
       ).catch(() => null);
       // Imported CSS has no link of its own, and a style block that is not in the page yet

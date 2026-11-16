@@ -273,6 +273,41 @@ test('failed CSS evaluation falls back to a bounded document reload', async () =
   assert.equal(tab.reloads, 1);
 });
 
+test('a CSS swap that answers late still swaps in place, and stopping the session ends its wait', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const tab = page(origin);
+  let answer;
+  tab.evaluate = () =>
+    new Promise((resolve) => {
+      answer = resolve;
+    });
+  let result;
+  const refreshing = refreshPages({ pages: () => [tab] }, session, ['main.css']).then((value) => {
+    result = value;
+  });
+  // A busy renderer is gated here: no elapsed time turns its pending swap into a reload.
+  for (let second = 0; second < 120; second++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(1000);
+  }
+  assert.equal(result, undefined);
+  assert.equal(tab.reloads, 0);
+  answer({ links: 1, styles: 0 });
+  await refreshing;
+  assert.equal(result, 'css');
+  assert.equal(tab.reloads, 0);
+
+  const stopped = page(origin);
+  stopped.evaluate = () => new Promise(() => {});
+  const stop = new AbortController();
+  const outcomes = new Map();
+  const pending = refreshPages({ pages: () => [stopped] }, session, ['main.css'], { outcomes, signal: stop.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  stop.abort();
+  assert.equal(await pending, 'none');
+  assert.equal(stopped.reloads, 0);
+});
+
 test('page-specific changes refresh language variants while preserving unrelated tabs', async () => {
   const about = page(`${origin}/en-US/about-us/`);
   const home = page(origin);
