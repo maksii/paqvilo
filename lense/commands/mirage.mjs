@@ -27,14 +27,14 @@ import {
   endRecordedWindowsProcess,
   isAlive,
   newStartIdentity,
-  processIdentity,
   processIdentityAsync,
   recordedIdentityNow,
   START_TOKEN_OPTION,
   startTokenOf,
 } from '../process-identity.mjs';
 
-export { isAlive, processIdentity, processIdentityAsync };
+export { isAlive, processIdentityAsync };
+export { processIdentity } from '../process-identity.mjs';
 
 /**
  * The identity of the process that holds a recorded PID now, for comparison with the identity `recorded` for it
