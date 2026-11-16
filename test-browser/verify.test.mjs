@@ -16,6 +16,7 @@ import { editSource } from '../lense/source-edit.mjs';
 import { createFixture, HOME_ID, SITE } from '../test/fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
+import { finalizeVerifyFixtureEvidence } from './helpers/verify-evidence.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const PAGE_JS = 'window.fixturePage = "original";\n';
@@ -58,7 +59,14 @@ function component(dir, id, type, name, content, attachment) {
 
 // heldScript, when given, adds a parser-blocking script in front of the page's failing script. It is called for each
 // request of that script and the answer waits for the promise it returns, so the document stays in parsing until then.
-async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '', heldScript = null) {
+async function fixture(
+  t,
+  layout,
+  uncommittedInline = false,
+  startHeadMarkup = '',
+  heldScript = null,
+  documentGate = null,
+) {
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
@@ -211,7 +219,12 @@ ${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new E
       return;
     }
     const content = assets[pathname] ?? (pathname === '/' ? ['text/html; charset=utf-8', html] : null);
-    if (content) response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]);
+    if (content && pathname === '/' && documentGate) {
+      void Promise.resolve(documentGate()).then(() =>
+        response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]),
+      );
+    } else if (content)
+      response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]);
     else response.writeHead(404).end('fixture only');
   });
   server.on('connect', (_request, socket) => {
@@ -222,13 +235,26 @@ ${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new E
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   ownedFixture(t).add(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    if (classic) {
-      fs.unlinkSync(path.join(sourceDir, 'linked-outside'));
-      classic.cleanup();
+    // Fixture teardown also runs after a failed test, before the lab can inspect its temporary directory.
+    let published = false;
+    try {
+      const evidence = finalizeVerifyFixtureEvidence(
+        {
+          fixtureRoot: work,
+          outputRoot: fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+        },
+        t.signal,
+      );
+      published = evidence.canRemove;
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      if (classic) {
+        fs.unlinkSync(path.join(sourceDir, 'linked-outside'));
+        classic.cleanup();
+      }
+      if (published) fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     }
-    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   return {
     work,
@@ -426,13 +452,24 @@ for (const layout of ['classic', 'enhanced'])
 
 test('verify reads the displayed document when the start page reloads itself after its first document', async (t) => {
   const reloadOnce = `<script>addEventListener('load', () => { if (!sessionStorage.getItem('reloaded')) { sessionStorage.setItem('reloaded', '1'); location.reload(); } });</script>`;
-  const fx = await fixture(t, 'classic', false, reloadOnce);
+  const secondRequested = Promise.withResolvers();
+  const secondResponse = Promise.withResolvers();
+  let documentRequests = 0;
+  let replacementReleased = false;
+  let replacementWaits = 0;
+  const fx = await fixture(t, 'classic', false, reloadOnce, null, () => {
+    documentRequests++;
+    if (documentRequests === 2) {
+      secondRequested.resolve();
+      return secondResponse.promise;
+    }
+  });
   fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
   fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
   const launch = chromium.launchPersistentContext;
   chromium.launchPersistentContext = async function (profileDir, options) {
     assertCopyIsolation(path.dirname(profileDir));
-    return launch.call(this, profileDir, {
+    const context = await launch.call(this, profileDir, {
       ...options,
       proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
       args: [
@@ -444,6 +481,25 @@ test('verify reads the displayed document when the start page reloads itself aft
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    const load = page.waitForLoadState.bind(page);
+    let initialGoto = true;
+    let initialLoad = true;
+    page.goto = (...args) => {
+      if (!initialGoto && !replacementReleased) throw new Error('verify replaced a pending observed navigation');
+      initialGoto = false;
+      return goto(...args);
+    };
+    page.waitForLoadState = async (...args) => {
+      if (initialLoad && args[0] === 'load') {
+        initialLoad = false;
+        await secondRequested.promise;
+        return;
+      }
+      return load(...args);
+    };
+    return context;
   };
   const output = [];
   const log = console.log;
@@ -452,13 +508,27 @@ test('verify reads the displayed document when the start page reloads itself aft
   console.error = (...values) => output.push(values.join(' '));
   let result;
   try {
-    result = await verify(fx.cfg, { strict: true });
+    result = await verify(
+      fx.cfg,
+      { strict: true },
+      {
+        onPhase: (phase) => {
+          if (phase === 'start-page-document-wait') {
+            replacementWaits++;
+            replacementReleased = true;
+            secondResponse.resolve();
+          }
+        },
+      },
+    );
   } finally {
+    secondResponse.resolve();
     chromium.launchPersistentContext = launch;
     console.log = log;
     console.error = logError;
   }
   const { report } = reportFor(fx.cfg);
+  assert.equal(replacementWaits, 1, 'verification waits for the already requested replacement document');
   assert.doesNotMatch(output.join('\n'), /Response body is not available/);
   assert.doesNotMatch(String(report.error ?? ''), /Response body is not available/);
   assert.ok(

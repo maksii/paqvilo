@@ -336,40 +336,18 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     });
 
   test('a 204 negative flow reaches pending-read diagnostics without a fixture response timer', async (t) => {
-    let releaseDocumentResponse;
+    let responseTimerSchedules = 0;
     const flow = await navigationFixture(t, {
       noCommit: true,
       settleTimeout: 2500,
       scheduleDocumentResponse: (callback) => {
-        releaseDocumentResponse = callback;
-      },
-      customizeContext: async (context) => {
-        // Pause this invented page's authored history timer; browser protocol, promises and the native action
-        // deadline continue normally. Neither history ordering nor a 204 response should need that fixture clock.
-        await context.addInitScript(() => {
-          globalThis.setTimeout = () => 0;
-        });
-        context.on('page', (page) => {
-          const locate = page.locator.bind(page);
-          page.locator = (...args) => {
-            const locator = locate(...args);
-            if (args[0] === '#save') {
-              const click = locator.click.bind(locator);
-              locator.click = async (...options) => {
-                try {
-                  return await click(...options);
-                } finally {
-                  // Release a legacy response timer after the actual action ends, so its timeout stays observable
-                  // without leaving the fixture's native navigation pending during failure capture or teardown.
-                  releaseDocumentResponse?.();
-                }
-              };
-            }
-            return locator;
-          };
-        });
+        // This response must be released by the observed history/read gates, never by a fixture clock. If a
+        // regression schedules it anyway, answer immediately so the count fails without leaving a response open.
+        responseTimerSchedules++;
+        callback();
       },
     });
+    assert.equal(responseTimerSchedules, 0, 'the no-content response needs no authored fixture timer');
     assert.equal(flow.passed, false);
     assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
     assert.deepEqual(

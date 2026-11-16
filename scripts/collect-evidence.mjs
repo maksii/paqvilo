@@ -8,6 +8,9 @@ import { randomUUID } from 'node:crypto';
 // write the same file.
 const RUN = String.raw`\.run-\d+`;
 const OUTPUTS = {
+  'fixture-diagnostics': /^[a-f0-9]{32}-(?:diagnostic\.json|failure\.png)$/,
+  'canvas-baseline': /^player-mobile\.png$/,
+  'verify-fixtures': /^[a-f0-9]{32}-(?:diagnostic\.json|failure\.png)$/,
   'synthetic-navigation': /^[a-f0-9]{32}-(?:diagnostic\.json|failure\.png)$/,
   'extended-round': new RegExp(
     String.raw`^(?:multipart${RUN}\.json|(?:classic|enhanced)-workflows${RUN}\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)${RUN}\.json)$`,

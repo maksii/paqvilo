@@ -77,10 +77,20 @@ function portalContext(trace, browser, at, marks) {
   let statusReads = 0;
   const mainFrame = {};
   const requestListeners = [];
+  const navigationWaiters = [];
+  const responses = new WeakMap();
   // the browser reports a main-frame navigation as a navigation request of the main frame, before the document commits
   const navigate = (url) => {
-    const request = { url: () => url, isNavigationRequest: () => true, frame: () => mainFrame };
+    const request = {
+      url: () => url,
+      isNavigationRequest: () => true,
+      frame: () => mainFrame,
+      response: async () => responses.get(request),
+    };
+    const response = respond(request, ++browser.documents);
+    responses.set(request, response);
     for (const listener of requestListeners) listener(request);
+    for (const navigation of navigationWaiters.splice(0)) navigation.resolve(response);
     return request;
   };
   const withSnippet = ['reload', 'replaced-while-inspected', 'keeps-navigating', 'inspection-fails'].includes(at);
@@ -106,10 +116,16 @@ function portalContext(trace, browser, at, marks) {
     on: (event, listener) => {
       if (event === 'request') requestListeners.push(listener);
     },
+    waitForNavigation: (options) => {
+      assert.deepEqual(options, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      const navigation = deferred();
+      navigationWaiters.push(navigation);
+      return navigation.promise;
+    },
     goto: () => {
       trace.step('page goto');
       browser.gotos += 1;
-      const response = respond(navigate(TARGET_URL), browser.gotos);
+      const response = responses.get(navigate(TARGET_URL));
       if (at !== 'goto') return Promise.resolve(response);
       const navigation = deferred();
       // the interrupt lands while the navigation is in flight; the navigation then completes on its own
@@ -122,7 +138,7 @@ function portalContext(trace, browser, at, marks) {
     waitForLoadState: async () => {
       if (at === 'load') trace.raise();
       // the page starts another navigation once it has loaded: once for 'reload', on every load for 'keeps-navigating'
-      if (at === 'keeps-navigating' || (at === 'reload' && browser.gotos === 1))
+      if (at === 'keeps-navigating' || (at === 'reload' && browser.documents === 1))
         navigate(`${TARGET_URL}?lang=INVENTED`);
     },
     // the diagnostics are captured right before the screenshot
@@ -184,7 +200,7 @@ function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
   const cfg = createVerifyConfig(t);
   const source = new EventEmitter();
   const trace = interruptTrace(signal, source);
-  const browser = { launched: false, closed: false, gotos: 0, inspected: [], screenshots: [] };
+  const browser = { launched: false, closed: false, gotos: 0, documents: 0, inspected: [], screenshots: [] };
   const marks = [];
   const idleRequested = deferred();
   const output = [];
@@ -364,9 +380,10 @@ test('an interrupt while the page load is awaited stops the run before the docum
   assertInterrupted(await interruptedRun(t, { at: 'load' }), { launched: true });
 });
 
-test('a start page that starts another navigation once it has loaded is read again before the edits are chosen', async (t) => {
+test('a start page that starts another navigation is read without replacing it before the edits are chosen', async (t) => {
   const outcome = await startVerify(t, { at: 'reload' }).finished;
-  assert.equal(outcome.browser.gotos, 2);
+  assert.equal(outcome.browser.gotos, 1, 'the observed replacement owns navigation without an additional goto');
+  assert.equal(outcome.browser.documents, 2);
   assert.deepEqual(outcome.browser.inspected, [pageDocument(2, true)]);
   assert.equal(outcome.report.error, undefined);
   assert.equal(outcome.report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
@@ -381,7 +398,8 @@ test('the evidence screenshot of a verified page is taken under its 120 s hang g
 
 test('a document the page replaces while its snippets are inspected is read again instead of failing the run', async (t) => {
   const outcome = await startVerify(t, { at: 'replaced-while-inspected' }).finished;
-  assert.equal(outcome.browser.gotos, 2);
+  assert.equal(outcome.browser.gotos, 1, 'an inspection invalidated by navigation never forces another goto');
+  assert.equal(outcome.browser.documents, 2);
   assert.deepEqual(outcome.browser.inspected, [pageDocument(1, true), pageDocument(2, true)]);
   assert.equal(outcome.report.error, undefined);
 });
@@ -389,7 +407,12 @@ test('a document the page replaces while its snippets are inspected is read agai
 test('a start page that keeps navigating fails after three reads and names where it went without query values', async (t) => {
   const outcome = await startVerify(t, { at: 'keeps-navigating' }).finished;
   assert.equal(outcome.result, 1);
-  assert.equal(outcome.browser.gotos, 3);
+  assert.equal(
+    outcome.browser.gotos,
+    1,
+    'the read limit follows observed documents instead of issuing more goto calls',
+  );
+  assert.equal(outcome.browser.documents, 4, 'each of the three read documents was replaced as it loaded');
   assert.equal(outcome.report.errorCode, 'VERIFY_FAILED');
   assert.ok(
     outcome.report.error.includes(

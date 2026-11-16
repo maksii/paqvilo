@@ -403,9 +403,29 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     // The main-frame navigation request of the document on display. A document the page replaces (a reload, a
     // client-side redirect) starts a new one, and the overlay routes it through this process before it can commit.
     let displayed = null;
+    const documents = new WeakMap();
     page.on('request', (r) => {
       try {
-        if (r.isNavigationRequest() && r.frame() === page.mainFrame()) displayed = r;
+        if (!r.isNavigationRequest() || r.frame() !== page.mainFrame()) return;
+        displayed = r;
+        // Observe this navigation before its paused document can commit. A response's bytes may no longer be
+        // readable after the page replaces it, so cache them as soon as they arrive, independently of DOM readiness.
+        const loaded = page.waitForNavigation({
+          waitUntil: 'domcontentloaded',
+          timeout: START_PAGE_NAVIGATION_GUARD_MS,
+        });
+        const content = r.response().then(async (response) => ({
+          request: r,
+          response,
+          html: response ? await response.text().catch(() => null) : null,
+        }));
+        documents.set(
+          r,
+          Promise.all([loaded, content]).then(
+            ([, document]) => document,
+            (error) => ({ request: r, response: null, html: null, error }),
+          ),
+        );
       } catch {
         /* a service worker request has no frame */
       }
@@ -420,16 +440,31 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     };
     // 'load' can take very long on data-heavy pages; the document itself is what matters here.
     // The body is read at once: a response cannot be read after the page has navigated away from it.
-    const open = async () => {
-      const res = await scope.until(
-        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: START_PAGE_NAVIGATION_GUARD_MS }),
-      );
-      const html = res ? await res.text().catch(() => null) : null;
+    const waitForDocumentLoad = async () => {
       // a load timeout is tolerated; an interrupt is not
       await scope
         .until(page.waitForLoadState('load', { timeout: 30_000 }))
         .catch(() => interrupt.signal.throwIfAborted());
-      return { response: res, html };
+    };
+    const open = async () => {
+      const res = await scope.until(
+        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: START_PAGE_NAVIGATION_GUARD_MS }),
+      );
+      const request = res?.request?.() ?? null;
+      const observed = request && documents.get(request);
+      const document = observed
+        ? await scope.until(observed)
+        : { request, response: res, html: res ? await res.text().catch(() => null) : null };
+      await waitForDocumentLoad();
+      return document;
+    };
+    const readDisplayedDocument = async () => {
+      const observed = displayed && documents.get(displayed);
+      if (!observed) throw new Error(`${startPath} has no observed document navigation to read`);
+      onPhase('start-page-document-wait');
+      const document = await scope.until(observed);
+      await waitForDocumentLoad();
+      return document;
     };
     let started = await open();
     if (!onTarget()) {
@@ -630,11 +665,17 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       return { cssFile, jsFile, imgFile, formScripts, template, snippet };
     };
     // The edits are chosen from the HTML of the document on display and from that document in the page. Choices
-    // made from a document the page has replaced are thrown away and the start page is read again; three reads at most.
+    // made from a document the page has replaced are thrown away and its observed replacement is read; three reads
+    // at most. Never force a new goto over a page-initiated navigation that already owns the displayed document.
     const replacedBy = [];
     let choice = null;
     for (let read = 1; ; read++) {
-      if (!started.response) throw new Error(`${startPath} answered no document response`);
+      if (started.request === displayed) {
+        if (started.error)
+          throw new Error(`${startPath} displayed document navigation failed`, { cause: started.error });
+        if (!started.response) throw new Error(`${startPath} answered no document response`);
+        if (started.html === null) throw new Error(`${startPath} displayed document response body could not be read`);
+      } else if (!started.response && !displayed) throw new Error(`${startPath} answered no document response`);
       if (started.html !== null && isDisplayed(started.response)) {
         if (started.response.status() !== 200)
           throw new Error(`${startPath} answered HTTP ${started.response.status()}`);
@@ -651,7 +692,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         throw new Error(
           `${startPath} kept navigating while it loaded (${replacedBy.join(', ')}); its document could not be read`,
         );
-      started = await open();
+      started = await readDisplayedDocument();
     }
     const { cssFile, jsFile, imgFile, formScripts, template, snippet } = choice;
     if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), started.html);
