@@ -335,7 +335,7 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
 });
 
 // Manifests declare the project's own AGPL licence, which LICENSE covers; they are not third-party data.
-const projectManifests = new Set(['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'mirage/package.json']);
+const projectManifests = new Set(['package.json', 'package-lock.json', 'paqvilo-lock.json', 'mirage/package.json']);
 
 // Directory names that .npmignore excludes at any depth: local state and build output are never shipped.
 const unshippedDirectories = new Set(['node_modules', '.paqvilo', '.git', 'obj', 'out', 'coverage']);

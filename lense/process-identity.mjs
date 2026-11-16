@@ -25,6 +25,13 @@ const PS = 'ps';
 const RETRY = Symbol('retry');
 
 const validPid = (pid) => Number.isInteger(pid) && pid > 0;
+// Our own PID cannot be reused while this module is running. Cache only a
+// successful self read; foreign PIDs and failed reads always need a fresh probe.
+let ownIdentity;
+const rememberIdentity = (pid, identity) => {
+  if (pid === process.pid && identity) ownIdentity = identity;
+  return identity;
+};
 const windowsArguments = (pid) => [
   '-NoProfile',
   '-NonInteractive',
@@ -72,6 +79,7 @@ async function procIdentityAsync(pid, signal) {
 /** The process start time: a recorded PID only names our Mirage while this value is unchanged. */
 export function processIdentity(pid) {
   if (!validPid(pid)) return null;
+  if (pid === process.pid && ownIdentity !== undefined) return ownIdentity;
   if (process.platform === 'win32') {
     for (let attempt = 0; attempt < WINDOWS_ATTEMPTS; attempt++) {
       const identity = windowsIdentity(
@@ -82,17 +90,20 @@ export function processIdentity(pid) {
         ),
         unreadSync,
       );
-      if (identity !== RETRY) return identity;
+      if (identity !== RETRY) return rememberIdentity(pid, identity);
     }
     return null;
   }
   const proc = procIdentity(pid);
-  if (proc !== undefined) return proc;
-  return psIdentity(
-    spawnSync(
-      PS, // NOSONAR: fixed tool name resolved through PATH by developer tooling
-      psArguments(pid),
-      { encoding: 'utf8', windowsHide: true, timeout: POSIX_TIMEOUT_MS },
+  if (proc !== undefined) return rememberIdentity(pid, proc);
+  return rememberIdentity(
+    pid,
+    psIdentity(
+      spawnSync(
+        PS, // NOSONAR: fixed tool name resolved through PATH by developer tooling
+        psArguments(pid),
+        { encoding: 'utf8', windowsHide: true, timeout: POSIX_TIMEOUT_MS },
+      ),
     ),
   );
 }
@@ -103,19 +114,20 @@ export function processIdentity(pid) {
  */
 export async function processIdentityAsync(pid, { signal } = {}) {
   if (signal?.aborted || !validPid(pid)) return null;
+  if (pid === process.pid && ownIdentity !== undefined) return ownIdentity;
   if (process.platform === 'win32') {
     for (let attempt = 0; attempt < WINDOWS_ATTEMPTS; attempt++) {
       const result = await runAsync(WINDOWS_SHELL, windowsArguments(pid), WINDOWS_TIMEOUT_MS, signal);
       if (signal?.aborted) return null;
       const identity = windowsIdentity(result, unreadAsync);
-      if (identity !== RETRY) return identity;
+      if (identity !== RETRY) return rememberIdentity(pid, identity);
     }
     return null;
   }
   const proc = await procIdentityAsync(pid, signal);
   if (signal?.aborted) return null;
-  if (proc !== undefined) return proc;
-  return psIdentity(await runAsync(PS, psArguments(pid), POSIX_TIMEOUT_MS, signal));
+  if (proc !== undefined) return rememberIdentity(pid, proc);
+  return rememberIdentity(pid, psIdentity(await runAsync(PS, psArguments(pid), POSIX_TIMEOUT_MS, signal)));
 }
 
 /** execFile as a promise, with the fields of a spawnSync result that processIdentity reads. */

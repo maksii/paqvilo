@@ -1,5 +1,6 @@
 // Audit the distributable file list without creating an archive or contacting a registry.
 import fs from 'node:fs';
+import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -273,7 +274,7 @@ export const REQUIRED_RELEASE_FILES = [
   'AGENTS.md',
   '.env.example',
   'paqvilo.config.yml',
-  'npm-shrinkwrap.json',
+  'paqvilo-lock.json',
   'bin/paqvilo.mjs',
   'lense/cli.mjs',
   'lense/commands/demo.mjs',
@@ -479,7 +480,7 @@ export function validateReleaseFiles(files) {
   const demoPluginAssembly =
     /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
   const allowed = [
-    /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
+    /^(?:package\.json|paqvilo-lock\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
     /^licenses\/[a-z0-9-]+(?:\.\d+)?\.txt$/,
     /^lense\/[a-z0-9/-]+\.mjs$/,
     /^lense\/setup\/[a-z0-9-]+\.(?:html|css)$/,
@@ -676,8 +677,8 @@ export function checkPackageMetadata(pkg) {
 
 function checkLockConsistency(root) {
   const packageLock = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
-  const shrinkwrap = fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8');
-  if (packageLock !== shrinkwrap) throw new Error('npm-shrinkwrap.json must match package-lock.json');
+  const shrinkwrap = fs.readFileSync(path.join(root, 'paqvilo-lock.json'), 'utf8');
+  if (packageLock !== shrinkwrap) throw new Error('paqvilo-lock.json must match package-lock.json');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -697,7 +698,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       timeout: CHILD_HANG_GUARD_MS,
     });
     if (packed.status !== 0) throw new Error(packed.error?.message ?? packed.stderr.trim());
-    const report = JSON.parse(packed.stdout)[0];
+    const report = packedPackage(packed.stdout);
     checkDocumentation(
       root,
       report.files.map((file) => file.path),

@@ -9,6 +9,7 @@ import { consumerStateIsOwned, verifyConsumerToolOwnership } from './consumer-to
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
 import { assertSmokeProcess, CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
+import { packedPackage } from './npm-pack.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const directory = path.join(root, '.paqvilo', 'distribution');
@@ -38,7 +39,7 @@ function finishWorkDirectory(work, { keep, remove, report }) {
   }
 }
 function packAndInstallBootstrap(work, run) {
-  const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root))[0];
+  const packed = packedPackage(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root));
   validateReleaseFiles(packed.files);
   const archive = `file:${path.join(work, packed.filename).replaceAll('\\', '/')}`;
   const bootstrap = path.join(work, 'bootstrap');
@@ -49,7 +50,7 @@ function packAndInstallBootstrap(work, run) {
   );
   run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
   const dependencyEvidence = packageDependencyEvidence(
-    JSON.parse(fs.readFileSync(path.join(bootstrap, 'node_modules/paqvilo/npm-shrinkwrap.json'), 'utf8')),
+    JSON.parse(fs.readFileSync(path.join(bootstrap, 'node_modules/paqvilo/paqvilo-lock.json'), 'utf8')),
     JSON.parse(fs.readFileSync(path.join(bootstrap, 'package-lock.json'), 'utf8')),
     'paqvilo',
   );

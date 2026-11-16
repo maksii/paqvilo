@@ -119,6 +119,25 @@ test('a detached iframe read needs lifecycle evidence at failure time', async (t
 
 test('a replaced postback document separates still-pending reads without claiming completion', async (t) => {
   const { origin, page } = await fixture(t);
+  // Chromium may announce the navigation abort before its independent CDP
+  // commit. This positive-order case holds delivery of that real abort until
+  // the observer has seen the commit. The authored-abort case below exercises
+  // the reverse order and requires the failure to remain failed forever.
+  const emit = page.emit;
+  let releaseFailure;
+  const failed = new Promise((resolve) => {
+    page.emit = function (event, ...args) {
+      if (event === 'requestfailed' && args[0].url().endsWith('/pending-read')) {
+        releaseFailure = () => emit.call(page, event, ...args);
+        resolve();
+        return true;
+      }
+      return emit.call(page, event, ...args);
+    };
+  });
+  ownedFixture(t).add(() => {
+    page.emit = emit;
+  });
   const observer = await observePageLifecycle(page, { origin });
   ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
@@ -135,6 +154,11 @@ test('a replaced postback document separates still-pending reads without claimin
     form.submit();
   });
   await page.waitForURL(origin + '/done');
+  await failed;
+  const committed = await observer.settle({ timeout: HANG_GUARD_MS });
+  assert.equal(committed.passed, true, JSON.stringify(committed));
+  assert.ok(committed.supersededReads.some((row) => row.lifecycle.reason === 'document-replaced'));
+  releaseFailure();
   const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.passed, true, JSON.stringify(result));
   assert.ok(result.supersededReads.some((row) => row.lifecycle.reason === 'document-replaced'));

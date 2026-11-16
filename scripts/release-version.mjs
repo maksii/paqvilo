@@ -65,7 +65,7 @@ export function releasePlan({ tag, version, sha, onMain }) {
 /** Change only release metadata in the runner checkout, never commit a version bump. */
 export function stampVersion(root, version) {
   baseVersion(version);
-  const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json'];
+  const files = ['package.json', 'package-lock.json', 'paqvilo-lock.json'];
   const documents = files.map((file) => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
   if (documents[0].name !== 'paqvilo' || documents.some((document) => document.version !== documents[0].version))
     throw new Error('Package and lockfile versions must agree before stamping.');
@@ -95,7 +95,7 @@ export function verifyArchive(directory, version) {
       }),
     );
   const pkg = read('package.json'),
-    lock = read('npm-shrinkwrap.json');
+    lock = read('paqvilo-lock.json');
   if (
     pkg.name !== 'paqvilo' ||
     pkg.version !== version ||

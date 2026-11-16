@@ -7,14 +7,18 @@ import { npmCliPath } from './npm-cli.mjs';
 export { npmCliPath };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const projects = [
+export const auditedProjects = Object.freeze([
   '.',
   'mirage',
   'examples/company-operations',
   'mirage/test-sdk/tds',
   'mirage/test-sdk/dynamics-web-api',
   'mirage/test-sdk/cert-auth',
-];
+  'examples/project/components/pcf-dataset-control',
+  'examples/project/components/pcf-field-control',
+  'examples/project/components/pcf-field-types',
+  'examples/project/components/pcf-web-api-control',
+]);
 // Accepted findings (user decision 2026-10-31): GHSA-g3hv-75wg-m249 (minimatch <11.0.1) in the dev-only lint copy that
 // eslint-plugin-import-x 4.17.1 needs, since minimatch 11 removed its makeRe import; lint globs come from this repository.
 // The other lint packages are overridden to minimatch 11 (package.json). An entry stops matching, and the audit fails,
@@ -29,7 +33,7 @@ const accepted = [
   },
 ];
 const lockfileOf = (cwd, project) =>
-  JSON.parse(fs.readFileSync(path.join(cwd, project === '.' ? 'npm-shrinkwrap.json' : 'package-lock.json'), 'utf8'));
+  JSON.parse(fs.readFileSync(path.join(cwd, project === '.' ? 'paqvilo-lock.json' : 'package-lock.json'), 'utf8'));
 // The packages whose installed dependency on `name` resolves to the hoisted node_modules/<name>.
 const dependentsOfHoisted = (lockfile, name) =>
   Object.entries(lockfile.packages ?? {})
@@ -61,7 +65,7 @@ export function acceptedFinding(project, name, finding, report, lockfile) {
 }
 function auditProject(project, cli) {
   const cwd = path.resolve(root, project);
-  if (!fs.existsSync(path.join(cwd, project === '.' ? 'npm-shrinkwrap.json' : 'package-lock.json')))
+  if (!fs.existsSync(path.join(cwd, project === '.' ? 'paqvilo-lock.json' : 'package-lock.json')))
     throw new Error(`Missing lockfile in ${project}.`);
   const result = spawnSync(process.execPath, [cli, 'audit', '--json'], {
     cwd,
@@ -98,7 +102,7 @@ function main() {
   const cli = npmCliPath();
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
   let failed = false;
-  for (const project of projects) {
+  for (const project of auditedProjects) {
     if (auditProject(project, cli)) failed = true;
   }
   process.exitCode = failed ? 1 : 0;

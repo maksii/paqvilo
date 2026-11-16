@@ -176,7 +176,7 @@ test(label, () => appendFileSync(process.env.MARKER, label + '\n'));
 import { syncBuiltinESMExports } from 'node:module';
 const originalSpawnSync = childProcess.spawnSync;
 childProcess.spawnSync = (command, args, options) => command === 'dotnet' && args?.[0] === '--version'
-  ? { status: 0, stdout: '10.0.114\\n', stderr: '', pid: process.pid }
+  ? { status: 0, stdout: '11.0.100\\n', stderr: '', pid: process.pid }
   : originalSpawnSync(command, args, options);
 syncBuiltinESMExports();
 Object.defineProperty(process, 'platform', { value: 'linux' });

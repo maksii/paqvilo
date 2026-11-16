@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
@@ -35,7 +35,7 @@ jobs:
     name: Dependency review
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.dependencies == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -49,7 +49,7 @@ jobs:
     name: CodeQL (${{ matrix.language }})
     needs: changes
     if: needs.changes.outputs.codeql == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -79,7 +79,7 @@ jobs:
       - changes
       - dependency-review
       - codeql
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read

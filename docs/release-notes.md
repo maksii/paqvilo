@@ -458,6 +458,9 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 
 ### Upgrade notes
 
+- Node.js 26.13.1 or a newer 26.x LTS release is required. Contributors use npm 12.2.2,
+  .NET SDK 11.0.100 and Python 3.15. See the [dependency audit](dependency-upgrades.md)
+  for the migration details and compatibility constraints.
 - Tracing is on at `summary`. Set `mirage.trace.level: off` to turn it off.
 - Source and implementation fingerprints change once, because source files are read in code-unit name order. Saved
   native network baseline observations report `NATIVE_BASELINE_SOURCE_CHANGED` and must be captured again; saved

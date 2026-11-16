@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Dataverse SDK wire contracts (https://learn.microsoft.com/power-apps/developer/data-platform/webapi/overview) and OAuth client assertions (RFC 7523).
 // SDK verification gate: Microsoft.PowerPlatform.Dataverse.Client 1.2.27 (ServiceClient) against the simulated
 // Dataverse API. ServiceClient drops the port from the URL, so the simulator listens on a per-run loopback address at :80.
 // Two passes over one simulator: "soap" (UseWebApi=false, CRUD and messages on /XRMServices/2011/Organization.svc/web)
@@ -17,7 +18,7 @@ import { startGate, clientCredentialsToken } from '../harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const project = path.join(here, 'Gate', 'Gate.csproj');
-const exe = path.join(here, 'Gate', 'bin', 'Release', 'net10.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
+const exe = path.join(here, 'Gate', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
 const ORG_CURRENT = [
   "/api/data/v9.0/RetrieveCurrentOrganization(AccessType='Default')",
   '/api/data/v9.0/RetrieveCurrentOrganization(AccessType=%27Default%27)',

@@ -13,12 +13,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // The bundle github/codeql-action@<action> installs (its src/defaults.json), with the release asset digests.
 export const CODEQL_BUNDLE = {
-  action: '9b3254085494b55a0f7c4c2b3d2d52cc712ce370',
-  version: '2.27.3',
+  action: '33d7b85da1a04171e211befe2c739303b9a4c066',
+  version: '2.27.4',
   assets: {
-    win32: ['codeql-bundle-win64.tar.gz', 'b1a54af0e0657bc8dd2201474373aae6cee72c20d820a3a89423013f2465533d'],
-    linux: ['codeql-bundle-linux64.tar.gz', '64518dc413c8e7b5733fee2489e830a899bb1e3f28c8873b5869d5cc90164c5c'],
-    darwin: ['codeql-bundle-osx64.tar.gz', '5a035e81cd8c76622d0e453d1d5197cfee46177f171d623f15fbb560a0b2b215'],
+    win32: ['codeql-bundle-win64.tar.gz', 'd67fead75936c55a241d26c25342747b07f94664b104f719dfe291b665508c4d'],
+    linux: ['codeql-bundle-linux64.tar.gz', '89ed56c8ec6bfccef6a0d2e7fe86da0469ca24b4db08b88016ec134b942c17a4'],
+    darwin: ['codeql-bundle-osx64.tar.gz', 'cfdf539260af57a18b50e56909ed94721844a99b195a1e492a9d901aae2899e5'],
   },
 };
 

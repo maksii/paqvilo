@@ -6,7 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
 import { chromium } from 'playwright-core';
-import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
+import { captureLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 import { miragePaths, discoveries, samePath } from '../lense/commands/mirage.mjs';
 import { createSimulator } from './server.mjs';
@@ -34,24 +34,6 @@ export function captureCdpUrl(value) {
 // The profile removal retries without blocking the event loop, up to 11 s of linear backoff.
 const removeProfile = (directory) =>
   fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-
-/** Launch options of the anonymous capture browser. */
-function captureLaunchOptions(channel, port, platform = process.platform) {
-  const options = windowsLaunchOptions(
-    {
-      headless: true,
-      timeout: BROWSER_HANG_GUARD_MS,
-      ...(channel !== 'chromium' ? { channel } : {}),
-      args: [`--remote-debugging-port=${port}`],
-    },
-    platform,
-  );
-  // On Windows, Edge signs a new profile into the Windows Microsoft account ("implicit sign-in") and adds that
-  // account's msn.com/bing.com cookies within seconds. The capture profile must stay anonymous. The feature
-  // joins the one --disable-features switch (args[0]) so the backported defaults stay in effect.
-  if (platform === 'win32') options.args[0] += ',msImplicitSignin';
-  return options;
-}
 
 /** An anonymous headless browser with a loopback CDP port; close() removes its owned temporary profile. */
 export async function launchCaptureBrowser(channel) {

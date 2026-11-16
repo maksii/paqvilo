@@ -21,6 +21,8 @@ import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { ownDrainedServers } from './helpers/owned-server.mjs';
 import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
+import { workflowSteps } from '../test/helpers/workflow-step.mjs';
+import { operationBudget } from '../test/helpers/operation-budget.mjs';
 
 const APP = 'web-files/app.js';
 const CSS = 'web-files/theme.css';
@@ -149,372 +151,454 @@ test('headless checks preserve the saved headed window placement in owned and se
 const toolkitProfile = (work, channel, name) =>
   channel === 'msedge' ? path.join(work, 'profiles', name) : path.join(work, 'profiles', 'default', channel, name);
 
-test('one catalogue browser isolates lazy portal sessions, environments, panels, APIs and source refreshes', async (t) => {
-  const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-portal-'));
-  const alpha = createFixture();
-  const beta = createFixture();
-  const servers = [];
-  let browser;
-  let runtime;
-  const launches = [];
-  const launch = chromium.launchPersistentContext;
-  ownedFixture(t).add(async () => {
-    chromium.launchPersistentContext = launch;
-  });
-  ownedFixture(t).add(async () => {
-    await runtime?.close();
-  });
-  ownedFixture(t).add(async () => {
-    await browser?.close();
-  });
-  ownDrainedServers(t, servers);
-  ownedFixture(t).remove(async () => {
-    alpha.cleanup();
-  });
-  ownedFixture(t).remove(async () => {
-    beta.cleanup();
-  });
-  ownedFixture(t).remove(async () => {
-    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
-  });
-  const [alphaDev, alphaTest, betaDev, betaExtra, foreign] = await Promise.all(
-    ['alpha-dev', 'alpha-test', 'beta-dev', 'beta-extra', 'foreign'].map((name) => serve(name, servers)),
-  );
-  for (const [fixture, name, color] of [
-    [alpha, 'alpha-v1', 'rgb(10, 20, 30)'],
-    [beta, 'beta-v1', 'rgb(40, 50, 60)'],
-  ]) {
-    fixture.write(APP, script(name));
-    fixture.write(CSS, style(color));
-    fixture.write(
-      `${CSS}.webfile.yml`,
-      `adx_name: theme.css\nadx_partialurl: theme.css\nadx_parentpageid: ${HOME_ID}\nfilename: theme.css\n`,
-    );
-  }
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  const config = path.join(work, 'paqvilo.config.yml');
-  fs.writeFileSync(
-    config,
-    JSON.stringify(
-      {
-        defaultSite: 'alpha',
-        browser: { channel, headless: true, debugPort: 0, profileDir: 'profiles' },
-        defaults: { scope: 'all' },
-        sites: {
-          alpha: {
-            source: alpha.dir,
-            defaultEnv: 'dev',
-            environments: { dev: alphaDev.origin, test: alphaTest.origin },
-          },
-          beta: { source: beta.dir, defaultEnv: 'dev', environments: { dev: betaDev.origin } },
-        },
+const CATALOGUE_OPERATIONS = 16;
+const OPERATION_GUARD_MS = 300_000;
+
+test(
+  'one catalogue browser isolates lazy portal sessions, environments, panels, APIs and source refreshes',
+  { timeout: operationBudget(CATALOGUE_OPERATIONS, OPERATION_GUARD_MS) },
+  async (t) => {
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-portal-'));
+    const alpha = createFixture();
+    const beta = createFixture();
+    const servers = [];
+    let browser;
+    let runtime;
+    const stopped = new AbortController();
+    const step = workflowSteps(t, {
+      guardMs: OPERATION_GUARD_MS,
+      operations: CATALOGUE_OPERATIONS,
+      abort: async () => {
+        stopped.abort();
+        if (!browser) return false;
+        await browser.close();
+        return true;
       },
-      null,
-      2,
-    ),
-  );
-  fs.writeFileSync(path.join(work, '.env'), `PAQVILO_PORTALS=all\nPAQVILO_BETA_ENV_EXTRA=${betaExtra.origin}\n`);
-  const selection = await loadDevTargets({ config }, {});
-  assert.equal(selection.mode, 'all');
-  assert.equal(selection.targets.length, 4, 'the per-site .env origin joins the catalogue');
-  assert.deepEqual(
-    new Set(selection.targets.map((cfg) => cfg.origin)),
-    new Set([alphaDev.origin, alphaTest.origin, betaDev.origin, betaExtra.origin]),
-  );
-  assert.equal(
-    selection.initial,
-    selection.targets.find((cfg) => cfg.origin === alphaDev.origin),
-  );
-  chromium.launchPersistentContext = async function (profileDir, options) {
-    launches.push(profileDir);
-    return launch.call(this, profileDir, {
-      ...options,
-      proxy: { server: foreign.origin, bypass: '127.0.0.1,localhost' },
-      args: [
-        ...options.args,
-        '--disable-background-networking',
-        '--disable-component-update',
-        '--disable-sync',
-        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-      ],
     });
-  };
-  browser = await openBrowser(selection.initial);
-  chromium.launchPersistentContext = launch;
-  assert.equal(launches.length, 1);
-  assert.equal(
-    launches[0],
-    toolkitProfile(work, channel, 'catalogue'),
-    'all-portal mode uses a dedicated catalogue profile',
-  );
-  const { context } = browser;
-  const contextPageListeners = context.listenerCount('page');
-  const errors = [];
-  const observe = (page) => page.on('pageerror', (error) => errors.push(error.message));
-  context.pages().forEach(observe);
-  context.on('page', observe);
-  const logs = [];
-  runtime = await startDevSessions(context, selection, { log: (line) => logs.push(line), debugPort: null });
-  assert.deepEqual(
-    [...runtime.active.keys()],
-    [alphaDev.origin],
-    'only the selected source is initialized before a portal is visited',
-  );
-  assert.ok(
-    [alphaDev, alphaTest, betaDev, betaExtra, foreign].every((fixture) => fixture.requests.length === 0),
-    'registering the catalogue never visits environments',
-  );
-  const main = context.pages()[0] ?? (await context.newPage());
-  const assertPortal = async (page, fixture, value, color) => {
-    try {
-      await page.waitForFunction((expected) => window.localSite === expected, value);
-    } catch (cause) {
-      let timer;
-      const observed = await Promise.race([
-        page
-          .evaluate(() => ({
-            localSite: window.localSite,
-            readyState: document.readyState,
-            draftTrackers: Object.getOwnPropertyNames(window)
-              .filter((name) => name.startsWith('__paqviloLateDraft_') && !name.endsWith('Changed'))
-              .map((name) => ({
-                dirty: window[name]?.dirty?.(),
-                binding: typeof window[name + 'Changed'],
-              })),
-          }))
-          .catch(() => ({ unavailable: true })),
-        new Promise((resolve) => {
-          timer = setTimeout(resolve, 2000, { unavailable: true });
-        }),
-      ]).finally(() => clearTimeout(timer));
-      throw new Error(
-        `Local source readiness failed: ${JSON.stringify({ fixture: fixture.name, expected: value, observed, warnings: logs.filter((line) => /WARN|ERROR/.test(line)).slice(-8) })}`,
-        { cause },
+    const launches = [];
+    const launch = chromium.launchPersistentContext;
+    ownedFixture(t).add(async () => {
+      chromium.launchPersistentContext = launch;
+    });
+    ownedFixture(t).add(async () => {
+      await runtime?.close();
+    });
+    ownedFixture(t).add(async () => {
+      await browser?.close();
+    });
+    ownDrainedServers(t, servers);
+    ownedFixture(t).remove(async () => {
+      alpha.cleanup();
+    });
+    ownedFixture(t).remove(async () => {
+      beta.cleanup();
+    });
+    ownedFixture(t).remove(async () => {
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+    });
+    const [alphaDev, alphaTest, betaDev, betaExtra, foreign] = await step(
+      'start the five loopback fixture origins',
+      () =>
+        Promise.all(
+          ['alpha-dev', 'alpha-test', 'beta-dev', 'beta-extra', 'foreign'].map((name) => serve(name, servers)),
+        ),
+    );
+    for (const [fixture, name, color] of [
+      [alpha, 'alpha-v1', 'rgb(10, 20, 30)'],
+      [beta, 'beta-v1', 'rgb(40, 50, 60)'],
+    ]) {
+      fixture.write(APP, script(name));
+      fixture.write(CSS, style(color));
+      fixture.write(
+        `${CSS}.webfile.yml`,
+        `adx_name: theme.css\nadx_partialurl: theme.css\nadx_parentpageid: ${HOME_ID}\nfilename: theme.css\n`,
       );
     }
-    await page.waitForFunction(
-      (label) => document.getElementById('paqvilo-panel')?.dataset.label === label,
-      fixture.name.replace(/-(dev|test|extra)$/, ' @ $1'),
+    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+    const config = path.join(work, 'paqvilo.config.yml');
+    fs.writeFileSync(
+      config,
+      JSON.stringify(
+        {
+          defaultSite: 'alpha',
+          browser: { channel, headless: true, debugPort: 0, profileDir: 'profiles' },
+          defaults: { scope: 'all' },
+          sites: {
+            alpha: {
+              source: alpha.dir,
+              defaultEnv: 'dev',
+              environments: { dev: alphaDev.origin, test: alphaTest.origin },
+            },
+            beta: { source: beta.dir, defaultEnv: 'dev', environments: { dev: betaDev.origin } },
+          },
+        },
+        null,
+        2,
+      ),
     );
-    assert.equal(await page.locator('#paqvilo-panel').count(), 1, 'one current panel owns the page');
-    assert.equal(await page.locator('#theme').evaluate((node) => getComputedStyle(node).color), color);
-  };
-  await main.goto(alphaDev.origin, { waitUntil: 'load' });
-  await assertPortal(main, alphaDev, 'alpha-v1', 'rgb(10, 20, 30)');
-  await main.locator('#paqvilo-panel .pill').click();
-  const switcher = main.getByLabel('Portal / environment');
-  assert.equal(await switcher.locator('option').count(), 4);
-  assert.ok(
-    (await switcher.locator('option').allTextContents()).includes('beta @ extra'),
-    'the .env-added environment is selectable in the panel',
-  );
-  await Promise.all([
-    main.waitForNavigation({ waitUntil: 'load' }),
-    switcher.selectOption({ label: 'beta @ dev' }).then(() => main.locator('[data-target-go]').click()),
-  ]);
-  await assertPortal(main, betaDev, 'beta-v1', 'rgb(40, 50, 60)');
-  assert.equal(runtime.active.size, 2, 'navigation in an existing tab activates its matching source');
-  await main.goto(alphaDev.origin, { waitUntil: 'load' });
-  await assertPortal(main, alphaDev, 'alpha-v1', 'rgb(10, 20, 30)');
-  const popupPromise = main.waitForEvent('popup');
-  await main.evaluate((url) => window.open(url, '_blank'), alphaTest.origin);
-  const popup = await popupPromise;
-  await assertPortal(popup, alphaTest, 'alpha-v1', 'rgb(10, 20, 30)');
-  const [betaPage, extraOne, extraTwo] = await Promise.all([context.newPage(), context.newPage(), context.newPage()]);
-  await Promise.all([betaPage.goto(betaDev.origin), extraOne.goto(betaExtra.origin), extraTwo.goto(betaExtra.origin)]);
-  await Promise.all([
-    assertPortal(betaPage, betaDev, 'beta-v1', 'rgb(40, 50, 60)'),
-    assertPortal(extraOne, betaExtra, 'beta-v1', 'rgb(40, 50, 60)'),
-    assertPortal(extraTwo, betaExtra, 'beta-v1', 'rgb(40, 50, 60)'),
-  ]);
-  assert.equal(runtime.active.size, 4, 'concurrent visits share one activation per origin');
-  const foreignPage = await context.newPage();
-  await foreignPage.goto(foreign.origin, { waitUntil: 'load' });
-  assert.equal(await foreignPage.evaluate(() => window.localSite), 'online-foreign');
-  assert.equal(await foreignPage.locator('#paqvilo-panel').count(), 0);
-  assert.equal(runtime.active.size, 4);
-
-  const alphaRecord = runtime.active.get(alphaDev.origin);
-  const alphaTestRecord = runtime.active.get(alphaTest.origin);
-  const betaRecord = runtime.active.get(betaDev.origin);
-  const extraRecord = runtime.active.get(betaExtra.origin);
-  const generations = new Map();
-  for (const page of [main, popup, betaPage, extraOne, extraTwo, foreignPage]) {
-    generations.set(page, 0);
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) generations.set(page, generations.get(page) + 1);
-    });
-    await page.evaluate(() => {
-      window.keepOnCssSwap = true;
-    });
-  }
-  const refreshed = (record) => once(record.session, 'refreshed');
-  const cssRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
-  alpha.write(CSS, style('rgb(70, 80, 90)'));
-  for (const [event] of await Promise.all(cssRefreshes)) assert.equal(event.how, 'css');
-  for (const [page, fixture] of [
-    [main, alphaDev],
-    [popup, alphaTest],
-  ]) {
-    await page.waitForFunction(() => getComputedStyle(document.getElementById('theme')).color === 'rgb(70, 80, 90)');
-    await assertPortal(page, fixture, 'alpha-v1', 'rgb(70, 80, 90)');
-    assert.equal(await page.evaluate(() => window.keepOnCssSwap), true);
-  }
-  assert.ok(
-    [...generations.values()].every((count) => count === 0),
-    'CSS saves do not navigate any portal or foreign tab',
-  );
-  const jsRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
-  alpha.write(APP, script('alpha-v2'));
-  for (const [event] of await Promise.all(jsRefreshes)) assert.equal(event.how, 'reload');
-  await Promise.all([
-    assertPortal(main, alphaDev, 'alpha-v2', 'rgb(70, 80, 90)'),
-    assertPortal(popup, alphaTest, 'alpha-v2', 'rgb(70, 80, 90)'),
-  ]);
-  assert.ok(generations.get(main) > 0 && generations.get(popup) > 0);
-  for (const page of [betaPage, extraOne, extraTwo, foreignPage])
-    assert.equal(generations.get(page), 0, 'a different source save never reloads this page');
-
-  const panelCall = (page, token, body) =>
-    page.evaluate(
-      async ({ token, body }) => {
-        const response = await fetch('/__paqvilo/api/mode', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-paqvilo-token': token },
-          body: JSON.stringify(body),
-        });
-        return { status: response.status, body: await response.json() };
-      },
-      { token, body },
+    fs.writeFileSync(path.join(work, '.env'), `PAQVILO_PORTALS=all\nPAQVILO_BETA_ENV_EXTRA=${betaExtra.origin}\n`);
+    const selection = await step('load all catalogue targets including the configured environment', () =>
+      loadDevTargets({ config }, {}),
     );
-  assert.equal(
-    (await panelCall(betaPage, alphaRecord.panel.stateFor(main).token, { online: true })).status,
-    403,
-    'a different portal panel token is refused',
-  );
-  assert.equal(betaRecord.session.bypass, false);
-  assert.equal((await panelCall(betaPage, betaRecord.panel.stateFor(betaPage).token, { online: true })).body.ok, true);
-  await betaPage.goto(betaDev.origin, { waitUntil: 'load' });
-  await assertPortal(betaPage, betaDev, 'online-beta-dev', 'rgb(1, 2, 3)');
-  assert.equal(
-    extraRecord.session.bypass,
-    false,
-    'online/local mode is independent between environments sharing sources',
-  );
-  await assertPortal(extraOne, betaExtra, 'beta-v1', 'rgb(40, 50, 60)');
-  assert.equal(alphaRecord.session.bypass, false);
-  assert.equal((await panelCall(betaPage, betaRecord.panel.stateFor(betaPage).token, { online: false })).body.ok, true);
-  await betaPage.goto(betaDev.origin, { waitUntil: 'load' });
-  await assertPortal(betaPage, betaDev, 'beta-v1', 'rgb(40, 50, 60)');
-
-  const alphaGenerations = [generations.get(main), generations.get(popup)];
-  const betaRefreshes = [refreshed(betaRecord), refreshed(extraRecord)];
-  beta.write(APP, script('beta-v2'));
-  for (const [event] of await Promise.all(betaRefreshes)) assert.equal(event.how, 'reload');
-  await Promise.all([
-    assertPortal(betaPage, betaDev, 'beta-v2', 'rgb(40, 50, 60)'),
-    assertPortal(extraOne, betaExtra, 'beta-v2', 'rgb(40, 50, 60)'),
-    assertPortal(extraTwo, betaExtra, 'beta-v2', 'rgb(40, 50, 60)'),
-  ]);
-  assert.deepEqual(
-    [generations.get(main), generations.get(popup)],
-    alphaGenerations,
-    'a lazily activated source refresh leaves the first site alone',
-  );
-  assert.equal(generations.get(foreignPage), 0);
-
-  const discoveries = [];
-  for (const [origin, record] of runtime.active) {
-    assert.ok(record.agent, 'each initialized portal exposes its own bounded agent API');
-    const discovery = await readDiscovery(record.agent.discoveryFile);
-    assert.equal(discovery.endpoint, record.agent.endpoint);
-    discoveries.push({ file: record.agent.discoveryFile, ...discovery });
-    const pages = await (
-      await fetch(discovery.endpoint + '/v1/pages', {
-        redirect: 'error',
-        headers: { authorization: `Bearer ${discovery.token}` },
-      })
-    ).json();
-    assert.ok(pages.pages.length > 0);
-    assert.ok(
-      pages.pages.every((page) => new URL(page.url).origin === origin),
-      'agent discovery sees only its configured origin',
-    );
-    const status = await (
-      await fetch(discovery.endpoint + '/v1/session', {
-        redirect: 'error',
-        headers: { authorization: `Bearer ${discovery.token}` },
-      })
-    ).json();
-    assert.equal(status.browserScope.mode, 'all');
-    assert.equal(status.browserScope.stopScope, 'browser');
+    assert.equal(selection.mode, 'all');
+    assert.equal(selection.targets.length, 4, 'the per-site .env origin joins the catalogue');
     assert.deepEqual(
-      new Set(status.browserScope.targets.map((target) => target.origin)),
-      new Set(selection.targets.map((target) => target.origin)),
+      new Set(selection.targets.map((cfg) => cfg.origin)),
+      new Set([alphaDev.origin, alphaTest.origin, betaDev.origin, betaExtra.origin]),
     );
-  }
-  const refusedAgent = await fetch(discoveries[1].endpoint + '/v1/session', {
-    redirect: 'error',
-    headers: { authorization: `Bearer ${discoveries[0].token}` },
-  });
-  assert.equal(refusedAgent.status, 401);
-  assert.deepEqual(errors, []);
-  assert.ok(
-    !logs.some((line) => /\bERROR\b/.test(line)),
-    'no target setup or watcher errors were hidden by another portal',
-  );
-  assert.ok(
-    [alphaDev, alphaTest, betaDev, betaExtra, foreign].every((fixture) =>
-      fixture.requests.every((request) => request.method === 'GET' && !request.pathname.startsWith('/__paqvilo/')),
-    ),
-    'all business-origin traffic is GET and panel endpoints stay local',
-  );
-  const activeCount = runtime.active.size;
-  await runtime.close();
-  await runtime.close();
-  runtime = null;
-  for (const page of [main, popup, betaPage, extraOne, extraTwo, foreignPage])
-    assert.equal(await page.locator('#paqvilo-panel').count(), 0, 'teardown removes every target panel');
-  for (const discovery of discoveries) assert.equal(fs.existsSync(discovery.file), false, 'agent discovery is removed');
-  for (const discovery of discoveries)
-    assert.equal(await servesAgentSession(discovery), false, 'agent API listener is closed');
-  context.off('page', observe);
-  assert.equal(
-    context.listenerCount('page'),
-    contextPageListeners,
-    'session teardown releases catalogue page listeners',
-  );
-  await main.goto(alphaDev.origin, { waitUntil: 'load' });
-  assert.equal(
-    await main.evaluate(() => window.localSite),
-    'online-alpha-dev',
-    'detached pages use server resources again',
-  );
-  fs.writeFileSync(
-    syntheticEvidencePath(
-      fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
-      'multi-portal-round',
-      'acceptance.json',
-    ),
-    JSON.stringify(
-      {
-        configuredOrigins: selection.targets.length,
-        activatedOrigins: activeCount,
-        sites: ['alpha', 'beta'],
-        envAddedOrigin: true,
-        navigationAndPopup: true,
-        samePathResourceIsolation: true,
-        selectiveReload: true,
-        independentMode: true,
-        isolatedAgentApis: discoveries.length,
-        cleanup: true,
-        errors,
-      },
-      null,
-      2,
-    ),
-  );
-});
+    assert.equal(
+      selection.initial,
+      selection.targets.find((cfg) => cfg.origin === alphaDev.origin),
+    );
+    chromium.launchPersistentContext = async function (profileDir, options) {
+      launches.push(profileDir);
+      return launch.call(this, profileDir, {
+        ...options,
+        proxy: { server: foreign.origin, bypass: '127.0.0.1,localhost' },
+        args: [
+          ...options.args,
+          '--disable-background-networking',
+          '--disable-component-update',
+          '--disable-sync',
+          '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+        ],
+      });
+    };
+    browser = await step('open the dedicated catalogue browser', async (signal) => {
+      const opened = await openBrowser(selection.initial);
+      if (signal.aborted) {
+        await opened.close();
+        signal.throwIfAborted();
+      }
+      return opened;
+    });
+    chromium.launchPersistentContext = launch;
+    assert.equal(launches.length, 1);
+    assert.equal(
+      launches[0],
+      toolkitProfile(work, channel, 'catalogue'),
+      'all-portal mode uses a dedicated catalogue profile',
+    );
+    const { context } = browser;
+    const contextPageListeners = context.listenerCount('page');
+    const errors = [];
+    const observe = (page) => page.on('pageerror', (error) => errors.push(error.message));
+    context.pages().forEach(observe);
+    context.on('page', observe);
+    const logs = [];
+    runtime = await step('initialize only the selected catalogue source', async (signal) => {
+      const started = await startDevSessions(context, selection, { log: (line) => logs.push(line), debugPort: null });
+      if (signal.aborted) {
+        await started.close();
+        signal.throwIfAborted();
+      }
+      return started;
+    });
+    assert.deepEqual(
+      [...runtime.active.keys()],
+      [alphaDev.origin],
+      'only the selected source is initialized before a portal is visited',
+    );
+    assert.ok(
+      [alphaDev, alphaTest, betaDev, betaExtra, foreign].every((fixture) => fixture.requests.length === 0),
+      'registering the catalogue never visits environments',
+    );
+    const main = await step(
+      'select the initial blank catalogue tab',
+      async () => context.pages()[0] ?? (await context.newPage()),
+    );
+    const assertPortal = async (page, fixture, value, color) => {
+      try {
+        await page.waitForFunction((expected) => window.localSite === expected, value);
+      } catch (cause) {
+        let timer;
+        const observed = await Promise.race([
+          page
+            .evaluate(() => ({
+              localSite: window.localSite,
+              readyState: document.readyState,
+              draftTrackers: Object.getOwnPropertyNames(window)
+                .filter((name) => name.startsWith('__paqviloLateDraft_') && !name.endsWith('Changed'))
+                .map((name) => ({
+                  dirty: window[name]?.dirty?.(),
+                  binding: typeof window[name + 'Changed'],
+                })),
+            }))
+            .catch(() => ({ unavailable: true })),
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, 2000, { unavailable: true });
+          }),
+        ]).finally(() => clearTimeout(timer));
+        throw new Error(
+          `Local source readiness failed: ${JSON.stringify({ fixture: fixture.name, expected: value, observed, warnings: logs.filter((line) => /WARN|ERROR/.test(line)).slice(-8) })}`,
+          { cause },
+        );
+      }
+      await page.waitForFunction(
+        (label) => document.getElementById('paqvilo-panel')?.dataset.label === label,
+        fixture.name.replace(/-(dev|test|extra)$/, ' @ $1'),
+      );
+      assert.equal(await page.locator('#paqvilo-panel').count(), 1, 'one current panel owns the page');
+      assert.equal(await page.locator('#theme').evaluate((node) => getComputedStyle(node).color), color);
+    };
+    let switcher;
+    await step('observe local initial application and catalogue choices', async () => {
+      await main.goto(alphaDev.origin, { waitUntil: 'load' });
+      await assertPortal(main, alphaDev, 'alpha-v1', 'rgb(10, 20, 30)');
+      await main.locator('#paqvilo-panel .pill').click();
+      switcher = main.getByLabel('Portal / environment');
+      assert.equal(await switcher.locator('option').count(), 4);
+      assert.ok(
+        (await switcher.locator('option').allTextContents()).includes('beta @ extra'),
+        'the .env-added environment is selectable in the panel',
+      );
+    });
+    await step('activate another source through the catalogue switcher', async () => {
+      await Promise.all([
+        main.waitForNavigation({ waitUntil: 'load' }),
+        switcher.selectOption({ label: 'beta @ dev' }).then(() => main.locator('[data-target-go]').click()),
+      ]);
+      await assertPortal(main, betaDev, 'beta-v1', 'rgb(40, 50, 60)');
+      assert.equal(runtime.active.size, 2, 'navigation in an existing tab activates its matching source');
+    });
+    let popup;
+    await step('activate the alternate environment through a popup', async () => {
+      await main.goto(alphaDev.origin, { waitUntil: 'load' });
+      await assertPortal(main, alphaDev, 'alpha-v1', 'rgb(10, 20, 30)');
+      const popupPromise = main.waitForEvent('popup');
+      await main.evaluate((url) => window.open(url, '_blank'), alphaTest.origin);
+      popup = await popupPromise;
+      await assertPortal(popup, alphaTest, 'alpha-v1', 'rgb(10, 20, 30)');
+    });
+    let betaPage, extraOne, extraTwo, foreignPage;
+    await step('activate concurrent matching tabs and exclude the foreign origin', async () => {
+      [betaPage, extraOne, extraTwo] = await Promise.all([context.newPage(), context.newPage(), context.newPage()]);
+      await Promise.all([
+        betaPage.goto(betaDev.origin),
+        extraOne.goto(betaExtra.origin),
+        extraTwo.goto(betaExtra.origin),
+      ]);
+      await Promise.all([
+        assertPortal(betaPage, betaDev, 'beta-v1', 'rgb(40, 50, 60)'),
+        assertPortal(extraOne, betaExtra, 'beta-v1', 'rgb(40, 50, 60)'),
+        assertPortal(extraTwo, betaExtra, 'beta-v1', 'rgb(40, 50, 60)'),
+      ]);
+      assert.equal(runtime.active.size, 4, 'concurrent visits share one activation per origin');
+      foreignPage = await context.newPage();
+      await foreignPage.goto(foreign.origin, { waitUntil: 'load' });
+      assert.equal(await foreignPage.evaluate(() => window.localSite), 'online-foreign');
+      assert.equal(await foreignPage.locator('#paqvilo-panel').count(), 0);
+      assert.equal(runtime.active.size, 4);
+    });
+    const alphaRecord = runtime.active.get(alphaDev.origin);
+    const alphaTestRecord = runtime.active.get(alphaTest.origin);
+    const betaRecord = runtime.active.get(betaDev.origin);
+    const extraRecord = runtime.active.get(betaExtra.origin);
+    const generations = new Map();
+    await step('record the initial document generation for every tab', async () => {
+      for (const page of [main, popup, betaPage, extraOne, extraTwo, foreignPage]) {
+        generations.set(page, 0);
+        page.on('framenavigated', (frame) => {
+          if (frame === page.mainFrame()) generations.set(page, generations.get(page) + 1);
+        });
+        await page.evaluate(() => {
+          window.keepOnCssSwap = true;
+        });
+      }
+    });
+    const refreshed = (record) => once(record.session, 'refreshed', { signal: stopped.signal });
+    await step('apply CSS to matching environments without navigation', async () => {
+      const cssRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
+      alpha.write(CSS, style('rgb(70, 80, 90)'));
+      for (const [event] of await Promise.all(cssRefreshes)) assert.equal(event.how, 'css');
+      for (const [page, fixture] of [
+        [main, alphaDev],
+        [popup, alphaTest],
+      ]) {
+        await page.waitForFunction(
+          () => getComputedStyle(document.getElementById('theme')).color === 'rgb(70, 80, 90)',
+        );
+        await assertPortal(page, fixture, 'alpha-v1', 'rgb(70, 80, 90)');
+        assert.equal(await page.evaluate(() => window.keepOnCssSwap), true);
+      }
+      assert.ok(
+        [...generations.values()].every((count) => count === 0),
+        'CSS saves do not navigate any portal or foreign tab',
+      );
+    });
+    await step('reload JavaScript only in matching source tabs', async () => {
+      const jsRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
+      alpha.write(APP, script('alpha-v2'));
+      for (const [event] of await Promise.all(jsRefreshes)) assert.equal(event.how, 'reload');
+      await Promise.all([
+        assertPortal(main, alphaDev, 'alpha-v2', 'rgb(70, 80, 90)'),
+        assertPortal(popup, alphaTest, 'alpha-v2', 'rgb(70, 80, 90)'),
+      ]);
+      assert.ok(generations.get(main) > 0 && generations.get(popup) > 0);
+      for (const page of [betaPage, extraOne, extraTwo, foreignPage])
+        assert.equal(generations.get(page), 0, 'a different source save never reloads this page');
+    });
+    const panelCall = (page, token, body) =>
+      page.evaluate(
+        async ({ token, body }) => {
+          const response = await fetch('/__paqvilo/api/mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-paqvilo-token': token },
+            body: JSON.stringify(body),
+          });
+          return { status: response.status, body: await response.json() };
+        },
+        { token, body },
+      );
+    await step('refuse foreign tokens and keep source modes independent', async () => {
+      assert.equal(
+        (await panelCall(betaPage, alphaRecord.panel.stateFor(main).token, { online: true })).status,
+        403,
+        'a different portal panel token is refused',
+      );
+      assert.equal(betaRecord.session.bypass, false);
+      assert.equal(
+        (await panelCall(betaPage, betaRecord.panel.stateFor(betaPage).token, { online: true })).body.ok,
+        true,
+      );
+      await betaPage.goto(betaDev.origin, { waitUntil: 'load' });
+      await assertPortal(betaPage, betaDev, 'online-beta-dev', 'rgb(1, 2, 3)');
+      assert.equal(
+        extraRecord.session.bypass,
+        false,
+        'online/local mode is independent between environments sharing sources',
+      );
+      await assertPortal(extraOne, betaExtra, 'beta-v1', 'rgb(40, 50, 60)');
+      assert.equal(alphaRecord.session.bypass, false);
+      assert.equal(
+        (await panelCall(betaPage, betaRecord.panel.stateFor(betaPage).token, { online: false })).body.ok,
+        true,
+      );
+      await betaPage.goto(betaDev.origin, { waitUntil: 'load' });
+      await assertPortal(betaPage, betaDev, 'beta-v1', 'rgb(40, 50, 60)');
+    });
+    await step('refresh all lazily activated tabs without reloading other sources', async () => {
+      const alphaGenerations = [generations.get(main), generations.get(popup)];
+      const betaRefreshes = [refreshed(betaRecord), refreshed(extraRecord)];
+      beta.write(APP, script('beta-v2'));
+      for (const [event] of await Promise.all(betaRefreshes)) assert.equal(event.how, 'reload');
+      await Promise.all([
+        assertPortal(betaPage, betaDev, 'beta-v2', 'rgb(40, 50, 60)'),
+        assertPortal(extraOne, betaExtra, 'beta-v2', 'rgb(40, 50, 60)'),
+        assertPortal(extraTwo, betaExtra, 'beta-v2', 'rgb(40, 50, 60)'),
+      ]);
+      assert.deepEqual(
+        [generations.get(main), generations.get(popup)],
+        alphaGenerations,
+        'a lazily activated source refresh leaves the first site alone',
+      );
+      assert.equal(generations.get(foreignPage), 0);
+    });
+    const discoveries = [];
+    await step('verify bounded agent APIs origin confinement and read-only portal traffic', async () => {
+      for (const [origin, record] of runtime.active) {
+        assert.ok(record.agent, 'each initialized portal exposes its own bounded agent API');
+        const discovery = await readDiscovery(record.agent.discoveryFile);
+        assert.equal(discovery.endpoint, record.agent.endpoint);
+        discoveries.push({ file: record.agent.discoveryFile, ...discovery });
+        const pages = await (
+          await fetch(discovery.endpoint + '/v1/pages', {
+            redirect: 'error',
+            signal: stopped.signal,
+            headers: { authorization: `Bearer ${discovery.token}` },
+          })
+        ).json();
+        assert.ok(pages.pages.length > 0);
+        assert.ok(
+          pages.pages.every((page) => new URL(page.url).origin === origin),
+          'agent discovery sees only its configured origin',
+        );
+        const status = await (
+          await fetch(discovery.endpoint + '/v1/session', {
+            redirect: 'error',
+            signal: stopped.signal,
+            headers: { authorization: `Bearer ${discovery.token}` },
+          })
+        ).json();
+        assert.equal(status.browserScope.mode, 'all');
+        assert.equal(status.browserScope.stopScope, 'browser');
+        assert.deepEqual(
+          new Set(status.browserScope.targets.map((target) => target.origin)),
+          new Set(selection.targets.map((target) => target.origin)),
+        );
+      }
+      const refusedAgent = await fetch(discoveries[1].endpoint + '/v1/session', {
+        redirect: 'error',
+        signal: stopped.signal,
+        headers: { authorization: `Bearer ${discoveries[0].token}` },
+      });
+      assert.equal(refusedAgent.status, 401);
+      assert.deepEqual(errors, []);
+      assert.ok(
+        !logs.some((line) => /\bERROR\b/.test(line)),
+        'no target setup or watcher errors were hidden by another portal',
+      );
+      assert.ok(
+        [alphaDev, alphaTest, betaDev, betaExtra, foreign].every((fixture) =>
+          fixture.requests.every((request) => request.method === 'GET' && !request.pathname.startsWith('/__paqvilo/')),
+        ),
+        'all business-origin traffic is GET and panel endpoints stay local',
+      );
+    });
+    const activeCount = runtime.active.size;
+    await step('drain every target and verify listeners discovery and interception are removed', async () => {
+      await runtime.close();
+      await runtime.close();
+      runtime = null;
+      for (const page of [main, popup, betaPage, extraOne, extraTwo, foreignPage])
+        assert.equal(await page.locator('#paqvilo-panel').count(), 0, 'teardown removes every target panel');
+      for (const discovery of discoveries)
+        assert.equal(fs.existsSync(discovery.file), false, 'agent discovery is removed');
+      for (const discovery of discoveries)
+        assert.equal(
+          await servesAgentSession(discovery, { signal: stopped.signal }),
+          false,
+          'agent API listener is closed',
+        );
+      context.off('page', observe);
+      assert.equal(
+        context.listenerCount('page'),
+        contextPageListeners,
+        'session teardown releases catalogue page listeners',
+      );
+      await main.goto(alphaDev.origin, { waitUntil: 'load' });
+      assert.equal(
+        await main.evaluate(() => window.localSite),
+        'online-alpha-dev',
+        'detached pages use server resources again',
+      );
+    });
+    fs.writeFileSync(
+      syntheticEvidencePath(
+        fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+        'multi-portal-round',
+        'acceptance.json',
+      ),
+      JSON.stringify(
+        {
+          configuredOrigins: selection.targets.length,
+          activatedOrigins: activeCount,
+          sites: ['alpha', 'beta'],
+          envAddedOrigin: true,
+          navigationAndPopup: true,
+          samePathResourceIsolation: true,
+          selectiveReload: true,
+          independentMode: true,
+          isolatedAgentApis: discoveries.length,
+          cleanup: true,
+          errors,
+        },
+        null,
+        2,
+      ),
+    );
+  },
+);
 
 test('all-day navigation retains template edits after commit and recovers a restored checkout without restart', async (t) => {
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-all-day-'));

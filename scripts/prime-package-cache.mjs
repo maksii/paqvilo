@@ -1,5 +1,6 @@
 // Contributor bootstrap prepares the exact metadata needed by the offline tarball smoke test.
 import fs from 'node:fs';
+import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +35,7 @@ function removePreparation(directory) {
 function main() {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error('Run npm run setup:repo or npm run cache:package.');
-  const lock = JSON.parse(fs.readFileSync('npm-shrinkwrap.json', 'utf8'));
+  const lock = JSON.parse(fs.readFileSync('paqvilo-lock.json', 'utf8'));
   const example = JSON.parse(fs.readFileSync('examples/project/package.json', 'utf8'));
   const specs = cacheSpecs(lock, example);
   for (const spec of specs) {
@@ -74,9 +75,9 @@ function prepareConsumerCache(preparation, npmCli) {
       throw new Error(result.error?.message ?? `Cannot prepare consumer cache: ${result.stderr}`);
     return result.stdout;
   };
-  const packed = JSON.parse(
+  const packed = packedPackage(
     run(['pack', '--json', '--ignore-scripts', '--pack-destination', preparation], process.cwd()),
-  )[0];
+  );
   fs.writeFileSync(
     path.join(preparation, 'package.json'),
     JSON.stringify({
@@ -94,7 +95,7 @@ function prepareConsumerCache(preparation, npmCli) {
         .map((entry) => entry.resolved),
     ),
   ];
-  for (const archive of archives) run(['cache', 'add', archive], preparation);
+  for (const archive of archives) run(['cache', 'add', archive, '--allow-remote=root'], preparation);
   console.log(
     `Consumer package cache prepared for ${archives.length} resolved archives; subsequent smoke installs remain offline.`,
   );

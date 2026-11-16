@@ -23,12 +23,13 @@ try {
       samples: { type: 'string', default: '5' },
       implementation: { type: 'string' },
       json: { type: 'boolean' },
+      progress: { type: 'boolean' },
       help: { type: 'boolean' },
     },
   });
   if (values.help) {
     console.log(
-      'npm run benchmark -- --site <site> [--samples 1..20] [--json]\nOffline, read-only startup and unchanged-save timings. --implementation <src-directory> compares a saved implementation. Disk cache and concurrent work affect results.',
+      'npm run benchmark -- --site <site> [--samples 1..20] [--json] [--progress]\nOffline, read-only startup and unchanged-save timings. --progress reports completed work phases on stderr. --implementation <src-directory> compares a saved implementation. Disk cache and concurrent work affect results.',
     );
   } else {
     if (!/^\d+$/.test(values.samples) || Number(values.samples) < 1 || Number(values.samples) > 20)
@@ -39,18 +40,26 @@ try {
       : path.resolve(import.meta.dirname, '../lense');
     const { OverlaySession } = await import(pathToFileURL(path.join(root, 'session.mjs')).href);
     const sampleCount = Number(values.samples);
+    const progress = (phase, sample, status) => {
+      if (values.progress)
+        console.error(
+          JSON.stringify({ type: 'benchmark-progress', phase, sample: sample + 1, samples: sampleCount, status }),
+        );
+    };
     let session;
-    const timed = async (operation) => {
+    const timed = async (phase, operation) => {
       const values = [];
       for (let i = 0; i < sampleCount; i++) {
+        progress(phase, i, 'started');
         const started = performance.now();
         await operation();
         values.push(performance.now() - started);
+        progress(phase, i, 'complete');
       }
       return summarize(values);
     };
     const before = process.memoryUsage();
-    const startup = await timed(async () => {
+    const startup = await timed('startup', async () => {
       session =
         typeof OverlaySession.create === 'function' ? await OverlaySession.create(cfg) : new OverlaySession(cfg);
     });
@@ -67,6 +76,7 @@ try {
         tracking = [],
         total = [];
       for (let i = 0; i < sampleCount; i++) {
+        progress('webFileRefresh', i, 'started');
         const started = performance.now();
         const result = session.refresh([webFile.file], { deferChangeTracking: true });
         const prepared = performance.now();
@@ -75,6 +85,7 @@ try {
         prepare.push(prepared - started);
         tracking.push(completed - prepared);
         total.push(completed - started);
+        progress('webFileRefresh', i, 'complete');
       }
       timings.webFilePrepare = summarize(prepare);
       timings.webFileChangeTracking = summarize(tracking);
@@ -82,9 +93,11 @@ try {
     }
     const refresh = (files) =>
       typeof session.refreshAsync === 'function' ? session.refreshAsync(files) : session.refresh(files);
-    if (inline) timings.inlineRefresh = await timed(() => refresh([inline.file]));
-    timings.fullRefresh = await timed(() => refresh());
-    timings.unrelatedSave = await timed(() => refresh([path.join(cfg.sourceDir, '__benchmark_note__.txt')]));
+    if (inline) timings.inlineRefresh = await timed('inlineRefresh', () => refresh([inline.file]));
+    timings.fullRefresh = await timed('fullRefresh', () => refresh());
+    timings.unrelatedSave = await timed('unrelatedSave', () =>
+      refresh([path.join(cfg.sourceDir, '__benchmark_note__.txt')]),
+    );
     const after = process.memoryUsage();
     const report = {
       offline: true,
@@ -95,6 +108,7 @@ try {
       scope: cfg.site.scope,
       node: process.version,
       samples: sampleCount,
+      baselineAvailable: session.baseline?.available ?? null,
       webFileChangeTrackingMeasured: typeof session.refreshChangeTracking === 'function',
       counts: {
         pages: session.model.pages.size,

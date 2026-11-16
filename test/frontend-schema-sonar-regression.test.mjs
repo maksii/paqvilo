@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
-import { windowsLaunchOptions, BACKPORTED_DISABLED_FEATURES } from '../mirage/lib/browser-launch.mjs';
+import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { observedConfig } from '../mirage/lib/project-config.mjs';
 import { staffFormatting } from '../mirage/lib/model-driven/pcf-runtime.mjs';
 import { createOfflineSessions } from '../mirage/lib/model-driven/offline.mjs';
@@ -33,13 +33,13 @@ async function privateFunction(file, name, bindings) {
   return vm.runInNewContext(`(${text})`, bindings, { timeout: 120_000 });
 }
 
-test('Windows launch forwarding retains invalid caller input and the default backport', () => {
+test('Windows launch forwarding retains invalid caller input and upstream defaults', () => {
   for (const invalid of [null, false, 3, 'invalid', [], { args: null }, { ignoreDefaultArgs: null }])
     assert.strictEqual(windowsLaunchOptions(invalid, 'win32'), invalid);
   const explicit = { args: ['--caller'], ignoreDefaultArgs: true };
   assert.strictEqual(windowsLaunchOptions(explicit, 'win32'), explicit);
   assert.strictEqual(windowsLaunchOptions(explicit, 'linux'), explicit);
-  assert.equal(windowsLaunchOptions(undefined, 'win32').args[0], BACKPORTED_DISABLED_FEATURES);
+  assert.deepEqual(windowsLaunchOptions(undefined, 'win32'), {});
 });
 
 test('observed configuration rejects an accessor without invoking it', () => {

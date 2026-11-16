@@ -1,3 +1,4 @@
+// @test-kind tooling: validates browser launch options and the release CI configuration.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -59,7 +60,7 @@ test('every browser partition retains Linux Chromium and adds Windows Chromium a
     assert.deepEqual(
       variants.map(({ os, channel }) => [os, channel]),
       [
-        ['ubuntu-24.04', 'chromium'],
+        ['ubuntu-26.04', 'chromium'],
         ['windows-2025', 'chromium'],
         ['windows-2025', 'msedge'],
       ],

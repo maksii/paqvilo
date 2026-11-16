@@ -41,7 +41,7 @@ body:
     attributes:
       label: Environment and related platform components
       description: OS, Node, browser; Dataverse/Solution metadata, forms/lists, Liquid, PCF, server logic, plugins, cloud flows, Power Automate or other integrations involved.
-      placeholder: 'Windows 11, Node 24, Edge; enhanced export with FormXml and a PCF field'
+      placeholder: 'Windows 11, Node 26, Edge; enhanced export with FormXml and a PCF field'
     validations:
       required: true
   - type: textarea

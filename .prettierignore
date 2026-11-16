@@ -35,7 +35,7 @@
 **/out/
 **/*.min.js
 **/package-lock.json
-/npm-shrinkwrap.json
+/paqvilo-lock.json
 /licenses/
 /site/media/
 /docs/assets/

@@ -21,7 +21,7 @@ concurrency:
 jobs:
   plan:
     name: Resolve immutable release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       version: ${{ steps.plan.outputs.version }}
@@ -37,6 +37,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
       - name: Validate tag and main or preview provenance
         id: plan
         env:
@@ -55,7 +58,7 @@ jobs:
     needs:
       - plan
       - ci
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     environment:
       name: npm
@@ -82,6 +85,9 @@ jobs:
         with:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
       - name: Download the archive built and tested by Gates
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:

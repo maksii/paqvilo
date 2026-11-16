@@ -11,6 +11,8 @@ import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
 import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 
 let fx;
@@ -617,9 +619,17 @@ test('mirage init writes a validated project file from the catalogue site and re
   }
 });
 
-test('list and doctor expose catalogue Mirage settings and offline readiness without changing overlay readiness', async () => {
-  const roots = tempDirSync('paqvilo-mirage-roots-');
-  try {
+const CATALOGUE_COMMANDS = 6;
+
+test(
+  'list and doctor expose catalogue Mirage settings and offline readiness without changing overlay readiness',
+  { timeout: operationBudget(CATALOGUE_COMMANDS, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const roots = tempDirSync('paqvilo-mirage-roots-');
+    ownedFixture(t).remove(() => fs.rmSync(roots, { recursive: true, force: true }));
+    const runCatalogue = countOperations(t, CATALOGUE_COMMANDS, (...args) =>
+      boundedCommand(t, process.execPath, [cli, ...args], { env, maxBuffer: 64 << 20 }),
+    );
     fs.mkdirSync(path.join(roots, 'Base'));
     const config = fx.file('mirage-settings-catalogue.yml');
     fs.writeFileSync(
@@ -646,12 +656,12 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
       ].join('\n'),
     );
     const [listed, listText, doctor, gated, doctorText, brokenText] = await Promise.all([
-      run('list', '--config', config, '--repo', fx.dir, '--json'),
-      run('list', '--config', config, '--repo', fx.dir),
-      run('doctor', '--config', config, '--repo', fx.dir, '--all', '--json'),
-      run('doctor', '--config', config, '--repo', fx.dir, '--all', '--mirage', '--json'),
-      run('doctor', '--config', config, '--repo', fx.dir, '--all'),
-      run('doctor', '--config', config, '--repo', fx.dir, '--site', 'broken'),
+      runCatalogue('list', '--config', config, '--repo', fx.dir, '--json'),
+      runCatalogue('list', '--config', config, '--repo', fx.dir),
+      runCatalogue('doctor', '--config', config, '--repo', fx.dir, '--all', '--json'),
+      runCatalogue('doctor', '--config', config, '--repo', fx.dir, '--all', '--mirage', '--json'),
+      runCatalogue('doctor', '--config', config, '--repo', fx.dir, '--all'),
+      runCatalogue('doctor', '--config', config, '--repo', fx.dir, '--site', 'broken'),
     ]);
     assert.equal(listed.status, 0, listed.stdout + listed.stderr);
     const list = JSON.parse(listed.stdout);
@@ -695,10 +705,8 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     assert.equal(broken.mirage.ready, false);
     assert.ok(broken.mirage.errors.some((error) => /Solution root does not exist/.test(error.message)));
     assert.match(brokenText.stdout, /mirage NOT READY[\s\S]*MIRAGE ERROR: Mirage Solution root does not exist/);
-  } finally {
-    fs.rmSync(roots, { recursive: true, force: true });
-  }
-});
+  },
+);
 
 test('mirage stop ends owned starting processes, prunes stale records and never touches other programs', async (t) => {
   const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity, isAlive } =

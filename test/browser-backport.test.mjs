@@ -10,9 +10,7 @@ import { tempDirSync } from './fixture.mjs';
 import {
   PLAYWRIGHT_VERSION,
   DEFAULT_DISABLED_FEATURES,
-  BACKPORTED_DISABLED_FEATURES,
   backportLaunchOptions,
-  installChromiumBackport,
   installTestTimeouts,
   requirePinnedDefaults,
   requirePinnedTimeoutDefaults,
@@ -21,81 +19,60 @@ import {
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../', import.meta.url));
 
-test('Windows backport replaces only the pinned default and preserves caller choices and ownership APIs', (t) => {
+test('upstream launch defaults preserve caller options and do not replace ownership APIs', () => {
   const args = Object.freeze(['--invented-option=retained', '--enable-features=InventedEnabled']);
   const ignoreDefaultArgs = Object.freeze(['--mute-audio']);
   const options = Object.freeze({ args, ignoreDefaultArgs, channel: 'msedge', timeout: 1734, env: { INVENTED: '1' } });
-  const transformed = backportLaunchOptions(options, 'win32');
-  assert.deepEqual(transformed.args, [BACKPORTED_DISABLED_FEATURES, ...args]);
-  assert.deepEqual(transformed.ignoreDefaultArgs, [...ignoreDefaultArgs, DEFAULT_DISABLED_FEATURES]);
-  for (const key of ['channel', 'timeout', 'env']) assert.equal(transformed[key], options[key]);
-  assert.equal(backportLaunchOptions(options, 'linux'), options);
-  assert.equal(backportLaunchOptions(options, 'darwin'), options);
-  for (const ignored of [true, [DEFAULT_DISABLED_FEATURES]]) {
-    const explicit = { ...options, ignoreDefaultArgs: ignored };
-    assert.equal(backportLaunchOptions(explicit, 'win32'), explicit);
+  for (const platform of ['win32', 'linux', 'darwin']) {
+    assert.equal(backportLaunchOptions(options, platform), options);
+    for (const invalid of [
+      null,
+      false,
+      'invalid options',
+      [],
+      { args: '--invalid' },
+      { args: null },
+      { args: [12] },
+      { ignoreDefaultArgs: '--invalid' },
+      { ignoreDefaultArgs: null },
+      { ignoreDefaultArgs: [false] },
+    ])
+      assert.equal(backportLaunchOptions(invalid, platform), invalid);
+    for (const ignored of [true, [DEFAULT_DISABLED_FEATURES]]) {
+      const explicit = { ...options, ignoreDefaultArgs: ignored };
+      assert.equal(backportLaunchOptions(explicit, platform), explicit);
+    }
+    for (const explicit of [
+      { args: ['--disable-features=InventedCallerOverride'] },
+      { args: [DEFAULT_DISABLED_FEATURES] },
+      { ignoreDefaultArgs: false },
+    ])
+      assert.equal(backportLaunchOptions(explicit, platform), explicit);
   }
-  const custom = { args: ['--disable-features=InventedCallerOverride'] };
-  assert.deepEqual(backportLaunchOptions(custom, 'win32').args, [BACKPORTED_DISABLED_FEATURES, ...custom.args]);
-  const explicitDefault = { args: [DEFAULT_DISABLED_FEATURES] };
-  assert.equal(backportLaunchOptions(explicitDefault, 'win32'), explicitDefault);
-  assert.deepEqual(backportLaunchOptions(undefined, 'win32').args, [BACKPORTED_DISABLED_FEATURES]);
-  assert.deepEqual(backportLaunchOptions({ ignoreDefaultArgs: false }, 'win32').ignoreDefaultArgs, [
-    DEFAULT_DISABLED_FEATURES,
-  ]);
-  for (const invalid of [
-    null,
-    false,
-    'invalid options',
-    [],
-    { args: '--invalid' },
-    { args: null },
-    { args: [12] },
-    { ignoreDefaultArgs: '--invalid' },
-    { ignoreDefaultArgs: null },
-    { ignoreDefaultArgs: [false] },
-  ])
-    assert.equal(backportLaunchOptions(invalid, 'win32'), invalid, 'forward invalid input to the original API');
-  const calls = [];
-  const chromium = {
-    launch(...values) {
-      calls.push({ method: 'launch', receiver: this, values });
-      return 'browser';
-    },
-    launchPersistentContext(...values) {
-      calls.push({ method: 'persistent', receiver: this, values });
-      return 'context';
-    },
-    connect() {},
-    connectOverCDP() {},
-    launchServer(...values) {
-      calls.push({ method: 'server', receiver: this, values });
-      return 'server';
-    },
-  };
-  const untouched = [chromium.connect, chromium.connectOverCDP];
+  assert.deepEqual(backportLaunchOptions(), {});
+  const method = () => {};
+  const type = () => ({
+    launch: method,
+    launchPersistentContext: method,
+    launchServer: method,
+    connect: method,
+    connectOverCDP: method,
+  });
+  const playwright = { chromium: type(), firefox: type(), webkit: type() };
   const directory = path.dirname(require.resolve('playwright-core/package.json'));
-  installChromiumBackport(chromium, directory, 'win32');
-  const launch = chromium.launch;
-  installChromiumBackport(chromium, directory, 'win32');
-  assert.equal(chromium.launch, launch);
-  assert.equal(chromium.launch(options), 'browser');
-  assert.equal(chromium.launchPersistentContext('invented-profile', options), 'context');
-  assert.equal(chromium.launchServer(options), 'server');
-  assert.deepEqual(
-    calls.map(({ method, values }) => [method, values]),
-    [
-      ['launch', [transformed]],
-      ['persistent', ['invented-profile', transformed]],
-      ['server', [transformed]],
-    ],
-  );
-  for (const call of calls) assert.equal(call.receiver, chromium);
-  assert.deepEqual([chromium.connect, chromium.connectOverCDP], untouched);
-  t.diagnostic('No existing connect or connectOverCDP API is replaced');
+  installTestTimeouts(playwright, directory);
+  for (const browser of [playwright.chromium, playwright.firefox, playwright.webkit])
+    for (const name of ['launch', 'launchPersistentContext', 'launchServer', 'connect'])
+      assert.equal(browser[name], method, name);
 });
 
 test('pinned package version and the complete upstream default list fail closed on drift', (t) => {
+  for (const file of ['package.json', 'mirage/package.json', 'examples/project/package.json'])
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')).dependencies?.['playwright-core'] ??
+        JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')).devDependencies?.['playwright-core'],
+      PLAYWRIGHT_VERSION,
+    );
   const original = path.dirname(require.resolve('playwright-core/package.json'));
   requirePinnedDefaults(original);
   const directory = tempDirSync('paq-browser-defaults-');
@@ -124,7 +101,7 @@ test('test bootstrap stays lazy in an ordinary process and propagates only its e
     let calls=0;
     chromium._channel={launch:async options=>{
       calls++;
-      assert.equal(options.args?.includes(${JSON.stringify(BACKPORTED_DISABLED_FEATURES)})||false,process.platform==='win32');
+      assert.equal(options.args?.some(arg=>arg.startsWith('--disable-features='))||false,false);
       throw new Error('invented launch interception');
     }};
     assert.equal(process.env.NODE_OPTIONS.split(/\\s+/).filter(v=>v===${JSON.stringify('--import=' + bootstrap)}).length,1);

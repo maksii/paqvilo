@@ -1,4 +1,5 @@
-// SDK verification gate: dynamics-web-api 2.5.1 + @azure/msal-node 7.1.1 against the Mirage Dataverse simulator.
+// @test-kind compatibility: Microsoft Dataverse SDK wire contracts (https://learn.microsoft.com/power-apps/developer/data-platform/webapi/overview) and OAuth client assertions (RFC 7523).
+// SDK verification gate: dynamics-web-api 2.5.1 + @azure/msal-node 7.2.2 against the Mirage Dataverse simulator.
 // Included in the full Windows verification gate; also runnable with `npm test` in this folder.
 // Variant B: msal uses authorityMetadata pointing at the http token endpoint, so no TLS is needed.
 import { after, test } from 'node:test';

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { isAlive, ownedSessions, processIdentity } from '../lense/commands/mirage.mjs';
 import { endRuntimes, ownStartedRuntimes, recordedRuntimeOwner, recordedRuntimes } from './helpers/mirage-runtimes.mjs';
+import { ownedHealthRequest } from './helpers/owned-health-request.mjs';
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -23,8 +24,8 @@ const env = Object.fromEntries(
 const portFree = (port) =>
   new Promise((resolve) => {
     const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+    server.once('error', (error) => resolve({ free: false, code: error.code }));
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve({ free: true })));
   });
 
 test('the runtime owner ends a started runtime nobody stopped, and never a process without its start identity', async (t) => {
@@ -67,7 +68,8 @@ test('the runtime owner ends a started runtime nobody stopped, and never a proce
   assert.match(foreign[0], new RegExp(`pid ${answer.pid} .*was not ended`));
   assert.equal(isAlive(answer.pid), true, 'the process was left running');
   assert.equal(processIdentity(answer.pid), recorded);
-  assert.equal((await fetch(new URL('/_sim/api/status', answer.url))).status, 200);
+  const health = await ownedHealthRequest(t, new URL('/_sim/api/status', answer.url));
+  assert.equal(health.status, 200);
 
   const reports = [];
   await t.test('a started runtime is ended after its test when nothing stopped it', (st) => {
@@ -75,7 +77,9 @@ test('the runtime owner ends a started runtime nobody stopped, and never a proce
   });
   assert.deepEqual(reports, []);
   assert.ok(!isAlive(answer.pid) || processIdentity(answer.pid) !== recorded, 'the runtime process has gone');
-  assert.equal(await portFree(port), true, 'its port is free');
+  await health.closed;
+  const binding = await portFree(port);
+  assert.equal(binding.free, true, `its port ${port} is free (${binding.code ?? 'bound'})`);
 });
 
 /** Starts an idle process of its own group with a records file naming it, as `mirage start` records a runtime. */

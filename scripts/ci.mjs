@@ -55,7 +55,7 @@ export function verifyClrSdk(sdk) {
 }
 
 /**
- * True when `actual` is the pinned SDK or a later patch of its feature band (10.0.1xx), the servicing updates
+ * True when `actual` is the pinned SDK or a later patch of its feature band (11.0.1xx), the servicing updates
  * global.json's latestPatch roll-forward accepts. A different band, major or minor is a different compiler.
  */
 export function dotnetSatisfies(expected, actual) {
@@ -278,7 +278,7 @@ export function resetLinkedDependencyDirectory(directory, checkout = root) {
 }
 
 export function requireExampleBrowserDependency(project, checkout = root) {
-  const lock = JSON.parse(fs.readFileSync(path.join(checkout, 'npm-shrinkwrap.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(checkout, 'paqvilo-lock.json'), 'utf8'));
   // Probe in a fresh process, as the suite does: Node caches resolutions across fixture cleanup.
   const resolved = spawnSync(process.execPath, ['-p', "require('playwright-core/package.json').version"], {
     cwd: path.join(checkout, project),
