@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own frame load blocker and the observed settings that switch it off; no native behaviour is claimed.
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,9 +30,10 @@ test('the blocker leaves authored closing-tag literals intact and ignores fragme
   readiness.close();
 });
 
+// @test-kind contract: Mirage's own frame load blocker fails open after its limit, counted from the browser's image request; no native behaviour is claimed.
 test('a missing ready release fails open at a bounded timeout and cleans owned requests', async (t) => {
-  // The deadline runs from decoration on a mock clock that advances only after the held image request is observed, so
-  // the request can never lose a race against the timeout on a loaded runner.
+  // The deadline runs on a mock clock, and starts again when the held image request is observed: the time before the
+  // browser asked for the image (delivery and parsing on a loaded host) never counts against the page.
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const timeoutMs = 2500, // not the 5 s default, so the configured bound is the one observed
     diagnostics = [],
@@ -55,6 +57,8 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
     document,
     /<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="\/__sim\/frame-ready\/[^"]+"><script data-paqvilo-frame-ready>/,
   );
+  t.mock.timers.tick(timeoutMs - 1);
+  assert.deepEqual(diagnostics, [], 'a document not yet requested is held until the deadline from decoration');
   const responding = fetch(`http://127.0.0.1:${server.address().port}${route}`);
   await held;
   t.mock.timers.tick(timeoutMs - 1);

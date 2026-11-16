@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own portal session client against invented mappings; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -68,8 +69,8 @@ test('membership visitors and persona reports use the explicit contact key with 
     watch: false,
   });
   ownedFixture(t).add(() => app.close());
-  const alpha = await createPortalSession({ origin: app.url, contactId: 'alpha' }),
-    beta = await createPortalSession({ origin: app.url, contactId: 'beta' });
+  const alpha = await createPortalSession({ origin: app.url, contactId: 'alpha', timeoutMs: 0 }),
+    beta = await createPortalSession({ origin: app.url, contactId: 'beta', timeoutMs: 0 });
   ownedFixture(t).add(() => {
     alpha.close();
     beta.close();
@@ -85,7 +86,7 @@ test('membership visitors and persona reports use the explicit contact key with 
     (await beta.json(route)).body.value.map((row) => row.entry_key),
     ['two'],
   );
-  const runtime = await connectRuntime({ origin: app.url }),
+  const runtime = await connectRuntime({ origin: app.url, timeoutMs: 0 }),
     report = await runtime.personas();
   assert.deepEqual(report.contacts.map((contact) => contact.contactId).sort(), ['alpha', 'beta']);
   assert.ok(report.contacts.every((contact) => contact.active && contact.roles.includes('Reader')));

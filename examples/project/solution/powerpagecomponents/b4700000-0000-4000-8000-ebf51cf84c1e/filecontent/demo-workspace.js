@@ -172,8 +172,12 @@
   }
   async function waitForControls() {
     if(approach!=='pcf')return;
-    for(let attempt=0;attempt<100;attempt++){if(accountFields.every(name=>field(name)))break;await new Promise(resolve=>setTimeout(resolve,100));}
-    for(const name of accountFields){const input=field(name);if(!input)throw new Error('The PCF control for '+name+' did not load.');input.name=name;input.id='pcf-'+name;const label=find('[data-field="'+name+'"]>label');if(label)label.htmlFor=input.id;}
+    // The component renders its fields when its bundle has loaded, however long that takes; a host that cannot render or load it shows an alert in its place instead.
+    await new Promise((resolve,reject)=>{
+      const check=()=>{const failed=initialForm.querySelector('[role=alert]');if(!failed&&!accountFields.every(name=>field(name)))return;observer.disconnect();if(failed)reject(new Error('The PCF control did not load. '+failed.textContent));else resolve();};
+      const observer=new MutationObserver(check);observer.observe(initialForm,{childList:true,subtree:true,attributes:true,attributeFilter:['role']});check();
+    });
+    for(const name of accountFields){const input=field(name);input.name=name;input.id='pcf-'+name;const label=find('[data-field="'+name+'"]>label');if(label)label.htmlFor=input.id;}
     const industry=field('industrycode');if(industry?.tagName==='INPUT'){industry.setAttribute('aria-label','Industry');industry.setAttribute('list','demo-industries');}
   }
   find('[data-account-query]')?.addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,()=>listAccounts());});

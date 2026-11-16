@@ -5,7 +5,13 @@ async function launch(options) {
   const { origin, config, site, fetchImpl, personaKey, scenario, instanceKey, returnUrl } = options;
   if (!personaKey && !scenario) throw new Error('Choose personaKey or scenario');
   if (personaKey && scenario) throw new Error('Choose either personaKey or scenario');
-  const parent = await connectRuntime({ origin, config, site, fetchImpl });
+  const parent = await connectRuntime({
+    origin,
+    config,
+    site,
+    fetchImpl,
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+  });
   const report = await parent.personas();
   const definition = report.personas.find(
     (p) => p.key === (scenario ? report.scenarios.find((s) => s.id === scenario)?.persona : personaKey),

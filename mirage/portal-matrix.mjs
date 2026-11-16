@@ -1692,7 +1692,7 @@ async function serveOnce(projectFile, timeoutMs) {
     return { child, exited, ready, startMs: elapsed(started) };
   } catch (error) {
     try {
-      await stopServe({ child, exited });
+      await stopServe({ child, exited }, timeoutMs);
     } catch (cleanupError) {
       error.cleanupError = cleanupError;
     }
@@ -1700,15 +1700,15 @@ async function serveOnce(projectFile, timeoutMs) {
   }
 }
 
-/** Graceful stop (a `stop` line on stdin), forced after 30 s. */
-async function stopServe({ child, exited }) {
+/** Graceful stop (a `stop` line on stdin): the wait is the child's exit, forced only at the stage's serve deadline. */
+async function stopServe({ child, exited }, timeoutMs) {
   if (child.exitCode != null) return { graceful: true, exitCode: child.exitCode };
   if (!child.pid) return { graceful: false, exitCode: null };
   if (child.stdin.writable && !child.stdin.destroyed) child.stdin.write('stop\n');
   let timer;
   const stopped = await Promise.race([
     exited,
-    new Promise((resolve) => (timer = setTimeout(() => resolve(null), 30_000))),
+    new Promise((resolve) => (timer = setTimeout(() => resolve(null), timeoutMs))),
   ]);
   clearTimeout(timer);
   if (!stopped) {
@@ -1794,13 +1794,15 @@ async function /* NOSONAR */ serveStage(resolved, context) {
         stateBytes: await fileSize(portal.stateFile),
       };
       try {
-        const status = await fetch(`${portal.url}/__sim/api/status`, { signal: AbortSignal.timeout(30_000) }).then(
-          (response) => response.json(),
+        // The runtime reported ready: these reads wait for its answer within the stage's serve deadline.
+        const answered = AbortSignal.timeout(context.serveTimeoutMs);
+        const status = await fetch(`${portal.url}/__sim/api/status`, { signal: answered }).then((response) =>
+          response.json(),
         );
         csrfTokens.push(status.csrf);
-        const state = await fetch(`${portal.url}/__sim/api/state?summary=1`, {
-          signal: AbortSignal.timeout(60_000),
-        }).then((response) => response.json());
+        const state = await fetch(`${portal.url}/__sim/api/state?summary=1`, { signal: answered }).then((response) =>
+          response.json(),
+        );
         entry.site = status.site;
         entry.format = status.format;
         entry.pageCount = status.pageCount;
@@ -1851,13 +1853,12 @@ async function /* NOSONAR */ serveStage(resolved, context) {
     try {
       const { mirageStatus, miragePaths } = await import('../lense/commands/mirage.mjs');
       const paths = miragePaths(null, { project: projectFile });
-      // The toolkit probes each runtime with a short timeout; a loaded machine gets a few attempts.
-      let sessions = [];
-      for (let attempt = 0; attempt < 5; attempt++) {
-        sessions = (await mirageStatus(paths)).filter((session) => session.pid === child.pid);
-        if (sessions.length === portals.length && sessions.every((session) => session.ready)) break;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
+      // The child reported its portals after writing the discovery file with every runtime listening, so one status
+      // lists them all. Its probes wait for each runtime's answer within this stage's own deadline, not the toolkit's
+      // interactive one.
+      const sessions = (
+        await mirageStatus(paths, { signal: AbortSignal.timeout(context.serveTimeoutMs), probeTimeout: null })
+      ).filter((session) => session.pid === child.pid);
       result.toolkitStatus = sessions.map(({ portal, url, ready: isReady, owned, stateFile }) => ({
         portal,
         url,
@@ -1877,7 +1878,7 @@ async function /* NOSONAR */ serveStage(resolved, context) {
     result.error = error.message;
   } finally {
     const stopStarted = performance.now();
-    result.stop = { ...(await stopServe({ child, exited })), ms: elapsed(stopStarted) };
+    result.stop = { ...(await stopServe({ child, exited }, context.serveTimeoutMs)), ms: elapsed(stopStarted) };
     check('clean stop removes the discovery file', result.discovery ? !(await exists(result.discovery)) : false);
     // Warm restart: the same state directory, now with each portal's state and Solution parse cache.
     if (!result.error)
@@ -1889,7 +1890,7 @@ async function /* NOSONAR */ serveStage(resolved, context) {
           (warm.ready.portals ?? []).length === project.portals.length,
           `${((warm.startMs ?? 0) / 1000).toFixed(1)} s`,
         );
-        await stopServe(warm);
+        await stopServe(warm, context.serveTimeoutMs);
       } catch (error) {
         check('warm restart starts every portal', false, error.message);
       }

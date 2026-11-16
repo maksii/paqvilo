@@ -14,6 +14,7 @@
 // Guessed: POST children defaults to conflictBehavior fail; replace on an existing folder answers 200 with that folder.
 // ponytail: simple upload bodies are capped at 4 MiB in the fixture server (413); createUploadSession is not modelled.
 import http from 'node:http';
+import { keepIdleConnections } from './idle-connections.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { recordHttpError } from './trace-store.mjs';
 import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
@@ -391,6 +392,7 @@ export async function createSharePointFixtureServer({
     response.writeHead(answer.status, answer.headers);
     response.end(answer.body == null ? undefined : JSON.stringify(answer.body));
   }
+  keepIdleConnections(server);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, host, resolve);

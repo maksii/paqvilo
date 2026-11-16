@@ -10,8 +10,6 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { interceptOrigin } from '../lense/intercept.mjs';
 
-const LATE_COMMIT_WINDOW_MS = 100;
-
 test('real browser: agent API inspects DOM/styles/network, resizes, captures and isolates foreign tabs', async (t) => {
   const { serve, launch } = agentBrowserFixture(t, 'pp-agent-browser-');
   // Each step's name and duration; printed when the test does not finish, to name a stuck step.
@@ -107,14 +105,23 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal((await call('/v1/pages/0/state')).status, 400);
   assert.equal((await call('/v1/pages/1/unknown')).status, 404);
   const beforeTimeout = page.url();
+  // A navigation ends in one of two page events: its request fails (the browser gave the document up) or its
+  // document commits. Both listeners are registered before the navigation starts.
+  const slowOutcome = new Promise((resolve) => {
+    page.on('requestfailed', (request) => {
+      if (request.url() === origin + '/slow') resolve('abandoned');
+    });
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame() && frame.url() === origin + '/slow') resolve('committed');
+    });
+  });
   const timeoutResponse = await call('/v1/pages/1/navigate', { url: '/slow', timeoutMs: 150 });
   assert.equal(timeoutResponse.status, 504);
   assert.equal((await timeoutResponse.json()).error.code, 'action_timeout');
-  // Either the browser abandons the slow document or it arrives late; neither may commit.
+  // The slow document is answered now, after the timeout: the browser must have given it up, not commit it late.
   releaseSlow();
   await slowDone;
-  // No event marks a navigation that never commits; give a late commit one short window.
-  await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), LATE_COMMIT_WINDOW_MS);
+  assert.equal(await slowOutcome, 'abandoned', 'timed-out navigation must not commit later');
   assert.equal(page.url(), beforeTimeout, 'timed-out navigation must not commit later');
   // A document that never answers is stopped by the server's own deadline, however long the client waits.
   const neverResponse = await call('/v1/pages/1/navigate', { url: '/never', timeoutMs: 150 });
@@ -219,6 +226,8 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   const lateGet = page.waitForRequest(
     (request) => request.isNavigationRequest() && request.url().startsWith(origin + '/chapter/'),
   );
+  // The retried document's commit; registered before the interception that starts the retry.
+  const lateCommit = page.waitForEvent('framenavigated', (frame) => frame === page.mainFrame());
   const detach = await step('interceptOrigin', () => interceptOrigin(context, origin, (route) => route.fallback()));
   const lateRequest = await step('late GET retry', () => lateGet);
   assert.equal(
@@ -226,8 +235,10 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
     'GET',
     'late interception retry requests GET even for a POST document with a fragment',
   );
-  // Let the retried document arrive; waitForLoadState alone can still see the POST document.
+  // Let the retried document arrive and commit; until then waitForLoadState still sees the POST document, and a
+  // navigation started meanwhile is interrupted by the retried document's commit.
   assert.equal((await step('late GET response', () => lateRequest.response()))?.status(), 200);
+  await step('late GET commit', () => lateCommit);
   await step('waitForLoadState', () => page.waitForLoadState('load'));
   assert.equal(methods.filter((method) => method === 'POST').length, 1);
   assert.equal(new URL(page.url()).hash, '#posted');

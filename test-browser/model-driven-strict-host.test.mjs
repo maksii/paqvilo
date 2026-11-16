@@ -1,3 +1,4 @@
+// @test-kind contract: the model-driven inspector's behaviour under a strict CSP and a throwing client API, on an invented loopback fixture.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -150,6 +151,13 @@ test('a strict CSP and throwing client API keep Actions readable and runnable, X
   // and a name-based field join remains a candidate rather than runtime proof.
   await host.getByRole('tab', { name: 'Inspect', exact: true }).click();
   await host.getByText('invented · loopback · 1 Solution roots').waitFor();
+  // The report card is drawn only by the redraw that follows a completed inspection. The inspector state read
+  // further down (inspection error, native structure) is set by that inspection.
+  await host
+    .getByText(
+      'Selected element ownership and local source identity are evaluated separately from native form context.',
+    )
+    .waitFor();
   assert.equal(await host.getByText('no exported page matches this address').count(), 0);
   await host.getByRole('button', { name: 'Toggle Lense X-ray', exact: true }).click();
   const xray = tab.locator('#paqvilo-xray');

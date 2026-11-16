@@ -10,17 +10,22 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { checkProject as inspectProject, scaffoldWarning } from '../lense/project-check.mjs';
 import { refreshEditor } from '../lense/project-editor.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
+import { parseOptions, LENSE_OPTIONS } from '../lense/cli-options.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
+import { ownedChildren } from './helpers/owned-children.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
+// A generated runner may still be running when its test ends: the children are ended before their project folder is removed.
+const children = ownedChildren();
 async function project(t) {
   const directory = await tempDir('paqvilo-init-');
+  t.after(() => children.end());
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -32,12 +37,14 @@ const node = (args, options = {}) =>
   withProcessSlot(
     () =>
       new Promise((resolve) =>
-        execFile(
-          process.execPath,
-          args,
-          { env, encoding: 'utf8', windowsHide: true, ...options },
-          (error, stdout, stderr) =>
-            resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
+        children.own(
+          execFile(
+            process.execPath,
+            args,
+            { env, encoding: 'utf8', windowsHide: true, ...options },
+            (error, stdout, stderr) =>
+              resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
+          ),
         ),
       ),
   );
@@ -381,27 +388,28 @@ test('generated browser runner ignores empty pack folders and propagates real te
 });
 
 test('generated smoke exercises enhanced and code-site exports instead of silently skipping them', async (t) => {
-  await Promise.all(
-    ['enhanced', 'code-site'].map(async (format) => {
-      const directory = await project(t);
-      await prepareProject(directory, { name: 'fixture', noPack: true, noVscode: true });
-      const destination = path.join(directory, 'test-browser/fixtures/portal');
-      await fs.cp(fileURLToPath(new URL(`../test-browser/fixtures/${format}/`, import.meta.url)), destination, {
-        recursive: true,
-      });
-      await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
-      await fs.mkdir(path.join(directory, 'node_modules'));
-      await fs.symlink(
-        fileURLToPath(new URL('../', import.meta.url)),
-        path.join(directory, 'node_modules/paqvilo'),
-        process.platform === 'win32' ? 'junction' : 'dir',
-      );
-      const result = await node(['tools/test-browser.mjs'], { cwd: directory });
-      assert.equal(result.status, 0, format + result.stdout + result.stderr);
-      assert.match(result.stdout, /pass 1/, format);
-      assert.match(result.stdout, /skipped 0/, format);
-    }),
+  // One generated project with both sites: one runner process serves both export formats.
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'fixture', sites: ['enhanced', 'code-site'], noPack: true, noVscode: true });
+  for (const format of ['enhanced', 'code-site']) {
+    const destination = path.join(directory, 'test-browser/fixtures', format);
+    await fs.cp(fileURLToPath(new URL(`../test-browser/fixtures/${format}/`, import.meta.url)), destination, {
+      recursive: true,
+    });
+    await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
+  }
+  await fs.mkdir(path.join(directory, 'node_modules'));
+  await fs.symlink(
+    fileURLToPath(new URL('../', import.meta.url)),
+    path.join(directory, 'node_modules/paqvilo'),
+    process.platform === 'win32' ? 'junction' : 'dir',
   );
+  const result = await node(['tools/test-browser.mjs'], { cwd: directory });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /pass 2/);
+  assert.match(result.stdout, /skipped 0/);
+  assert.match(result.stdout, /enhanced: local portal smoke/);
+  assert.match(result.stdout, /code-site: local portal smoke/);
 });
 
 // @test-kind security: scaffold writes cannot replace unrelated content or follow symbolic output paths
@@ -551,6 +559,7 @@ test('editor refresh follows catalogue/.env/worktree paths and preserves edited 
 });
 
 test('every generated development task parses with the CLI option parser for each browser choice', async (t) => {
+  const cliChecks = [];
   for (const browser of [undefined, 'msedge', 'chrome', 'chromium']) {
     const directory = await project(t);
     await prepareProject(directory, { name: 'guarded', noPack: true, browser });
@@ -559,9 +568,24 @@ test('every generated development task parses with the CLI option parser for eac
     );
     assert.ok(processTasks.length >= 8, 'the lense and mirage development workflows are generated as tasks');
     for (const task of processTasks) {
-      const args = task.args.slice(1).map((arg) => arg.replace('${workspaceFolder}', directory));
-      const result = await node([cli, ...args, '--help'], { cwd: directory });
-      assert.equal(result.status, 0, `${task.label} (${browser ?? 'default browser'}): ${result.stderr.trim()}`);
+      const [product, ...args] = task.args.slice(1).map((arg) => arg.replace('${workspaceFolder}', directory));
+      const label = `${task.label} (${browser ?? 'default browser'})`;
+      // The parser and option table the CLI itself applies to these arguments, called here instead of once per task in
+      // a new CLI process: thirty-six process starts measured nothing the parser does not.
+      assert.ok(['lense', 'mirage'].includes(product), label);
+      assert.doesNotThrow(() => parseOptions({ args, options: LENSE_OPTIONS, allowPositionals: true }), label);
+      if (browser === undefined) cliChecks.push({ label, directory, args: [product, ...args] });
     }
   }
+  // The CLI entry point routes both products to that parser: one generated lense task and one mirage task, the ones
+  // with the most options, run through it for real.
+  const longest = (product) =>
+    cliChecks.filter((check) => check.args[0] === product).sort((a, b) => b.args.length - a.args.length)[0];
+  await Promise.all(
+    ['lense', 'mirage'].map(async (product) => {
+      const { label, directory, args } = longest(product);
+      const result = await node([cli, ...args, '--help'], { cwd: directory });
+      assert.equal(result.status, 0, `${label}: ${result.stderr.trim()}`);
+    }),
+  );
 });

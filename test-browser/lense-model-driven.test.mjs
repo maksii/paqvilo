@@ -200,10 +200,13 @@ test('model-driven overlay refresh bypasses an existing worker only in its owned
     1,
     'initial repair applied the local resource before explicit refresh',
   );
+  // The refresh returns when the new document arrives; its script has run once the value is there.
   await refreshModelDrivenPage(page, origin);
+  await page.waitForFunction(() => window.cachedAsset === 'local first');
   assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
   overlay.replace(imported('local changed'));
   await refreshModelDrivenPage(page, origin);
+  await page.waitForFunction(() => window.cachedAsset === 'local changed');
   assert.equal(await page.evaluate(() => window.cachedAsset), 'local changed');
   assert.equal(overlay.report().currentRevisionApplied, 1);
   await sibling.goto(origin + '/main.aspx?unowned');

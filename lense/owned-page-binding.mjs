@@ -1,5 +1,9 @@
 import { randomBytes } from 'node:crypto';
 
+// A cleanup command waits until it answers or its page closes. This guard only ends a wait on a live renderer that never
+// answers (a page script that never returns holds every Runtime command), so that the retirement still detaches.
+const CLEANUP_HANG_MS = 30_000;
+
 function install({ origin, channel, stateName, names, maxBytes }) {
   if (window !== window.top || location.origin !== origin || globalThis[stateName]) return; // NOSONAR: retain the original WindowProxy top-frame guard independently of the mutable globalThis alias.
   if (names.some((name) => Object.hasOwn(globalThis, name)))
@@ -205,11 +209,40 @@ export async function createOwnedPageBindings(
         failures.push(error);
       }
     };
+    // Waits for one cleanup step of the browser. A step that is never answered fails the cleanup at the hang guard.
+    const answered = async (label, start) => {
+      let timer;
+      try {
+        return await Promise.race([
+          start(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              const message = `Owned page cleanup: ${label} did not answer within ${CLEANUP_HANG_MS} ms.`;
+              reject(Object.assign(new Error(message), { unanswered: true }));
+            }, CLEANUP_HANG_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    // Sends one cleanup command. After an unanswered command the ones after it are not sent, because the same
+    // renderer would hold them too, and detaching ends the session.
+    let unanswered = false;
+    const command = async (method, params) => {
+      if (unanswered) return {};
+      try {
+        return await answered(method, () => session.send(method, params));
+      } catch (error) {
+        unanswered ||= error.unanswered === true;
+        throw error;
+      }
+    };
     if (!page.isClosed()) {
       if (script)
         await drain(async () => {
           try {
-            await session.send('Page.removeScriptToEvaluateOnNewDocument', {
+            await command('Page.removeScriptToEvaluateOnNewDocument', {
               identifier: script,
             });
           } catch (error) {
@@ -224,15 +257,16 @@ export async function createOwnedPageBindings(
           }
         });
       await drain(async () => {
-        const response = await session.send('Runtime.evaluate', {
+        const response = await command('Runtime.evaluate', {
           expression: `globalThis[${JSON.stringify(stateName)}]?.dispose();delete globalThis[${JSON.stringify(channel)}]`,
         });
         if (response.exceptionDetails) throw new Error('Owned page wrapper cleanup failed.');
       });
-      await drain(() => session.send('Runtime.removeBinding', { name: channel }));
+      await drain(() => command('Runtime.removeBinding', { name: channel }));
     }
     contexts.clear();
-    await drain(() => session.detach());
+    // The browser process answers a detach, not the renderer; one that is suspended or deadlocked answers nothing.
+    await drain(() => answered('detach', () => session.detach()));
     await settleWithinCallTimeout(replies);
     if (failures.length === 1) throw failures[0];
     if (failures.length) throw new AggregateError(failures, 'Owned page binding cleanup failed.');

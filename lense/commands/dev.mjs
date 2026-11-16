@@ -482,9 +482,10 @@ export function watchSources(
     baselineTimer.unref();
   };
   const locate = async () => {
-    let directories;
+    // Where a checkout keeps its repository does not change during a session: Git is asked once per session.
+    let directories = session.repository ?? null;
     try {
-      directories = await gitDirectories(cfg.sourceDir);
+      directories ??= await gitDirectories(cfg.sourceDir);
     } catch (err) {
       gitNoAnswer(err);
       return;
@@ -492,6 +493,8 @@ export function watchSources(
     located = true;
     gitSilent = false;
     if (closed) return;
+    // The session reads the repository's files from here on, so a save or a poll starts Git only for what changed.
+    session.followRepository?.(directories);
     // Git answered that there is no repository: no HEAD to follow; do not spawn Git for it on every poll.
     if (directories === null) tracksHead = false;
     if (directories && gitWatch) {

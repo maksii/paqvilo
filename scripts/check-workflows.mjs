@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ensureVerifiedArchive } from './verified-download.mjs';
+import { ensureVerifiedArchive, extractZipOnWindows } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const assets = {
@@ -115,18 +115,8 @@ export async function provision(
   if (recorded?.archive !== expected || !fs.existsSync(target) || recorded.binary !== digest(target)) {
     const unpacked = path.join(directory, 'unpacked');
     fs.mkdirSync(unpacked, { recursive: true });
-    if (process.platform === 'win32') {
-      execute(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          'Expand-Archive -LiteralPath $env:PAQVILO_TOOL_ARCHIVE -DestinationPath $env:PAQVILO_TOOL_DESTINATION -Force',
-        ],
-        { ...process.env, PAQVILO_TOOL_ARCHIVE: archive, PAQVILO_TOOL_DESTINATION: unpacked },
-      );
-    } else execute('tar', ['-xzf', archive, '-C', unpacked]);
+    if (process.platform === 'win32') extractZipOnWindows(archive, unpacked);
+    else execute('tar', ['-xzf', archive, '-C', unpacked]);
     if (!fs.existsSync(target)) throw new Error(`${name} executable missing after extraction.`);
     fs.writeFileSync(receipt, JSON.stringify({ archive: expected, binary: digest(target) }) + '\n');
   }

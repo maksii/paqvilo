@@ -10,6 +10,7 @@ import {
 } from './dashboard-map.mjs';
 import * as icons from './dashboard-icons.mjs';
 import { HELP } from './help-content.mjs';
+import { oneAtATime } from './view-common.mjs';
 import { view as servicesView } from './view-services.mjs';
 import { view as flowsView } from './view-flows.mjs';
 import { view as capabilitiesView } from './view-capabilities.mjs';
@@ -293,6 +294,7 @@ document.addEventListener('submit', async (event) => {
     });
     staffSessionError = '';
     drafts.delete('staff-session-form');
+    await loadView();
     render();
     notify('Staff session changed. Reload open model-driven tabs to use this identity.');
   } catch (error) {
@@ -309,6 +311,7 @@ document.addEventListener('click', async (event) => {
   try {
     staffSession = await request('/dataverse/session', { method: 'DELETE' });
     staffSessionError = '';
+    await loadView();
     render();
     notify('Local administrator selected. Reload open model-driven tabs to use this identity.');
   } catch (error) {
@@ -536,6 +539,8 @@ const panelTarget = (view, key) => {
     ) ?? content.querySelector(`#${quoted}`)
   );
 };
+/** The element of a landed panel that takes the focus: the summary of a section, otherwise the panel itself. */
+const landingFocus = (target) => (target?.localName === 'details' ? target.querySelector('summary') : target);
 function land() {
   if (landed?.view === activeView) landed.find()?.classList.add('is-landed');
   if (landing?.view !== activeView) return;
@@ -557,7 +562,7 @@ function land() {
   if (target.localName === 'details') target.open = true;
   target.scrollIntoView({ block: 'start' });
   if (!target.matches('a, button, input, select, textarea, summary, [tabindex]')) target.setAttribute('tabindex', '-1');
-  (target.localName === 'details' ? target.querySelector('summary') : target).focus({ preventScroll: true });
+  landingFocus(target).focus({ preventScroll: true });
   target.classList.add('is-landed');
   const mark = (landed = { view: activeView, find });
   setTimeout(() => {
@@ -910,7 +915,32 @@ async function loadEnvironment() {
 }
 // Module load state per view: a module renders only after its data arrived; a failed load shows its error.
 const moduleLoads = new Map();
-/* NOSONAR: single-pass routine, splitting it would change shared state */ async function loadView() {
+// The data of a view is read by one load at a time (a navigation and a refresh can both ask for it): a read that
+// started before a change never answers after the read that follows the change. Each view has its own turn, so a view
+// whose data is slow does not hold back the view the user opens next.
+const viewLoads = new Map();
+function loadView() {
+  const view = activeView;
+  // Opening Activity counts from the moment it is opened, also when the user leaves before its lists have arrived.
+  if (activeView === 'activity')
+    try {
+      localStorage.setItem(ACTIVITY_SEEN, '1');
+    } catch {
+      /* storage unavailable: Home keeps the step open */
+    }
+  if (!viewLoads.has(view))
+    viewLoads.set(
+      view,
+      oneAtATime(() => loadViewOnce(view)),
+    );
+  // The workspace stays marked busy for the whole load, also between its requests.
+  return viewLoads.get(view)().finally(beginRequest({}));
+}
+/* NOSONAR: single-pass routine, splitting it would change shared state */ async function loadViewOnce(view) {
+  // The user left this view (while its turn was waiting, or while one of its reads was unanswered): the view that is
+  // open now has a load of its own, and this one neither renders it nor moves its focus.
+  const left = () => activeView !== view;
+  if (left()) return;
   for (const module of modules) if (module.id !== activeView) module.leave?.(ctx);
   const module = moduleFor(activeView),
     loading = activeView;
@@ -921,37 +951,36 @@ const moduleLoads = new Map();
     } catch (error) {
       moduleLoads.set(loading, { loaded: moduleLoads.get(loading)?.loaded === true, error });
     }
-    if (activeView === loading) render();
+    if (left()) return;
+    render();
   }
-  if (activeView === 'home') await loadHomeFacts();
-  if (activeView === 'activity')
-    try {
-      localStorage.setItem(ACTIVITY_SEEN, '1');
-    } catch {
-      /* storage unavailable: Home keeps the step open */
-    }
-  if (activeView === 'operations') {
+  if (view === 'home') await loadHomeFacts();
+  if (view === 'operations') {
     await loadOperations().catch((error) => notify(error.message, true));
+    if (left()) return;
     if (!powerPages()) render();
   }
-  if (activeView === 'records') await loadRecords();
-  if (['access', 'scenarios'].includes(activeView)) {
+  if (view === 'records') await loadRecords();
+  if (['access', 'scenarios'].includes(view)) {
     personaCatalogue = await request('/personas');
     if (personaCatalogue.version !== 1) personaCatalogue = undefined;
     await loadContacts();
+    if (left()) return;
     render();
   }
-  if (activeView === 'access') {
+  if (view === 'access') {
     await loadExternalIdentities();
-    if (activeView === 'access') render();
+    if (left()) return;
+    render();
   }
-  if (activeView === 'portal') await loadAccessRules();
-  if (activeView === 'environment') await loadEnvironment();
-  if (activeView === 'dataverse') {
+  if (view === 'portal') await loadAccessRules();
+  if (view === 'environment') await loadEnvironment();
+  if (view === 'dataverse') {
     await loadAppSurfaceNodes();
     if (usesStaffSession()) await loadStaffSession();
     await loadDataverse();
   }
+  if (left()) return;
   await followRoute();
   // The view's data is in: a panel the link named either lands now or does not exist here.
   if (landing?.view === activeView) landing.ready = true;
@@ -1458,8 +1487,8 @@ async function signOutThroughPortal() {
 /** The simulation override: explicit web roles for this browser's signed-in session; null clears it. */
 async function setSessionRoles(roles) {
   await request('/session/roles', { method: 'POST', body: JSON.stringify({ roles }) });
-  await loadSession();
-  render();
+  if (!(await refresh()))
+    throw new Error('The web roles were saved, but the workspace could not be read back. Select Refresh to try again.');
 }
 /**
  * The simulation override: explicit web-role names for this browser's signed-in session instead
@@ -1546,6 +1575,8 @@ function refresh({ announce = false } = {}) {
   refreshAnnounce ||= announce;
   if (refreshInFlight) return refreshInFlight;
   $('#refresh').disabled = true;
+  // The workspace stays marked busy for the whole refresh, also while views are probed and between its requests.
+  const settled = beginRequest({});
   refreshInFlight = (async () => {
     let success;
     do {
@@ -1553,10 +1584,12 @@ function refresh({ announce = false } = {}) {
       success = await refreshOnce();
     } while (refreshAgain);
     if (success && refreshAnnounce) notify('Workspace refreshed.');
+    return success;
   })().finally(() => {
     refreshInFlight = undefined;
     refreshAnnounce = false;
     $('#refresh').disabled = false;
+    settled();
   });
   return refreshInFlight;
 }
@@ -3981,14 +4014,13 @@ const dvLines = (value) =>
     .filter(Boolean);
 async function dataverseWrite(path, options, done) {
   const result = await request(path, options);
-  if (usesStaffSession()) await loadStaffSession();
-  await loadDataverse();
+  await loadView();
   if (done) notify(done);
   return result;
 }
 
 function handleDataverseEdit(data) {
-  if (data.action === 'reload-dataverse') return { handled: true, result: loadDataverse() };
+  if (data.action === 'reload-dataverse') return { handled: true, result: loadView() };
   if (data.action === 'dismiss-dataverse-secret') {
     dataverseSecret = null;
     render();
@@ -4349,8 +4381,30 @@ function renderView(view) {
   }
 }
 
+// The open state each section was last rendered with or last reported by a `toggle` event.
+const shownOpen = new WeakMap();
+const sections = () => document.querySelectorAll('#content details, #navigation details');
+/**
+ * Records the sections the user opened or closed whose `toggle` event has not arrived. The browser sends that event
+ * after the click; when the view is rendered again first, the event goes to the replaced section and is lost, so a
+ * render reads the sections that differ from the state they were shown with.
+ */
+function rememberOpenSections() {
+  for (const detail of sections()) {
+    if (!shownOpen.has(detail) || shownOpen.get(detail) === detail.open) continue;
+    toggleSectionState(detail);
+    toggleNavigationGroup(detail);
+    if (detail.dataset.disclosure) {
+      if (detail.open) openDisclosures.add(detail.dataset.disclosure);
+      else openDisclosures.delete(detail.dataset.disclosure);
+    }
+  }
+}
 /* NOSONAR: single-pass routine, splitting it would change shared state */ function render() {
+  rememberOpenSections();
   const focused = document.activeElement;
+  // A landed panel keeps the focus across the renders that follow its landing (a second read of the same view).
+  const landedFocused = landed?.view === activeView && Boolean(focused) && landingFocus(landed.find()) === focused;
   let focusKey = null;
   if (focused?.id && $('#content').contains(focused)) focusKey = `#${CSS.escape(focused.id)}`;
   else if (focused?.dataset?.tableSearch) focusKey = `[data-table-search="${CSS.escape(focused.dataset.tableSearch)}"]`;
@@ -4433,12 +4487,18 @@ function renderView(view) {
   moduleFor(activeView)?.mounted?.(ctx);
   for (const section of $('#content').querySelectorAll('details[data-ui-section]'))
     if (sectionState.has(section.dataset.uiSection)) section.open = sectionState.get(section.dataset.uiSection);
+  for (const detail of sections()) shownOpen.set(detail, detail.open);
   restoreDrafts();
   for (const input of $('#content').querySelectorAll('[data-filter-target]')) applyListFilter(input);
   linkFieldHelp($('#content'));
   syncConfinement();
   restorePendingScopes();
-  if (focusKey) {
+  if (landedFocused) {
+    const target = landed.find();
+    if (target && !target.matches('a, button, input, select, textarea, summary, [tabindex]'))
+      target.setAttribute('tabindex', '-1');
+    landingFocus(target)?.focus({ preventScroll: true });
+  } else if (focusKey) {
     const replacement = $('#content').querySelector(focusKey);
     // Lazy data can arrive between focus and the next keystroke, before an input event saves a
     // draft. Keep editing in the replacement control without moving the operator's viewport.
@@ -4750,7 +4810,7 @@ async function saveConfig(patch, { form } = {}) {
         method: 'PUT',
         body: JSON.stringify({ value: null }),
       });
-      await loadEnvironment();
+      await loadView();
       notify('Local value removed; the Solution value or definition default applies.');
     } catch (error) {
       notify(error.message, true);
@@ -4781,7 +4841,7 @@ async function saveConfig(patch, { form } = {}) {
     return;
   }
   if (target.dataset.action === 'reload-environment') {
-    await loadEnvironment();
+    await loadView();
     return;
   }
   if (target.dataset.action === 'export-state') {
@@ -5309,6 +5369,7 @@ document.addEventListener('input', (event) => {
     if (!body || Array.isArray(body) || typeof body !== 'object')
       throw new Error('Enter a JSON object with named fields.');
     const { name, id, entity, configField } = editContext;
+    // The editor closes after the view behind it shows the saved values, so stale rows are never open to use.
     if (name === 'mappings') {
       if (!body.logicalName) throw new Error('Mappings require a logicalName.');
       if ((body.id && body.id !== body.logicalName) || (id !== undefined && id !== body.logicalName))
@@ -5322,8 +5383,8 @@ document.addEventListener('input', (event) => {
         method: 'PUT',
         body: JSON.stringify({ value: body.value }),
       });
+      await loadView();
       $('#editor').close();
-      await loadEnvironment();
       notify('Environment variable saved.');
       return;
     }
@@ -5332,9 +5393,10 @@ document.addEventListener('input', (event) => {
         method: 'PATCH',
         body: JSON.stringify({ [name]: body }),
       });
+      const current = await refresh();
       $('#editor').close();
-      await refresh();
-      notify(name === 'shellProfile' ? 'Shell profile saved.' : 'Schemas saved.');
+      if (current) notify(name === 'shellProfile' ? 'Shell profile saved.' : 'Schemas saved.');
+      else notify('Changes saved, but the workspace could not be read back. Select Refresh to try again.', true);
       return;
     }
     const base = name === 'records' ? `records/${encodeURIComponent(entity)}` : name;
@@ -5344,9 +5406,10 @@ document.addEventListener('input', (event) => {
       method: id === undefined ? 'POST' : 'PATCH',
       body: JSON.stringify(body),
     });
+    const current = await refresh();
     $('#editor').close();
-    await refresh();
-    notify('Changes saved.');
+    if (current) notify('Changes saved.');
+    else notify('Changes saved, but the workspace could not be read back. Select Refresh to try again.', true);
   } catch (error) {
     setButtonPending(button, false, true);
     $('#editor-error').textContent = error.message;
@@ -5442,6 +5505,7 @@ document.addEventListener(
   'toggle',
   (event) => {
     const detail = event.target;
+    shownOpen.set(detail, detail.open);
     toggleLazyJson(detail);
     toggleSectionState(detail);
     toggleNavigationGroup(detail);

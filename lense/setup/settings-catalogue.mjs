@@ -2,7 +2,7 @@
 // an invented YAML example and the setup stage (1..10, docs/setup.md journey) that configures it.
 // Mirage keys take doc/contract/redact from mirage/lib/config-keys.mjs, the one registration point.
 import { MIRAGE_SETTINGS, pendingSettingParsers } from '../../mirage/lib/config-keys.mjs';
-import '../../mirage/lib/provider-modules.mjs';
+import '../../mirage/lib/settings-contracts.mjs';
 
 // Choices mirror the choice([...]) parsers and enum checks; test/setup-settings-catalogue.test.mjs proves each
 // one is accepted and a foreign value rejected, so a parser change fails the test instead of drifting.

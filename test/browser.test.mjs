@@ -859,6 +859,23 @@ test('closing after the user closed the browser prints no notice and leaves the 
   assert.equal(error.mock.callCount(), 0);
 });
 
+test('a browser close that never settles ends at the close guard and names it', async (t) => {
+  const fixture = closeFixture(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  // The browser stopped answering: its close never settles.
+  fixture.context.close = () => new Promise(() => {});
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const closing = opened.close().then(
+    () => null,
+    (error) => error,
+  );
+  await settleWhileTicking(t, closing, 1000);
+  assert.equal(
+    (await closing)?.message,
+    'Closing the browser did not finish within 30000 ms. That is the browser hang guard, not a readiness deadline.',
+  );
+});
+
 // @test-kind contract: a browser guard override that is not a positive duration is rejected before any launch
 test('browser guard overrides must be positive durations and are rejected before a launch', async (t) => {
   const dir = tempDirSync('paqvilo-guard-override-');

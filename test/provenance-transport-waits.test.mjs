@@ -606,3 +606,70 @@ test('closing the browser context while a page answer is unread or in flight end
     assert.deepEqual(reports, []);
   }
 });
+
+const retirements = (session) =>
+  session.sent.filter(
+    ({ method, params }) => method === 'Runtime.evaluate' && params.expression.includes('?.release?.('),
+  );
+
+test('disposal retires the registry of every live document context, also beyond the record limit and before its claim', async () => {
+  for (const create of [createDomProvenanceTransport, createPortalProvenanceTransport]) {
+    const session = fakeSession();
+    const transport = create({ request: {} }, [{ origin: ORIGIN }]);
+    const attachment = await transport.onAttach({
+      cdp: session.cdp,
+      configure: (method, params) => session.cdp.send(method, params),
+      report: () => {},
+    });
+    session.navigate('document-loader');
+    const ids = Array.from({ length: 130 }, (_, index) => 100 + index);
+    for (const id of ids)
+      session.cdp.emit('Runtime.executionContextCreated', {
+        context: { id, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+      });
+    // A context of another origin, an isolated world and a destroyed context have no registry to retire.
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 300, origin: 'https://other.invalid', auxData: { isDefault: true, frameId: 'main' } },
+    });
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 301, origin: ORIGIN, auxData: { isDefault: false, frameId: 'main' } },
+    });
+    session.cdp.emit('Runtime.executionContextDestroyed', { executionContextId: ids.pop() });
+    // Disposed in the same turn: no claim has been answered for any context yet.
+    await attachment.dispose();
+    assert.deepEqual(
+      retirements(session).map(({ params }) => params.contextId),
+      ids,
+      create.name,
+    );
+    assert.ok(
+      session.sent.findIndex(({ method }) => method === 'Page.removeScriptToEvaluateOnNewDocument') <
+        session.sent.indexOf(retirements(session)[0]),
+      `${create.name}: the bootstrap is removed before the registries are retired`,
+    );
+  }
+});
+
+test('a document that was open before the bootstrap is never sent the release key', async () => {
+  for (const create of [createDomProvenanceTransport, createPortalProvenanceTransport]) {
+    const session = fakeSession();
+    const transport = create({ request: {} }, [{ origin: ORIGIN }]);
+    const attachment = await transport.onAttach({
+      cdp: session.cdp,
+      configure: (method, params) => session.cdp.send(method, params),
+      report: () => {},
+    });
+    // The frame still shows the loader it had when the transport attached.
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 5, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => session.sent.filter(({ method }) => method === 'Page.getFrameTree').length >= 2);
+    await setImmediate();
+    await attachment.dispose();
+    assert.deepEqual(
+      session.sent.filter(({ method }) => method === 'Runtime.evaluate'),
+      [],
+      create.name,
+    );
+  }
+});

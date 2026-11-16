@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's reference-parity tool against invented loopback fixtures; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -160,7 +161,7 @@ test('reference parity uses explicit local visitors, membership and override rol
     'compatibility scope does not grant the default parity visitor access',
   );
   delete app.store.state.simulator.identityScope;
-  const session = await createPortalSession({ origin: app.url, contactId: 'reader' });
+  const session = await createPortalSession({ origin: app.url, contactId: 'reader', timeoutMs: 0 });
   assert.equal((await compareReferenceContracts({ ...options, localSession: session })).passed, true);
   assert.equal((await session.session()).signedIn, true, 'caller-owned session stays open');
   const changed = await compareReferenceContracts({

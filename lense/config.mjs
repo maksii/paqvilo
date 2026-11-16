@@ -28,7 +28,8 @@ import {
   browserUserDataDir,
 } from './config-schema.mjs';
 import { resolveCatalogueSettings } from '../mirage/lib/config-keys.mjs';
-import '../mirage/lib/provider-modules.mjs';
+// The contract setting parsers alone: reading a catalogue loads no provider runtime (mirage/lib/settings-contracts.mjs).
+import '../mirage/lib/settings-contracts.mjs';
 
 /** A deliberate configuration error with a stable `code`; scripts match on it and analyze reports it. */
 const configurationError = (message, code = 'configuration_error') => Object.assign(new Error(message), { code });
@@ -323,10 +324,10 @@ function catalogueProvenance(sites, opts, settings, local) {
 
 /**
  * Reads the catalogue (all sites and environments) without selecting one.
- * @param {{config?: string}} opts
+ * @param {{config?: string, cwd?: string}} opts `cwd` is the working directory relative paths resolve against
  */
 export function loadCatalogue(opts = {}, processEnv = process.env) {
-  const localConfig = path.join(process.cwd(), 'paqvilo.config.yml');
+  const localConfig = path.join(opts.cwd ?? process.cwd(), 'paqvilo.config.yml');
   const configFile = path.resolve(
     opts.config ?? (fs.existsSync(localConfig) ? localConfig : path.join(TOOL_ROOT, 'paqvilo.config.yml')),
   );
@@ -341,7 +342,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof sourceRootSetting !== 'string' || !sourceRootSetting.trim() || /[\x00-\x1f\x7f]/.test(sourceRootSetting))
     throw configurationError('Portal repository root must be a non-empty path without control characters');
-  const sourceRoot = path.resolve(opts.repo !== undefined ? process.cwd() : configDir, sourceRootSetting);
+  const sourceRoot = path.resolve(opts.repo !== undefined ? (opts.cwd ?? process.cwd()) : configDir, sourceRootSetting);
 
   const sites = {};
   for (const [name, raw] of Object.entries(root.sites ?? {})) {
@@ -503,7 +504,7 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
   // A code-site project folder is read through its .powerpages-site/ folder (short-key YAML).
   let configuredSourceDir;
   if (sourceSetting) {
-    const baseDirectory = opts.source ? process.cwd() : configDir;
+    const baseDirectory = opts.source ? (opts.cwd ?? process.cwd()) : configDir;
     configuredSourceDir = path.resolve(baseDirectory, sourceSetting);
   } else configuredSourceDir = site.sourceDir;
   const sourceDir = portalSourceDir(configuredSourceDir);

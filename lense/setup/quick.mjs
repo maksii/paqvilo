@@ -277,6 +277,7 @@ function runSummary({ state, esc, session, operation, checking }) {
   if (checking) return 'Checking…';
   if (operation?.state === 'running') return 'Working…';
   if (session?.ready) return `Running at <code>${esc(session.url)}</code>`;
+  if (session?.probe === 'no-answer') return 'Not answering yet…';
   return session ? 'Starting…' : 'Not running';
 }
 
@@ -607,9 +608,9 @@ function renderStartedPreview({ state, esc, target, session, restartHint, preset
   const controls = session.owned
     ? `<div class="toolbar"><button type="button" class="button${restartClass}" data-preview="restart">Restart</button><button type="button" class="button quiet" data-preview="stop">Stop</button></div>`
     : `<p class="muted small">This preview was started from a terminal: stop it there (Ctrl+C)${restartCommandHint}.</p>`;
-  const readyText = session.ready
-    ? `Your preview is running on this computer at <code>${esc(session.url)}</code>.`
-    : 'Your preview is starting…';
+  let readyText = 'Your preview is starting…';
+  if (session.ready) readyText = `Your preview is running on this computer at <code>${esc(session.url)}</code>.`;
+  else if (session.probe === 'no-answer') readyText = 'Your preview has not answered yet…';
   const openItems = previewActionItems(opens, restart, esc);
   return (
     `${failed}${error}${restart ? '<p class="quick-warn">You changed settings. Restart the preview to use them.</p>' : ''}` +

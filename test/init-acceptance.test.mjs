@@ -10,6 +10,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownedChildren } from './helpers/owned-children.mjs';
 
 const toolkit = fileURLToPath(new URL('../', import.meta.url));
 const environment = Object.fromEntries(
@@ -27,18 +28,24 @@ async function project(t, options = {}) {
 // this file run one at a time, so the signal recorded before each test is that test's. Each test runs a bounded
 // number of children, so the per-test limit never covers a whole sequence of scenarios.
 let testSignal;
+// The generated runner starts `node --test`, a grandchild that holds the project folder on Windows: the runner's
+// processes are ended before the test's folder is removed.
+const children = ownedChildren();
 beforeEach((t) => {
   testSignal = t.signal;
+  ownedFixture(t).add(() => children.end());
 });
 async function run(root, args = ['tools/test-browser.mjs']) {
   return withProcessSlot(async () => {
-    const child = spawn(process.execPath, args, {
-      cwd: root,
-      env: environment,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      signal: testSignal,
-    });
+    const child = children.own(
+      spawn(process.execPath, args, {
+        cwd: root,
+        env: environment,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        signal: testSignal,
+      }),
+    );
     let output = '';
     child.stdout.on('data', (chunk) => {
       output += chunk;

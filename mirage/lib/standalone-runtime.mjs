@@ -85,6 +85,7 @@ import {
 } from './sim-environment-routes.mjs';
 import { docsLinks } from './docs-links.mjs';
 import { writeJsonChunks } from './json-response.mjs';
+import { keepIdleConnections } from './idle-connections.mjs';
 import {
   STANDALONE_ROUTES,
   adminServes,
@@ -1084,8 +1085,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
       requests.add(task);
       task.finally(() => requests.delete(task)).catch(() => {});
     };
-    server = http.createServer(onRequest);
-    adminServer = http.createServer(onRequest);
+    server = keepIdleConnections(http.createServer(onRequest));
+    adminServer = keepIdleConnections(http.createServer(onRequest));
     storageAdapter?.activate(store.state);
     store.completeInitialization();
     startupPhase('listener');

@@ -94,27 +94,38 @@ async function fixture(t, source, { scriptFor } = {}) {
     );
     return query('dom');
   };
-  return { page, query, domProof, transport, source, scope, errors };
+  // Resolves once the response's portal proof is published to the page: a parser original that the same source binds
+  // as a literal has its fact. Only after that does an empty portal answer for another node mean a refusal.
+  const portalProof = (original) =>
+    page.waitForFunction(
+      ({ slot, scope, original }) =>
+        window[slot]?.query(document.querySelector(original), { scope, anchorGeneration: 1 }).facts.length > 0,
+      { slot: transport.slot, scope, original },
+    );
+  return { page, query, domProof, portalProof, transport, source, scope, errors };
 }
 
-for (const [name, source, relationship, call] of [
+for (const [name, source, relationship, call, original] of [
   [
     'inert-template clone',
     '<!doctype html><html><body><template id="pattern"><button id="claimed">Literal source</button></template><script>window.scriptNode=document.getElementById("pattern").content.cloneNode(true).firstElementChild;document.body.append(scriptNode)</script></body></html>',
     'cloned-by',
     'cloneNode',
+    '#pattern',
   ],
   [
     'predicted future literal marker',
     '<!doctype html><html><body><p>Earlier literal</p><script>const marker=document.currentScript.getAttribute("data-paqvilo-source"),cut=marker.lastIndexOf(":");window.scriptNode=document.createElement("button");scriptNode.id="claimed";scriptNode.setAttribute("data-paqvilo-source",marker.slice(0,cut+1)+(Number(marker.slice(cut+1))+1));document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
     'created-by',
     'createElement',
+    'p',
   ],
   [
     'DOMParser future-marker insertion',
     '<!doctype html><html><body><p>Earlier literal</p><script>const marker=document.currentScript.getAttribute("data-paqvilo-source"),cut=marker.lastIndexOf(":"),next=marker.slice(0,cut+1)+(Number(marker.slice(cut+1))+1);window.scriptNode=new DOMParser().parseFromString(`<button id="claimed" data-paqvilo-source="${next}">Created</button>`,"text/html").body.firstChild;document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
     'attached-by',
     'append',
+    'p',
   ],
 ])
   // @test-kind security: an authored script cannot obtain parser-original proof for a node it created
@@ -123,6 +134,7 @@ for (const [name, source, relationship, call] of [
     const dom = await fx.domProof();
     assert.equal(await fx.page.evaluate(() => document.getElementById('claimed') === window.scriptNode), true);
     assert.equal(await fx.page.locator('#claimed').count(), 1, 'the future original never appeared');
+    await fx.portalProof(original);
     const portal = await fx.query('portal');
     assert.deepEqual(
       portal.facts,

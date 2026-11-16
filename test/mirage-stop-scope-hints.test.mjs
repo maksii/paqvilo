@@ -1,13 +1,18 @@
 // @test-kind contract: stop hints retain exact catalogue and project ownership and stop only selected processes
 // Multi-portal and Power Pages stop hints keep their catalogue, checkout, state and port selectors,
 // and human and JSON output advertise the same exact targets.
+//
+// A hint is the command a start prints; what it selects when it runs is decided by the stop command from the
+// ownership records. Both run in this process against runtime doubles (test/helpers/mirage-in-process.mjs), and a
+// hint is replayed as the argv it holds. That a shell hands a hint over as that argv, and that a real runtime ends
+// when it does, is test/mirage-process-boundary.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { workspace, startOnPair, alive, stopped } from './mirage-stop-workspace.mjs';
+import net from 'node:net';
+import { workspace, startOnPair, alive, stopped, hintCommands } from './helpers/mirage-in-process.mjs';
 
-// Each scenario is its own test, so the per-test limit covers a bounded number of CLI processes and runtimes.
 async function multiProject(t) {
   const work = await workspace(t);
   const config = path.join(work.directory, 'catalogue controls', 'custom.json');
@@ -101,7 +106,7 @@ test('init next retains the custom catalogue and checkout', async (t) => {
   await work.writeCatalogue(config, { all: true });
   const init = await work.run(['mirage', 'init', '--config', config, '--repo', work.alternate, '--json']);
   assert.equal(init.status, 0, init.stdout + init.stderr);
-  const nextArgs = JSON.parse((await work.replay(JSON.parse(init.stdout).next, true)).stdout);
+  const [nextArgs] = hintCommands(JSON.parse(init.stdout).next).commands;
   assert.ok(nextArgs.includes(config) && nextArgs.includes(work.alternate));
   assert.deepEqual(nextArgs.slice(-2), ['--portals', 'all']);
 });
@@ -201,4 +206,25 @@ test('a broad site stop after configuration edits stops every runtime of that re
   );
   await stopped(sameState);
   await stopped(otherState);
+});
+
+// @test-kind tooling: the in-process host holds a reserved port pair until its runtime doubles adopt it
+test('a reserved pair cannot be taken between reservation and start', async (t) => {
+  const { work, config, project } = await multiProject(t);
+  const base = await work.host.reservePair();
+  await assert.rejects(
+    new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', reject);
+      probe.listen(base, '127.0.0.1', () => probe.close(() => resolve()));
+    }),
+    { code: 'EADDRINUSE' },
+  );
+  const started = await work.start(['--config', config, '--project', project, '--port', String(base)]);
+  assert.deepEqual(
+    started.portals.map((session) => Number(new URL(session.url).port)).sort((a, b) => a - b),
+    [base, base + 1],
+  );
+  await work.replay(started.stop);
+  for (const session of started.portals) await stopped(session);
 });

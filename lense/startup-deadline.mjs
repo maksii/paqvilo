@@ -8,13 +8,16 @@ const PAGE_PROGRESS_EVENTS = ['request', 'requestfinished', 'requestfailed', 'fr
  * without progress (a phase, a page request or navigation), or at the absolute cap counted from the start.
  * Both limits are hang guards; a start that keeps progressing is never failed by them. A deadline ends at
  * initial document/assets readiness, independently of session lifetime.
+ * @param {number|string} [value] the silence limit in milliseconds
+ * @param {{clock?: {Date: {now: () => number}, setTimeout: Function, clearTimeout: Function}}} [options] clock reads
+ *   the time and arms the one guard timer (default: the global clock and timers), so a caller can drive the guards
  */
-export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
+export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS, { clock = globalThis } = {}) {
   const controller = new AbortController();
   const silenceMs = Number(value);
   if (!Number.isInteger(silenceMs) || silenceMs < 1000 || silenceMs > 600000)
     throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
-  const startedAt = Date.now();
+  const startedAt = clock.Date.now();
   const capAt = startedAt + STARTUP_PAGE_CAP_MS;
   let phase = 'configuration',
     lastProgressAt = startedAt,
@@ -49,7 +52,7 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
     return null;
   };
   const clearTimer = () => {
-    clearTimeout(timer);
+    clock.clearTimeout(timer);
     timer = null;
   };
   const detachPages = () => {
@@ -66,7 +69,7 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
   // A guard that is due ends the start now, even when its timer has not run yet (for example during synchronous work).
   const tripped = () => {
     if (!expired && !finished) {
-      const failure = guardFailure(Date.now());
+      const failure = guardFailure(clock.Date.now());
       if (failure) expire(failure);
     }
     return expired;
@@ -75,11 +78,11 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
     clearTimer();
     if (finished || expired) return;
     const due = Math.min(lastProgressAt + silenceMs, capAt);
-    timer = setTimeout(onTimer, Math.max(1, due - Date.now()));
+    timer = clock.setTimeout(onTimer, Math.max(1, due - clock.Date.now()));
   };
   // Progress only moves the silence mark; the timer re-arms itself for the next due check.
   const touch = () => {
-    if (!finished && !expired) lastProgressAt = Date.now();
+    if (!finished && !expired) lastProgressAt = clock.Date.now();
   };
   function onTimer() {
     timer = null;
@@ -136,7 +139,7 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
       if (disposeLate) {
         const disposal = pending
           .then(async (value) => {
-            if (!admitted && (expired || (!finished && guardFailure(Date.now())))) await dispose(value);
+            if (!admitted && (expired || (!finished && guardFailure(clock.Date.now())))) await dispose(value);
           })
           .catch(() => {})
           .finally(() => late.delete(disposal));

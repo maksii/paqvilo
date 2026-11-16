@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own standalone source watcher ignores its outputs and reloads authored XML; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,13 +14,10 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // with margin. On a slower host a missed reload makes this pass weakly, never fail spuriously; the positive reload
 // observed afterwards proves the watcher was live.
 const NO_RELOAD_WINDOW_MS = 700;
+// The runtime announces no reload event, so the reloaded state is read until it shows. The pause only paces the
+// reads; a reload that never comes is ended by the runner's --test-timeout, not by a deadline of this test.
 async function eventually(fn) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await fn()) return;
-    await pause(50);
-  }
-  assert.fail('Authored solution metadata did not reload.');
+  while (!(await fn())) await pause(50);
 }
 for (const level of [null, 'simulation'])
   test(`standalone watcher ignores runtime/build/DATA outputs and reloads authored XML (${level ?? 'legacy'})`, async (t) => {

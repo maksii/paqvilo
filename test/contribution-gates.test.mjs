@@ -16,6 +16,7 @@ import {
   githubScope,
   suitesForScope,
   ciLanes,
+  browserLanes,
 } from '../.github/scripts/change-scope.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -107,7 +108,7 @@ test('description, title, base and source events validate the same complete PR d
   };
   const eventFile = path.join(root, 'event.json'),
     output = path.join(root, 'output');
-  const run = (payload, forced = false) => {
+  const run = (payload) => {
     fs.writeFileSync(eventFile, JSON.stringify(payload));
     fs.writeFileSync(output, '');
     const env = {
@@ -115,7 +116,7 @@ test('description, title, base and source events validate the same complete PR d
       GITHUB_EVENT_PATH: eventFile,
       GITHUB_EVENT_NAME: 'pull_request',
       GITHUB_OUTPUT: output,
-      VALIDATE_ALL: String(forced),
+      VALIDATE_ALL: 'false',
     };
     for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
     const result = spawnSync(
@@ -138,6 +139,18 @@ test('description, title, base and source events validate the same complete PR d
   assert.equal(scope.package, true);
   assert.equal(scope.smoke, true);
   assert.deepEqual(suitesForScope(scope), ['lense', 'mirage', 'examples']);
+  const written = Object.fromEntries(
+    synchronized.output
+      .trimEnd()
+      .split('\n')
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+  for (const [key, value] of Object.entries(scope)) assert.equal(written[key], String(value), `GITHUB_OUTPUT ${key}`);
+  assert.equal(written.suites, JSON.stringify(suitesForScope(scope)));
+  assert.equal(written.units, JSON.stringify(ciLanes('unit', suitesForScope(scope))));
+  assert.equal(written.browsers, JSON.stringify(browserLanes(suitesForScope(scope))));
+  // The script's output is a pure function of its scope (the lines written above), so each edit is classified by the
+  // function the script calls; the real run above checks that output once.
   for (const edited of [
     event,
     { ...event, changes: {} },
@@ -147,17 +160,16 @@ test('description, title, base and source events validate the same complete PR d
     { ...event, changes: { base: { ref: { from: 'previous' } } } },
     { ...event, changes: { ...event.changes, unknown: {} } },
   ]) {
-    const result = run(edited);
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), scope);
-    assert.equal(result.output, synchronized.output, 'every PR edit retains the applicable source lanes');
+    assert.deepEqual(
+      githubScope(edited, 'pull_request', { VALIDATE_ALL: 'false' }, root),
+      scope,
+      'every PR edit retains the applicable source lanes',
+    );
   }
   const unavailable = run({ ...event, pull_request: { ...event.pull_request, base: { sha: 'a'.repeat(40) } } });
   assert.notEqual(unavailable.status, 0, 'description edits fail closed when the source diff is unavailable');
   assert.match(unavailable.stderr, /Cannot determine changed files/);
-  const forced = run(event, true);
-  assert.equal(forced.status, 0, forced.stderr);
-  assert.equal(JSON.parse(forced.stdout).full, true);
+  assert.equal(githubScope(event, 'pull_request', { VALIDATE_ALL: 'true' }, root).full, true);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.equal(ci.concurrency.group, 'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
   assert.equal(ci.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
@@ -190,7 +202,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     SDK: 'success',
     SMOKE: 'success',
   };
-  const run = (env) => {
+  const node = (env) => {
     const result = spawnSync(process.execPath, ['-e', script], {
       env: { ...process.env, ...env },
       encoding: 'utf8',
@@ -199,6 +211,28 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     assert.equal(result.error, undefined);
     return result.status;
   };
+  // The script reads its inputs from process.env and its only effect is process.exit, so each combination below is
+  // evaluated here with those two supplied; a Node process per combination measured nothing more.
+  const run = (env) => {
+    const exited = Symbol('exit');
+    let status = 0;
+    const stub = {
+      env,
+      exit(code = 0) {
+        status = code;
+        throw exited;
+      },
+    };
+    try {
+      new Function('process', script)(stub);
+    } catch (error) {
+      if (error !== exited) throw error;
+    }
+    return status;
+  };
+  // Node itself runs the workflow's script to both outcomes.
+  assert.equal(node(required), 0);
+  assert.equal(node({ ...required, CHECKS: 'failure' }), 1);
   assert.equal(run(required), 0);
   for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SDK', 'SMOKE'])
     for (const result of ['failure', 'cancelled', 'skipped'])
@@ -337,10 +371,16 @@ test('PR scope excludes unrelated base-branch code but includes both sides of re
   git('mv', 'runtime.mjs', 'docs/runtime.md');
   git('commit', '-qm', 'rename');
   const renamed = git('rev-parse', 'HEAD');
-  assert.equal(classify({ before: head }, { GITHUB_EVENT_NAME: 'push', GITHUB_SHA: renamed }).runtime, true);
-  assert.equal(classify({ pull_request: { base: { sha: head }, head: { sha: renamed } } }).runtime, true);
-  assert.equal(classify({}, { GITHUB_EVENT_NAME: 'workflow_dispatch' }).runtime, true);
-  assert.equal(classify({ before: head }, { VALIDATE_ALL: 'true' }).runtime, true);
+  // The same classification the script runs for each event, called directly: one process per case is not needed.
+  const scopeOf = (event, eventName, env = {}) =>
+    githubScope(event, eventName, { VALIDATE_ALL: 'false', ...env }, root);
+  assert.equal(scopeOf({ before: head }, 'push', { GITHUB_SHA: renamed }).runtime, true);
+  assert.equal(
+    scopeOf({ pull_request: { base: { sha: head }, head: { sha: renamed } } }, 'pull_request').runtime,
+    true,
+  );
+  assert.equal(scopeOf({}, 'workflow_dispatch').runtime, true);
+  assert.equal(scopeOf({ before: head }, 'pull_request', { VALIDATE_ALL: 'true' }).runtime, true);
 });
 
 // The hook executes staged copies, including every local module imported by its selected entry points.

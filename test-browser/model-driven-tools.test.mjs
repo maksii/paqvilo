@@ -1,3 +1,4 @@
+// @test-kind contract: owned model-driven action and identity bindings run on invented loopback fixtures.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import test from 'node:test';
@@ -142,7 +143,7 @@ test('owned action bindings keep native results out of metadata and scope identi
     document.body.append(frame);
   });
   const frame = await attached;
-  await frame.waitForLoadState();
+  await frame.waitForURL(origin + '/frame');
   assert.equal(
     await frame.evaluate(() => typeof window.__paqviloModelAction),
     'undefined',

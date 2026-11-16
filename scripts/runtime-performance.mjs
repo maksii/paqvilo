@@ -68,6 +68,31 @@ export function performanceOptionsFromArgs(args) {
   return options;
 }
 
+// Pause before status heartbeat `index` of a request, at least `budgetMs / 10` once the pause has grown that far.
+// ponytail: a block shorter than the current pause can fall between two heartbeats; a block longer than a tenth of the
+// budget is always seen.
+export const heartbeatPause = (index, budgetMs) => Math.min(5 * 2 ** index, Math.max(5, Math.floor(budgetMs / 10)));
+
+/**
+ * Runs `probe()` (a heartbeat, resolving to its duration in ms) while the request it watches is incomplete. Each pause
+ * is at least as long as the probe that preceded it, so probes take at most half of the server's time whatever its speed.
+ * A pause ends early when `completed` resolves, so the caller's measured duration does not include the rest of the pause.
+ */
+export async function heartbeatsWhile(
+  isComplete,
+  probe,
+  { pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), completed = null } = {},
+) {
+  let duration;
+  do {
+    duration = await probe();
+    if (!isComplete()) {
+      const wait = pause(Math.max(5, duration));
+      await (completed ? Promise.race([wait, completed]) : wait);
+    }
+  } while (!isComplete());
+}
+
 /** Sequential loopback probe: never consumes an external portal or business data. */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runtimePerformance({
   scales = [16, 32, 64],
@@ -165,31 +190,45 @@ export function performanceOptionsFromArgs(args) {
           pending.catch(() => {});
           const heartbeat = [],
             heartbeatErrors = [];
-          do {
-            const at = performance.now();
-            try {
-              const response = await fetch(sim.url + '/_sim/api/status', {
-                signal: budgetSignal(heartbeatBudgetMs),
-              });
-              if (!response.ok) throw new Error(`Status ${response.status}`);
-              await response.arrayBuffer();
-            } catch (error) {
-              if (strictBudgets) throw error;
-              heartbeatErrors.push({ name: error.name, message: error.message });
-              findings.push({
-                tables,
-                phase,
-                warmth,
-                stage: 'status request',
-                error: error.name,
-                budgetMs: heartbeatBudgetMs,
-              });
-            }
-            const durationMs = performance.now() - at;
-            heartbeat.push(durationMs);
-            checkBudget(durationMs, heartbeatBudgetMs, { tables, phase, warmth, stage: 'status heartbeat' });
-            if (!complete) await new Promise((resolve) => setTimeout(resolve, 5));
-          } while (!complete);
+          await heartbeatsWhile(
+            () => complete,
+            async () => {
+              const at = performance.now();
+              try {
+                const response = await fetch(sim.url + '/_sim/api/status', {
+                  signal: budgetSignal(heartbeatBudgetMs),
+                });
+                if (!response.ok) throw new Error(`Status ${response.status}`);
+                await response.arrayBuffer();
+              } catch (error) {
+                if (strictBudgets) throw error;
+                heartbeatErrors.push({ name: error.name, message: error.message });
+                findings.push({
+                  tables,
+                  phase,
+                  warmth,
+                  stage: 'status request',
+                  error: error.name,
+                  budgetMs: heartbeatBudgetMs,
+                });
+              }
+              const durationMs = performance.now() - at;
+              heartbeat.push(durationMs);
+              checkBudget(durationMs, heartbeatBudgetMs, { tables, phase, warmth, stage: 'status heartbeat' });
+              return durationMs;
+            },
+            {
+              // The pause never shrinks below the count-bounded heartbeatPause, so the number of probes stays bounded too.
+              pause: (ms) =>
+                new Promise((resolve) =>
+                  setTimeout(resolve, Math.max(ms, heartbeatPause(heartbeat.length - 1, heartbeatBudgetMs))),
+                ),
+              completed: pending.then(
+                () => {},
+                () => {},
+              ),
+            },
+          );
           let value, catalogueParseMs;
           try {
             // Finish server heartbeats before parsing the response in this same

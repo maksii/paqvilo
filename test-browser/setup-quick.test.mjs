@@ -16,6 +16,8 @@ import YAML from 'yaml';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
+import { runningRuntimeOrigins } from './helpers/mirage-status.mjs';
+import { setupNotice } from './helpers/setup-notice.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -46,8 +48,10 @@ async function ownPorts(config, t) {
 async function started(run) {
   const running = run.getByText(/Your preview is running on this computer/);
   const failed = run.getByRole('alert').filter({ hasText: /The preview could not start/ });
-  await running.or(failed).first().waitFor();
-  assert.equal(await running.count(), 1, await run.innerText());
+  // The first state observed decides; a later poll may redraw a running preview as "starting". If both waits fail
+  // (the page or browser closed), the AggregateError is the test's failure.
+  const outcome = await Promise.any([running.waitFor().then(() => 'running'), failed.waitFor().then(() => 'failed')]);
+  assert.equal(outcome, 'running', await run.innerText().catch((error) => error.message));
 }
 let browser;
 before(async () => {
@@ -88,7 +92,7 @@ async function setupFixture(t, prefix) {
 }
 
 test('quick setup creates a project from a found export, starts, opens and stops its preview', async (t) => {
-  const { config, page, errors } = await setupFixture(t, 'paqvilo-quick-run-');
+  const { directory, config, page, errors } = await setupFixture(t, 'paqvilo-quick-run-');
   const create = page.locator('form[data-form=quick-create]');
   assert.match(await create.innerText(), /we found 1 website export/);
   assert.equal(await create.getByLabel(/Power Pages website/).isChecked(), true);
@@ -111,10 +115,13 @@ test('quick setup creates a project from a found export, starts, opens and stops
   assert.notEqual(Number(new URL(website).port), blocked.port);
   assert.equal(blocked.occupied.listening, true);
   assert.equal((await fetch(website)).status, 200, 'the opened website answers');
+  // The project's own records say whether its preview runs; its released port may already answer for another process.
+  const running = () => runningRuntimeOrigins(['--config', config], { cwd: directory, signal: t.signal });
+  assert.ok((await running()).includes(new URL(website).origin), 'the started preview is recorded as running');
 
   await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
   await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor();
-  await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
+  assert.ok(!(await running()).includes(new URL(website).origin), 'the stopped preview no longer runs');
   assert.deepEqual(errors, []);
 });
 
@@ -125,10 +132,7 @@ test('All settings creates a project from what to run and the found exports, and
   assert.match(await create.innerText(), /found in this folder: 1 website export/);
   await create.locator('input[name=part][value=api]').check();
   await create.getByRole('button', { name: 'Create settings file' }).click();
-  await page
-    .locator('#notice')
-    .filter({ hasText: /^Saved\. Created/ })
-    .waitFor();
+  await setupNotice(page, /^Saved\. Created/);
   const written = YAML.parse(await fs.readFile(config, 'utf8')),
     name = written.defaultSite,
     site = written.sites[name];
@@ -153,10 +157,7 @@ test('All settings creates a project from what to run and the found exports, and
   );
   await form.locator('[name=presetMode]').selectOption('bootstrap');
   await form.getByRole('button', { name: 'Save', exact: true }).click();
-  await page
-    .locator('#notice')
-    .filter({ hasText: /^Saved\./ })
-    .waitFor();
+  await setupNotice(page, /^Saved\./);
   const saved = YAML.parse(await fs.readFile(config, 'utf8')).sites[name];
   assert.deepEqual(saved.mirage.dataPacks, ['./pack/pack.mjs']);
   assert.equal(saved.mirage.presetMode, 'bootstrap');

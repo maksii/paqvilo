@@ -48,6 +48,7 @@ import {
 } from './baseline-compare.mjs';
 import { startMcpServer } from './mcp-stdio.mjs';
 import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
+import { keepIdleConnections } from './lib/idle-connections.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // `--only a,b,c` or `--only @file` selects scenarios. A list file holds one scenario per line: the first
@@ -151,7 +152,7 @@ export async function startSaver() {
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    keepIdleConnections(server).listen(0, '127.0.0.1', resolve);
   });
   const url = `http://127.0.0.1:${server.address().port}/capture`;
   return {

@@ -15,6 +15,7 @@
   let source,
     snapshot,
     pending = Promise.resolve(),
+    acting = 0,
     timerClock = null,
     lastTick = null,
     preservedMedia = new Map(),
@@ -97,8 +98,17 @@
       );
     return data;
   }
+  // Actions run one after another. The stage is marked busy from the moment an action is queued until the last queued
+  // action is rendered, so assistive technology and tests read the stage of the answered app, not of a pending one.
   function act(action) {
-    pending = pending.then(() => execute(action));
+    acting += 1;
+    stage.setAttribute('aria-busy', 'true');
+    pending = pending
+      .then(() => execute(action))
+      .finally(() => {
+        acting -= 1;
+        if (!acting) stage.setAttribute('aria-busy', 'false');
+      });
     return pending;
   }
   async function execute(action) {

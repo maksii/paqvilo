@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of solution formula documents and their computed columns; no native recording is replayed by these tests.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -124,6 +125,7 @@ test('invalid formula paths, missing columns and malformed YAML stay unevaluated
   );
 });
 
+// @test-kind contract: Mirage's own source watcher reloads edited formula YAML into a running host; no native behaviour is claimed.
 for (const location of ['entity', 'root'])
   test(`a running model-driven host recomputes source formula values after editing ${location} YAML`, async (t) => {
     const fixtureSource = await fixture(t),
@@ -152,8 +154,7 @@ for (const location of ['entity', 'root'])
     assert.equal(await read(), 'Invented / A');
     // createSimulator resolves after the source watcher reported ready (standalone-runtime.mjs restartWatcher).
     await fs.writeFile(file, 'x_label: =Concatenate(x_code, " / ", x_name)\n');
-    const deadline = Date.now() + 60_000;
-    while ((await read()) !== 'A / Invented' && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(await read(), 'A / Invented');
+    // The runtime announces no reload event: the row is read until it shows the new formula. The 50 ms only paces the
+    // reads; a reload that never comes is ended by the runner's --test-timeout, not by a deadline of this test.
+    while ((await read()) !== 'A / Invented') await new Promise((resolve) => setTimeout(resolve, 50));
   });

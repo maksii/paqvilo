@@ -19,6 +19,9 @@ function xrayBrowserImpl(data) {
     host.__px.update({ ...data, ui: undefined });
     return;
   }
+  // An X-ray whose host the page removed or replaced while inspection was off is not reachable through the document.
+  // Dispose it before another one is created, so its attachShadow hook is restored first and never ends up under this one's.
+  globalThis.__paqviloXrayUi?.dispose?.();
   host = document.createElement('div');
   host.id = 'paqvilo-xray';
   host.setAttribute('popover', 'manual');
@@ -3080,11 +3083,14 @@ function xrayBrowserImpl(data) {
       card.style.right = r.left > innerWidth / 2 ? 'auto' : '20px';
     }
     if (action === 'copy') {
+      // The message belongs to the selection the button was pressed for: another element can be picked while the
+      // clipboard write is pending.
+      const pressedFor = host.__px.feedbackState();
       try {
         await navigator.clipboard.writeText(button.dataset.copy);
-        setStatus('Source path copied.');
+        setStatus('Source path copied.', pressedFor);
       } catch {
-        setStatus('The browser could not copy the source path.');
+        setStatus('The browser could not copy the source path.', pressedFor);
       }
     }
     if (action === 'open')
@@ -3147,7 +3153,7 @@ function xrayBrowserImpl(data) {
   });
   watchShadowRoots();
   watchFrames();
-  host.__px = {
+  host.__px = globalThis.__paqviloXrayUi = {
     toggle,
     select,
     identify,
@@ -3268,6 +3274,7 @@ function xrayBrowserImpl(data) {
       releaseFrames();
       lifetime.abort();
       host.remove();
+      if (globalThis.__paqviloXrayUi === host.__px) globalThis.__paqviloXrayUi = null;
     },
   };
 }

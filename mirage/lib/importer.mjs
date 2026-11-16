@@ -3,6 +3,7 @@ import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
 import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
 import { decodeXml } from './xml-text.mjs';
+import { portalField as field } from './portal-field.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -37,12 +38,13 @@ export function guidOrderKey(value) {
     .map((index) => digits.slice(index * 2, index * 2 + 2))
     .join('');
 }
+// Both git queries are local and read-only, and are waited for until git exits: an answer that a time limit replaced
+// with "unknown" would let the speed of the host choose which copy of a record is imported.
 /** Last commit time of a file (ms) when it is tracked by git, else null. Read-only. */
 async function committedAt(file) {
   try {
     const { stdout } = await execFileAsync('git', ['log', '-1', '--format=%ct', '--', path.basename(file)], {
       cwd: path.dirname(file),
-      timeout: 15000,
       windowsHide: true,
     });
     const seconds = Number(stdout.trim());
@@ -56,7 +58,6 @@ async function checkedOutCommit(dir) {
   try {
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
       cwd: dir,
-      timeout: 15000,
       windowsHide: true,
     });
     return /^[0-9a-f]{40,64}$/.test(stdout.trim()) ? stdout.trim() : null;
@@ -99,8 +100,6 @@ export async function chooseRecordCopy(copies, { commitTime = committedAt } = {}
 export { COMPONENT_KINDS } from './portal-component-types.mjs';
 export const DATA_MODELS = Object.freeze(['standard', 'enhanced']);
 export { decodeXml } from './xml-text.mjs';
-const field = (record, name, fallback = null) =>
-  record[`adx_${name}`] ?? record[`mspp_${name}`] ?? record[name] ?? fallback;
 const id = (value) => (value == null ? null : String(idValue(value)).replace(/[{}]/g, '').toLowerCase());
 const idValue = (value) => {
   if (typeof value !== 'object') return value;

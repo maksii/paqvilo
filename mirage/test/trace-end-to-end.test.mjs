@@ -384,7 +384,7 @@ test('the _sim route, connectRuntime().trace and the CLI return the same tree', 
   const route = await fetch(`${sim.url}/_sim/api/trace/${traceId}`);
   assert.equal(route.status, 200);
   assert.deepEqual(await route.json(), expected);
-  const client = await connectRuntime({ origin: sim.url });
+  const client = await connectRuntime({ origin: sim.url, timeoutMs: 0 });
   assert.deepEqual(await client.trace.tree(traceId), expected);
   const stdout = await new Promise((resolve, reject) =>
     execFile(

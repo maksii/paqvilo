@@ -44,7 +44,73 @@ const keyOf = (key) => {
  * This corpus executes the private registry on real nodes and documented native APIs
  * on actual DOM, then checks the shared decision policy independently. */
 test('all 60 invented provenance scenarios execute current DOM/provider observations', async (t) => {
-  const { sim, origin: portalOrigin, root, solutionDir } = await modelDrivenFixture(t);
+  // The two native hosts (the subgrid and the web resource) sit on the same item form, so they share one simulator.
+  // It starts with trusted extensions, which the web resource host needs.
+  const host = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
+  const { root, solutionDir } = host;
+  // Every simulator this test starts goes through a counted start.
+  let simulatorStarts = 0;
+  const counted =
+    (start) =>
+    (...args) => (simulatorStarts++, start(...args));
+  const oldView = guid(811),
+    newView = guid(812);
+  const content = '<h1>Invented resource body</h1>';
+  // The subgrid's two views and the view picker on the item form.
+  const prepareGridSources = async (dir) => {
+    const viewFile = path.join(dir, 'Entities/x_child/SavedQueries/children.xml');
+    const view = await fs.readFile(viewFile, 'utf8');
+    await fs.writeFile(viewFile, view.replaceAll('children-view', oldView));
+    await fs.writeFile(
+      path.join(path.dirname(viewFile), 'alternate.xml'),
+      view
+        .replaceAll('children-view', newView)
+        .replace('<isdefault>1</isdefault>', '<isdefault>0</isdefault>')
+        .replace('description="Children"', 'description="Alternate children"'),
+    );
+    const formFile = path.join(dir, 'Entities/x_item/FormXml/main/item.xml');
+    await fs.writeFile(
+      formFile,
+      (await fs.readFile(formFile, 'utf8'))
+        .replaceAll('children-view', oldView)
+        .replace(
+          '<RecordsPerPage>10</RecordsPerPage>',
+          `<RecordsPerPage>10</RecordsPerPage><EnableViewPicker>true</EnableViewPicker><ViewIds>{${oldView}},{${newView}}</ViewIds>`,
+        ),
+    );
+  };
+  // The web resource, its site map entry and the exported command on the item form.
+  const prepareResourceSources = async (dir) => {
+    const resourceFile = path.join(dir, 'WebResources/fixture_page.html');
+    await fs.mkdir(path.dirname(resourceFile), { recursive: true });
+    await fs.writeFile(resourceFile, content);
+    await fs.writeFile(
+      resourceFile + '.data.xml',
+      '<WebResource><WebResourceId>40000000-0000-4000-8000-000000000001</WebResourceId><Name>fixture_page.html</Name><WebResourceType>1</WebResourceType><FileName>WebResources/fixture_page.html</FileName></WebResource>',
+    );
+    const sitemap = path.join(dir, 'AppModuleSiteMaps/x_example/AppModuleSiteMap.xml');
+    await fs.writeFile(
+      sitemap,
+      (await fs.readFile(sitemap, 'utf8')).replace(
+        '<SubArea Id="external"',
+        '<SubArea Id="fixture_page" Url="$webresource:fixture_page.html"><Titles><Title LCID="1033" Title="Fixture page"/></Titles></SubArea><SubArea Id="external"',
+      ),
+    );
+    await fs.writeFile(
+      path.join(dir, 'Entities/x_item/RibbonDiff.xml'),
+      '<RibbonDiffXml><CustomActions><CustomAction><CommandUIDefinition><Button Id="x.Form.Inspect" Command="x.Inspect" LabelText="Fixture exported command"/></CommandUIDefinition></CustomAction></CustomActions><CommandDefinitions><CommandDefinition Id="x.Inspect"><Actions><Url Address="https://example.invalid"/></Actions></CommandDefinition></CommandDefinitions></RibbonDiffXml>',
+    );
+    return resourceFile;
+  };
+  await prepareGridSources(solutionDir);
+  const resourceFile = await prepareResourceSources(solutionDir);
+  // Simulators started by this test: the native hosts' one here, and one for the PCF host in observePcf.
+  const sim = await counted(host.start)();
+  const portalOrigin = sim.origin ?? sim.url;
+  // The native hosts' own metadata, read before the corpus files below are written into the same solution.
+  const hostIndex = createModelDrivenMetadataIndex(
+    await importModelDrivenProject({ solutionRoots: [solutionDir], solutionOrder: 'explicit' }),
+  );
   // App pages, their assets and the native corpus page run on the apps origin, the origin the observations read.
   const origin = appsOrigin(sim, portalOrigin);
   const write = async (relative, content) => {
@@ -263,7 +329,7 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
             `<controlDescriptions><controlDescription forControl="{10000000-0000-4000-8000-000000000038}"><customControl name="Fixture.Scalar" formFactor="0"><parameters><value type="bound">x_name</value></parameters></customControl><customControl name="Fixture.PhoneScalar" formFactor="2"><parameters><value type="bound">x_name</value></parameters></customControl></controlDescription><controlDescription forControl="children"><customControl name="Fixture.Dataset" formFactor="0"><parameters><data-set name="records"><ViewId>{${defaultView}}</ViewId><TargetEntityType>x_child</TargetEntityType></data-set></parameters></customControl><customControl name="Fixture.TabletDataset" formFactor="1"><parameters><data-set name="records"><ViewId>{${defaultView}}</ViewId><TargetEntityType>x_child</TargetEntityType></data-set></parameters></customControl></controlDescription></controlDescriptions></form>`,
           ),
       );
-      const sim = await fixture.start();
+      const sim = await counted(fixture.start)();
       const importedPcf = await importModelDrivenProject({
         solutionRoots: [fixture.solutionDir],
         solutionOrder: 'explicit',
@@ -361,70 +427,64 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
       }
       return { scalar, dataset, scalarFailure, datasetFailure, failedGrid, currentView, defaultView };
     })());
-  let realGrid;
-  const observeGrid = () =>
-    (realGrid ??= (async () => {
-      const fixture = await modelDrivenFixture(t, { defer: true });
-      const oldView = guid(811),
-        newView = guid(812);
-      const viewFile = path.join(fixture.solutionDir, 'Entities/x_child/SavedQueries/children.xml');
-      const view = await fs.readFile(viewFile, 'utf8');
-      await fs.writeFile(viewFile, view.replaceAll('children-view', oldView));
-      await fs.writeFile(
-        path.join(path.dirname(viewFile), 'alternate.xml'),
-        view
-          .replaceAll('children-view', newView)
-          .replace('<isdefault>1</isdefault>', '<isdefault>0</isdefault>')
-          .replace('description="Children"', 'description="Alternate children"'),
-      );
-      const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
-      await fs.writeFile(
-        formFile,
-        (await fs.readFile(formFile, 'utf8'))
-          .replaceAll('children-view', oldView)
-          .replace(
-            '<RecordsPerPage>10</RecordsPerPage>',
-            `<RecordsPerPage>10</RecordsPerPage><EnableViewPicker>true</EnableViewPicker><ViewIds>{${oldView}},{${newView}}</ViewIds>`,
-          ),
-      );
-      const sim = await fixture.start();
-      const importedGrid = await importModelDrivenProject({
-        solutionRoots: [fixture.solutionDir],
-        solutionOrder: 'explicit',
-      });
-      const gridIndex = createModelDrivenMetadataIndex(importedGrid);
-      const details = gridIndex.query({
-        active: { formId: 'item-form' },
-        componentKeys: ['view:' + oldView, 'view:' + newView],
-      });
-      const gridPage = await chrome.page(t);
-      const gridScope = { documentId: 'grid-document', frameId: 'grid-frame', uiEpoch: 1, sourceRevision: '1' };
-      await gridPage.goto(
+  // The two native hosts are both on the item form, so one page observes them in the order the observations need: the
+  // command part before the Related tab is opened (the subgrid's own command bar can add a second "New" button), then
+  // the grid part, then the web resource part.
+  let realHost;
+  const observeHost = () =>
+    (realHost ??= (async () => {
+      const hostPage = await chrome.page(t, { viewport: { width: 1920, height: 1080 } });
+      await hostPage.goto(
         appsOrigin(sim, sim.url) +
           '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       );
-      await gridPage.getByRole('tab', { name: 'Related items', exact: true }).click();
-      const grid = gridPage.locator('.related-grid');
-      await grid.getByRole('button', { name: 'Copper child', exact: true }).waitFor();
-      await gridPage.evaluate(
-        `(${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token: 'grid-corpus', origin: appsOrigin(sim, sim.url), localSimulation: true, ...details, validatedScope: gridScope, validatedAnchorGeneration: 1 })})`,
-      );
-      const inspect = async () => {
-        const packet = await grid.evaluate(
+      // A page holds one provider: the part's own details replace the previous part's, so that one is disposed first.
+      const install = (token, scope, details) =>
+        hostPage.evaluate(
+          `(() => { globalThis.__paqviloModelDrivenProvider?.dispose(); return (${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token, origin: appsOrigin(sim, sim.url), localSimulation: true, ...details, validatedScope: scope, validatedAnchorGeneration: 1 })}); })()`,
+        );
+      const inspect = async (locator, scope) => {
+        const packet = await locator.evaluate(
           (node, suppliedScope) =>
             window.__paqviloModelDrivenProvider.query(node, { scope: suppliedScope, anchorGeneration: 1 }),
-          gridScope,
+          scope,
         );
         return {
           packet,
-          evidence: resolveInspectionEvidence({ ...packet, scope: gridScope, node: { connected: true } }),
+          evidence: resolveInspectionEvidence({ ...packet, scope, node: { connected: true } }),
         };
       };
-      const initial = await inspect();
+
+      const resourceScope = {
+        documentId: 'resource-document',
+        frameId: 'resource-frame',
+        uiEpoch: 1,
+        sourceRevision: '1',
+      };
+      const resourceDetails = hostIndex.query({
+        componentKeys: ['resource:fixture_page.html', 'command:x_item:x.form.inspect'],
+        active: { formId: 'item-form' },
+      });
+      const commandNode = hostPage.getByRole('button', { name: 'Fixture exported command', exact: true });
+      await commandNode.waitFor({ state: 'attached' });
+      await install('resource-corpus', resourceScope, resourceDetails);
+      const command = await inspect(commandNode, resourceScope);
+      const platformCommand = await inspect(hostPage.getByRole('button', { name: 'New', exact: true }), resourceScope);
+
+      const gridScope = { documentId: 'grid-document', frameId: 'grid-frame', uiEpoch: 1, sourceRevision: '1' };
+      await hostPage.getByRole('tab', { name: 'Related items', exact: true }).click();
+      const grid = hostPage.locator('.related-grid');
+      await grid.getByRole('button', { name: 'Copper child', exact: true }).waitFor();
+      const gridDetails = hostIndex.query({
+        active: { formId: 'item-form' },
+        componentKeys: ['view:' + oldView, 'view:' + newView],
+      });
+      await install('grid-corpus', gridScope, gridDetails);
+      const initial = await inspect(grid, gridScope);
       const held = Promise.withResolvers(),
         release = Promise.withResolvers();
       t.after(() => release.resolve());
-      await gridPage.route(
+      await hostPage.route(
         '**/_apps/api/tables/x_child?query=*',
         async (route) => {
           held.resolve();
@@ -434,111 +494,43 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
         { times: 1 },
       );
       await grid.getByRole('button', { name: 'View for Related children', exact: true }).click();
-      await gridPage.getByRole('menuitemradio', { name: 'Alternate children', exact: true }).click();
+      await hostPage.getByRole('menuitemradio', { name: 'Alternate children', exact: true }).click();
       await held.promise;
-      const pending = await inspect();
+      const pending = await inspect(grid, gridScope);
       release.resolve();
-      await gridPage.waitForFunction(
+      await hostPage.waitForFunction(
         () => document.querySelector('.related-results')?.getAttribute('aria-busy') === 'false',
       );
-      const final = await inspect();
-      const viewRefs = gridIndex.sourceRefsFor(['view:' + newView]);
+      const final = await inspect(grid, gridScope);
+      const viewRefs = hostIndex.sourceRefsFor(['view:' + newView]);
       assert.ok(viewRefs.length);
       for (const ref of viewRefs) assert.equal(digest(await fs.readFile(ref.ref)), ref.contentRevision);
-      return { initial, pending, final, oldView, newView, viewRefs };
-    })());
-  let realResource;
-  const observeResource = () =>
-    (realResource ??= (async () => {
-      const fixture = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
-      const resourceFile = path.join(fixture.solutionDir, 'WebResources/fixture_page.html');
-      await fs.mkdir(path.dirname(resourceFile), { recursive: true });
-      const content = '<h1>Invented resource body</h1>';
-      await fs.writeFile(resourceFile, content);
-      await fs.writeFile(
-        resourceFile + '.data.xml',
-        '<WebResource><WebResourceId>40000000-0000-4000-8000-000000000001</WebResourceId><Name>fixture_page.html</Name><WebResourceType>1</WebResourceType><FileName>WebResources/fixture_page.html</FileName></WebResource>',
-      );
-      const sitemap = path.join(fixture.solutionDir, 'AppModuleSiteMaps/x_example/AppModuleSiteMap.xml');
-      await fs.writeFile(
-        sitemap,
-        (await fs.readFile(sitemap, 'utf8')).replace(
-          '<SubArea Id="external"',
-          '<SubArea Id="fixture_page" Url="$webresource:fixture_page.html"><Titles><Title LCID="1033" Title="Fixture page"/></Titles></SubArea><SubArea Id="external"',
-        ),
-      );
-      await fs.writeFile(
-        path.join(fixture.solutionDir, 'Entities/x_item/RibbonDiff.xml'),
-        '<RibbonDiffXml><CustomActions><CustomAction><CommandUIDefinition><Button Id="x.Form.Inspect" Command="x.Inspect" LabelText="Fixture exported command"/></CommandUIDefinition></CustomAction></CustomActions><CommandDefinitions><CommandDefinition Id="x.Inspect"><Actions><Url Address="https://example.invalid"/></Actions></CommandDefinition></CommandDefinitions></RibbonDiffXml>',
-      );
-      const sim = await fixture.start();
-      const importedResource = await importModelDrivenProject({
-        solutionRoots: [fixture.solutionDir],
-        solutionOrder: 'explicit',
-      });
-      const resourceIndex = createModelDrivenMetadataIndex(importedResource);
-      const details = resourceIndex.query({
-        componentKeys: ['resource:fixture_page.html', 'command:x_item:x.form.inspect'],
-        active: { formId: 'item-form' },
-      });
-      const resourcePage = await chrome.page(t, { viewport: { width: 1920, height: 1080 } });
-      const resourceScope = {
-        documentId: 'resource-document',
-        frameId: 'resource-frame',
-        uiEpoch: 1,
-        sourceRevision: '1',
-      };
-      await resourcePage.goto(
-        appsOrigin(sim, sim.url) +
-          '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      );
-      const commandNode = resourcePage.getByRole('button', { name: 'Fixture exported command', exact: true });
-      await commandNode.waitFor({ state: 'attached' });
-      await resourcePage.evaluate(
-        `(${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token: 'resource-corpus', origin: appsOrigin(sim, sim.url), localSimulation: true, ...details, validatedScope: resourceScope, validatedAnchorGeneration: 1 })})`,
-      );
-      const inspect = async (locator) => {
-        const packet = await locator.evaluate(
-          (node, suppliedScope) =>
-            window.__paqviloModelDrivenProvider.query(node, { scope: suppliedScope, anchorGeneration: 1 }),
-          resourceScope,
-        );
-        return {
-          packet,
-          evidence: resolveInspectionEvidence({ ...packet, scope: resourceScope, node: { connected: true } }),
-        };
-      };
-      const command = await inspect(commandNode);
-      const platformCommand = await inspect(resourcePage.getByRole('button', { name: 'New', exact: true }));
-      await resourcePage.getByRole('button', { name: 'Fixture page', exact: true }).click();
-      const frame = resourcePage.locator('iframe.webresource-page');
+
+      await hostPage.getByRole('button', { name: 'Fixture page', exact: true }).click();
+      const frame = hostPage.locator('iframe.webresource-page');
       await frame.waitFor();
-      await resourcePage
+      await hostPage
         .frameLocator('iframe.webresource-page')
         .getByRole('heading', { name: 'Invented resource body', exact: true })
         .waitFor();
-      await resourcePage.evaluate(
-        `(${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token: 'resource-corpus', origin: appsOrigin(sim, sim.url), localSimulation: true, ...details, validatedScope: resourceScope, validatedAnchorGeneration: 1 })})`,
-      );
-      const packet = await frame.evaluate(
-        (node, suppliedScope) =>
-          window.__paqviloModelDrivenProvider.query(node, { scope: suppliedScope, anchorGeneration: 1 }),
-        resourceScope,
-      );
-      const evidence = resolveInspectionEvidence({ ...packet, scope: resourceScope, node: { connected: true } });
+      await install('resource-corpus', resourceScope, resourceDetails);
+      const { packet, evidence } = await inspect(frame, resourceScope);
       const url = await frame.getAttribute('src');
       const response = await fetch(new URL(url, appsOrigin(sim, sim.url)));
       assert.equal(response.status, 200);
       assert.equal(await response.text(), content);
       return {
-        packet,
-        evidence,
-        url,
-        resourceFile,
-        content,
-        origin: appsOrigin(sim, sim.url),
-        command,
-        platformCommand,
+        grid: { initial, pending, final, oldView, newView, viewRefs },
+        resource: {
+          packet,
+          evidence,
+          url,
+          resourceFile,
+          content,
+          origin: appsOrigin(sim, sim.url),
+          command,
+          platformCommand,
+        },
       };
     })());
   const results = [];
@@ -557,7 +549,7 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
             scenario.id,
           )
         ) {
-          const resource = await observeResource();
+          const resource = (await observeHost()).resource;
           const command =
             scenario.id === 'exported-command-exact-host-binding' ? resource.command : resource.platformCommand;
           assert.equal(command.evidence.owner.status, 'exact');
@@ -588,7 +580,7 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
             'hashed-resource-requires-exact-declared-asset-join',
           ].includes(scenario.id)
         ) {
-          const resource = await observeResource();
+          const resource = (await observeHost()).resource;
           assert.equal(resource.evidence.owner.status, 'exact');
           assert.equal(resource.evidence.owner.component.key, 'resource:fixture_page.html');
           assert.equal(resource.evidence.source.status, 'exact');
@@ -616,7 +608,7 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
             'subgrid-owner-and-runtime-view-have-separate-sources',
           ].includes(scenario.id)
         ) {
-          const grid = await observeGrid();
+          const grid = (await observeHost()).grid;
           const hasView = (result, id) =>
             result.packet.contextFacts.some(
               (fact) => fact.predicate === 'current-view' && fact.binding.key === 'view:' + id,
@@ -1610,6 +1602,7 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
       },
     );
   assert.equal(results.length, 60);
+  assert.equal(simulatorStarts, 2, 'the corpus starts one simulator for its native hosts and one for the PCF host');
   t.diagnostic(
     JSON.stringify({
       scenarios: results.length,

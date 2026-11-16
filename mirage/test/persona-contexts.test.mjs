@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own persona runtime manager and its settings: launches, fingerprints, owned snapshot folders and configuration checks; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,11 +9,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-test('context launches serialize duplicate starts, fingerprint definitions and clean failed snapshots', async () => {
+test('context launches serialize duplicate starts, fingerprint definitions and clean failed snapshots', async (t) => {
+  // The manager's folder is the test's own: its default is under the working directory, which is the checkout here.
+  const owned = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persona-runtimes-'));
+  t.after(() => fs.rm(owned, { recursive: true, force: true }));
   let starts = 0;
   const directories = [],
     closed = [];
   const manager = createPersonaContexts({
+    directory: owned,
     maxInstances: 2,
     snapshot: async (file) => {
       directories.push(path.dirname(file));
@@ -35,11 +40,7 @@ test('context launches serialize duplicate starts, fingerprint definitions and c
     assert.equal(starts, 1);
     assert.equal(first.id, second.id);
     assert.equal(second.created, false);
-    assert.ok(
-      directories.every((directory) =>
-        directory.startsWith(path.join(process.cwd(), '.paqvilo', 'persona-runtimes') + path.sep),
-      ),
-    );
+    assert.ok(directories.every((directory) => directory.startsWith(owned + path.sep)));
     const scenario = await manager.open({ id: 'one', label: 'One' }, { scenario: 'another-start-page' });
     assert.equal(scenario.id, first.id);
     assert.equal(starts, 1);

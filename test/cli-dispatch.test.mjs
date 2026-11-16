@@ -8,7 +8,12 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
-import { forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
+import {
+  exitOnUnhandledTermination,
+  forwardTerminationSignals,
+  guardShutdownSignals,
+  TERMINATION_FALLBACK,
+} from '../lense/signal-forwarding.mjs';
 import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -182,4 +187,86 @@ test('terminal interrupts stay with the child on Windows and on POSIX SIGINT, wh
   stopPosix();
   assert.equal(posixSource.listenerCount('SIGINT'), 0);
   assert.equal(posixSource.listenerCount('SIGTERM'), 0);
+});
+
+// @test-kind contract: a lense command that ends on an unhandled POSIX signal exits with that signal's code
+test('an unhandled POSIX SIGINT or SIGTERM ends the command with the exit code of that signal', () => {
+  const codes = [];
+  const posixSource = new EventEmitter();
+  const stop = exitOnUnhandledTermination({
+    platform: 'linux',
+    source: posixSource,
+    exit: (code) => codes.push(code),
+  });
+  posixSource.emit('SIGINT');
+  assert.deepEqual(codes, [130]);
+  posixSource.emit('SIGTERM');
+  assert.deepEqual(codes, [130, 143]);
+
+  const handled = () => {};
+  posixSource.on('SIGINT', handled);
+  posixSource.emit('SIGINT');
+  assert.deepEqual(codes, [130, 143]);
+  posixSource.off('SIGINT', handled);
+  stop();
+  assert.equal(posixSource.listenerCount('SIGINT'), 0);
+  assert.equal(posixSource.listenerCount('SIGTERM'), 0);
+
+  const windowsCodes = [];
+  const windowsSource = new EventEmitter();
+  const stopWindows = exitOnUnhandledTermination({
+    platform: 'win32',
+    source: windowsSource,
+    exit: (code) => windowsCodes.push(code),
+  });
+  assert.equal(windowsSource.listenerCount('SIGINT'), 0);
+  assert.equal(windowsSource.listenerCount('SIGTERM'), 0);
+  stopWindows();
+  assert.deepEqual(windowsCodes, []);
+});
+
+// @test-kind contract: an unhandled POSIX SIGTERM still ends the command while another fallback listens
+test('an unhandled POSIX SIGTERM still ends the command while another fallback listens', () => {
+  const codes = [];
+  const source = new EventEmitter();
+  const stop = exitOnUnhandledTermination({ platform: 'linux', source, exit: (code) => codes.push(code) });
+  const fallback = () => {};
+  fallback[TERMINATION_FALLBACK] = true;
+  source.on('SIGTERM', fallback);
+  source.emit('SIGTERM');
+  assert.deepEqual(codes, [143]);
+
+  const owner = () => {};
+  source.on('SIGTERM', owner);
+  source.emit('SIGTERM');
+  assert.deepEqual(codes, [143]);
+  source.off('SIGTERM', owner);
+  source.off('SIGTERM', fallback);
+  stop();
+  assert.equal(source.listenerCount('SIGTERM'), 0);
+});
+
+// @test-kind contract: the work of a guarded shutdown gets a signal that the first shutdown signal aborts
+test('guardShutdownSignals hands its work a signal that the first shutdown signal aborts', async () => {
+  const source = new EventEmitter();
+  const notices = [];
+  let interrupt;
+  let finish;
+  const guarded = guardShutdownSignals(
+    (signal) => {
+      interrupt = signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+    (line) => notices.push(line),
+    { source, exit: () => assert.fail('a single signal must not exit') },
+  );
+  assert.equal(interrupt.aborted, false);
+  source.emit('SIGINT');
+  assert.equal(interrupt.aborted, true);
+  assert.deepEqual(notices, ['stopping…']);
+  finish('done');
+  assert.equal(await guarded, 'done');
+  assert.equal(source.listenerCount('SIGINT'), 0);
 });

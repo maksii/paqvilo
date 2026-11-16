@@ -7,6 +7,7 @@
 // Path-style addressing only (http://127.0.0.1:<port>/<account>/<container>/<blob>), as Azurite's IP-style URLs.
 // Not a production server: no leases, snapshots, tiers, page or append blobs.
 import http from 'node:http';
+import { keepIdleConnections } from '../lib/idle-connections.mjs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 // Invented test key (base64), never a real account key.
@@ -318,7 +319,7 @@ export async function startAzuriteFake({
       },
     );
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => keepIdleConnections(server).listen(0, '127.0.0.1', resolve));
   const blobEndpoint = `http://127.0.0.1:${server.address().port}/${accountName}`;
   return {
     blobEndpoint,

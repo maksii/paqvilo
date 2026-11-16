@@ -15,6 +15,7 @@ import { resolveMirageConfig } from '../../lense/config.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { bootstrapReport } from '../bootstrap-report.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
+import { ownedClose } from '../testing/owned-fixture.mjs';
 import { initProject, cliArgs, mirageReadiness } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 
@@ -178,8 +179,7 @@ test('mapped files require correct PAC sections and reject duplicates, malformed
 
 test('runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults', async (t) => {
   const fixture = await profileFixture(t);
-  let app = await createSimulator({ ...fixture, watch: false });
-  fixture.onCleanup(() => app?.close());
+  let app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
   const call = async (route, body) => {
     const response = await fetch(
       `${app.url}/__sim/api${route}`,
@@ -212,7 +212,7 @@ test('runtime pins profiles atomically, retains overrides and pins across restar
   await call('/environment/variables/sample_Url', { value: 'Manual' });
   assert.equal(variable(), 'Manual');
   await app.close();
-  app = await createSimulator({ ...fixture, watch: false });
+  app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
   assert.equal(app.portal.snippets.Greeting, 'Test');
   assert.equal(variable(), 'Manual');
   assert.equal((await call('/environment')).body.profileSelection.pinned, true);

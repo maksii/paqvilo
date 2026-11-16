@@ -537,10 +537,16 @@ test('screenshot sends the caller budget to Playwright, and close waits for a sc
     assert.equal(timedOut.status, 504);
     assert.equal((await timedOut.json()).error.code, 'action_timeout');
 
-    // Close must not finish while the screenshot is still running; it finishes once the screenshot settles.
-    const closing = fx.close();
+    // Close must not finish while the screenshot is still running; it finishes once the screenshot settles. After
+    // the HTTP server has closed, a close with nothing left to wait for finishes within the same turn of the event
+    // loop, so one further turn shows whether it is waiting.
+    let closeFinished = false;
+    const closing = fx.close().then(() => {
+      closeFinished = true;
+    });
     await once(httpServer, 'close');
-    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a screenshot still ran');
+    await new Promise(setImmediate);
+    assert.equal(closeFinished, false, 'close finished while a screenshot still ran');
     releaseScreenshot(Buffer.from('late PNG'));
     await closing;
     assert.equal(fs.existsSync(fx.discoveryFile), false);
@@ -583,16 +589,63 @@ test('close waits for a navigation still running after its 504', async (t) => {
     assert.equal((await timedOut.json()).error.code, 'action_timeout');
     assert.equal(settings[0].timeout, 1500, 'Playwright must end the navigation at the caller budget');
 
-    // Close must not finish while the navigation is still running; it finishes once the navigation settles.
-    const closing = fx.close();
+    // Close must not finish while the navigation is still running; it finishes once the navigation settles. After
+    // the HTTP server has closed, a close with nothing left to wait for finishes within the same turn of the event
+    // loop, so one further turn shows whether it is waiting.
+    let closeFinished = false;
+    const closing = fx.close().then(() => {
+      closeFinished = true;
+    });
     await once(httpServer, 'close');
-    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a navigation still ran');
+    await new Promise(setImmediate);
+    assert.equal(closeFinished, false, 'close finished while a navigation still ran');
     releaseNavigation({ status: () => 200 });
     await closing;
     assert.equal(fs.existsSync(fx.discoveryFile), false);
   } finally {
     // A failed assertion must not leave close waiting on this navigation.
     releaseNavigation({ status: () => 200 });
+  }
+});
+
+// @test-kind security: the discovery file holds the bearer token and is gone before close waits for anything
+test('close removes the discovery file before it waits for a page operation still running', async (t) => {
+  const fx = await fixture(t);
+  let enteredScreenshot;
+  const entered = new Promise((resolve) => {
+    enteredScreenshot = resolve;
+  });
+  let releaseScreenshot;
+  // The screenshot stays in flight until the test releases it, so close has an owned operation to wait for.
+  fx.page.screenshot = () => {
+    enteredScreenshot();
+    return new Promise((resolve) => {
+      releaseScreenshot = resolve;
+    });
+  };
+  const response = fx.call('/v1/pages/1/screenshot', {});
+  await entered;
+  try {
+    assert.equal(fs.existsSync(fx.discoveryFile), true);
+    let closeFinished = false;
+    const closing = fx.close().then(() => {
+      closeFinished = true;
+    });
+    assert.equal(
+      fs.existsSync(fx.discoveryFile),
+      false,
+      'the token file is still on disk while close waits for the screenshot',
+    );
+    assert.equal(closeFinished, false);
+    releaseScreenshot(Buffer.from('late PNG'));
+    await closing;
+    await response.then(
+      (answer) => answer.arrayBuffer(),
+      () => {},
+    );
+  } finally {
+    // A failed assertion must not leave close waiting on this screenshot.
+    releaseScreenshot(Buffer.from('late PNG'));
   }
 });
 

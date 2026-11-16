@@ -25,7 +25,7 @@ const scope = {
   uiEpoch: 1,
   sourceRevision: 'invented-current',
 };
-async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair = false } = {}) {
+async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair = false, holdClaim = false } = {}) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
@@ -98,7 +98,44 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
   const context = await browser.newContext();
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
+  // Every sideband read of the transport with the status of its final answer: a read that followed a redirect would
+  // report the status of the redirect target.
+  const sidebandAnswers = [];
+  let sidebandAnswered = () => {};
+  const readSideband = context.request.get.bind(context.request);
+  context.request.get = async (url, options) => {
+    const answer = await readSideband(url, options);
+    sidebandAnswers.push({ proof: new URL(url).searchParams.get('proof'), status: answer.status() });
+    sidebandAnswered();
+    return answer;
+  };
+  // Resolves with the status the transport received for its sideband read of `proof`.
+  const sidebandAnswer = async (proof) => {
+    while (!sidebandAnswers.some((item) => item.proof === proof))
+      await new Promise((resolve) => (sidebandAnswered = resolve));
+    return sidebandAnswers.find((item) => item.proof === proof).status;
+  };
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);
+  // With holdClaim: the answer of the next registry claim is kept from the transport until the test releases it.
+  const claimAnswered = Promise.withResolvers(),
+    claimGate = Promise.withResolvers();
+  let claimHoldArmed = false;
+  const onAttach = (options) => {
+    if (holdClaim) {
+      const send = options.cdp.send.bind(options.cdp);
+      options.cdp.send = async (method, params) => {
+        const answer = await send(method, params);
+        if (claimHoldArmed && method === 'Runtime.evaluate' && params?.expression?.includes('.claim(')) {
+          // The browser has run the claim; only its answer is withheld.
+          claimHoldArmed = false;
+          claimAnswered.resolve();
+          await claimGate.promise;
+        }
+        return answer;
+      };
+    }
+    return transport.onAttach(options);
+  };
   const acknowledgments = [];
   let acknowledge = () => {};
   // Resolves with the fulfillment result of `pathname` once interception has it.
@@ -133,6 +170,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     releaseDescriptors();
     releaseSlow();
     releaseRepair();
+    claimGate.resolve();
     await detached?.();
     await context.close();
     server.closeAllConnections();
@@ -179,7 +217,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
           acknowledge();
         }
       },
-      { onAttach: transport.onAttach },
+      { onAttach },
     );
   };
   const query = (target = page, id = 'original') =>
@@ -212,6 +250,12 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     acknowledgments,
     acknowledgment,
     sideband,
+    sidebandAnswer,
+    holdNextClaim: () => {
+      claimHoldArmed = true;
+    },
+    claimHeld: claimAnswered.promise,
+    releaseClaim: () => claimGate.resolve(),
     slowEntered,
     releaseSlow,
     repairEntered,
@@ -348,13 +392,36 @@ test('Mirage observes one native document response and reads only its same-cooki
   );
   await fx.page.goto(fx.origin + '/redirect');
   await fx.sideband('redirect-proof');
-  // A followed redirect would request its location as soon as the 302 arrives; nothing marks one that never comes.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // The transport's own read has its final answer: a followed redirect would have requested its location before that
+  // answer, and the answer would carry the status of the location instead of the redirect.
+  assert.equal(await fx.sidebandAnswer('redirect-proof'), 302);
   assert.equal((await fx.query()).facts.length, 0);
   assert.equal(
     fx.requests.some(({ path }) => path === '/must-not-follow'),
     false,
   );
+});
+
+test('disposal retires the markup registry of a document whose claim has not been answered yet', async (t) => {
+  const fx = await fixture(t, { holdClaim: true });
+  await fx.attach();
+  await fx.page.goto(fx.origin + '/accepted');
+  await fx.proved();
+  const instrumented = () =>
+    fx.page.evaluate(
+      () =>
+        !Function.prototype.toString
+          .call(Object.getOwnPropertyDescriptor(HTMLTemplateElement.prototype, 'content').get)
+          .includes('[native code]'),
+    );
+  fx.holdNextClaim();
+  await fx.page.goto(fx.origin + '/next');
+  // The browser has run the claim of the new document; its answer has not reached the transport.
+  await fx.claimHeld;
+  assert.equal(await instrumented(), true, 'the bootstrap instrumented the new document');
+  await fx.detach();
+  fx.releaseClaim();
+  assert.equal(await instrumented(), false, 'the document has its native template content getter back');
 });
 
 // @test-kind security: An authored registry cannot be claimed and canceled responses cannot publish across documents.

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { adminPage } from './shared-browser.mjs';
+import { adminPage, refreshWorkspace } from './shared-browser.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
@@ -81,7 +81,7 @@ test('manual identity input survives the lazy contact re-render that previously 
   assert.equal(app.state().config.identity.name, 'Draft survivor');
   assert.deepEqual(app.state().config.identity.roles, ['Reviewer']);
   // After a successful save the form shows the saved values, not a stale draft.
-  await page.locator('#refresh').click();
+  await refreshWorkspace(page);
   await page.locator('#persona-contact').waitFor();
   assert.equal(await page.getByLabel('Display name', { exact: true }).inputValue(), 'Draft survivor');
   assert.deepEqual(errors, []);
@@ -92,7 +92,7 @@ test('contact membership checkboxes survive a workspace refresh until saved, and
   await page.goto(app.adminUrl + '#access');
   const memberships = page.getByRole('group', { name: 'Contact web-role memberships', exact: true });
   await memberships.getByLabel('Editor', { exact: true }).check();
-  await page.locator('#refresh').click();
+  await refreshWorkspace(page);
   await page.getByText('Workspace refreshed.', { exact: true }).waitFor();
   await page.locator('#persona-contact').waitFor();
   assert.equal(

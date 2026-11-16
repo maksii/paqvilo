@@ -189,8 +189,13 @@ function captureFailure(error) {
       if (!running.length && target.mirage.port > 0) {
         const url = `http://127.0.0.1:${target.mirage.port}`;
         let response;
+        // A port nothing listens on refuses at once: that is "no configured runtime". A runtime that listens is waited
+        // for under the command's own --timeout (0: no limit), so a busy one is never taken for an absent one.
         try {
-          response = await fetch(`${url}/_sim/api/status`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
+          response = await fetch(`${url}/_sim/api/status`, {
+            ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+            redirect: 'error',
+          });
         } catch {
           /* No configured runtime. */
         }
@@ -339,9 +344,13 @@ export function captureExitCode(report, { strict = false } = {}) {
     : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * Runs the capture-shell command for its arguments: progress and summary lines go to stderr, the report to stdout.
+ * Resolves to the exit code; the process entry below sets it, and an in-process caller gets it back unchanged.
+ */
+export async function runCaptureShellCommand(args, { stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
-    const values = parseToolArgs('capture-shell', process.argv.slice(2));
+    const values = parseToolArgs('capture-shell', args);
     const report = await captureShell({
       ...values,
       ...(!values.json
@@ -351,16 +360,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
                 phase === 'started'
                   ? 'capturing shell and editor resources'
                   : `still capturing (${Math.floor(elapsedMs / 1000)} s)`;
-              console.error(`Shell ${site}: ${progress}`);
+              stderr.write(`Shell ${site}: ${progress}\n`);
             },
           }
         : {}),
     });
-    if (!values.json) console.error(captureSummary(report));
-    console.log(JSON.stringify(report, null, 2));
-    process.exitCode = captureExitCode(report, values);
+    if (!values.json) stderr.write(`${captureSummary(report)}\n`);
+    stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return captureExitCode(report, values);
   } catch (error) {
-    reportCliError(captureFailure(error));
-    process.exitCode = 1;
+    reportCliError(captureFailure(error), { args, stdout, stderr });
+    return 1;
   }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exitCode = await runCaptureShellCommand(process.argv.slice(2));
 }

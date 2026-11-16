@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { PortalModel, mimeFor, inlineKindOf, isSourceFile, isPortalMetadata } from './portal-model.mjs';
 import { Resolver, globToRegExp } from './resolver.mjs';
 import { HtmlRewriter, pageKey, INLINE_PREFIX, LOCAL_PREFIX, API_PREFIX } from './html-rewriter.mjs';
-import { GitBaseline, gitHead } from './git.mjs';
+import { GitBaseline, gitHead, gitHeadState } from './git.mjs';
 import { FileBodyCache } from './file-cache.mjs';
 import { scriptSourceBody, scriptResourceProof } from './script-source-evidence.mjs';
 
@@ -117,6 +117,10 @@ export class OverlaySession extends EventEmitter {
     this.api = null;
     /** where Git HEAD of the checkout points: {commit, branch, detached}; null until read or outside Git */
     this.head = null;
+    /** where the repository keeps HEAD and its refs (gitDirectories()); null until the source watcher has asked Git */
+    this.repository = null;
+    /** the repository state `head` was read in; null while files cannot show whether HEAD moved */
+    this.headState = null;
     this.refreshQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.rewriter =
       prepared.rewriter ??
@@ -289,9 +293,22 @@ export class OverlaySession extends EventEmitter {
     return { files: relevant, changeTrackingDeferred: false, baselineChanged };
   }
 
+  /**
+   * Lets HEAD and baseline checks read the repository's ref files: Git is then asked only when the files that
+   * decide the answer differ from the state it last answered for (see repositoryRefState in git.mjs).
+   */
+  followRepository(directories) {
+    this.repository = directories ?? null;
+    this.headState = null;
+    this.baseline.followRepository?.(directories);
+  }
+
   /** Re-reads where HEAD points; emits 'head' when the commit or branch moved. */
   async refreshHead() {
+    const before = gitHeadState(this.repository);
+    if (before !== null && before === this.headState) return this.head;
     const head = await gitHead(this.cfg.sourceDir);
+    this.headState = before !== null && before === gitHeadState(this.repository) ? before : null;
     const previous = this.head;
     if (previous?.commit === head?.commit && previous?.branch === head?.branch) return head;
     this.head = head;
@@ -317,6 +334,7 @@ export class OverlaySession extends EventEmitter {
     const baseline = new GitBaseline(this.cfg.sourceDir, head.commit);
     if (!baseline.available) throw new Error(baseline.error ?? 'Cannot read the current HEAD commit');
     const changed = await baseline.changedFilesAsync({ refreshRef: false });
+    if (this.repository) baseline.followRepository(this.repository);
     this.baseline = baseline;
     this.rewriter.baseline = baseline;
     this.cfg.site.markup.baseline = head.commit;

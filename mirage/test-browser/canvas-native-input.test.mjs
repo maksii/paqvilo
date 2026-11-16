@@ -67,20 +67,28 @@ test('draft text, cancel confirmation, retained edits and reopen reset match the
   await signInContext(page.context(), sim, 'alex');
   await page.goto(appsOrigin(sim, sim.url) + '/_apps/canvas/invented');
   const target = appsOrigin(sim, sim.url) + '/_apps/api/canvas/invented';
+  // The player sends its actions one after another and marks the stage busy until the last one is rendered. A gesture
+  // can send more than one action (typing, then the commit when focus leaves), so a step is over when the stage is no
+  // longer busy, not when the next answer arrives: that answer can belong to the gesture before.
+  const answers = [];
+  page.on('response', (response) => {
+    if (response.url() === target && response.request().method() === 'POST') answers.push(response);
+  });
   const action = async (run) => {
-    const rendered = page.getByTestId('canvas-stage').locator(':scope > *').first();
-    const before = (await rendered.count()) ? await rendered.elementHandle() : null;
-    const pending = page.waitForResponse((r) => r.url() === target && r.request().method() === 'POST');
+    const from = answers.length;
     await run();
-    const response = await pending;
-    assert.equal(response.status(), 200, await response.text());
-    const body = await response.json();
-    assert.deepEqual(body.errors ?? body.snapshot?.errors ?? [], []);
-    if (before) await page.waitForFunction((node) => !node.isConnected, before);
     await page.waitForFunction(
-      (screen) => document.querySelector('[data-testid="canvas-status"]')?.textContent === `Current screen: ${screen}`,
-      body.snapshot.currentScreen,
+      () => document.querySelector('[data-testid="canvas-stage"]').getAttribute('aria-busy') !== 'true',
     );
+    assert.ok(answers.length > from, 'the gesture was answered');
+    let screen;
+    for (const response of answers.slice(from)) {
+      assert.equal(response.status(), 200, await response.text());
+      const body = await response.json();
+      assert.deepEqual(body.errors ?? body.snapshot?.errors ?? [], []);
+      screen = body.snapshot.currentScreen;
+    }
+    assert.equal(await page.getByTestId('canvas-status').textContent(), `Current screen: ${screen}`);
   };
   await action(() => page.getByTestId('canvas-start').click());
   const control = (name) => page.locator(`[data-control="${name}"]`);

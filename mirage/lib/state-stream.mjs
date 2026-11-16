@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
 import { pagedRecordsOf, rawRecordOf } from './record-tables.mjs';
+import { untracked } from './state-tracking.mjs';
 
 // Common record/metadata leaves can use V8's encoder without allocating a whole
 // document string. Inspect descriptors first so a fallback never reads a getter
@@ -360,6 +361,7 @@ function enterJsonItem(item, { recordVersions, project, chunkLength, sortKeys, s
     shapes = sortKeys ? new Map() : null;
   // Chunks end after the first token that reaches 64 KiB, so every token append is followed by this check.
   let chunk = '';
+  value = untracked(value);
   if (!prepared) value = prepare(value, '');
   if (omitted(value)) return;
   let token = enterJsonItem(value, {

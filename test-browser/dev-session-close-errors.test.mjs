@@ -546,9 +546,12 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   const ownedPage = remoteContext.pages()[0];
   await ownedPage.waitForFunction((expected) => location.origin === expected, origin);
   const protocol = await remoteBrowser.newBrowserCDPSession();
+  // The child's exit and this connection's loss reach this process on separate channels, in either order.
+  const disconnected = once(remoteBrowser, 'disconnected');
   await protocol.send('Browser.close');
   assert.equal(await closed, 1, 'actual CLI must report unsuccessful shutdown');
   assert.equal(output.text.includes(discovery.token), false, 'discovery credentials must not enter diagnostics');
   assert.match(output.text, /EISDIR|EPERM|directory/);
+  await disconnected;
   assert.equal(remoteBrowser.isConnected(), false, 'the exact owned browser disconnected');
 });

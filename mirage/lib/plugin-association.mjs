@@ -110,7 +110,8 @@ export function associationRequestBinding(store, parameters, identity, options) 
 }
 
 function authorizeIntersectBefore(store, rel, source, records, associate, authorize) {
-  const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
+  // A copy of the intersect table alone (a whole snapshot copied every table for this one).
+  const edges = store.snapshot({ tables: [rel.intersect.entity] }).tables[rel.intersect.entity] ?? [];
   for (const row of records) {
     const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
     const existing = edges.filter((edge) => Object.keys(values).every((key) => scalar(edge[key]) === values[key]));
@@ -142,7 +143,8 @@ function checkAssociationPermissions({ store, entity, id, rel, related, operatio
 }
 
 function authorizeIntersectAfter(store, rel, source, records, authorize) {
-  const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
+  // A copy of the intersect table alone (a whole snapshot copied every table for this one).
+  const edges = store.snapshot({ tables: [rel.intersect.entity] }).tables[rel.intersect.entity] ?? [];
   for (const row of records) {
     const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
     for (const edge of edges)

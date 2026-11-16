@@ -2,6 +2,7 @@
 // authorization, role-privilege introspection.
 // @test-kind contract: security model seeding, privilege depth and access checks designed by Paqvilo's Dataverse runtime
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -608,6 +609,31 @@ test('uuidV5 matches the RFC 4122 example and the access right values are stable
   );
   assert.equal(ACCESS_RIGHTS.Read, 1);
   assert.equal(ACCESS_RIGHTS.Assign, 524288);
+});
+
+// @test-kind contract: uuidV5 remembers the ids it derived; a remembered id is the id a fresh derivation gives
+test('uuidV5 answers a repeated namespace and name with the id of a fresh derivation, before and after its memory is emptied', () => {
+  const namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+  const fresh = (name) => {
+    const bytes = createHash('sha1')
+      .update(Buffer.concat([Buffer.from(namespace.replaceAll('-', ''), 'hex'), Buffer.from(name, 'utf8')]))
+      .digest()
+      .subarray(0, 16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return bytes.toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+  };
+  const names = ['sdkmessagefilter:Create:contoso_widget', 'privilege:prvReadcontoso_widget', 'ünïcode:名前', ''];
+  for (const name of names) assert.equal(uuidV5(namespace, name), fresh(name), name);
+  for (const name of names) assert.equal(uuidV5(namespace, name), fresh(name), `${name} (remembered)`);
+  // A name that only differs by the namespace separator of the memory's key is another id.
+  assert.notEqual(uuidV5(namespace, 'a'), uuidV5(namespace, '\na'));
+  // More distinct names than the memory keeps: the ids derived before and after it is emptied are the same.
+  for (let index = 0; index <= 131_072; index++) uuidV5(namespace, `filler:${index}`);
+  for (const name of names) assert.equal(uuidV5(namespace, name), fresh(name), `${name} (after the bound)`);
+  assert.equal(uuidV5(namespace, 'filler:7'), fresh('filler:7'));
+  assert.throws(() => uuidV5('not-a-guid', 'x'), /Invalid namespace GUID/);
+  assert.throws(() => uuidV5('not-a-guid', 'x'), /Invalid namespace GUID/);
 });
 
 // Helpers for the team, business unit and ownership tests below.

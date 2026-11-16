@@ -425,9 +425,9 @@ function submitFlowWait(ctx, event, d, form) {
       body: JSON.stringify(body),
     });
     d.answer = null;
+    await ctx.refresh();
     if (result.scheduled === false) ctx.notify(`Run ${result.runId} keeps waiting: the approval is still pending.`);
     else ctx.notify(`Run ${result.runId} is scheduled to resume${flowWaitOutcome(result)}.`);
-    await ctx.refresh();
   });
 }
 

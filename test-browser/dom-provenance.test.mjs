@@ -1,3 +1,4 @@
+// @test-kind contract: the page-side script-callsite observer is Paqvilo's designed instrumentation, exercised with invented markup and scripts on a routed address
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -106,12 +107,17 @@ async function fixture(
         window[slot].query(window[name] ?? document.getElementById(name), { scope, anchorGeneration: 7 }),
       { name, slot: options.slot, scope },
     );
-  // A short in-page pause before an assertion that no packet was sent. It cannot decide a positive result: an expected
-  // packet is awaited from the binding with packetsReach.
-  const settle = async () => {
-    await page.evaluate(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
+  // A later packet through the same binding, from a script whose callsite is always reported. Resolves, once that
+  // packet has arrived, with the packets that arrived before it (earlier barriers excluded): a packet the page sent
+  // for an earlier operation is among them. The barrier's record stays pending and occupies one slot of `limit`.
+  const barriers = new Set();
+  const barrier = async () => {
+    const url = origin + '/barrier-' + barriers.size + '.js';
+    barriers.add(url);
+    await script(`document.body.append(document.createElement('i'));`, new URL(url).pathname);
+    const position = () => packets.findIndex((packet) => packet.frames[0]?.url === url);
+    while (position() < 0) await new Promise((arrived) => arrivals.push(arrived));
+    return packets.slice(0, position()).filter((packet) => !barriers.has(packet.frames[0]?.url));
   };
   const resolve = async (count) => {
     await packetsReach(count);
@@ -122,7 +128,7 @@ async function fixture(
         proof: proofFor(packet.id),
       });
   };
-  return { page, writer, packets, packetsReach, script, query, resolve, settle, origin };
+  return { page, writer, packets, packetsReach, script, query, resolve, barrier, origin };
 }
 
 test('creation, cloning, insertion and moves retain actual-node identity without emitting content or query values', async (t) => {
@@ -283,7 +289,8 @@ test('custom stack formatting and unknown evaluation frames abstain without read
   await fx.script(
     `window.originalPrepare=Object.getOwnPropertyDescriptor(Error,'prepareStackTrace');window.stackHookCalls=0;Error.prepareStackTrace=()=>{window.stackHookCalls++;return 'PRIVATE_STACK_SENTINEL'};window.custom=document.createElement('i');document.body.append(custom);`,
   );
-  await fx.settle();
+  // No barrier can follow here: while the page's stack formatter is installed, no callsite is reported at all. The
+  // barrier after the formatter is restored covers this operation as well.
   assert.equal(fx.packets.length, 0);
   assert.equal(await fx.page.evaluate(() => window.stackHookCalls), 0);
   assert.equal((await fx.query('custom')).availability[0].reason, 'custom-stack-format');
@@ -293,8 +300,11 @@ test('custom stack formatting and unknown evaluation frames abstain without read
     window.unknown = document.createElement('b');
     document.body.append(window.unknown);
   });
-  await fx.settle();
-  assert.equal(fx.packets.length, 0, 'unknown execution never promotes an older caller or creates a backend/UI loop');
+  assert.deepEqual(
+    await fx.barrier(),
+    [],
+    'unknown execution never promotes an older caller or creates a backend/UI loop',
+  );
   assert.equal((await fx.query('unknown')).availability[0].reason, 'callsite-unavailable');
   assert.deepEqual((await fx.query('unknown')).facts, []);
 });
@@ -377,20 +387,31 @@ test('bounded changes never attribute untouched huge-parent siblings or continue
     `window.domReads=0;window.untouched=huge.children[huge.children.length-2000];huge.lastChild.replaceWith();window.readsForRemoval=domReads;`,
     '/remove.js',
   );
-  await fx.settle();
-  assert.equal(fx.packets.length, 0, 'a bounded before/after scan must not invent attachment of an untouched sibling');
+  assert.deepEqual(
+    await fx.barrier(),
+    [],
+    'a bounded before/after scan must not invent attachment of an untouched sibling',
+  );
   assert.deepEqual((await fx.query('untouched')).availability, []);
   assert.ok((await fx.page.evaluate(() => window.readsForRemoval)) < 10000, 'one operation never walks all30000nodes');
+  // The barrier's record is resolved, so the next script has all three pending slots.
+  const release = (packet) =>
+    fx.writer.evaluate((writer, { id, proof }) => writer.resolve(id, proof), {
+      id: packet.id,
+      proof: proofFor(packet.id),
+    });
+  assert.equal(await release(fx.packets[0]), true);
   await fx.script(
     `window.digestCalls=0;window.created=[];for(let i=0;i<1000;i++)created.push(document.createElement('b'));document.body.append(...created);window.overflow=created.at(-1);`,
     '/bounded.js',
   );
-  await fx.settle();
-  assert.ok(fx.packets.length <= 3);
-  assert.ok(
-    (await fx.page.evaluate(() => window.digestCalls)) <= 36,
-    'only the three admitted records may request at most12frame hashes each',
-  );
+  // Hashes are requested while the script runs; the barrier below requests its own afterwards.
+  const digestCalls = await fx.page.evaluate(() => window.digestCalls);
+  // The pending limit is reached, so a barrier needs a slot: one admitted record is resolved once its packet arrived.
+  await fx.packetsReach(2);
+  assert.equal(await release(fx.packets[1]), true);
+  assert.ok((await fx.barrier()).length <= 3);
+  assert.ok(digestCalls <= 36, 'only the three admitted records may request at most12frame hashes each');
   const overflow = await fx.query('overflow');
   assert.equal(overflow.limits.truncated, true);
   assert.equal(overflow.availability[0].reason, 'dom-evidence-limit');
@@ -466,8 +487,11 @@ test('anonymous UI redraws do not generate backend events or a provenance-ready 
       }),
       1,
     );
-    await fx.settle();
-    assert.equal(fx.packets.length, prior + 1, 'ready-triggered anonymous UI work never emits another backend event');
+    assert.equal(
+      (await fx.barrier()).length,
+      round + 1,
+      'ready-triggered anonymous UI work never emits another backend event',
+    );
     assert.equal(await fx.page.evaluate(() => window.redraws), round + 1);
   }
   assert.equal((await fx.query('selected')).availability[0].reason, 'script-callsite-unmapped');

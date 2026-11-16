@@ -6,7 +6,7 @@
 // status, and visible help on every control.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { loopbackServer, serveAdminFile } from './shared-browser.mjs';
+import { loopbackServer, serveAdminFile, workspaceSettled } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -317,7 +317,25 @@ test('module views render their data on first entry, act through the real app an
   await page.getByRole('button', { name: 'Answer wait fx-approval' }).click();
   await page.getByLabel('Responder').fill('reviewer@example.test');
   assert.deepEqual(await undescribed(page), []);
+  // The answer is announced when the lists show it: the refresh that follows the answer is held to observe that order.
+  const answered = 'POST /__sim/api/flow-waits/fx-approval';
+  const refreshHeld = Promise.withResolvers();
+  const refreshRelease = Promise.withResolvers();
+  const holdRefresh = async (route) => {
+    if (calls.includes(answered)) {
+      refreshHeld.resolve();
+      await refreshRelease.promise;
+    }
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/state*', holdRefresh);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await refreshHeld.promise;
+  const announcement = /Run \S+ (is scheduled to resume|keeps waiting)/;
+  assert.doesNotMatch(await page.locator('#notification').textContent(), announcement);
+  refreshRelease.resolve();
+  await page.locator('#notification').filter({ hasText: announcement }).waitFor();
+  await page.unroute('**/__sim/api/state*', holdRefresh);
   await page.getByText('No run is waiting.').waitFor();
   assert.equal(await page.locator('[data-ui-section="flows:waits"] .ui-section-summary').innerText(), '0 waiting');
   await page.waitForFunction(
@@ -518,6 +536,20 @@ test('every sidebar link lands at the top of a view headed by its label; step an
     assert.equal(await page.title(), `${label} · Paqvilo simulator workspace`);
   }
 
+  // A view is left while its data is unanswered: the first read of the persona catalogue, which belongs to Portal
+  // identity & permissions, is held until the panel below has been landed on.
+  const personasRelease = Promise.withResolvers();
+  let personasHeld = false;
+  const holdPersonas = async (route) => {
+    if (!personasHeld) {
+      personasHeld = true;
+      await personasRelease.promise;
+    }
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/personas', holdPersonas);
+  await nav(page, 'Portal identity & permissions');
+  await page.getByRole('heading', { name: 'Portal identity & permissions', exact: true }).waitFor();
   // A step link names the panel that does the step: it opens, scrolls to, focuses and outlines that panel.
   await nav(page, 'Scenarios');
   await page.getByRole('heading', { name: 'Scenarios', exact: true }).waitFor();
@@ -529,6 +561,16 @@ test('every sidebar link lands at the top of a view headed by its label; step an
         box = panel.getBoundingClientRect();
       return panel.contains(document.activeElement) && box.top >= 0 && box.top < innerHeight;
     }),
+  );
+  // The view that was left gets its answer now. Nothing is outstanding once the workspace is no longer busy, and the
+  // landed panel is still the one in focus: a view that is not open does not render over the one that is.
+  assert.equal(personasHeld, true);
+  personasRelease.resolve();
+  await page.unroute('**/__sim/api/personas', holdPersonas);
+  await page.waitForFunction(() => document.querySelector('#content').getAttribute('aria-busy') === 'false');
+  assert.ok(
+    await page.evaluate(() => document.querySelector('[data-panel="reset"]').contains(document.activeElement)),
+    'the landed panel keeps the focus when the view that was left is answered',
   );
   // A deep link to a collapsed module panel opens and lands on it, and the outline goes away again after the
   // product's 2.5 s timer (admin/app.mjs land), which a fake clock advances instead of the test waiting it out.
@@ -710,12 +752,20 @@ test('Home guides the first run, Health counters and the places that change thin
     'To do See what happened 1 finding to review',
   ]);
   assert.equal(await counter(), '3 of 5 done');
+  // Opening Activity counts when it is opened: its lists are still unanswered when the user goes back to Home.
+  const listsRelease = Promise.withResolvers();
+  const holdLists = async (route) => {
+    await listsRelease.promise;
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/trace?*', holdLists);
   await nav(page, 'Activity');
   await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
   await nav(page, 'Home');
-  await page.waitForFunction(
-    () => document.querySelector('[data-panel="checklist"] .panel-heading .badge')?.textContent === '4 of 5 done',
-  );
+  listsRelease.resolve();
+  await page.unroute('**/__sim/api/trace?*', holdLists);
+  await workspaceSettled(page);
+  assert.equal(await counter(), '4 of 5 done');
   assert.equal((await steps()).at(-1), 'Done See what happened 1 finding to review');
   await page.locator('[data-panel="checklist"]').getByRole('link', { name: 'Findings →' }).waitFor();
   await page.locator('[data-panel="sign-in"] dt', { hasText: 'Sign-in route' }).waitFor();
@@ -1187,9 +1237,11 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
     await page.evaluate((hash) => {
       location.hash = hash;
     }, id);
+    // The view's own data has arrived: the title is set by the first render, before the view's requests are answered.
     await page.waitForFunction(
       (name) =>
         document.querySelector('#view-title')?.textContent === name &&
+        document.querySelector('#content').getAttribute('aria-busy') !== 'true' &&
         !document.querySelector('#content [role="status"]')?.textContent.startsWith('Loading'),
       label,
     );

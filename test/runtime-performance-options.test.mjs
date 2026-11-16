@@ -1,7 +1,45 @@
+// @test-kind tooling: the performance probe's heartbeat pauses are at least the probe duration before them, so probes take at most half of the server's time
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { performanceOptionsFromArgs, runtimePerformance } from '../scripts/runtime-performance.mjs';
+import { heartbeatsWhile, performanceOptionsFromArgs, runtimePerformance } from '../scripts/runtime-performance.mjs';
+
+test('heartbeat pauses are at least the probe before them, so the probes never take more than half of the wait', async () => {
+  const durations = [40, 7, 3];
+  const pauses = [];
+  let complete = false;
+  await heartbeatsWhile(
+    () => complete,
+    async () => durations.shift(),
+    {
+      pause: async (ms) => {
+        pauses.push(ms);
+        if (pauses.length === 3) complete = true;
+      },
+    },
+  );
+  assert.deepEqual(pauses, [40, 7, 5]);
+});
+
+test('a heartbeat pause ends when the watched request completes', async () => {
+  let complete = false,
+    done;
+  const completed = new Promise((resolve) => (done = resolve));
+  const probes = [];
+  const run = heartbeatsWhile(
+    () => complete,
+    async () => (probes.push(1), 40),
+    { pause: () => new Promise(() => {}), completed },
+  );
+  await Promise.resolve();
+  complete = true;
+  done();
+  assert.equal(
+    await Promise.race([run.then(() => 'returned'), new Promise((resolve) => setImmediate(() => resolve('pending')))]),
+    'returned',
+  );
+  assert.equal(probes.length, 1);
+});
 
 test('performance workload and per-phase budgets reach the measured report without changing default qualification', async () => {
   // Budgets sit far above any runner's timings: this checks that they reach the report, not this machine's speed.

@@ -651,9 +651,12 @@ export function renderCodeComponent({
     component: { kind: 'pcf', key: 'pcf:' + schema.toLowerCase(), name: schema },
     attributes: [{ name: 'data-pcf-schema', value: schema }],
   });
+  // When the host script did not run, the container reports that outcome instead of waiting for ever.
   return (
     prefix +
     opening +
-    `</div><script>window.__paqviloPcf.mount(${json(value)}, document.currentScript.previousElementSibling);</script>`
+    `</div><script>if(window.__paqviloPcf)window.__paqviloPcf.mount(${json(value)}, document.currentScript.previousElementSibling);` +
+    `else{const c=document.currentScript.previousElementSibling;c.setAttribute('aria-busy','false');c.setAttribute('role','alert');` +
+    `c.dataset.pcfError='true';c.textContent='The code component host script did not load.';}</script>`
   );
 }

@@ -21,6 +21,14 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
           : `Local frame load released after ${reason}.`,
     });
   };
+  // The limit bounds the page's own ready work. It first runs from decoration, for a document no browser ever loads;
+  // when the browser asks for the image (it has parsed the body) it starts again, so the time a busy host took to deliver
+  // and parse the document is not counted against the page.
+  const arm = (id, entry) => {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => finish(id, 'timeout'), timeoutMs);
+    entry.timer.unref?.();
+  };
   return {
     decorate(html, { path = '/', observed } = {}) {
       if (observed?.modalLoadOrdering === 'immediate') return html;
@@ -31,8 +39,8 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       if (pending.size >= limit) finish(pending.keys().next().value, 'timeout');
       const id = randomUUID(),
         route = prefix + id;
-      const entry = { path, timer: setTimeout(() => finish(id, 'timeout'), timeoutMs) };
-      entry.timer.unref?.();
+      const entry = { path };
+      arm(id, entry);
       pending.set(id, entry);
       // The image is parsed before DOMContentLoaded. jQuery 3 ready handlers are
       // asynchronous; queue behind them and allow one further macrotask. A
@@ -64,6 +72,7 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       } else if (req.method === 'GET' && !entry.response) {
         res.writeHead(200, { 'content-type': 'image/gif', 'cache-control': 'no-store' });
         entry.response = res;
+        arm(id, entry);
         res.on('close', () => {
           if (pending.has(id)) finish(id, 'aborted');
         });

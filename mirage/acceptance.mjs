@@ -425,7 +425,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         if (cancelled.length) {
           observation.navigationCancelledRequests ??= [];
           observation.navigationCancelledRequests.push(...cancelled);
-          lastRequestActivity = Date.now();
         }
       };
       page.on('framedetached', (frame) =>
@@ -716,7 +715,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         }
       });
       const proofInputs = new Map();
-      let lastRequestActivity = Date.now();
       page.on('request', (request) => {
         const frame = requestFrame(request);
         const record = {
@@ -729,7 +727,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
         pending.set(request, record);
         requestRecords.set(request, record);
-        if (record.type !== 'eventsource') lastRequestActivity = Date.now();
         const url = new URL(request.url());
         proofInputs.set(request, {
           method: record.method,
@@ -750,7 +747,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         page.on(event, (request) => {
           const record = pending.get(request);
           if (record) {
-            if (record.type !== 'eventsource') lastRequestActivity = Date.now();
             record.durationMs = Date.now() - record.started;
             record.endedAt = Date.now();
             record.finished = event === 'requestfinished';
@@ -797,11 +793,30 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       };
       // A user acts once a loaded page has finished its own requests: exported pages chain
       // load-time reads and writes after their ready handlers (bounded and recorded).
+      // Every task (and, in a visible document, animation frame) the page had queued has run. A hidden document runs no
+      // animation frames, so it waits for a task only. `until` bounds the turn: a page that never answers ends at it.
+      const pageTurn = (until = Infinity) => {
+        const turn = page.evaluate(
+          () =>
+            new Promise((resolve) =>
+              document.visibilityState === 'hidden'
+                ? setTimeout(resolve, 0)
+                : requestAnimationFrame(() => setTimeout(resolve, 0)),
+            ),
+        );
+        if (!Number.isFinite(until)) return turn;
+        let timer;
+        return Promise.race([
+          turn,
+          new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, until - Date.now())))),
+        ]).finally(() => clearTimeout(timer));
+      };
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
           timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
+          roundTrip: pageTurn,
         });
         observation.loadWaits ??= [];
         observation.loadWaits.push({ url: safeUrl(page.url()), ...quiet });
@@ -821,35 +836,28 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           let lastProofCheck = 0;
           // Native save callbacks can schedule a subgrid refresh after the modal
           // closes. Observe that work before initiating another navigation.
-          while ((active().length || Date.now() - lastRequestActivity < 500) && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            if (!isLive && Date.now() - lastProofCheck > 750) {
-              lastProofCheck = Date.now();
-              const response = await fetch(local.origin + '/__sim/api/audit/export', {
-                signal: AbortSignal.timeout(timeout),
-              });
-              if (response.ok) {
-                const audit = await response.json();
-                const frameTree = await cdp.send('Page.getFrameTree');
-                const currentFrames = flattenFrameTree(frameTree.frameTree);
-                observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
-                  id,
-                  parentId,
-                  loaderId,
-                }));
-                reconcilePendingFrames({
+          for (;;) {
+            while (active().length && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              if (!isLive && Date.now() - lastProofCheck > 750) {
+                lastProofCheck = Date.now();
+                await reconcileFrameProof({
+                  cdp,
+                  localOrigin: local.origin,
+                  timeout,
                   observation,
                   pending,
                   proofInputs,
                   cdpRecords,
-                  audit,
-                  localOrigin: local.origin,
                   observedIdentity,
                   frameEvents,
-                  currentFrames,
                 });
               }
             }
+            if (Date.now() >= deadline) break;
+            const count = pending.size;
+            await pageTurn(deadline).catch(() => {});
+            if (pending.size === count && !active().length) break;
           }
           await Promise.allSettled(responseObservations);
           throwIfActiveRequests(active);
@@ -1046,7 +1054,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         actionTimeout = timeout;
         page.setDefaultTimeout(timeout);
         page.setDefaultNavigationTimeout(timeout);
-        await page.waitForTimeout(300);
         await settle();
         await capture('final');
         if (
@@ -1177,6 +1184,40 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
     await fs.writeFile(result.report, JSON.stringify(result, null, 2));
   }
   return result;
+}
+
+/**
+ * Reconciles the pending frame records with the simulator's audit export and the page's frame tree. A failed export
+ * leaves them as they are; the next check asks again.
+ */
+async function reconcileFrameProof({
+  cdp,
+  localOrigin,
+  timeout,
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  observedIdentity,
+  frameEvents,
+}) {
+  const response = await fetch(localOrigin + '/__sim/api/audit/export', { signal: AbortSignal.timeout(timeout) });
+  if (!response.ok) return;
+  const audit = await response.json();
+  const frameTree = await cdp.send('Page.getFrameTree');
+  const currentFrames = flattenFrameTree(frameTree.frameTree);
+  observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({ id, parentId, loaderId }));
+  reconcilePendingFrames({
+    observation,
+    pending,
+    proofInputs,
+    cdpRecords,
+    audit,
+    localOrigin,
+    observedIdentity,
+    frameEvents,
+    currentFrames,
+  });
 }
 
 function reconcilePendingFrames({

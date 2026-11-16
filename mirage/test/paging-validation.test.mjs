@@ -6,7 +6,7 @@ import path from 'node:path';
 import { collectFetchXmlPages, escapeXmlAttribute } from '../lib/paging-validation.mjs';
 import { createSimulator } from '../server.mjs';
 import { decodePagingCookie } from '../lib/live.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('bounded complete paging preserves cookie continuity and rejects missing/repeated/error/partial continuations', async () => {
   const calls = [];
@@ -74,42 +74,41 @@ test('bounded complete paging preserves cookie continuity and rejects missing/re
 
 test('public FetchXML returns genuine continuation annotations while preserving record scope and selected columns', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-fetch-continuation-'));
-  let app;
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: site\nadx_name: Paging');
   await fs.writeFile(
     path.join(dir, 'sitesetting.yml'),
     '- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: itemid,name',
   );
-  app = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
-    watch: false,
-    initial: {
-      mappings: { item: { entitySet: 'items', idColumn: 'itemid' } },
-      tables: {
-        item: [
-          { itemid: 'a', owner: 'person', name: 'First', secret: 'hidden' },
-          { itemid: 'b', owner: 'person', name: 'Second', secret: 'hidden' },
-          { itemid: 'c', owner: 'other', name: 'Denied' },
-        ],
-      },
-      permissions: [
-        {
-          entity: 'item',
-          roles: ['Member'],
-          operations: ['read'],
-          scope: 'contact',
-          field: 'owner',
+  const app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: dir,
+      stateFile: path.join(dir, 'state.json'),
+      watch: false,
+      initial: {
+        mappings: { item: { entitySet: 'items', idColumn: 'itemid' } },
+        tables: {
+          item: [
+            { itemid: 'a', owner: 'person', name: 'First', secret: 'hidden' },
+            { itemid: 'b', owner: 'person', name: 'Second', secret: 'hidden' },
+            { itemid: 'c', owner: 'other', name: 'Denied' },
+          ],
         },
-      ],
-      simulator: { identityScope: 'configured', identity: { contactId: 'person', roles: ['Member'] } },
-      settings: { permissionMode: 'enforce' },
-    },
-  });
+        permissions: [
+          {
+            entity: 'item',
+            roles: ['Member'],
+            operations: ['read'],
+            scope: 'contact',
+            field: 'owner',
+          },
+        ],
+        simulator: { identityScope: 'configured', identity: { contactId: 'person', roles: ['Member'] } },
+        settings: { permissionMode: 'enforce' },
+      },
+    }),
+  );
   const collected = await collectFetchXmlPages({
     idColumn: 'itemid',
     pageSize: 1,

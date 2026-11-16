@@ -6,8 +6,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { tempDirSync } from './fixture.mjs';
-
-const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
 
 function ciFixture(t) {
   const directory = tempDirSync('paq-ci-receipt-command-');
@@ -23,19 +23,28 @@ function ciFixture(t) {
     'scripts/ci-workspace-lease.mjs',
     'scripts/npm-cli.mjs',
     '.github/scripts/change-scope.mjs',
-    // The lense leaves scripts/ci.mjs imports (the process identity and lane stop helpers).
-    'lense/process-identity.mjs',
+    // The lane stop and signal helpers that scripts/ci.mjs imports.
     'lense/code-app-dev-stop.mjs',
     'lense/signal-forwarding.mjs',
   ])
     write(file, fs.readFileSync(new URL(`../${file}`, import.meta.url)));
+  // Identity reads start PowerShell on Windows. Every lease and lane identity here is a fixture value, because the
+  // subject of this file is the receipt and lane sequencing, not the identity of a process.
+  write(
+    'lense/process-identity.mjs',
+    `export function isAlive(pid) { if (!Number.isInteger(pid) || pid <= 0) return false;
+     try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } }
+   export const processIdentity = (pid) => (isAlive(pid) ? 'fixture:' + pid : null);
+   export const processIdentityAsync = async (pid) => processIdentity(pid);
+   export async function endRecordedWindowsProcess() { return 'refused'; }`,
+  );
   write(
     'scripts/ensure-dependencies.mjs',
     'export const dependencyReadiness = () => ({ ready: true }); export const browserExecutable = async () => ({ path: null });',
   );
   write(
     'scripts/verified-download.mjs',
-    'export function ensureVerifiedArchive() { throw new Error("Unexpected download"); }',
+    'export function ensureVerifiedArchive() { throw new Error("Unexpected download"); } export function extractZipOnWindows() { throw new Error("Unexpected extraction"); }',
   );
   const env = { ...process.env, GITHUB_ACTIONS: 'false' };
   for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
@@ -84,7 +93,7 @@ function receiptFixtureIdentity({ directory, env }, git) {
   };
 }
 
-test('a redirected receipt directory is rejected before even invalid verification can delete its receipt', (t) => {
+test('a redirected receipt directory is rejected before even invalid verification can delete its receipt', async (t) => {
   const { directory, env } = ciFixture(t),
     outside = tempDirSync('paq-external-receipt-');
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
@@ -92,19 +101,21 @@ test('a redirected receipt directory is rejected before even invalid verificatio
   fs.writeFileSync(receipt, 'other checkout');
   fs.mkdirSync(path.join(directory, '.paqvilo/ci'), { recursive: true });
   fs.symlinkSync(outside, path.join(directory, '.paqvilo/ci/runs'), process.platform === 'win32' ? 'junction' : 'dir');
-  const result = spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), 'verify', '--unknown-option'], {
-    cwd: directory,
-    env,
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: CLI_HANG_GUARD_MS,
-  });
+  const result = await boundedCommand(
+    t,
+    process.execPath,
+    [path.join(directory, 'scripts/ci.mjs'), 'verify', '--unknown-option'],
+    {
+      cwd: directory,
+      env,
+    },
+  );
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /CI state must stay inside/);
   assert.equal(fs.readFileSync(receipt, 'utf8'), 'other checkout');
 });
 
-test('a failed prepared suite revokes an earlier full receipt through the CI command', (t) => {
+test('a failed prepared suite revokes an earlier full receipt through the CI command', async (t) => {
   const { directory, write, env } = ciFixture(t);
   const npmCli = write(
     'fake-npm.mjs',
@@ -119,10 +130,11 @@ test('a failed prepared suite revokes an earlier full receipt through the CI com
     JSON.stringify({ identity: { tree: 'previously-passing-tree' }, scope: { lense: true }, full: true }),
   );
   env.npm_execpath = npmCli;
-  const result = spawnSync(
+  const result = await boundedCommand(
+    t,
     process.execPath,
     [path.join(directory, 'scripts/ci.mjs'), 'verify', '--suite', 'lense', '--unit', '--prepared'],
-    { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
+    { cwd: directory, env },
   );
   assert.equal(result.status, 1, result.error?.message ?? result.stderr);
   assert.match(result.stderr, /Invented suite failure/);
@@ -131,72 +143,72 @@ test('a failed prepared suite revokes an earlier full receipt through the CI com
   assert.equal(fs.existsSync(receipt), false, 'a previous full pass cannot survive a failed suite rerun');
 });
 
-test('unit shards run the package test script over disjoint files that together cover the suite', (t) => {
-  const { directory, write, env } = ciFixture(t);
-  write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 test/*.test.mjs' } }));
-  for (const name of ['a', 'b', 'c', 'd', 'e'])
+// Eleven CI commands: 2 shards, 2 overshards, 1 empty glob and 6 invalid arguments.
+test(
+  'unit shards run the package test script over disjoint files that together cover the suite',
+  { timeout: operationBudget(11, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const { directory, write, env } = ciFixture(t);
+    write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 test/*.test.mjs' } }));
+    for (const name of ['a', 'b', 'c', 'd', 'e'])
+      write(
+        `test/${name}.test.mjs`,
+        `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, ${JSON.stringify(name + '\n')});`,
+      );
     write(
-      `test/${name}.test.mjs`,
-      `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, ${JSON.stringify(name + '\n')});`,
+      'test/nested/default-discovery-sentinel.test.mjs',
+      `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, 'DEFAULT-DISCOVERY-RAN\\n');`,
     );
-  write(
-    'test/nested/default-discovery-sentinel.test.mjs',
-    `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, 'DEFAULT-DISCOVERY-RAN\\n');`,
-  );
-  env.npm_execpath = write('fake-npm.mjs', 'process.exit(99);');
-  const ci = (...args) =>
-    spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), ...args], {
-      cwd: directory,
-      env,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: CLI_HANG_GUARD_MS,
-    });
-  const ran = [];
-  for (const shard of ['1/2', '2/2']) {
-    env.SHARD_LOG = path.join(directory, `shard-${shard[0]}.log`);
-    const result = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
-    assert.equal(result.status, 0, result.stderr);
-    ran.push(fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split('\n').sort());
-  }
-  // Shards own sorted file indexes 0, 2, 4 and 1, 3.
-  assert.deepEqual(ran, [
-    ['a', 'c', 'e'],
-    ['b', 'd'],
-  ]);
-  for (const shard of ['6/6', '1/6']) {
-    env.SHARD_LOG = path.join(directory, `overshard-${shard.replace('/', '-')}.log`);
-    const result = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
-    const executedFixtures = fs.existsSync(env.SHARD_LOG)
-      ? fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split(/\r?\n/).filter(Boolean)
-      : [];
-    if (result.status !== 1 || executedFixtures.length)
-      t.diagnostic(JSON.stringify({ shard, exit: result.status, executedFixtures }));
-    assert.equal(result.status, 1, `${shard}: ${result.stderr}`);
-    assert.match(result.stderr, /shards exceed the 5 matched test files/);
-    assert.doesNotMatch(result.stdout, /^> .*\btest\b/m, 'an invalid shard must not launch the test script');
-    assert.equal(fs.existsSync(env.SHARD_LOG), false, 'an invalid shard must not fall through to default discovery');
-  }
-  write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 missing/*.test.mjs' } }));
-  env.SHARD_LOG = path.join(directory, 'empty-glob.log');
-  const empty = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', '1/1');
-  assert.equal(empty.status, 1, empty.stderr);
-  assert.match(empty.stderr, /test glob matched no files/);
-  assert.doesNotMatch(empty.stdout, /^> .*\btest\b/m, 'an empty glob must be rejected before Node starts');
-  assert.equal(fs.existsSync(env.SHARD_LOG), false);
-  for (const args of [
-    ['--suite', 'lense', '--unit', '--shard', '3/2'],
-    ['--suite', 'lense', '--unit', '--shard', '0/2'],
-    ['--suite', 'lense', '--unit', '--shard', 'x'],
-    ['--suite', 'examples', '--unit', '--shard', '1/2'],
-    ['--suite', 'lense', '--shard', '1/2'],
-    ['--full', '--shard', '1/2'],
-  ]) {
-    const result = ci('verify', '--prepared', ...args);
-    assert.equal(result.status, 1, args.join(' '));
-    assert.match(result.stderr, /--shard|--full/, args.join(' '));
-  }
-});
+    env.npm_execpath = write('fake-npm.mjs', 'process.exit(99);');
+    const ci = countOperations(t, 11, (...args) =>
+      boundedCommand(t, process.execPath, [path.join(directory, 'scripts/ci.mjs'), ...args], { cwd: directory, env }),
+    );
+    const ran = [];
+    for (const shard of ['1/2', '2/2']) {
+      env.SHARD_LOG = path.join(directory, `shard-${shard[0]}.log`);
+      const result = await ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
+      assert.equal(result.status, 0, result.stderr);
+      ran.push(fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split('\n').sort());
+    }
+    // Shards own sorted file indexes 0, 2, 4 and 1, 3.
+    assert.deepEqual(ran, [
+      ['a', 'c', 'e'],
+      ['b', 'd'],
+    ]);
+    for (const shard of ['6/6', '1/6']) {
+      env.SHARD_LOG = path.join(directory, `overshard-${shard.replace('/', '-')}.log`);
+      const result = await ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
+      const executedFixtures = fs.existsSync(env.SHARD_LOG)
+        ? fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+        : [];
+      if (result.status !== 1 || executedFixtures.length)
+        t.diagnostic(JSON.stringify({ shard, exit: result.status, executedFixtures }));
+      assert.equal(result.status, 1, `${shard}: ${result.stderr}`);
+      assert.match(result.stderr, /shards exceed the 5 matched test files/);
+      assert.doesNotMatch(result.stdout, /^> .*\btest\b/m, 'an invalid shard must not launch the test script');
+      assert.equal(fs.existsSync(env.SHARD_LOG), false, 'an invalid shard must not fall through to default discovery');
+    }
+    write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 missing/*.test.mjs' } }));
+    env.SHARD_LOG = path.join(directory, 'empty-glob.log');
+    const empty = await ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', '1/1');
+    assert.equal(empty.status, 1, empty.stderr);
+    assert.match(empty.stderr, /test glob matched no files/);
+    assert.doesNotMatch(empty.stdout, /^> .*\btest\b/m, 'an empty glob must be rejected before Node starts');
+    assert.equal(fs.existsSync(env.SHARD_LOG), false);
+    for (const args of [
+      ['--suite', 'lense', '--unit', '--shard', '3/2'],
+      ['--suite', 'lense', '--unit', '--shard', '0/2'],
+      ['--suite', 'lense', '--unit', '--shard', 'x'],
+      ['--suite', 'examples', '--unit', '--shard', '1/2'],
+      ['--suite', 'lense', '--shard', '1/2'],
+      ['--full', '--shard', '1/2'],
+    ]) {
+      const result = await ci('verify', '--prepared', ...args);
+      assert.equal(result.status, 1, args.join(' '));
+      assert.match(result.stderr, /--shard|--full/, args.join(' '));
+    }
+  },
+);
 
 test('Chromium system libraries are installed only where root is available without a prompt', async () => {
   const { chromiumInstallArguments } = await import('../scripts/ci.mjs');
@@ -214,64 +226,63 @@ test('Chromium system libraries are installed only where root is available witho
   );
 });
 
-test('explicit full validation executes fresh steps even with an identical earlier full receipt', (t) => {
-  const { directory, write, env } = ciFixture(t);
-  // Keep the command fixture small: its full plan has the CodeQL and SDK gates,
-  // with readiness supplied by invented fixtures. Production lane selection is
-  // independently covered by the contribution-gate and parity suites.
-  write(
-    '.github/scripts/change-scope.mjs',
-    'export const classifyChanges = (_files, { full = false } = {}) => ({ full, codeql: true }); export const suitesForScope = () => [];',
-  );
-  write('scripts/sdk-preparation.mjs', 'export function requireSdkFixtures() {}');
-  write(
-    'scripts/codeql.mjs',
-    'import fs from "node:fs"; fs.writeFileSync(".paqvilo/fresh-full-step", "executed"); console.error("Invented fresh full-gate failure"); process.exitCode = 42;',
-  );
-  write('.gitignore', '.paqvilo/\nnode_modules/\n');
-  write('package.json', '{}');
-  write('node_modules/playwright-core/package.json', JSON.stringify({ name: 'playwright-core', version: '1.0.0' }));
-  write(
-    'node_modules/playwright-core/index.js',
-    'exports.chromium = { executablePath: () => require("node:path").join(__dirname, "missing-browser") };',
-  );
-  env.npm_execpath = write(
-    'fake-npm.mjs',
-    'if(process.argv[2]==="--version") console.log("1.0.0"); else if(process.argv.slice(2).join(" ")!=="run audit:dependencies"&&process.argv.slice(2,4).join(" ")!=="audit signatures") process.exit(99);',
-  );
-  env.PAQ_CI_BROWSER = 'chromium';
-  env.PAQ_CI_REPEAT = '0';
-  env.PAQ_CI_JOBS = '1';
-  const git = commitReceiptFixture({ directory, env }, 'test: full receipt fixture');
-  const receipt = write(
-    '.paqvilo/ci/runs/verification.json',
-    JSON.stringify({
-      full: true,
-      identity: receiptFixtureIdentity({ directory, env }, git),
-    }),
-  );
-  const cached = spawnSync(
-    process.execPath,
-    [path.join(directory, 'scripts/ci.mjs'), 'verify', '--base', 'HEAD', '--prepared'],
-    { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
-  );
-  assert.equal(cached.status, 0, cached.error?.message ?? cached.stdout + cached.stderr);
-  assert.match(cached.stdout, /reused full deterministic validation/);
-  assert.equal(fs.existsSync(path.join(directory, '.paqvilo/fresh-full-step')), false);
-  assert.equal(fs.existsSync(receipt), true, 'the same identity qualifies for scoped reuse');
-  const result = spawnSync(
-    process.execPath,
-    [path.join(directory, 'scripts/ci.mjs'), 'verify', '--full', '--prepared'],
-    { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
-  );
-  assert.equal(result.status, 1, result.error?.message ?? result.stderr);
-  assert.match(result.stdout + result.stderr, /Invented fresh full-gate failure/);
-  assert.equal(fs.readFileSync(path.join(directory, '.paqvilo/fresh-full-step'), 'utf8'), 'executed');
-  assert.doesNotMatch(result.stdout, /reused .*deterministic validation/);
-  assert.equal(fs.existsSync(receipt), false, 'a failed explicit full run revokes the earlier qualifying receipt');
-});
+test(
+  'explicit full validation executes fresh steps even with an identical earlier full receipt',
+  { timeout: operationBudget(2, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const { directory, write, env } = ciFixture(t);
+    // Keep the command fixture small: its full plan has the CodeQL and SDK gates,
+    // with readiness supplied by invented fixtures. Production lane selection is
+    // independently covered by the contribution-gate and parity suites.
+    write(
+      '.github/scripts/change-scope.mjs',
+      'export const classifyChanges = (_files, { full = false } = {}) => ({ full, codeql: true }); export const suitesForScope = () => [];',
+    );
+    write('scripts/sdk-preparation.mjs', 'export function requireSdkFixtures() {}');
+    write(
+      'scripts/codeql.mjs',
+      'import fs from "node:fs"; fs.writeFileSync(".paqvilo/fresh-full-step", "executed"); console.error("Invented fresh full-gate failure"); process.exitCode = 42;',
+    );
+    write('.gitignore', '.paqvilo/\nnode_modules/\n');
+    write('package.json', '{}');
+    write('node_modules/playwright-core/package.json', JSON.stringify({ name: 'playwright-core', version: '1.0.0' }));
+    write(
+      'node_modules/playwright-core/index.js',
+      'exports.chromium = { executablePath: () => require("node:path").join(__dirname, "missing-browser") };',
+    );
+    env.npm_execpath = write(
+      'fake-npm.mjs',
+      'if(process.argv[2]==="--version") console.log("1.0.0"); else if(process.argv.slice(2).join(" ")!=="run audit:dependencies"&&process.argv.slice(2,4).join(" ")!=="audit signatures") process.exit(99);',
+    );
+    env.PAQ_CI_BROWSER = 'chromium';
+    env.PAQ_CI_REPEAT = '0';
+    env.PAQ_CI_JOBS = '1';
+    const git = commitReceiptFixture({ directory, env }, 'test: full receipt fixture');
+    const receipt = write(
+      '.paqvilo/ci/runs/verification.json',
+      JSON.stringify({
+        full: true,
+        identity: receiptFixtureIdentity({ directory, env }, git),
+      }),
+    );
+    const ci = countOperations(t, 2, (...args) =>
+      boundedCommand(t, process.execPath, [path.join(directory, 'scripts/ci.mjs'), ...args], { cwd: directory, env }),
+    );
+    const cached = await ci('verify', '--base', 'HEAD', '--prepared');
+    assert.equal(cached.status, 0, cached.error?.message ?? cached.stdout + cached.stderr);
+    assert.match(cached.stdout, /reused full deterministic validation/);
+    assert.equal(fs.existsSync(path.join(directory, '.paqvilo/fresh-full-step')), false);
+    assert.equal(fs.existsSync(receipt), true, 'the same identity qualifies for scoped reuse');
+    const result = await ci('verify', '--full', '--prepared');
+    assert.equal(result.status, 1, result.error?.message ?? result.stderr);
+    assert.match(result.stdout + result.stderr, /Invented fresh full-gate failure/);
+    assert.equal(fs.readFileSync(path.join(directory, '.paqvilo/fresh-full-step'), 'utf8'), 'executed');
+    assert.doesNotMatch(result.stdout, /reused .*deterministic validation/);
+    assert.equal(fs.existsSync(receipt), false, 'a failed explicit full run revokes the earlier qualifying receipt');
+  },
+);
 
-test('cached validation cannot restore a receipt after source changes during dependency audits', (t) => {
+test('cached validation cannot restore a receipt after source changes during dependency audits', async (t) => {
   const { directory, write, env } = ciFixture(t);
   write('.gitignore', '.paqvilo/\nnode_modules/\n');
   write('README.md', 'Previously verified source');
@@ -297,10 +308,11 @@ test('cached validation cannot restore a receipt after source changes during dep
       full: true,
     }),
   );
-  const result = spawnSync(
+  const result = await boundedCommand(
+    t,
     process.execPath,
     [path.join(directory, 'scripts/ci.mjs'), 'verify', '--base', 'HEAD', '--prepared'],
-    { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
+    { cwd: directory, env },
   );
   assert.equal(result.status, 1, result.error?.message ?? result.stderr);
   assert.match(result.stderr, /changed during dependency audits/);
@@ -350,7 +362,12 @@ test('parallel validation budgets fixture processes across every lane and comman
     label,
     commands: [1, 2].map((command) => ['probe.mjs', `${label}-${command}.done`]),
   }));
-  await runSteps(steps, 2, { cwd: directory, logs: path.join(directory, 'logs'), cpus: 8 });
+  await runSteps(steps, 2, {
+    cwd: directory,
+    logs: path.join(directory, 'logs'),
+    cpus: 8,
+    laneIdentity: async (pid) => 'fixture:' + pid,
+  });
   for (const label of ['alpha', 'beta'])
     for (const command of [1, 2])
       assert.equal(fs.readFileSync(path.join(directory, `${label}-${command}.done`), 'utf8'), 'finished');
@@ -365,13 +382,16 @@ test('parallel validation runs every step concurrently and reports each failure 
     fs.writeFileSync(path.join(directory, name), body);
     return [name];
   };
-  // `waits` finishes only once `starts` has begun, so a serial run of the two would fail instead of passing.
+  // `waits` finishes only once `starts` has begun, however long a loaded host takes to start it; a serial run of the two
+  // never finishes and is reported by the runner's hang guard. It ends with this test process, so a lane left behind
+  // by an abandoned test does not outlive it.
   const waits = script(
     'waits.mjs',
     `import fs from 'node:fs';
-    const until = Date.now() + 30_000;
-    while (!fs.existsSync('started') && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-    process.exit(fs.existsSync('started') ? 0 : 3);`,
+    while (!fs.existsSync('started')) {
+      try { process.kill(Number(process.argv[2]), 0); } catch { process.exit(3); }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }`,
   );
   const starts = script('starts.mjs', `import fs from 'node:fs'; fs.writeFileSync('started', '');`);
   const fails = script('fails.mjs', `console.error('Invented step failure'); process.exit(7);`);
@@ -381,13 +401,13 @@ test('parallel validation runs every step concurrently and reports each failure 
   await assert.rejects(
     runSteps(
       [
-        { label: 'waits', commands: [waits] },
+        { label: 'waits', commands: [[...waits, String(process.pid)]] },
         { label: 'starts', commands: [starts] },
         { label: 'fails', commands: [fails, unreached] },
         { label: 'after failure', commands: [after] },
       ],
       2,
-      { cwd: directory, logs },
+      { cwd: directory, logs, laneIdentity: async (pid) => 'fixture:' + pid },
     ),
     { message: 'Validation failed: fails.' },
   );
@@ -417,7 +437,7 @@ test('a deleted failed-step log cannot prevent collecting the remaining lane res
         { label: 'remaining', commands: [['pass.mjs', 'remaining.done']] },
       ],
       2,
-      { cwd: directory, logs },
+      { cwd: directory, logs, laneIdentity: async (pid) => 'fixture:' + pid },
     ),
     /Validation failed: failed/,
   );
@@ -443,7 +463,7 @@ test('an unavailable step log still runs every command and collects every lane r
         { label: 'remaining', commands: [['pass.mjs', 'remaining.ran']] },
       ],
       2,
-      { cwd: directory, logs },
+      { cwd: directory, logs, laneIdentity: async (pid) => 'fixture:' + pid },
     ),
     /Validation failed: blocked/,
   );
@@ -460,7 +480,11 @@ test('default parallel logs belong to separate invocations and retain earlier ev
     { label: 'one', commands: [['pass.mjs']] },
     { label: 'two', commands: [['pass.mjs']] },
   ];
-  await Promise.all([runSteps(steps, 2, { cwd: directory }), runSteps(steps, 2, { cwd: directory })]);
+  const laneIdentity = async (pid) => 'fixture:' + pid;
+  await Promise.all([
+    runSteps(steps, 2, { cwd: directory, laneIdentity }),
+    runSteps(steps, 2, { cwd: directory, laneIdentity }),
+  ]);
   const parent = path.join(directory, '.paqvilo/ci/runs'),
     runs = fs.readdirSync(parent);
   assert.equal(runs.length, 2);
@@ -469,7 +493,7 @@ test('default parallel logs belong to separate invocations and retain earlier ev
       assert.match(fs.readFileSync(path.join(parent, run, 'logs', label + '.log'), 'utf8'), /owned evidence/);
 });
 
-test('SDK preparation command installs every npm client and invokes fixture preparation', (t) => {
+test('SDK preparation command installs every npm client and invokes fixture preparation', async (t) => {
   const { directory, write, env } = ciFixture(t);
   write('global.json', JSON.stringify({ sdk: { version: '10.0.114' } }));
   const preload = write(
@@ -494,16 +518,11 @@ test('SDK preparation command installs every npm client and invokes fixture prep
       fs.writeFileSync('sdk-fixtures-prepared', 'complete');
     }`,
   );
-  const result = spawnSync(
+  const result = await boundedCommand(
+    t,
     process.execPath,
     ['--import', pathToFileURL(preload).href, path.join(directory, 'scripts/ci.mjs'), 'sdk-prepare'],
-    {
-      cwd: directory,
-      env,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: CLI_HANG_GUARD_MS,
-    },
+    { cwd: directory, env },
   );
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   const calls = fs
@@ -547,28 +566,33 @@ test('receipt browser identity follows the selected channel and changes when its
   assert.equal(matchingVerification({ identity: edge, scope }, updated, scope), false);
 });
 
-test('verification rejected before identity qualification revokes earlier successful evidence', (t) => {
-  const { directory, write, env } = ciFixture(t);
-  for (const args of [['--unknown-verification-option'], ['--full', '--unit'], ['--full', '--prepared']]) {
-    const receipt = write(
-      '.paqvilo/ci/runs/verification.json',
-      JSON.stringify({ full: true, identity: { tree: 'earlier-pass' } }),
+// Three verify commands, one per rejected argument set.
+test(
+  'verification rejected before identity qualification revokes earlier successful evidence',
+  { timeout: operationBudget(3, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const { directory, write, env } = ciFixture(t);
+    const verify = countOperations(t, 3, (...args) =>
+      boundedCommand(t, process.execPath, [path.join(directory, 'scripts/ci.mjs'), 'verify', ...args], {
+        cwd: directory,
+        env,
+      }),
     );
-    const result = spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), 'verify', ...args], {
-      cwd: directory,
-      env,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: CLI_HANG_GUARD_MS,
-    });
-    assert.equal(result.status, 1, result.stderr);
-    assert.equal(
-      fs.existsSync(receipt),
-      false,
-      'even an early validation failure revokes the old pass: ' + args.join(' '),
-    );
-  }
-});
+    for (const args of [['--unknown-verification-option'], ['--full', '--unit'], ['--full', '--prepared']]) {
+      const receipt = write(
+        '.paqvilo/ci/runs/verification.json',
+        JSON.stringify({ full: true, identity: { tree: 'earlier-pass' } }),
+      );
+      const result = await verify(...args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(
+        fs.existsSync(receipt),
+        false,
+        'even an early validation failure revokes the old pass: ' + args.join(' '),
+      );
+    }
+  },
+);
 
 test('matching cached receipts lose qualification when an SDK fixture disappears or TLS tools stop working', async (t) => {
   const { verificationFixturesReady, matchingVerification } = await import('../scripts/ci.mjs');
@@ -687,7 +711,7 @@ test('a failed exclusive analysis still runs the remaining functional lanes and 
         { label: 'functional', commands: [['after.mjs']] },
       ],
       2,
-      { cwd: directory },
+      { cwd: directory, laneIdentity: async (pid) => 'fixture:' + pid },
     ),
     { message: 'Validation failed: scanner.' },
   );

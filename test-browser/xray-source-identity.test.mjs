@@ -77,6 +77,58 @@ test('X-ray action feedback survives source refresh and clears when selecting an
   assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
 });
 
+// @test-kind contract: an X-ray copy result belongs to the selection its button was pressed for
+test('a copy result that arrives after another element was picked does not label the new selection', async (t) => {
+  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
+  const observed = await page.evaluate(async () => {
+    const host = document.getElementById('paqvilo-xray'),
+      api = host.__px,
+      card = host.shadowRoot.querySelector('.card');
+    const status = () => host.shadowRoot.querySelector('.status').textContent;
+    // The clipboard write stays pending until the test settles it, so the order of the two events is the test's.
+    let settle;
+    const writes = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText(text) {
+          writes.push(text);
+          return new Promise((resolve) => {
+            settle = resolve;
+          });
+        },
+      },
+    });
+    const pressCopy = () => {
+      const button = document.createElement('button');
+      button.dataset.action = 'copy';
+      button.dataset.copy = 'invented/first.xml';
+      card.append(button);
+      button.click();
+    };
+    // The handler continues in a microtask after the write settles; a task later it has run.
+    const settled = async () => {
+      settle();
+      await new Promise((resolve) => setTimeout(resolve));
+    };
+    api.select(document.getElementById('first'));
+    pressCopy();
+    await settled();
+    const sameSelection = status();
+    api.select(document.getElementById('second'));
+    const cleared = status();
+    api.select(document.getElementById('first'));
+    pressCopy();
+    api.select(document.getElementById('second'));
+    await settled();
+    return { writes, sameSelection, cleared, afterAnotherPick: status() };
+  });
+  assert.deepEqual(observed.writes, ['invented/first.xml', 'invented/first.xml']);
+  assert.equal(observed.sameSelection, 'Source path copied.');
+  assert.equal(observed.cleared, '');
+  assert.equal(observed.afterAnotherPick, '', 'the copy made for the first element does not label the second');
+});
+
 const assertNoExact = (row, message) => {
   assert.notEqual(row.evidence.owner.status, 'exact', message);
   assert.notEqual(row.evidence.source.status, 'exact', message);
@@ -297,6 +349,7 @@ test('descent remembers the selected child, native controls are picked without f
     };
     // Track the frame and timer callbacks the page schedules from now on until they run or are cancelled.
     window.nativeFrame = window.requestAnimationFrame;
+    window.nativeTimer = window.setTimeout;
     window.scheduled = new Set();
     for (const [schedule, cancel] of [
       ['requestAnimationFrame', 'cancelAnimationFrame'],
@@ -332,8 +385,9 @@ test('descent remembers the selected child, native controls are picked without f
     while (window.scheduled.size);
   });
   await page.evaluate(() => (window.geometryReads = 0));
-  // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.
-  await page.waitForTimeout(1100);
+  // No event marks a poll that never runs. A timer the page itself queues for longer than a one-second poll interval
+  // runs after every earlier page timer of up to that interval, however slow the host: any such poll has read by then.
+  await page.evaluate(() => new Promise((resolve) => window.nativeTimer.call(window, resolve, 1100)));
   assert.equal(await page.evaluate(() => window.geometryReads), 0);
 });
 
@@ -518,8 +572,18 @@ test('background outlines exclude descendants of clipped ancestors while manual 
   // Initial pointer events may legitimately outline the document separately from background candidates.
   await page.mouse.move(0, 0);
   await page.locator('#paqvilo-xray .hover').waitFor();
-  assert.equal(await background.count(), 1);
-  assert.deepEqual(await background.boundingBox(), await page.locator('#visible').boundingBox());
+  // Every paint replaces the background marks: read them and the field in one step, so no paint falls between.
+  const outlines = await page.evaluate(() => {
+    const box = (node) => {
+      const { x, y, width, height } = node.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const marks = document
+      .getElementById('paqvilo-xray')
+      .shadowRoot.querySelectorAll('.mark:not(.hover):not(.selected)');
+    return { marks: Array.from(marks, box), visible: box(document.getElementById('visible')) };
+  });
+  assert.deepEqual(outlines.marks, [outlines.visible]);
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('clipped')));
   await page.locator('#paqvilo-xray .selected').waitFor();
 });
@@ -1217,10 +1281,17 @@ test('same-origin frame shortcuts activate while off, survive navigation and sto
   await frame.evaluate(() => (document.body.innerHTML = '<input id="field"><textarea></textarea>'));
   await frame.locator('#field').press('Alt+Shift+X');
   assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), true);
-  await page.evaluate(() => {
-    document.getElementById('paqvilo-xray').__px.toggle(false);
-    document.querySelector('iframe').src = '/second';
-  });
+  // X-ray watches a navigated frame document from the frame element's load event (capture). This later bubble
+  // listener runs after it, so the frame added below is seen by X-ray, which then watches it from its first document.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        document.getElementById('paqvilo-xray').__px.toggle(false);
+        const embedding = document.querySelector('iframe');
+        embedding.addEventListener('load', resolve, { once: true });
+        embedding.src = '/second';
+      }),
+  );
   await page.waitForFunction(
     () =>
       document.querySelector('iframe').contentDocument.URL.endsWith('/second') &&
@@ -1465,8 +1536,11 @@ test('frame shortcuts discover late open-shadow frames while off and restore rea
     const embedding = parentDoc.createElement('div');
     parentDoc.body.append(embedding);
     const root = embedding.attachShadow({ mode: 'open' });
+    // X-ray learns of the frame from its own mutation observer. Observers are notified in the order they were created,
+    // so this later one runs once X-ray has seen the frame.
+    const seen = new Promise((resolve) => new MutationObserver(resolve).observe(root, { childList: true }));
     root.innerHTML = '<iframe></iframe>';
-    await new Promise((resolve) => setTimeout(resolve));
+    await seen;
     const doc = root.querySelector('iframe').contentDocument;
     doc.body.innerHTML = '<input id="field">';
     const typing = new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', cancelable: true, bubbles: true });

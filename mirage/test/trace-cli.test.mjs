@@ -16,6 +16,7 @@ import { createTraceStore } from '../lib/trace-store.mjs';
 import { createTraceChannel, createTraceRoutes } from '../lib/sim-trace-routes.mjs';
 import { writeActivityBundle } from '../lib/sim-activity.mjs';
 import { connectRuntime } from '../testing/runtime.mjs';
+import { runTraceCommand } from '../trace.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const CSRF = 'invented-csrf';
@@ -120,7 +121,23 @@ async function fixture(t, { endStream = false, failures = false } = {}) {
   return { traces, page, child, origin: `http://127.0.0.1:${server.address().port}`, advance: (ms) => (time += ms) };
 }
 
-const cli = (...args) =>
+// The command's entry function (mirage/trace.mjs runTraceCommand) with its output captured: the arguments, the exit
+// code and the two streams are what the process entry passes through, so the argument and output cases below need no
+// process of their own. The installed command itself is run by the process test that follows the helpers.
+const captured = () => {
+  const chunks = [];
+  return {
+    write: (chunk) => (chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')), true),
+    text: () => chunks.join(''),
+  };
+};
+const cli = async (...args) => {
+  const stdout = captured(),
+    stderr = captured();
+  const status = await runTraceCommand(args, { stdout, stderr });
+  return { status, stdout: stdout.text(), stderr: stderr.text() };
+};
+const installed = (...args) =>
   new Promise((resolve) =>
     execFile(
       process.execPath,
@@ -152,6 +169,29 @@ const failed = async (exit, args) => {
   assert.equal(value.ok, false);
   return value;
 };
+
+test("the installed command writes the entry function's output and exit codes: success, failure and refusal", async (t) => {
+  const { origin, page } = await fixture(t);
+  // Each installed run is kept by its arguments, so the exit-status assertions below reuse it.
+  const results = new Map();
+  for (const args of [
+    ['list', '--origin', origin, '--json'],
+    ['list', '--origin', origin],
+    ['show', UNKNOWN_ID, '--origin', origin, '--json'],
+    ['show', UNKNOWN_ID, '--origin', origin],
+    ['list', '--page-size', '0', '--origin', origin, '--json'],
+    ['--bogus'],
+  ]) {
+    const [process, entry] = [await installed(...args), await cli(...args)];
+    assert.deepEqual(process, entry, args.join(' '));
+    results.set(args.join(' '), process);
+  }
+  const listed = results.get(['list', '--origin', origin, '--json'].join(' '));
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(JSON.parse(listed.stdout).result.items[0].traceId, page.traceId);
+  assert.equal(results.get(['show', UNKNOWN_ID, '--origin', origin, '--json'].join(' ')).status, 1);
+  assert.equal(results.get(['list', '--page-size', '0', '--origin', origin, '--json'].join(' ')).status, 2);
+});
 
 test('list, show, spans, stats and export read the runtime trace store in one envelope shape', async (t) => {
   const { origin, page } = await fixture(t);

@@ -94,10 +94,13 @@ export async function createPortalSession({
     id.length > 160 ||
     typeof fetchImpl !== 'function' ||
     !Number.isInteger(timeoutMs) ||
-    timeoutMs < 1 ||
+    timeoutMs < 0 ||
     timeoutMs > 300000
   )
     throw failure('Portal session requires a bounded identity label and timeout.', 'InvalidPortalSession');
+  // timeoutMs 0 sets no client deadline, as for connectRuntime: the caller's signal alone ends a request then. A caller
+  // that waits for real work (a test under its runner's own guard) uses it, so a busy host never fails a request.
+  const clientDeadline = () => (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null);
   const cookies = new Map();
   let csrf = '',
     active = 0,
@@ -137,7 +140,7 @@ export async function createPortalSession({
     const cookie = cookieHeader(url);
     if (cookie) headers.set('cookie', cookie);
     headers.set('x-paqvilo-local-only', 'true');
-    const signals = [AbortSignal.timeout(timeoutMs), signal, init.signal].filter(Boolean);
+    const signals = [clientDeadline(), signal, init.signal].filter(Boolean);
     const response = await fetchImpl(url, {
       ...init,
       method,
@@ -161,7 +164,7 @@ export async function createPortalSession({
         headers: { ...headers, ...(cookie ? { cookie } : {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         redirect: 'error',
-        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), signal].filter(Boolean)),
+        signal: AbortSignal.any([clientDeadline(), signal].filter(Boolean)),
       });
     const value = await response.json();
     if (!response.ok)

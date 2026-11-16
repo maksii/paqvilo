@@ -1241,6 +1241,22 @@ describe('dataverse API batch, metadata and sign-in', () => {
     assert.ok(store.state.mappings.widget.fields.new_note, 'the custom column is reapplied after reseed');
   });
 
+  // @test-kind contract: The local listener leaves closing an idle connection to its client and to close(); a timed close resets the request a client writes on that pooled connection after a busy stretch. No native behaviour is claimed.
+  it('arms no idle timeout on a kept-alive connection and advertises none', async () => {
+    // Node arms the keep-alive timeout in its own finish listener, registered before this one.
+    const answered = new Promise((resolve) => {
+      api.servers[0].once('request', (req, res) => res.once('finish', () => resolve(req.socket)));
+    });
+    const response = await send(apiPath('WhoAmI'), { headers: bearer(token) });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    assert.equal(response.headers.get('connection'), 'keep-alive');
+    assert.equal(response.headers.get('keep-alive'), null);
+    const socket = await answered;
+    assert.ok(!socket.timeout, `the idle connection is closed after ${socket.timeout} ms`);
+    assert.equal(socket.destroyed, false);
+  });
+
   it('re-creates the audit, saved query, duplicate rule, async operation and field security tables on reseed', async () => {
     // A fresh store has none of these: drop their mappings and tables, then reseed as the /_sim/ reset path does.
     const logicals = ['audit', 'savedquery', 'duplicaterule', 'asyncoperation', 'fieldsecurityprofile'];

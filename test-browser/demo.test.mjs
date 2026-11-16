@@ -420,6 +420,8 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await evidence('demo-native');
   await page.goto(url + '/approach/pcf/account/?id=a4300000-0000-4000-8000-000000001001');
   await ready();
+  // The form is ready once its fields exist and its records loaded; the component marks itself ready on its own.
+  await page.locator('[data-pcf-ready=true]').first().waitFor({ state: 'attached' });
   assert.equal(await page.locator('[data-pcf-ready=true]').count(), 1);
   assert.equal(await page.locator('.demo-pcf-field').count(), 14);
   assert.equal(await page.locator('[name=address1_city]').inputValue(), 'Bristol');

@@ -3,6 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../local-file.mjs';
+import { discoveryOwnerGone } from '../agent-discovery.mjs';
 
 const MAX_JSON = 4 * 1024 * 1024;
 const MAX_IMAGE = 32 * 1024 * 1024;
@@ -41,7 +42,20 @@ function integer(value, name, fallback, min, max) {
   return Number(value);
 }
 
+const STALE_SESSION = 'Session owner process is gone; its discovery file is stale (session stopped?)';
+
+/**
+ * Reads a session discovery file for use. A file whose owner process is gone is rejected (`session_stale`): its
+ * token is never sent anywhere, because whatever listens on that port now is not the session.
+ */
 export async function readDiscovery(file) {
+  const value = await parseDiscovery(file);
+  if (discoveryOwnerGone(value, file))
+    throw Object.assign(new Error(STALE_SESSION), { code: 'session_stale', status: 404 });
+  return value;
+}
+
+async function parseDiscovery(file) {
   let value;
   try {
     value = JSON.parse(await readLocalFile(file, { maxBytes: 64 * 1024, encoding: 'utf8' }));
@@ -190,7 +204,7 @@ export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl 
         const file = path.join(dir, name);
         let entry;
         try {
-          entry = await readDiscovery(file);
+          entry = await parseDiscovery(file);
         } catch {
           invalidFiles.push(file);
           return;
@@ -205,6 +219,11 @@ export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl 
           sourceDir: entry.sourceDir,
           discoveryFile: file,
         };
+        // A stale file is listed, never probed: the token must not reach whatever has that port now.
+        if (discoveryOwnerGone(entry, file)) {
+          sessions.push({ ...item, reachable: false, error: STALE_SESSION });
+          return;
+        }
         try {
           const status = await agentRequest(entry, '/v1/session', { timeout, fetchImpl });
           item.reachable = status.id === entry.id;

@@ -1,3 +1,4 @@
+// @test-kind contract: script-callsite provenance is Paqvilo's designed transport behaviour, exercised with an invented page and script on a loopback server
 import { ownedFixture, makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,6 +39,7 @@ async function fixture(
     bulk = 0,
     holdResolution = false,
     rejectLimit = false,
+    holdClaim = false,
   } = {},
 ) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
@@ -146,6 +148,13 @@ async function fixture(
     limitRejected = resolve;
   });
   t.after(() => releaseResolution());
+  // Resolved by the next registry claim the transport sends (the first command it sends for a new document's context).
+  const claimWaiters = [];
+  // With holdClaim: the answer of the next script-registry claim is kept from the transport until the test releases it.
+  const claimAnswered = Promise.withResolvers(),
+    claimGate = Promise.withResolvers();
+  let claimHoldArmed = false;
+  t.after(() => claimGate.resolve());
   const detach = await interceptOrigin(
     context,
     origin,
@@ -167,10 +176,30 @@ async function fixture(
     {
       onAttach: async (options) => {
         attachmentCDP = options.cdp;
+        if (holdClaim) {
+          const send = options.cdp.send.bind(options.cdp);
+          options.cdp.send = async (method, params) => {
+            const answer = await send(method, params);
+            if (
+              claimHoldArmed &&
+              method === 'Runtime.evaluate' &&
+              params?.expression?.includes(transport.domSlot) &&
+              params.expression.includes('.claim(')
+            ) {
+              // The browser has run the claim; only its answer is withheld.
+              claimHoldArmed = false;
+              claimAnswered.resolve();
+              await claimGate.promise;
+            }
+            return answer;
+          };
+        }
         if (holdResolution) {
           const send = options.cdp.send.bind(options.cdp);
           let held = false;
           options.cdp.send = async (method, params) => {
+            if (method === 'Runtime.evaluate' && params?.expression?.includes('.claim('))
+              for (const sent of claimWaiters.splice(0)) sent();
             if (method === 'Runtime.callFunctionOn' && params?.functionDeclaration?.includes('this.markLimited')) {
               if (rejectLimit) {
                 if (rejectedObject === params.objectId) afterRejectedLimit.push(params.functionDeclaration);
@@ -267,6 +296,7 @@ async function fixture(
   );
   ownedFixture(t).add(async () => {
     releaseResolution();
+    claimGate.resolve();
     await detach();
     await context.close();
     server.closeAllConnections();
@@ -319,6 +349,12 @@ async function fixture(
     holdNextResolution: () => {
       resolutionEnabled = true;
     },
+    nextClaim: () => new Promise((resolve) => claimWaiters.push(resolve)),
+    holdNextClaim: () => {
+      claimHoldArmed = true;
+    },
+    claimHeld: claimAnswered.promise,
+    releaseClaim: () => claimGate.resolve(),
   };
 }
 
@@ -499,13 +535,46 @@ test('a rejected limit report closes the document record instead of resending to
   await fx.bindingsReceived;
   fx.releaseResolution();
   await fx.limitRejection;
-  // One more DOM callsite arrives after the rejection; a page round trip then
-  // orders every command the transport issued for both events.
+  // One more DOM callsite arrives after the rejection.
   const received = fx.receivedNodes.size;
   await fx.page.evaluate(() => window.makeWidget());
   await fx.page.waitForFunction(() => document.querySelectorAll('#created').length === 3002);
   while (fx.receivedNodes.size === received) await fx.page.evaluate(() => 0);
-  await fx.page.evaluate(() => 0);
-  assert.deepEqual(fx.afterRejectedLimit, [], 'no resolution or repeated limit report reaches the stale object');
   assert.equal(await fx.page.locator('#created').count(), 3002, 'instrumentation preserves all native DOM operations');
+  // Sentinel: the registry claim for the next document is a later command of the same transport on the same session,
+  // caused by an event that follows both callsite events. Once it has been sent, a command the transport issued for
+  // the stale object because of those events has been sent, and recorded, before it.
+  const claimed = fx.nextClaim();
+  await fx.page.goto(fx.origin + '/next');
+  await claimed;
+  assert.deepEqual(fx.afterRejectedLimit, [], 'no resolution or repeated limit report reaches the stale object');
+});
+
+test('disposal retires the script registry of a document whose claim has not been answered yet', async (t) => {
+  const fx = await fixture(t, { holdClaim: true });
+  await fx.proved('created');
+  const instrumented = () =>
+    fx.page.evaluate(
+      (slot) => ({
+        createElement: !Function.prototype.toString.call(Document.prototype.createElement).includes('[native code]'),
+        observing: window[slot].isScriptObserved(document.body) !== null,
+      }),
+      fx.transport.domSlot,
+    );
+  fx.holdNextClaim();
+  await fx.page.goto(fx.origin + '/next');
+  // The browser has run the claim of the new document; its answer has not reached the transport.
+  await fx.claimHeld;
+  assert.deepEqual(
+    await instrumented(),
+    { createElement: true, observing: true },
+    'the bootstrap instrumented the new document',
+  );
+  await fx.detach();
+  fx.releaseClaim();
+  assert.deepEqual(
+    await instrumented(),
+    { createElement: false, observing: false },
+    'the document has its native DOM methods back and its registry is closed',
+  );
 });

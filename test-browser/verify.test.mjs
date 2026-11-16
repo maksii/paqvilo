@@ -36,6 +36,7 @@ const CSS_URL = '/theme space.css';
 const IMAGE_URL = '/Badge mark.svg';
 const CONFIGURATION_SNIPPET = 'a11b2222-c333-4444-5555-666666666666';
 const JS_URL = '/scripts/app.js';
+const HELD_JS_URL = '/scripts/held.js';
 const escapeXml = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function write(dir, rel, content) {
@@ -55,7 +56,9 @@ function component(dir, id, type, name, content, attachment) {
   if (attachment) write(dir, `powerpagecomponents/${id}/filecontent/${attachment.name}`, attachment.text);
 }
 
-async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '') {
+// heldScript, when given, adds a parser-blocking script in front of the page's failing script. It is called for each
+// request of that script and the answer waits for the promise it returns, so the document stays in parsing until then.
+async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '', heldScript = null) {
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
@@ -186,7 +189,7 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
 </div>
 <img src="${encodeURI(IMAGE_URL)}" alt="Fixture badge">
 <script>${FORM_JS}</script>${classic ? `<script>${ADVANCED_JS}</script><script>${LIST_JS}</script>\n` : ''}<footer>${SNIPPET}</footer>
-<script>throw new Error("fixture-existing-runtime-error");</script>
+${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new Error("fixture-existing-runtime-error");</script>
 </body></html>`;
   const requests = [];
   const server = http.createServer((request, response) => {
@@ -201,6 +204,12 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
       [CSS_URL]: ['text/css', WEB_CSS],
       [IMAGE_URL]: ['image/svg+xml', IMAGE],
     };
+    if (heldScript && pathname === HELD_JS_URL) {
+      void Promise.resolve(heldScript()).then(() =>
+        response.writeHead(200, { 'content-type': 'application/javascript', 'cache-control': 'no-store' }).end(''),
+      );
+      return;
+    }
     const content = assets[pathname] ?? (pathname === '/' ? ['text/html; charset=utf-8', html] : null);
     if (content) response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]);
     else response.writeHead(404).end('fixture only');
@@ -608,4 +617,71 @@ test('verify writes failure evidence and removes a partial copy when copying sou
   assert.match(reportFor(fx.cfg).report.error, /deliberate copy failure/);
   assert.equal(fs.existsSync(temporaryWork), false);
   assert.equal(fx.requests.length, 0);
+});
+
+test('verify reads the after-edit diagnostics once the document reloaded for the last edit has loaded', async (t) => {
+  let temporaryWork, release;
+  const loadAwaited = new Promise((resolve) => {
+    release = resolve;
+  });
+  // The last edit verify saves is the second marker in the web file script. A document requested after it stays in
+  // parsing, in front of its failing script, until verify reports that it waits for the document to load.
+  const lastEditSaved = () =>
+    Boolean(temporaryWork) &&
+    fs.readFileSync(path.join(temporaryWork, 'source/web-files/app.js'), 'utf8').split('__paqviloVerifyJs=').length ===
+      3;
+  const fx = await fixture(t, 'classic', false, '', () => (lastEditSaved() ? loadAwaited : null));
+  ownedFixture(t).add(async () => {
+    release();
+  });
+  fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
+  fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    temporaryWork = path.dirname(profileDir);
+    return launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+  };
+  const phases = [];
+  const log = console.log;
+  console.log = () => {};
+  try {
+    await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          phases.push(phase);
+          if (phase === 'after-edits-load') release();
+        },
+      },
+    );
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.deepEqual(phases, ['after-edits-load']);
+  assert.equal(
+    fx.requests.filter((request) => request.pathname === HELD_JS_URL).length >= 2,
+    true,
+    'the page was reloaded for the edits',
+  );
+  assert.equal(report.checks.find((check) => check.name === 'second JS edit reloads the page and runs')?.ok, true);
+  assert.ok(
+    report.diagnostics.afterEdits.problems.some(
+      (problem) => problem.type === 'error' && problem.text === 'fixture-existing-runtime-error',
+    ),
+    'the error of the reloaded document is in the after-edit diagnostics',
+  );
 });

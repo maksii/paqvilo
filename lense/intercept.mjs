@@ -2,6 +2,7 @@
 // including handler failures, without relying on another network event to complete the route.
 import { refreshUrl } from './navigation.mjs';
 import { randomUUID } from 'node:crypto';
+import { setMaxListeners } from 'node:events';
 const RESOURCE_TYPES = {
   XHR: 'xhr',
   Fetch: 'fetch',
@@ -256,6 +257,9 @@ export async function interceptOrigins(
   const activeRoutes = new Set(); // NOSONAR: collection is written for its side effect
   let stopped = false;
   let disposal;
+  // Aborts when interception stops: a tab whose DevTools session has not been answered yet stops waiting for it.
+  const stopping = new AbortController();
+  setMaxListeners(0, stopping.signal);
   const release = (record) => {
     if (record.closing) return record.closing;
     record.closed = true;
@@ -287,15 +291,19 @@ export async function interceptOrigins(
         ),
       );
       record.routes.clear();
-      if (record.draftScript?.identifier) {
+      if (record.draftInstall) {
+        // The answer names the registration, and the browser installs the tracker whether or not setup still waits
+        // for that answer. A release that overtakes it waits for it, then removes the registration and the tracker.
+        await step('draft tracker script', async () => {
+          const script = await record.draftInstall;
+          if (script?.identifier)
+            await record.cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
+        });
         await step('draft tracker cleanup', () =>
           record.cdp.send('Runtime.evaluate', { expression: `window[${JSON.stringify(record.draftSlot)}]?.dispose()` }),
         );
-        await step('draft tracker script', () =>
-          record.cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: record.draftScript.identifier }),
-        );
       }
-      if (record.draftBindingReady)
+      if (record.draftBindingRequested)
         await step('draft tracker binding', () =>
           record.cdp.send('Runtime.removeBinding', { name: record.draftBinding }),
         );
@@ -321,7 +329,20 @@ export async function interceptOrigins(
     attached.add(page);
     let cdp;
     try {
-      cdp = await context.newCDPSession(page);
+      const opening = Promise.resolve(context.newCDPSession(page));
+      let onStop;
+      cdp = await Promise.race([
+        opening,
+        new Promise((resolve) => {
+          onStop = () => resolve(null);
+          stopping.signal.addEventListener('abort', onStop, { once: true });
+        }),
+      ]).finally(() => stopping.signal.removeEventListener('abort', onStop));
+      if (!cdp) {
+        // Interception stopped first. Nothing waits for the session; one that still arrives is detached.
+        opening.then((late) => late.detach?.()).catch(() => {});
+        return;
+      }
     } catch (error) {
       if (stopped || page.isClosed()) return;
       throw Object.assign(new Error(`Could not attach development interception: ${error.message}`, { cause: error }), {
@@ -417,15 +438,23 @@ export async function interceptOrigins(
       const draftSource = `(${installLateDraftTracker.toString()})(${JSON.stringify(record.draftSlot)},${JSON.stringify([...allowed])},${JSON.stringify(record.draftBinding)})`;
       await configure('Page.enable');
       await configure('Runtime.enable');
-      await configure('Runtime.addBinding', { name: record.draftBinding });
-      record.draftBindingReady = true;
+      // Both commands are recorded when they are sent, not when they answer: the browser carries out a command whose
+      // answer setup no longer waits for, and the release has to undo it.
+      await setupStep('Runtime.addBinding', () => {
+        record.draftBindingRequested = true;
+        return cdp.send('Runtime.addBinding', { name: record.draftBinding });
+      });
       // Register the tracker and install it in existing contexts in one CDP command.
       // A separate Runtime.evaluate can lose its context during a new-tab navigation,
       // falsely treating a healthy target as an interception failure.
-      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', {
-        source: draftSource,
-        runImmediately: true,
-      });
+      await setupStep(
+        'Page.addScriptToEvaluateOnNewDocument',
+        () =>
+          (record.draftInstall = cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+            source: draftSource,
+            runImmediately: true,
+          })),
+      );
       // CSP remains enforced unless explicitly disabled for this development session.
       if (bypassCSP) await configure('Page.setBypassCSP', { enabled: true });
       // A file the browser has cached from the online site would not be asked for again when its
@@ -574,6 +603,7 @@ export async function interceptOrigins(
   const dispose = () => {
     if (disposal) return disposal;
     stopped = true;
+    stopping.abort();
     for (const record of sessions.values()) record.ending.abort();
     context.off('page', onPage);
     disposal = (async () => {

@@ -37,12 +37,22 @@ for (const format of ['directory', 'archive']) {
     ]);
     await page.goto(`${sim.url}/_apps/canvas/${app}`);
     await ready;
+    // The player draws an answer after it has read the answer's body, which is later than the response reported
+    // here, and every draw replaces the inspector's content. A marker left in the inspector before the action is gone
+    // once the answer is drawn, so the next step never acts on, or reads, the draw before it.
     const action = async (fn) => {
       const response = page.waitForResponse(
         (r) => r.url().endsWith(`/_apps/api/canvas/${app}`) && r.request().method() === 'POST',
       );
+      await page.getByTestId('canvas-inspector').evaluate((inspector) => {
+        const marker = document.createElement('i');
+        marker.id = 'draw-marker';
+        marker.hidden = true;
+        inspector.append(marker);
+      });
       await fn();
       assert.equal((await response).ok(), true);
+      await page.waitForFunction(() => !document.getElementById('draw-marker'));
     };
     await page.getByTestId('canvas-resolution').selectOption('390x844');
     await action(() => page.getByTestId('canvas-start').click());

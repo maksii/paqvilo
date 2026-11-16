@@ -1,4 +1,6 @@
+// @test-kind contract: X-ray and panel selection evidence, focus and lifecycle on an invented routed page
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { navigateFrame } from './helpers/frame-navigation.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -295,9 +297,7 @@ test('inspection keyboard includes native summaries, blocks activation and track
     api.select(document.getElementById('frame').contentDocument.getElementById('inner'));
     return api.selectionState();
   });
-  await page.locator('#frame').evaluate((node) => {
-    node.src = '/frame-b';
-  });
+  await navigateFrame(page, '#frame', '/frame-b');
   await page.waitForFunction(() => document.getElementById('paqvilo-xray').__px.selection() === null);
   const second = await page.evaluate(() => {
     const api = document.getElementById('paqvilo-xray').__px;

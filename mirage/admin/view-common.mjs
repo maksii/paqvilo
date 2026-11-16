@@ -16,6 +16,25 @@ function pending(ctx, button, work) /* NOSONAR: constant return value is part of
   return true;
 }
 
+/**
+ * One run of `work` at a time. A call made while a run is in progress waits for it and shares one further run with
+ * every other waiting call, so the answers of an earlier run never arrive after those of a later one.
+ */
+export function oneAtATime(work) {
+  let last = Promise.resolve(),
+    waiting;
+  return () => {
+    if (waiting) return waiting;
+    const run = last.then(() => {
+      waiting = undefined;
+      return work();
+    });
+    waiting = run;
+    last = run.catch(() => {});
+    return run;
+  };
+}
+
 export function viewCommon({ id, label, kit, help }) {
   const e = kit.escapeHtml;
   const value = (item) => (typeof item === 'function' ? item() : item);

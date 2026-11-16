@@ -1,17 +1,17 @@
 // @test-kind unproven: the checks in this file exercise mirage stop scope standalone with local fixtures; no native capture establishes the behaviour they assert.
 // Standalone runtimes: stop and init hints keep their ownership directory and runtime from another
 // cwd, a failed hint stops what it started, and shared hint payloads outlive unverified targets.
+//
+// The commands run in this process against runtime doubles (test/helpers/mirage-in-process.mjs): which runtime a
+// hint or a cleanup selects is decided from the ownership records, whatever kind of process a runtime is.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { miragePaths, stopOwnedSessions } from '../lense/commands/mirage.mjs';
 import { persistCommandPayload } from '../lense/command-payload.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import { workspace, cli, alive, stopped } from './mirage-stop-workspace.mjs';
+import { workspace, runMirage, hintCommands, cli, alive, stopped } from './helpers/mirage-in-process.mjs';
 
 // @test-kind contract: hint preparation failure stops newly started single/group sessions and preserves a reused sibling
 test('hint preparation failure stops newly started single/group sessions and preserves a reused sibling', async (t) => {
@@ -20,29 +20,31 @@ test('hint preparation failure stops newly started single/group sessions and pre
   await work.writeCatalogue(config, { all: true });
   const existing = await work.start(['--config', config, '--site', 'first', '--portals', 'selected']);
   const paths = miragePaths({ stateDir: path.join(path.dirname(config), '.paqvilo') });
-  const captured = path.join(work.directory, 'failed-hint-sessions.json');
-  const hooks = path.join(work.directory, 'hint-failure.mjs');
-  const formatter = pathToFileURL(fileURLToPath(new URL('../lense/stop-command.mjs', import.meta.url))).href;
-  const replacement = `import fs from 'node:fs';export {listenerPort} from ${JSON.stringify(formatter + '?original')};function fail(){const entries=JSON.parse(fs.readFileSync(process.env.PAQ_TEST_OWNERSHIP,'utf8')).sessions;fs.writeFileSync(process.env.PAQ_TEST_CAPTURE,JSON.stringify(entries.map(({pid,url})=>({pid,url}))));throw Error('Invented hint preparation failure')}export {fail as mirageCommandHint,fail as mirageStopCommand};`;
-  await fs.writeFile(
-    hooks,
-    `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,next){const result=next(specifier,context);return result.url===${JSON.stringify(formatter)}?{url:${JSON.stringify('data:text/javascript,' + encodeURIComponent(replacement))},shortCircuit:true}:result}});`,
-  );
-  const env = {
-    NODE_OPTIONS: '--import=' + pathToFileURL(hooks).href,
-    PAQ_TEST_OWNERSHIP: paths.ownershipFile,
-    PAQ_TEST_CAPTURE: captured,
+  // The command's hint formatter fails once the runtimes are recorded, and notes what was recorded then.
+  let sessions;
+  const failing = {
+    ...work.host,
+    commandHint() {
+      sessions = JSON.parse(fsSync.readFileSync(paths.ownershipFile, 'utf8')).sessions.map(({ pid, url }) => ({
+        pid,
+        url,
+      }));
+      throw new Error('Invented hint preparation failure');
+    },
   };
   for (const selection of [
     [],
     ['--site', 'first', '--portals', 'selected', '--state', path.join(work.directory, 'new-single-state.json')],
   ]) {
-    const result = await work.run(['mirage', 'start', '--config', config, ...selection, '--json'], env);
-    const sessions = JSON.parse(await fs.readFile(captured, 'utf8'));
+    sessions = null;
+    const result = await runMirage(['mirage', 'start', '--config', config, ...selection, '--json'], {
+      cwd: work.cwd,
+      host: failing,
+    });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(JSON.parse(result.stdout).error.message, /Invented hint preparation failure/);
     const started = sessions.filter(({ pid }) => pid !== existing.pid);
-    assert.equal(started.length, 1, 'the failure follows a real runtime launch');
+    assert.equal(started.length, 1, 'the failure follows a runtime launch');
     for (const session of started) await stopped(session);
     await alive(existing);
     assert.deepEqual(
@@ -65,7 +67,7 @@ test('projectless standalone stop and init next preserve ownership cwd and runti
     standalone(state),
     standalone(path.join(work.directory, 'other standalone.json')),
   ]);
-  await work.replay(first.stop, false, elsewhere);
+  await work.replay(first.stop, elsewhere);
   await stopped(first);
   await alive(sibling);
   const init = await work.run([
@@ -87,7 +89,9 @@ test('projectless standalone stop and init next preserve ownership cwd and runti
   const report = JSON.parse(init.stdout);
   assert.deepEqual(report.writesFiles, []);
   assert.doesNotMatch(report.skipped, /catalogue settings configure/);
-  const args = JSON.parse((await work.replay(report.next, true, elsewhere)).stdout);
+  const next = hintCommands(report.next);
+  assert.equal(next.cwd, work.cwd, 'the hint returns to the directory that holds the ownership records');
+  const [args] = next.commands;
   assert.ok(args.includes('model-driven') && args.includes(state) && args.includes(work.alternate));
   assert.ok(args.includes('--simulation') && args.includes('dry-run'));
 });
@@ -117,7 +121,7 @@ test('standalone project with external configuration replays both inferred and e
       'dry-run',
     ];
     const started = await work.start(args);
-    await work.replay(started.stop, false, elsewhere);
+    await work.replay(started.stop, elsewhere);
     await stopped(started);
   }
   const init = await work.run([
@@ -134,7 +138,7 @@ test('standalone project with external configuration replays both inferred and e
     '--json',
   ]);
   assert.equal(init.status, 0, init.stdout + init.stderr);
-  const args = JSON.parse((await work.replay(JSON.parse(init.stdout).next, true, elsewhere)).stdout);
+  const [args] = hintCommands(JSON.parse(init.stdout).next).commands;
   assert.ok(
     args.includes(config) && args.includes(work.alternate) && args.includes(project) && args.includes('model-driven'),
   );
@@ -144,40 +148,35 @@ test('standalone project with external configuration replays both inferred and e
 test('shared hint payload stays while a target is unverified and is removed after the final owned target stops', async (t) => {
   const work = await workspace(t);
   const paths = miragePaths({ stateDir: path.join(work.directory, '.paqvilo') });
-  const children = [0, 1].map(() =>
-    spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true }),
-  );
-  // Closed with the workspace's other processes, before its directory is removed.
-  ownedFixture(t).add(async () => {
-    for (const child of children)
-      if (child.exitCode === null && child.signalCode === null) {
-        const closed = once(child, 'close');
-        child.kill();
-        await closed;
-      }
-  });
-  await Promise.all(children.map((child) => once(child, 'spawn')));
+  // Two running processes of the test's own process table: a signal ends the one it names.
+  const pids = [2_100_000_001, 2_100_000_002];
+  const identities = new Map(pids.map((pid, index) => [pid, `invented identity ${index}`]));
+  const running = new Set(pids);
+  const table = {
+    identityOf: (pid) => (running.has(pid) ? identities.get(pid) : null),
+    alive: (pid) => running.has(pid),
+    kill: (pid) => running.delete(pid),
+  };
   const payload = persistCommandPayload(
     path.join(path.dirname(paths.ownershipFile), 'commands'),
     Buffer.from(JSON.stringify([[cli, 'mirage', 'stop']])),
   );
-  const identities = new Map(children.map((child, index) => [child.pid, `invented identity ${index}`]));
-  const identityOf = (pid) => identities.get(pid) ?? null;
-  const records = children.map((child, index) => ({
-    pid: child.pid,
-    processIdentity: index === 0 ? identities.get(child.pid) : null,
+  const records = pids.map((pid, index) => ({
+    pid,
+    processIdentity: index === 0 ? identities.get(pid) : null,
     sourceDir: null,
     url: null,
     hintFiles: [payload],
   }));
   await fs.mkdir(path.dirname(paths.ownershipFile), { recursive: true });
   await fs.writeFile(paths.ownershipFile, JSON.stringify({ sessions: records }));
-  const first = await stopOwnedSessions({ paths, pids: [children[0].pid], identityOf });
+  const first = await stopOwnedSessions({ paths, pids: [pids[0]], ...table });
   assert.equal(first.stopped.length, 1);
+  assert.deepEqual([...running], [pids[1]], 'the record without an identity was never signalled');
   await fs.access(payload);
-  records[1].processIdentity = identities.get(children[1].pid);
+  records[1].processIdentity = identities.get(pids[1]);
   await fs.writeFile(paths.ownershipFile, JSON.stringify({ sessions: [records[1]] }));
-  const last = await stopOwnedSessions({ paths, pids: [children[1].pid], identityOf });
+  const last = await stopOwnedSessions({ paths, pids: [pids[1]], ...table });
   assert.equal(last.stopped.length, 1);
   await assert.rejects(fs.access(payload), { code: 'ENOENT' });
 });

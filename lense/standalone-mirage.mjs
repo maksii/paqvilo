@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { browserSettings, readEnvSettings, resolveMirageConfig, loadCatalogue } from './config.mjs';
-import { openBrowser } from './browser.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
 import { startupProgress, startupWaitOptions, waitForStartupPage } from './startup-progress.mjs';
 import { guardShutdownSignals } from './signal-forwarding.mjs';
@@ -71,6 +70,10 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
     }),
   };
 }
+
+// The browser automation library loads with the first browser this module opens: the configuration functions above
+// serve start, stop and status, which open none.
+const openBrowser = async (...args) => (await import('./browser.mjs')).openBrowser(...args);
 
 /** Open the local application directly. No portal overlay or source model is created. */
 export async function developStandalone(cfg, args, session, { open = openBrowser, signal, source = process } = {}) {

@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { createSimulator } from '../server.mjs';
-import { adminPage } from './shared-browser.mjs';
+import { adminPage, refreshWorkspace } from './shared-browser.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
@@ -75,7 +75,7 @@ test('registering an application shows its secret once and later reads carry onl
     'the application user is listed',
   );
   await page.getByRole('button', { name: 'Dismiss' }).click();
-  await page.locator('#refresh').click();
+  await refreshWorkspace(page);
   await page.getByText('Workspace refreshed.', { exact: true }).waitFor();
   await page
     .getByRole('row', { name: /Browser client/ })

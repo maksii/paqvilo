@@ -490,10 +490,53 @@ test('local-source refresh issues GET navigation and preserves app fragments wit
   assert.equal(url.searchParams.get('appid'), 'local');
   assert.equal(url.hash, '#route');
   assert.ok(url.searchParams.has('paqvilo'));
-  assert.equal(visits[0].options.timeout, 15000);
+  assert.equal(visits[0].options.waitUntil, 'commit', 'the reload returns when its document arrives');
   assert.equal(await refreshModelDrivenPage(page, 'https://other.invalid'), false);
   assert.equal(await refreshModelDrivenPage({ ...page, isClosed: () => true }, 'https://invented.invalid'), false);
   assert.equal(visits.length, 1);
+});
+
+// A page whose navigation follows Playwright's contract: it settles when the test lets the document arrive, and it
+// rejects with a TimeoutError once the timeout it was given has elapsed on the mocked clock.
+function heldDocumentPage() {
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://invented.invalid/main.aspx',
+    goto: (_url, { timeout }) =>
+      new Promise((resolve, reject) => {
+        page.arrive = resolve;
+        if (timeout)
+          setTimeout(
+            () => reject(Object.assign(new Error(`Timeout ${timeout}ms exceeded.`), { name: 'TimeoutError' })),
+            timeout,
+          );
+      }),
+  };
+  return page;
+}
+
+test('a watched reload waits for a document slower than 15 s and reports it once it arrives', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const page = heldDocumentPage();
+  const outcome = refreshModelDrivenPage(page, 'https://invented.invalid').then(
+    (value) => ({ value }),
+    (error) => ({ error: error.message }),
+  );
+  // The document is held past the 15 s that used to end the reload, then it arrives.
+  t.mock.timers.tick(15_001);
+  page.arrive();
+  assert.deepEqual(await outcome, { value: true });
+});
+
+test('a watched reload still waiting for its document ends when the session stops', async () => {
+  const page = heldDocumentPage();
+  const stopped = new AbortController();
+  const outcome = refreshModelDrivenPage(page, 'https://invented.invalid', stopped.signal);
+  stopped.abort();
+  assert.equal(await outcome, false);
+  // Lets the held navigation settle, so its timer is not left armed.
+  page.arrive();
+  assert.equal(await refreshModelDrivenPage(page, 'https://invented.invalid', stopped.signal), false);
 });
 
 test('a slow Solution watcher scan is not a failure while the startup wait allows it', async (t) => {

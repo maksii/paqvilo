@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own testing API: portal sessions, their isolation and the session matrix against local runtimes; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -81,7 +82,10 @@ test('ten cookie-isolated visitors read and write through real portal handlers w
   const { app, contacts } = await fixture(t),
     runtime = await connectRuntime({ origin: app.url }),
     sessions = await Promise.all(
-      contacts.map((contact) => runtime.createSession({ id: contact.contactid, contactId: contact.contactid })),
+      // No client deadline: ten visitors share one runtime, and how long a request waits on a busy host decides nothing.
+      contacts.map((contact) =>
+        runtime.createSession({ id: contact.contactid, contactId: contact.contactid, timeoutMs: 0 }),
+      ),
     );
   ownedFixture(t).add(() => sessions.forEach((session) => session.close()));
   const cases = [
@@ -402,4 +406,25 @@ test('visitor cookies persist with path/deletion scope and pending requests prot
     (error) => error.code === 'PortalSessionClosed',
   );
   assert.ok(requests.every((request) => !request.cookie?.includes('foreign')));
+});
+
+test('a session with timeoutMs 0 sets no client deadline: its request outlives one that a 1 ms deadline ended', async () => {
+  const held = [];
+  const fetchImpl = (url, init) =>
+    new URL(url).pathname === '/held'
+      ? new Promise((resolve, reject) => {
+          held.push(() => resolve(Response.json({ answered: true })));
+          init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        })
+      : Response.json({ csrf: 'fixture-csrf', config: { mode: 'local', pageMode: 'local' } });
+  const origin = 'http://127.0.0.1:8787';
+  const unbounded = await createPortalSession({ origin, fetchImpl, timeoutMs: 0 }),
+    bounded = await createPortalSession({ origin, fetchImpl, timeoutMs: 1 });
+  let settled = false;
+  const waiting = unbounded.json('/held').finally(() => (settled = true));
+  await assert.rejects(bounded.json('/held'), { name: 'TimeoutError' });
+  assert.equal(settled, false, 'the request without a client deadline is still waiting');
+  held[0]();
+  assert.deepEqual((await waiting).body, { answered: true });
+  await assert.rejects(createPortalSession({ origin, fetchImpl, timeoutMs: -1 }), { code: 'InvalidPortalSession' });
 });

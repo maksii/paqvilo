@@ -14,12 +14,19 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
 import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
+import { ownedChildren } from './helpers/owned-children.mjs';
 
 let fx;
 before(() => {
   fx = createFixture();
 });
-after(() => fx.cleanup());
+// A command still running when its test was stopped holds files of the fixture: it is ended, and its exit observed,
+// before the fixture is removed.
+const children = ownedChildren();
+after(async () => {
+  await children.end();
+  fx.cleanup();
+});
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
@@ -27,6 +34,7 @@ const env = Object.fromEntries(
 // A child is ended by the running test's signal when the runner stops that test, never by a timer of its own. Tests in
 // this file run one at a time, so the signal recorded before each test is that test's. A cleanup that runs after its
 // test was stopped (a `mirage stop` in an after hook) still runs to completion.
+const ownExecFile = (...args) => children.own(execFile(...args));
 let testSignal;
 beforeEach((t) => {
   testSignal = t.signal;
@@ -37,7 +45,7 @@ function run(...args) {
   return withProcessSlot(
     () =>
       new Promise((resolve) =>
-        execFile(
+        ownExecFile(
           process.execPath,
           [cli, ...args],
           { env, encoding: 'utf8', windowsHide: true, signal: childSignal(), maxBuffer: 64 << 20 },
@@ -56,7 +64,7 @@ const runWithEnv = (extra, ...args) =>
   withProcessSlot(
     () =>
       new Promise((resolve) =>
-        execFile(
+        ownExecFile(
           process.execPath,
           [cli, ...args],
           {
@@ -329,40 +337,48 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   assert.equal(report.remaining.length, 0);
 });
 
-test('machine-readable CLI failures reject ignored options and interactive JSON workflows', async () => {
-  const cases = [
-    [['resources', '--check', '--json'], 'unsupported_option', /--check is not supported by resources/],
-    [['map', '--limit', '10', '--json'], 'unsupported_option', /--limit is not supported by map/],
-    [['list', '--pick', '--json'], 'unsupported_option', /--pick is not supported by list/],
-    [['resources', '--unknown-option', '--json'], 'unsupported_option', /Unknown option '--unknown-option'/],
-    [['doctor', '--all', '--site', 'sample', '--json'], 'invalid_argument', /--all cannot be combined with --site/],
-    [
-      ['verify', '--headless', '--headed', '--json'],
-      'invalid_argument',
-      /--headless and --headed cannot be used together/,
-    ],
-    [['agent', 'pages', 'extra'], 'invalid_argument', /agent accepts only one action/],
-  ];
-  const [help, agentHelp, ...results] = await Promise.all([
-    run('--help', '--json'),
-    run('agent', '--help'),
-    ...cases.map(([args]) => run(...args)),
-  ]);
-  for (const [index, [args, code, message]] of cases.entries()) {
-    const result = results[index];
-    assert.equal(result.status, 1, args.join(' '));
-    const report = JSON.parse(result.stdout);
-    assert.deepEqual(
-      [report.ok, report.schemaVersion, report.command, report.error.code],
-      [false, 1, args[0], code],
-      args.join(' '),
+// Nine CLI commands: help, agent help and seven rejected invocations.
+test(
+  'machine-readable CLI failures reject ignored options and interactive JSON workflows',
+  { timeout: operationBudget(9, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const runBudgeted = countOperations(t, 9, (...args) =>
+      boundedCommand(t, process.execPath, [cli, ...args], { env, maxBuffer: 64 << 20 }),
     );
-    assert.match(report.error.message, message);
-    assert.equal(result.stderr, '');
-  }
-  assert.equal(JSON.parse(help.stdout).command, 'help');
-  assert.equal(JSON.parse(agentHelp.stdout).command, 'help', 'agent commands consistently produce JSON');
-});
+    const cases = [
+      [['resources', '--check', '--json'], 'unsupported_option', /--check is not supported by resources/],
+      [['map', '--limit', '10', '--json'], 'unsupported_option', /--limit is not supported by map/],
+      [['list', '--pick', '--json'], 'unsupported_option', /--pick is not supported by list/],
+      [['resources', '--unknown-option', '--json'], 'unsupported_option', /Unknown option '--unknown-option'/],
+      [['doctor', '--all', '--site', 'sample', '--json'], 'invalid_argument', /--all cannot be combined with --site/],
+      [
+        ['verify', '--headless', '--headed', '--json'],
+        'invalid_argument',
+        /--headless and --headed cannot be used together/,
+      ],
+      [['agent', 'pages', 'extra'], 'invalid_argument', /agent accepts only one action/],
+    ];
+    const [help, agentHelp, ...results] = await Promise.all([
+      runBudgeted('--help', '--json'),
+      runBudgeted('agent', '--help'),
+      ...cases.map(([args]) => runBudgeted(...args)),
+    ]);
+    for (const [index, [args, code, message]] of cases.entries()) {
+      const result = results[index];
+      assert.equal(result.status, 1, args.join(' '));
+      const report = JSON.parse(result.stdout);
+      assert.deepEqual(
+        [report.ok, report.schemaVersion, report.command, report.error.code],
+        [false, 1, args[0], code],
+        args.join(' '),
+      );
+      assert.match(report.error.message, message);
+      assert.equal(result.stderr, '');
+    }
+    assert.equal(JSON.parse(help.stdout).command, 'help');
+    assert.equal(JSON.parse(agentHelp.stdout).command, 'help', 'agent commands consistently produce JSON');
+  },
+);
 
 test('JSON setting discovery includes descriptions and resolved disabled agent access', async () => {
   const file = fx.file('agent-catalogue.yml');
@@ -404,125 +420,152 @@ test('list settings never prints credentials embedded in configured URLs', async
   }
 });
 
-test('list exposes configured portal coverage and refuses ambiguous all-mode origins', async () => {
-  const file = fx.file('coverage-catalogue.yml');
-  fs.writeFileSync(
-    file,
-    'sites:\n  first:\n    source: .\n    environments:\n      dev: https://first.example\n      test: https://first-test.example\n  second:\n    source: .\n    environments:\n      dev: https://second.example\n',
-  );
-  const [selectedRun, all, text, resources] = await Promise.all([
-    run('list', '--config', file, '--json'),
-    run('list', '--config', file, '--portals', 'all', '--site', 'second', '--json'),
-    run('list', '--config', file, '--portals', 'all'),
-    run('resources', '--portals', 'all', '--json'),
-  ]);
-  const selected = JSON.parse(selectedRun.stdout);
-  assert.equal(selected.inEffect.portals, 'selected');
-  assert.equal(selected.coverage.configuredTargetCount, 3);
-  assert.equal(selected.coverage.targets.length, 1);
-  assert.equal(all.status, 0, all.stderr);
-  const report = JSON.parse(all.stdout);
-  assert.equal(report.coverage.mode, 'all');
-  assert.equal(report.coverage.ready, true);
-  assert.equal(report.coverage.targets.length, 3);
-  assert.deepEqual(
-    report.coverage.targets.filter((target) => target.initial).map((target) => target.site),
-    ['second'],
-  );
-  assert.match(text.stdout, /dev coverage: all, 3 target\(s\)/);
-  assert.match(text.stdout, /second @ dev\s+https:\/\/second.example/);
-  assert.equal(resources.status, 1, 'the switch is specific to dev and its list preview');
-  assert.match(JSON.parse(resources.stdout).error.message, /--portals is not supported by resources/);
-  fs.appendFileSync(
-    file,
-    '  duplicate:\n    source: .\n    environments:\n      extra: https://SECOND.example:443/path\n',
-  );
-  const [duplicate, conflict] = await Promise.all([
-    run('list', '--config', file, '--portals', 'all', '--json'),
-    run('list', '--config', file, '--portals', 'all', '--url', 'https://custom.example', '--json'),
-  ]);
-  assert.equal(duplicate.status, 1);
-  const invalid = JSON.parse(duplicate.stdout);
-  assert.equal(invalid.coverage.ready, false);
-  assert.deepEqual(invalid.coverage.targets, []);
-  assert.match(invalid.problem, /Duplicate portal origin/);
-  assert.equal(conflict.status, 1);
-  assert.match(JSON.parse(conflict.stdout).problem, /portals=all cannot be combined with --url/);
-});
+// Six CLI commands: four coverage queries and two refused all-mode origins.
+test(
+  'list exposes configured portal coverage and refuses ambiguous all-mode origins',
+  { timeout: operationBudget(6, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const runBudgeted = countOperations(t, 6, (...args) =>
+      boundedCommand(t, process.execPath, [cli, ...args], { env, maxBuffer: 64 << 20 }),
+    );
+    const file = fx.file('coverage-catalogue.yml');
+    fs.writeFileSync(
+      file,
+      'sites:\n  first:\n    source: .\n    environments:\n      dev: https://first.example\n      test: https://first-test.example\n  second:\n    source: .\n    environments:\n      dev: https://second.example\n',
+    );
+    const [selectedRun, all, text, resources] = await Promise.all([
+      runBudgeted('list', '--config', file, '--json'),
+      runBudgeted('list', '--config', file, '--portals', 'all', '--site', 'second', '--json'),
+      runBudgeted('list', '--config', file, '--portals', 'all'),
+      runBudgeted('resources', '--portals', 'all', '--json'),
+    ]);
+    const selected = JSON.parse(selectedRun.stdout);
+    assert.equal(selected.inEffect.portals, 'selected');
+    assert.equal(selected.coverage.configuredTargetCount, 3);
+    assert.equal(selected.coverage.targets.length, 1);
+    assert.equal(all.status, 0, all.stderr);
+    const report = JSON.parse(all.stdout);
+    assert.equal(report.coverage.mode, 'all');
+    assert.equal(report.coverage.ready, true);
+    assert.equal(report.coverage.targets.length, 3);
+    assert.deepEqual(
+      report.coverage.targets.filter((target) => target.initial).map((target) => target.site),
+      ['second'],
+    );
+    assert.match(text.stdout, /dev coverage: all, 3 target\(s\)/);
+    assert.match(text.stdout, /second @ dev\s+https:\/\/second.example/);
+    assert.equal(resources.status, 1, 'the switch is specific to dev and its list preview');
+    assert.match(JSON.parse(resources.stdout).error.message, /--portals is not supported by resources/);
+    fs.appendFileSync(
+      file,
+      '  duplicate:\n    source: .\n    environments:\n      extra: https://SECOND.example:443/path\n',
+    );
+    const [duplicate, conflict] = await Promise.all([
+      runBudgeted('list', '--config', file, '--portals', 'all', '--json'),
+      runBudgeted('list', '--config', file, '--portals', 'all', '--url', 'https://custom.example', '--json'),
+    ]);
+    assert.equal(duplicate.status, 1);
+    const invalid = JSON.parse(duplicate.stdout);
+    assert.equal(invalid.coverage.ready, false);
+    assert.deepEqual(invalid.coverage.targets, []);
+    assert.match(invalid.problem, /Duplicate portal origin/);
+    assert.equal(conflict.status, 1);
+    assert.match(JSON.parse(conflict.stdout).problem, /portals=all cannot be combined with --url/);
+  },
+);
 
-test('browser/profile CLI choices are discoverable offline and incompatible commands reject them', async () => {
-  const file = fx.file('profile-catalogue.yml');
-  fs.writeFileSync(file, 'sites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example\n');
-  const unsupported = [
-    ['map', '--profile', 'work'],
-    ['resources', '--browser', 'chrome'],
-    ['verify', '--cdp-url', 'http://127.0.0.1:9222'],
-    ['agent', 'sessions', '--user-data-dir', 'test-browser-root'],
-  ];
-  const endpoints = ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented'];
-  const [named, external, attach, conflict, doctor, invalidDev, text, ...rest] = await Promise.all([
-    run('list', '--config', file, '--browser', 'chrome', '--profile', 'Team-Work', '--settings', '--json'),
-    run('list', '--config', file, '--user-data-dir', 'test-browser-root', '--profile-directory', 'Profile 1', '--json'),
-    run('list', '--config', file, '--cdp-url', 'http://127.0.0.1:9222', '--json'),
-    run('list', '--config', file, '--profile', 'work', '--user-data-dir', 'test-browser-root', '--json'),
-    run('doctor', '--config', file, '--browser', 'chromium', '--profile', 'diagnostics', '--json'),
-    run('dev', '--config', file, '--profile', '../escape'),
-    run('list', '--config', file, '--profile', 'work'),
-    ...endpoints.map((endpoint) => run('dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222')),
-    ...unsupported.map((args) => run(...args, '--json')),
-  ]);
-  assert.equal(named.status, 0, named.stderr);
-  const report = JSON.parse(named.stdout);
-  assert.equal(report.inEffect.browser.channel, 'chrome');
-  assert.equal(report.inEffect.browser.profile, 'team-work');
-  assert.equal(report.inEffect.browser.profileMode, 'named');
-  assert.equal(report.inEffect.browser.userDataDir, null);
-  assert.deepEqual(report.inEffect.browser.profileInfo, {
-    kind: 'named',
-    name: 'team-work',
-    channel: 'chrome',
-    userDataDir: path.join(fx.dir, '.paqvilo', 'profiles', 'named', 'chrome', 'team-work'),
-    profileDirectory: 'Default',
-  });
-  for (const setting of ['PAQVILO_PROFILE', 'PAQVILO_USER_DATA_DIR', 'PAQVILO_PROFILE_DIRECTORY'])
-    assert.equal(typeof report.supportedSettings[setting], 'string', setting);
-  assert.equal(external.status, 0, external.stderr);
-  const externalReport = JSON.parse(external.stdout);
-  assert.equal(externalReport.inEffect.browser.profileMode, 'external');
-  assert.equal(externalReport.inEffect.browser.userDataDir, path.resolve('test-browser-root'));
-  assert.equal(externalReport.inEffect.browser.profileDirectory, 'Profile 1');
-  assert.equal(externalReport.inEffect.browser.profileInfo.userDataDir, path.resolve('test-browser-root'));
-  assert.equal(attach.status, 0, attach.stderr);
-  assert.equal(JSON.parse(attach.stdout).inEffect.browser.mode, 'attach');
-  assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');
-  assert.deepEqual(JSON.parse(attach.stdout).inEffect.browser.profileInfo, {
-    kind: 'attached',
-    name: null,
-    channel: null,
-    userDataDir: null,
-    profileDirectory: null,
-  });
-  for (const invalid of rest.slice(0, endpoints.length)) {
-    assert.equal(invalid.status, 1, [invalid.error?.message, invalid.stderr].filter(Boolean).join('\n'));
-    assert.match(invalid.stderr, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
-    assert.match(invalid.stderr, /--debug-port 0/);
-  }
-  assert.equal(conflict.status, 1);
-  assert.match(JSON.parse(conflict.stdout).problem, /cannot be combined/);
-  assert.equal(doctor.status, 0, doctor.stderr);
-  assert.equal(JSON.parse(doctor.stdout).offline, true);
-  for (const [index, args] of unsupported.entries()) {
-    const invalid = rest[endpoints.length + index];
-    assert.equal(invalid.status, 1);
-    assert.deepEqual(JSON.parse(invalid.stdout).error, {
-      code: 'unsupported_option',
-      message: `${args.at(-2)} is not supported by ${args[0]}`,
+// Thirteen CLI commands: seven profile and browser queries, two endpoints and four unsupported options.
+test(
+  'browser/profile CLI choices are discoverable offline and incompatible commands reject them',
+  { timeout: operationBudget(13, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const runBudgeted = countOperations(t, 13, (...args) =>
+      boundedCommand(t, process.execPath, [cli, ...args], { env, maxBuffer: 64 << 20 }),
+    );
+    const file = fx.file('profile-catalogue.yml');
+    fs.writeFileSync(file, 'sites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example\n');
+    const unsupported = [
+      ['map', '--profile', 'work'],
+      ['resources', '--browser', 'chrome'],
+      ['verify', '--cdp-url', 'http://127.0.0.1:9222'],
+      ['agent', 'sessions', '--user-data-dir', 'test-browser-root'],
+    ];
+    const endpoints = ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented'];
+    const [named, external, attach, conflict, doctor, invalidDev, text, ...rest] = await Promise.all([
+      runBudgeted('list', '--config', file, '--browser', 'chrome', '--profile', 'Team-Work', '--settings', '--json'),
+      runBudgeted(
+        'list',
+        '--config',
+        file,
+        '--user-data-dir',
+        'test-browser-root',
+        '--profile-directory',
+        'Profile 1',
+        '--json',
+      ),
+      runBudgeted('list', '--config', file, '--cdp-url', 'http://127.0.0.1:9222', '--json'),
+      runBudgeted('list', '--config', file, '--profile', 'work', '--user-data-dir', 'test-browser-root', '--json'),
+      runBudgeted('doctor', '--config', file, '--browser', 'chromium', '--profile', 'diagnostics', '--json'),
+      runBudgeted('dev', '--config', file, '--profile', '../escape'),
+      runBudgeted('list', '--config', file, '--profile', 'work'),
+      ...endpoints.map((endpoint) =>
+        runBudgeted('dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222'),
+      ),
+      ...unsupported.map((args) => runBudgeted(...args, '--json')),
+    ]);
+    assert.equal(named.status, 0, named.stderr);
+    const report = JSON.parse(named.stdout);
+    assert.equal(report.inEffect.browser.channel, 'chrome');
+    assert.equal(report.inEffect.browser.profile, 'team-work');
+    assert.equal(report.inEffect.browser.profileMode, 'named');
+    assert.equal(report.inEffect.browser.userDataDir, null);
+    assert.deepEqual(report.inEffect.browser.profileInfo, {
+      kind: 'named',
+      name: 'team-work',
+      channel: 'chrome',
+      userDataDir: path.join(fx.dir, '.paqvilo', 'profiles', 'named', 'chrome', 'team-work'),
+      profileDirectory: 'Default',
     });
-  }
-  assert.equal(invalidDev.status, 1);
-  assert.match(invalidDev.stderr, /browser.profile/);
-  assert.match(text.stdout, /named toolkit profile work/);
-});
+    for (const setting of ['PAQVILO_PROFILE', 'PAQVILO_USER_DATA_DIR', 'PAQVILO_PROFILE_DIRECTORY'])
+      assert.equal(typeof report.supportedSettings[setting], 'string', setting);
+    assert.equal(external.status, 0, external.stderr);
+    const externalReport = JSON.parse(external.stdout);
+    assert.equal(externalReport.inEffect.browser.profileMode, 'external');
+    assert.equal(externalReport.inEffect.browser.userDataDir, path.resolve('test-browser-root'));
+    assert.equal(externalReport.inEffect.browser.profileDirectory, 'Profile 1');
+    assert.equal(externalReport.inEffect.browser.profileInfo.userDataDir, path.resolve('test-browser-root'));
+    assert.equal(attach.status, 0, attach.stderr);
+    assert.equal(JSON.parse(attach.stdout).inEffect.browser.mode, 'attach');
+    assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');
+    assert.deepEqual(JSON.parse(attach.stdout).inEffect.browser.profileInfo, {
+      kind: 'attached',
+      name: null,
+      channel: null,
+      userDataDir: null,
+      profileDirectory: null,
+    });
+    for (const invalid of rest.slice(0, endpoints.length)) {
+      assert.equal(invalid.status, 1, [invalid.error?.message, invalid.stderr].filter(Boolean).join('\n'));
+      assert.match(invalid.stderr, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+      assert.match(invalid.stderr, /--debug-port 0/);
+    }
+    assert.equal(conflict.status, 1);
+    assert.match(JSON.parse(conflict.stdout).problem, /cannot be combined/);
+    assert.equal(doctor.status, 0, doctor.stderr);
+    assert.equal(JSON.parse(doctor.stdout).offline, true);
+    for (const [index, args] of unsupported.entries()) {
+      const invalid = rest[endpoints.length + index];
+      assert.equal(invalid.status, 1);
+      assert.deepEqual(JSON.parse(invalid.stdout).error, {
+        code: 'unsupported_option',
+        message: `${args.at(-2)} is not supported by ${args[0]}`,
+      });
+    }
+    assert.equal(invalidDev.status, 1);
+    assert.match(invalidDev.stderr, /browser.profile/);
+    assert.match(text.stdout, /named toolkit profile work/);
+  },
+);
 
 test('mirage init writes a validated project file from the catalogue site and refuses silent overwrites', async () => {
   const solutions = tempDirSync('paqvilo-init-solutions-');
@@ -709,7 +752,7 @@ test(
 );
 
 test('mirage stop ends owned starting processes, prunes stale records and never touches other programs', async (t) => {
-  const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity, isAlive } =
+  const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity } =
     await import('../lense/commands/mirage.mjs');
   const root = tempDirSync('paqvilo-mirage-owned-');
   const paths = {
@@ -721,9 +764,27 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   fs.mkdirSync(path.dirname(paths.ownershipFile), { recursive: true });
   const idle = () =>
     spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  // Another program on a PID a record names: it answers a line on its input for as long as it runs. Whether a PID is
+  // in use says nothing about which process holds it, so the test asks the process itself.
+  const answering = () =>
+    spawn(
+      process.execPath,
+      ['-e', "process.stdin.on('data', () => console.log('here')); setInterval(() => {}, 1000)"],
+      {
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true,
+      },
+    );
+  const answers = async (child) => {
+    const answer = once(child.stdout, 'data');
+    child.stdin.write('\n');
+    return String((await Promise.race([answer, once(child, 'exit').then(() => ['exited'])]))[0]).trim();
+  };
   const starting = idle(),
-    unrelated = idle(),
+    unrelated = answering(),
     finished = idle();
+  // The exit of the starting process is observed as the event of this child.
+  const startingExit = once(starting, 'exit');
   let identityGuard;
   ownedFixture(t).add(() =>
     Promise.all(
@@ -826,14 +887,14 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   );
   assert.equal(report.pruned.find((item) => item.pid === finished.pid).reason, 'process exited');
   assert.match(report.pruned.find((item) => item.pid === unrelated.pid).reason, /another program/);
-  assert.equal(isAlive(starting.pid), false);
-  assert.equal(isAlive(unrelated.pid), true, 'a reused PID belongs to another program and is never signalled');
+  await startingExit;
+  assert.equal(await answers(unrelated), 'here', 'a reused PID belongs to another program and is never signalled');
   assert.equal(fs.existsSync(discovery(finished.pid)), false, 'discovery files of exited processes are removed');
   assert.equal(fs.existsSync(discovery(unrelated.pid)), true, 'a live process keeps its discovery file');
   assert.deepEqual(await ownedSessions(paths), []);
   const repeated = await stopOwnedSessions({ paths, pids: [unrelated.pid] });
   assert.deepEqual([repeated.stopped, repeated.pruned, repeated.remaining], [[], [], []]);
-  assert.equal(isAlive(unrelated.pid), true);
+  assert.equal(await answers(unrelated), 'here');
 });
 
 test('mirage start refuses a port held by another program before spawning anything', async (t) => {

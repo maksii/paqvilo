@@ -124,6 +124,48 @@ export async function warmState(app) {
   await response.arrayBuffer();
 }
 
+/**
+ * Clicks the administration's Refresh and waits until that refresh has finished. The button is disabled from the click
+ * until the refreshed view is on screen, so what the test reads or opens next belongs to the refreshed view, not to
+ * the one the refresh is about to replace.
+ */
+export async function refreshWorkspace(page) {
+  await page.locator('#refresh').click();
+  await page.locator('#refresh:not([disabled])').waitFor();
+}
+
+/**
+ * Waits until the administration has nothing outstanding: the open view is rendered with the data it asked for. The
+ * workspace marks its content busy from the start of a refresh or a view load until its last answer is rendered, so
+ * elements a test keeps (or measures) after this are not replaced by a render that was still on its way.
+ */
+export async function workspaceSettled(page) {
+  await page.locator('#content[aria-busy="false"]').waitFor();
+}
+
+/**
+ * Opens `url` and waits until the ready handlers its scripts registered have run. jQuery 3 runs ready handlers from a
+ * timer of its own, after the document is parsed and possibly after `load`, so the controls a script binds in a ready
+ * handler (grids, lookups, form actions) answer a click only from then on. The handler registered here runs after the
+ * ones registered before it; a page without jQuery has none to wait for.
+ */
+export async function openPortalPage(page, url, options) {
+  const response = await page.goto(url, options);
+  await readyHandlersRan(page);
+  return response;
+}
+
+/** Waits until the ready handlers the page's scripts have registered so far have run (see `openPortalPage`). */
+export async function readyHandlersRan(page) {
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        if (typeof globalThis.jQuery === 'function') globalThis.jQuery(() => resolve());
+        else resolve();
+      }),
+  );
+}
+
 /** A page in a fresh context on a warmed simulator; the context, the simulator and its directory close with the test. */
 export async function adminPage(t, browser, app, directory) {
   let context;

@@ -20,12 +20,34 @@ const CONTEXT_CLOSED_READ = /^(?:[\w.]+: )?(?:Request context disposed\.|Respons
 export const readEndedByContextClose = (error) =>
   typeof error?.message === 'string' && CONTEXT_CLOSED_READ.test(error.message.split('\n', 1)[0]);
 
+/**
+ * The default execution contexts of the target origins, kept current from the CDP events that create and destroy them.
+ * Every live default context of a target origin, including a context beyond the record limit and one whose claim is
+ * still in flight or was never admitted: disposal retires the registry in each of them.
+ */
+export function trackDefaultDocuments(targets) {
+  const documents = new Set();
+  const tracking = [
+    [
+      'Runtime.executionContextCreated',
+      ({ context: execution }) => {
+        if (execution.auxData?.isDefault && targets.has(execution.origin)) documents.add(execution.id);
+      },
+    ],
+    ['Runtime.executionContextDestroyed', ({ executionContextId }) => documents.delete(executionContextId)],
+    ['Runtime.executionContextsCleared', () => documents.clear()],
+  ];
+  return { documents, tracking };
+}
+
 /** Private CDP writers admit descriptors only into the response's actual frame/loader. */
 export function createPortalProvenanceTransport(context, configs, { onDescriptor, domProvenanceSlot } = {}) {
   const targets = new Map(configs.map((cfg) => [new URL(cfg.origin).origin, cfg]));
   const slot = '__paqviloPortal_' + randomBytes(16).toString('hex');
   const secret = randomBytes(32).toString('hex');
-  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot })});`;
+  // Closes a registry without its writer; unlike `secret` it cannot admit evidence.
+  const releaseKey = randomBytes(32).toString('hex');
+  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot, releaseKey })});`;
   return {
     slot,
     async onAttach({ cdp, configure, report }) {
@@ -37,6 +59,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       const initialLoaders = new Map();
       let script,
         closed = false;
+      const { documents, tracking } = trackDefaultDocuments(targets);
       const lost = (error) => {
         if (!closed) report?.(error);
       };
@@ -144,6 +167,8 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           const loader = await currentLoader(record.frameId);
           // Existing documents never received our early bootstrap: do not scan
           // their DOM retroactively or accept a page-created lookalike registry.
+          // Such a document has no registry to retire either.
+          if (loader && initialLoaders.get(record.frameId) === loader) documents.delete(record.id);
           if (!loader || initialLoaders.get(record.frameId) === loader || record.closed || closed) return;
           record.loaderId = loader;
           for (let attempt = 0; attempt < 12 && !record.closed && !closed; attempt++) {
@@ -245,36 +270,40 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         closed = true;
         controller.abort();
         for (const [type, listener] of listeners) cdp.off(type, listener);
-        const cleanup = [];
-        for (const record of contexts.values()) {
-          record.closed = true;
-          if (record.objectId)
-            cleanup.push(
-              send('Runtime.callFunctionOn', {
-                objectId: record.objectId,
-                functionDeclaration: 'function(){this.dispose()}',
-                returnByValue: true,
-              }),
-            );
-        }
+        for (const record of contexts.values()) record.closed = true;
         contexts.clear();
         requests.clear();
         acknowledgements.clear();
         pending.clear();
+        // The bootstrap is removed first, while contexts are still tracked: a document that commits during disposal
+        // announces its context before the removal is answered, so its registry is retired below as well.
         if (script?.identifier)
-          cleanup.push(send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier }));
-        cleanup.push(
+          await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
+        for (const [type, listener] of tracking) cdp.off(type, listener);
+        // A registry is retired through its context, not through its claimed writer: the writer of a claim that is
+        // still in flight never reaches this transport, and the browser runs this command after that claim.
+        await Promise.allSettled(
+          [...documents].map((contextId) =>
+            send('Runtime.evaluate', {
+              expression: `window[${JSON.stringify(slot)}]?.release?.(${JSON.stringify(releaseKey)})`,
+              contextId,
+              silent: true,
+              returnByValue: true,
+            }),
+          ),
+        );
+        documents.clear();
+        await Promise.allSettled([
           send('Runtime.releaseObjectGroup', { objectGroup: slot }),
           send('Runtime.disable'),
           send('Page.disable'),
-        );
-        await Promise.allSettled(cleanup);
+        ]);
       };
       try {
         await configure('Page.enable');
         for (const [frameId, loader] of frames((await configure('Page.getFrameTree')).frameTree))
           initialLoaders.set(frameId, loader);
-        for (const [type, listener] of listeners) cdp.on(type, listener);
+        for (const [type, listener] of [...tracking, ...listeners]) cdp.on(type, listener);
         script = await configure('Page.addScriptToEvaluateOnNewDocument', { source: bootstrap });
         await configure('Runtime.enable');
       } catch (error) {

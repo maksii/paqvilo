@@ -1047,3 +1047,79 @@ test('bodyless responses never request an API response body', async () => {
     assert.equal(b.answers('paused')[0].body, '');
   }
 });
+
+test('stopping does not wait for a DevTools session that is still being opened, and detaches it when it arrives', async () => {
+  const b = fakeBrowser();
+  const dispose = await interceptOrigins(b.context, [ORIGIN], async () => {});
+  const tab = b.openTab();
+  const session = Promise.withResolvers(),
+    asked = Promise.withResolvers();
+  let detached = 0;
+  tab.cdp.detach = async () => {
+    detached++;
+  };
+  b.context.newCDPSession = () => {
+    asked.resolve();
+    return session.promise;
+  };
+  b.context.emit('page', tab.page);
+  await asked.promise;
+  let stopped = false;
+  dispose().then(() => {
+    stopped = true;
+  });
+  for (let i = 0; i < 20 && !stopped; i++) await setImmediate();
+  assert.equal(stopped, true, 'stopping does not wait for the unanswered attachment');
+  session.resolve(tab.cdp);
+  await setImmediate();
+  assert.equal(detached, 1, 'the late session is detached');
+  assert.deepEqual(b.sent, [], 'no command is sent on a session that arrived after the stop');
+  assert.equal(tab.page.listenerCount('close'), 0);
+});
+
+test('a release that overtakes the answer of a draft tracker command still undoes that command', async () => {
+  for (const overtaken of ['Runtime.addBinding', 'Page.addScriptToEvaluateOnNewDocument']) {
+    const b = fakeBrowser();
+    const dispose = await interceptOrigins(b.context, [ORIGIN], async () => {});
+    const tab = b.openTab();
+    const answer = tab.cdp.send;
+    const carriedOut = Promise.withResolvers(),
+      answered = Promise.withResolvers();
+    tab.cdp.send = async (method, params) => {
+      const result = await answer(method, params);
+      if (method !== overtaken) return result;
+      // The browser has carried the command out; only its answer is withheld.
+      carriedOut.resolve();
+      await answered.promise;
+      return method === 'Page.addScriptToEvaluateOnNewDocument' ? { identifier: 'overtaken-draft-script' } : result;
+    };
+    b.context.emit('page', tab.page);
+    await carriedOut.promise;
+    const stopping = dispose();
+    answered.resolve();
+    await stopping;
+    const binding = b.sent.find((item) => item.method === 'Runtime.addBinding').name;
+    assert.ok(
+      b.sent.some((item) => item.method === 'Runtime.removeBinding' && item.name === binding),
+      `${overtaken}: the cancellation binding is removed`,
+    );
+    if (overtaken === 'Page.addScriptToEvaluateOnNewDocument') {
+      const slot = binding.slice(0, -'Changed'.length);
+      assert.ok(
+        b.sent.some(
+          (item) =>
+            item.method === 'Page.removeScriptToEvaluateOnNewDocument' && item.identifier === 'overtaken-draft-script',
+        ),
+        'the tracker registration is removed',
+      );
+      assert.ok(
+        b.sent.some(
+          (item) =>
+            item.method === 'Runtime.evaluate' && item.expression === `window[${JSON.stringify(slot)}]?.dispose()`,
+        ),
+        'the tracker installed in the current document is disposed',
+      );
+    }
+    assert.equal(tab.cdp.listenerCount('Runtime.bindingCalled'), 0);
+  }
+});

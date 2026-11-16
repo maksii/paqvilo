@@ -1,8 +1,9 @@
 // Side-effect imports: each provider and contract module registers its setting parser (config-keys.mjs) and pack
-// exports (pack-exports.mjs) when it loads. project-config.mjs imports this file so every parser is present on the
-// config-load path. None of these modules may import project-config.mjs.
-import { registerSettingParser } from './config-keys.mjs';
-import { canvasSettings } from './canvas-source.mjs';
+// exports (pack-exports.mjs) when it loads. project-config.mjs imports this file so every parser and pack export is
+// present on the runtime's config-load path. None of these modules may import project-config.mjs.
+// settings-contracts.mjs holds the setting parsers alone: a command that only reads settings imports that file instead.
+import './settings-contracts.mjs';
+import './canvas-source.mjs';
 import './connector-runtime.mjs';
 import './code-apps-config.mjs';
 import './storage-provider.mjs';
@@ -21,7 +22,3 @@ import './dataverse-hierarchy.mjs';
 import './dataverse-state-transitions.mjs';
 import './flow-actions.mjs';
 import './flow-triggers.mjs';
-
-// canvas-source.mjs sits inside config-keys.mjs's own import graph (via solution-inventory.mjs), so registering there
-// would run before config-keys.mjs has initialised; the canvas parser is registered here instead.
-registerSettingParser('canvas', canvasSettings);

@@ -99,6 +99,13 @@ export function ownedFixture(context) {
   return owner;
 }
 
+/** Registers resource.close() with the test's owner and returns the resource. Each instance is registered when it
+ * exists, so one created after its test was stopped is closed too (and its abandoned body stops). */
+export function ownedClose(context, resource) {
+  ownedFixture(context).add(() => resource.close());
+  return resource;
+}
+
 /**
  * Create an owned workspace at its physical path, preserving the caller's complete prefix. The parent is created too:
  * a fresh CI checkout has no ignored state folders such as .paqvilo/.

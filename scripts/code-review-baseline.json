@@ -269,6 +269,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/git.mjs:gitMarkerExists",
+      "file": "lense/git.mjs",
+      "type": "exports",
+      "name": "gitMarkerExists",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/html-rewriter.mjs:inlineScriptUrl",
       "file": "lense/html-rewriter.mjs",
       "type": "exports",
@@ -318,10 +325,24 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/panel.mjs:runSessionFlow",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "runSessionFlow",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/portal-model.mjs:yamlKeyStyle",
       "file": "lense/portal-model.mjs",
       "type": "exports",
       "name": "yamlKeyStyle",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/process-identity.mjs:windowsOwnershipScript",
+      "file": "lense/process-identity.mjs",
+      "type": "exports",
+      "name": "windowsOwnershipScript",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -759,6 +780,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/capture-shell.mjs:runCaptureShellCommand",
+      "file": "mirage/capture-shell.mjs",
+      "type": "exports",
+      "name": "runCaptureShellCommand",
+      "reason": "Deliberate in-process entry point of the capture-shell command with caller-supplied streams; the capture-shell tests drive it and the process entry runs the same function."
+    },
+    {
       "key": "runtime:exports:mirage/dataverse-parity.mjs:compareRuns",
       "file": "mirage/dataverse-parity.mjs",
       "type": "exports",
@@ -955,6 +983,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/canvas-source.mjs:canvasSettings",
+      "file": "mirage/lib/canvas-source.mjs",
+      "type": "exports",
+      "name": "canvasSettings",
+      "reason": "Re-exported test seam: canvas-pcf.test.mjs checks the canvas settings contract through this module; settings-contracts.mjs imports the same function from canvas-settings.mjs."
+    },
+    {
       "key": "runtime:exports:mirage/lib/capability-registry.mjs:normalizeCapabilityRecord",
       "file": "mirage/lib/capability-registry.mjs",
       "type": "exports",
@@ -1037,6 +1072,13 @@
       "type": "exports",
       "name": "encodeEvent",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/compile-cache.mjs:fileDigest",
+      "file": "mirage/lib/compile-cache.mjs",
+      "type": "exports",
+      "name": "fileDigest",
+      "reason": "Test seam: the CLR SDK fixture (mirage/test/fixtures/clr-sdk.mjs) forms its cache keys with this digest; the module also uses it to identify compilers."
     },
     {
       "key": "runtime:exports:mirage/lib/connector-runtime.mjs:connectionSettings",
@@ -3193,6 +3235,13 @@
       "type": "exports",
       "name": "TOOL_OPTIONS",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/trace.mjs:runTraceCommand",
+      "file": "mirage/trace.mjs",
+      "type": "exports",
+      "name": "runTraceCommand",
+      "reason": "Deliberate in-process entry point of the trace command with caller-supplied streams; the trace tests drive it and the process entry runs the same function."
     },
     {
       "key": "runtime:exports:mirage/webapi-inventory.mjs:supportOf",

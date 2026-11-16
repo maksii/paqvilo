@@ -1,3 +1,4 @@
+// @test-kind contract: the model-driven Actions panel runs on an invented loopback page with stubbed action bindings.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -383,6 +384,8 @@ test('Custom commands retain drafts and caret, import without execution, run asy
     mimeType: 'application/json',
     buffer: Buffer.from('{"version":2,"commands":[]}'),
   });
+  // The import reads the file asynchronously; its refusal is the signal that it has finished.
+  await page.getByText('Use version 1 JSON with at most 50 commands.', { exact: true }).waitFor();
   assert.equal(await editor.inputValue(), 'window.staleDraftExecuted=true; return "old";');
   await page.locator('.actions-panel input[type=file]').setInputFiles({
     name: 'replacement.json',
@@ -394,6 +397,8 @@ test('Custom commands retain drafts and caret, import without execution, run asy
       }),
     ),
   });
+  // The saved command keeps its id, so its option exists before the import replaces it: wait for the import itself.
+  await page.getByText('Imported 1 commands. Nothing was executed.', { exact: true }).waitFor();
   await page.getByRole('combobox', { name: 'Saved custom commands', exact: true }).selectOption(savedId);
   assert.equal(await editor.inputValue(), 'window.replacementExecuted=true; return 99;');
   assert.equal(await page.evaluate(() => Boolean(window.replacementExecuted)), false);
@@ -410,6 +415,7 @@ test('Custom commands retain drafts and caret, import without execution, run asy
       }),
     ),
   });
+  await page.getByText('Imported 1 commands. Nothing was executed.', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => Boolean(window.importExecuted)), false);
   await page.getByRole('combobox', { name: 'Saved custom commands', exact: true }).selectOption('imported');
   await page.getByRole('button', { name: 'Run command', exact: true }).click();

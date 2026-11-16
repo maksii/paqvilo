@@ -1,6 +1,6 @@
 /** Serializable early bootstrap. Only a backend-held writer can admit response descriptors. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
-export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, limit = 50000 }) {
+export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, releaseKey, limit = 50000 }) {
   if (!secret || !slot || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   const marker = 'data-paqvilo-source';
   const apply = Reflect.apply,
@@ -319,6 +319,13 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       if (claimed || value !== secret) return null;
       claimed = true;
       return writer;
+    },
+    // The backend retires a registry by its context when the writer never reached it: a claim still in flight, a claim
+    // that was never admitted, a context beyond its record limit. The key only closes this registry; it admits nothing.
+    release(value) {
+      if (!releaseKey || value !== releaseKey) return false;
+      writer.dispose();
+      return true;
     },
   });
   define(window, slot, { value: capability, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding

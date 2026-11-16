@@ -134,7 +134,7 @@ const response = await fetch(`${sim.origin}/`, { headers });
 await sim.signOut();
 ```
 
-Alternatively pass `{ origin: 'http://127.0.0.1:8787' }`. The client resolves an owned running runtime (including dynamic ports), otherwise the configured port, and checks its source folder. All origins are confined to loopback. Methods: `status()`, `state({ summary })`, `signIn(contextOrNull, { contactId, roles, configuredPersona })`, `signOut(contextOrNull)`, `records(table, query)`, `setSnippet(name, value)`, `liveConnect(cdp)`, `liveDisconnect()` and `captureShell(path)`. Writes fetch/send CSRF automatically. Fetch sign-in returns a cookie header; Playwright uses its context request cookies. The client starts and stops no runtime.
+Alternatively pass `{ origin: 'http://127.0.0.1:8787' }`. The client resolves an owned running runtime (including dynamic ports), otherwise the configured port, and checks its source folder. All origins are confined to loopback. Methods: `status()`, `state({ summary })`, `signIn(contextOrNull, { contactId, roles, configuredPersona })`, `signOut(contextOrNull)`, `records(table, query)`, `setSnippet(name, value)`, `liveConnect(cdp)`, `liveDisconnect()` and `captureShell(path)`. Writes fetch/send CSRF automatically. Fetch sign-in returns a cookie header; Playwright uses its context request cookies. The client starts and stops no runtime. `timeoutMs` (default 30000; 0 sets no client deadline) is the deadline of each admin call and is inherited by `createSession` (0 to 300000).
 
 `records` is an administrative local read. Test portal permissions through portal/Web API routes with sign-in headers. Configured-persona sign-in preserves membership roles or explicit role overrides.
 
@@ -201,6 +201,7 @@ try {
 `createPortalSession({ origin, contactId?, roles?, id?, timeoutMs?, signal? })` and
 `runtime.createSession(options)` connect independent cookie jars to the same local
 runtime. Omit `contactId` for an anonymous visitor; membership roles are the default.
+`timeoutMs` (0 to 300000, default 30000) is the client's deadline for each request; 0 sets none, so only `signal` ends a request.
 Methods are `session()`, `signIn(contactId, { roles })`, `signOut()`, `setRoles(rolesOrNull)`,
 `request(path, fetchOptions)`, `json(path, { method, body, headers, signal })` and `close()`.
 The JSON method returns `{ status, traceId, body }`; `traceId` links to the runtime's
@@ -292,7 +293,7 @@ captures. Check `applied` and `complete`; default command success follows `appli
 including usable captures with nonblocking gaps. `--strict` requires `complete` as well.
 Other API errors carry `status` and the parsed `response`, and include the server message.
 Shell capture has no client deadline by default; ordinary admin calls retain their 30-second
-deadline. Set `captureShell(path, { timeoutMs: 120000 })` or CLI `--timeout 120000` to bound
+deadline unless `connectRuntime({ timeoutMs })` is given another value. Set `captureShell(path, { timeoutMs: 120000 })` or CLI `--timeout 120000` to bound
 waiting in milliseconds (`0` disables this deadline). `SHELL_CAPTURE_TIMEOUT` names the
 option and warns that the server may still be working. Non-JSON CLI captures print progress
 to stderr every 15 seconds. `--all` preserves each failed site's sanitized message, HTTP

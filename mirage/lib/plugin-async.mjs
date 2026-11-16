@@ -149,6 +149,10 @@ function jobExecutionFrame(store, id, event) {
   };
 }
 // Claims a Ready job (Locked, In Progress) and returns its finish/cancel; null when the job left Ready (a cancel) or is gone.
+// Every job transaction finds its row again by id and reaches the state through the store alone, so its rollback backup
+// copies only what the job reached (DataStore#transact `tracked`), not the whole state per job.
+const TRACKED = { tracked: true };
+
 function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
   const clockMs = () => clockFunction(store.clock ?? systemClock)();
   const now = () => new Date(clockMs()).toISOString();
@@ -365,21 +369,24 @@ export function createAsyncPluginRunner({
       let job = null;
       await store.transact(() => {
         job = claimJob(store, id, item, systemJobs, diagnostic);
-      });
+      }, TRACKED);
       if (!job) return;
       try {
         if (!item) {
-          await store.transact(() => job.stepMissing());
+          await store.transact(() => job.stepMissing(), TRACKED);
           return;
         }
         const skipped = skippedRegistration(item, event, 'webhook', id);
         if (skipped) {
-          await store.transact(() => job.cancel(...[skipped].flat()));
+          await store.transact(() => job.cancel(...[skipped].flat()), TRACKED);
           return;
         }
         if (!webhooks) {
           diagnostic({ code: 'WEBHOOK_NOT_DELIVERED', stepId: itemId, reason: 'no-adapter' });
-          await store.transact(() => job.cancel('Simulator: no asynchronous webhook delivery adapter is configured.'));
+          await store.transact(
+            () => job.cancel('Simulator: no asynchronous webhook delivery adapter is configured.'),
+            TRACKED,
+          );
           return;
         }
         const answer = await webhooks.afterCommit({
@@ -404,7 +411,7 @@ export function createAsyncPluginRunner({
           correlationId: event.correlationId ?? chain.id,
           diagnostic,
         });
-        await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)));
+        await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)), TRACKED);
         diagnostic({
           code: 'PLUGIN_ASYNC_COMPLETED',
           ...stepFacts(item, itemId, event, 'completed'),
@@ -415,7 +422,7 @@ export function createAsyncPluginRunner({
         });
       } catch (error) {
         span?.fail(error);
-        await store.transact(() => job.finish(error));
+        await store.transact(() => job.finish(error), TRACKED);
         diagnostic({
           code: 'PLUGIN_ASYNC_FAILED',
           ...stepFacts(item, itemId, event, `failed: ${error.message}`),
@@ -444,7 +451,7 @@ export function createAsyncPluginRunner({
       // restart cannot reset the four-attempt budget, even after a crash.
       await store.transact(() => {
         job = claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt: true });
-      });
+      }, TRACKED);
       if (!job) return;
       await store.transact(() => {
         const previousChain = store.flowChain,
@@ -549,10 +556,10 @@ export function createAsyncPluginRunner({
           store.pluginExecutionUserId = previousExecution;
           store.pluginPlatformUserId = previousPlatform;
         }
-      });
+      }, TRACKED);
       return retrying ? retryCommittedJob : undefined;
     } catch (error) {
-      if (job) await store.transact(() => job.recover());
+      if (job) await store.transact(() => job.recover(), TRACKED);
       diagnostic({
         code: 'PLUGIN_ASYNC_QUEUE_FAILED',
         stepId: itemId,

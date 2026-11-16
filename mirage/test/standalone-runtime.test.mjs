@@ -1,3 +1,4 @@
+// @test-kind unproven: local standalone runtime models (organization API, model-driven surfaces, project settings); no native recording is replayed by these tests.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -294,6 +295,7 @@ test('standalone validation responses agree with the documented payload and quer
   }
 });
 
+// @test-kind contract: Paqvilo's project platform settings need evidence, known keys and in-range values; no native behaviour is claimed.
 test('project platform settings need evidence, known keys and in-range values', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-platform-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -321,6 +323,7 @@ test('project platform settings need evidence, known keys and in-range values', 
 });
 
 for (const kind of ['dataverse-api', 'model-driven'])
+  // @test-kind contract: Paqvilo's root platform configuration is retained, enforced and exposed through its public administration; no native behaviour is claimed.
   test(`${kind} root platform configuration is retained, enforced and exposed through public administration`, async (t) => {
     const { sim } = await fixture(t, {
       runtime: { kind },
@@ -351,6 +354,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
     assert.equal(sim.status().platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
   });
 
+// @test-kind contract: Paqvilo's standalone project CLI forwards organization platform settings into the query runtime; no native behaviour is claimed.
 test('standalone project CLI forwards organization platform settings into the actual query runtime', async (t) => {
   const { root, solution } = await solutionSources(t);
   const file = path.join(root, 'cli-project.json');
@@ -498,6 +502,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
       }
     });
 
+// @test-kind contract: Mirage's own source watcher reloads independent client sources into a running standalone runtime; no native behaviour is claimed.
 test('independent client directory and ZIP sources reload without changing complete organization metadata', async (t) => {
   const { root, solution } = await solutionSources(t);
   const clientRoot = path.join(root, 'external-clients'),
@@ -555,13 +560,10 @@ test('independent client directory and ZIP sources reload without changing compl
   };
   assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
   assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
+  // The runtime announces no reload event: the served source is read until it shows the write. The 50 ms only paces
+  // the reads; a reload that never comes is ended by the runner's --test-timeout, not by a deadline of this test.
   const changed = async (url, expected) => {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      if ((await selectedSource(url)) === expected) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.fail('Selected client source was not reloaded: ' + expected);
+    while ((await selectedSource(url)) !== expected) await new Promise((resolve) => setTimeout(resolve, 50));
   };
   await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 2;');
   await changed(urls['x_/external.js'], 'window.External = 2;');

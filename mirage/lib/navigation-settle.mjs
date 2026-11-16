@@ -127,25 +127,18 @@ export async function awaitWritesBeforeDocument(
  */
 export async function awaitNetworkQuiet(
   records,
-  { frames = () => NO_FRAMES, timeout, quietMs = 500, poll = 50, ignore = () => false },
+  { frames = () => NO_FRAMES, timeout, quietMs = 500, poll = 50, ignore = () => false, roundTrip },
 ) {
+  if (roundTrip) return awaitPageTurns(records, frames, { timeout, poll, ignore, roundTrip });
   const started = Date.now();
   let signature = '';
   let changed = started;
   for (;;) {
     const rows = records();
     const state = frames();
-    const open = rows.filter(
-      (row) =>
-        row.type !== 'EventSource' &&
-        row.finishedTimestamp === undefined &&
-        !row.failure &&
-        !row.handedOff &&
-        !ignore(row) &&
-        (row.type === 'Document' ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
-    );
+    const open = openRowsOf(rows, state, ignore);
     const now = Date.now();
-    const current = `${rows.length}:${rows.filter((row) => row.finishedTimestamp !== undefined || row.failure).length}`;
+    const current = signatureOf(rows);
     if (current !== signature) {
       signature = current;
       changed = now;
@@ -154,5 +147,70 @@ export async function awaitNetworkQuiet(
     if (now - started >= timeout)
       return { waitedMs: now - started, settled: false, pending: open.map((row) => `${row.method} ${row.path}`) };
     await new Promise((resolve) => setTimeout(resolve, poll));
+  }
+}
+
+/** The requests of the current documents that are still open; streams, dead, handed-off and ignored records are not. */
+function openRowsOf(rows, state, ignore) {
+  return rows.filter(
+    (row) =>
+      row.type !== 'EventSource' &&
+      row.finishedTimestamp === undefined &&
+      !row.failure &&
+      !row.handedOff &&
+      !ignore(row) &&
+      (row.type === 'Document' ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
+  );
+}
+
+function signatureOf(rows) {
+  return `${rows.length}:${rows.filter((row) => row.finishedTimestamp !== undefined || row.failure).length}`;
+}
+
+/**
+ * The roundTrip form of awaitNetworkQuiet. Quiet is no open request, then a page turn that leaves the records unchanged.
+ * A turn that changed them (its queued work started or ended a request) is followed by another, so work the page chains
+ * from that work is waited for too.
+ */
+async function awaitPageTurns(records, frames, { timeout = Infinity, poll, ignore, roundTrip }) {
+  const started = Date.now();
+  let roundTrips = 0;
+  for (;;) {
+    const open = openRowsOf(records(), frames(), ignore);
+    const now = Date.now();
+    if (now - started >= timeout)
+      return {
+        waitedMs: now - started,
+        settled: false,
+        pending: open.map((row) => `${row.method} ${row.path}`),
+        roundTrips,
+      };
+    if (open.length) {
+      await new Promise((resolve) => setTimeout(resolve, poll));
+      continue;
+    }
+    const before = signatureOf(records());
+    // A turn that never answers (a page whose frames do not run animation frames) ends at the timeout, unsettled.
+    let timer,
+      answered = false;
+    const turn = Promise.resolve()
+      .then(roundTrip)
+      .then(
+        () => (answered = true),
+        () => (answered = true),
+      );
+    // Without a timeout there is nothing to race: a timer cannot hold an unbounded delay.
+    await (Number.isFinite(timeout)
+      ? Promise.race([
+          turn,
+          new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, timeout - (Date.now() - started))))),
+        ])
+      : turn);
+    clearTimeout(timer);
+    if (!answered) continue;
+    roundTrips += 1;
+    const after = records();
+    if (!openRowsOf(after, frames(), ignore).length && signatureOf(after) === before)
+      return { waitedMs: Date.now() - started, settled: true, roundTrips };
   }
 }

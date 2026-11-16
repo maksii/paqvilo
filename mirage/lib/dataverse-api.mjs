@@ -1,4 +1,5 @@
 import { readRawBody } from './http-body.mjs';
+import { keepIdleConnections } from './idle-connections.mjs';
 import {
   accessNamesOf,
   entryMessageActive,
@@ -2353,13 +2354,13 @@ export async function startDataverseApi({
     });
 
     await beforeListen?.(organization);
-    const httpServer = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle);
+    const httpServer = keepIdleConnections(http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle));
     servers.push(httpServer);
     await listen(httpServer, settings.port ?? 0, host);
     const origin = listenerOrigin('http', host, httpServer.address().port);
     let tlsOrigin = null;
     if (tls) {
-      const httpsServer = https.createServer({ ...tls, maxHeaderSize: MAX_HEADER_SIZE }, handle);
+      const httpsServer = keepIdleConnections(https.createServer({ ...tls, maxHeaderSize: MAX_HEADER_SIZE }, handle));
       servers.push(httpsServer);
       await listen(httpsServer, settings.tlsPort ?? 0, host);
       tlsOrigin = listenerOrigin('https', host, httpsServer.address().port);

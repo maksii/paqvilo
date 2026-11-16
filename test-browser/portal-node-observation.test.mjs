@@ -1,4 +1,6 @@
+// @test-kind contract: portal node observation joins rendered component scope on invented routed pages
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { navigateFrame } from './helpers/frame-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -287,11 +289,7 @@ test('typed advanced wrappers and modal form hierarchy preserve exact configurat
     !progress.facts.some((fact) => fact.binding.key === 'basic-form:wizard-a'),
     'the known native WebForm prefix disambiguates equal IDs in different component tables',
   );
-  await page.locator('#modal').evaluate((node) => {
-    node.src = '/modal';
-  });
-  const frame = await (await page.locator('#modal').elementHandle()).contentFrame();
-  await frame.waitForURL('http://127.0.0.1:11889/modal');
+  const frame = await navigateFrame(page, '#modal', '/modal');
   await frame.locator('body').waitFor();
   await frame.evaluate(() => {
     document.body.innerHTML =

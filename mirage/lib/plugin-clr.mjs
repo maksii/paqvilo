@@ -26,6 +26,7 @@ import { internalStageContext, internalStageSource, internalStepReference } from
 import { standardFieldDefinition } from './dataverse-standard.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { inspectAssembly } from './clr-assembly-reader.mjs';
+import { compileCached, compileCacheKey, compilerIdentity } from './compile-cache.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
   queryExpressionToFetch,
@@ -600,6 +601,9 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     securityModel,
     compileGuardMs = CLR_COMPILE_GUARD_MS,
     run = spawnSync,
+    // The host executable depends only on its source, the SDK it binds and the compiler: one build serves every
+    // snapshot of them (compile-cache.mjs). An injected compiler run is used as given unless it names a cache folder.
+    compileCache = run === spawnSync ? undefined : false,
   } = options;
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
@@ -627,14 +631,15 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       compiler ?? path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
     // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
     // online contract); an older SDK gets the Context4 class instead.
-    const compile = (defines) =>
+    const hostName = path.basename(executable);
+    const compile = (defines, folder) =>
       run(
         compilerFile,
         [
           '/nologo',
           '/target:exe',
           ...defines.map((name) => '/define:' + name),
-          '/out:' + executable,
+          '/out:' + path.join(folder, hostName),
           '/reference:' + files[1].path,
           '/reference:System.Web.Extensions.dll',
           '/reference:System.Runtime.Serialization.dll',
@@ -645,14 +650,33 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       );
     // The ILogger, IFeatureControlService(2) and IManagedIdentityService classes compile when the SDK declares them.
     const services = clrServiceDefines(sdk.bytes);
-    let contextInterfaceVersion = 7,
-      build = compile(['PAQVILO_CONTEXT7', ...services]);
-    if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
-      contextInterfaceVersion = 4;
-      build = compile(services);
-    }
-    if (build.error || build.status !== 0)
-      fail(clrCompileFailure(build, compilerFile, compileGuardMs, executable), 'LocalPluginClrBuild', 501);
+    const { meta: contextInterfaceVersion } = compileCached({
+      ...(compileCache === undefined ? {} : { root: compileCache }),
+      key: compileCacheKey([
+        'clr-plugin-host/1',
+        compilerIdentity(compilerFile),
+        sha(source),
+        files[1].sha256,
+        services.join(','),
+      ]),
+      files: [hostName],
+      into: directory,
+      build(folder) {
+        let version = 7,
+          build = compile(['PAQVILO_CONTEXT7', ...services], folder);
+        if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
+          version = 4;
+          build = compile(services, folder);
+        }
+        if (build.error || build.status !== 0)
+          fail(
+            clrCompileFailure(build, compilerFile, compileGuardMs, path.join(folder, hostName)),
+            'LocalPluginClrBuild',
+            501,
+          );
+        return version;
+      },
+    });
     files.push({ path: executable, sha256: sha(readClrFileSync(executable)) });
     const allowed = new Set([...files.map((f) => path.basename(f.path)), path.basename(sourceFile)]);
     if (syncFs.readdirSync(directory).some((name) => !allowed.has(name)))

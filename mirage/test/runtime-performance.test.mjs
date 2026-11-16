@@ -10,7 +10,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
-import { runtimePerformance, LARGE_PERFORMANCE_OPTIONS } from '../../scripts/runtime-performance.mjs';
+import { heartbeatPause, runtimePerformance, LARGE_PERFORMANCE_OPTIONS } from '../../scripts/runtime-performance.mjs';
 import { createSimulator } from '../server.mjs';
 import { performanceFixture, performanceId } from './runtime-performance-fixture.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
@@ -1198,6 +1198,19 @@ test('optional source-volume probe retains every form and the exact requested re
     assert.ok(result.inventory.sourceBytes > 0);
     assert.ok(result.fixtureMs >= 0);
   }
+});
+
+// @test-kind tooling: the performance probe's heartbeat pacing is bounded by count, not by wall time
+test('heartbeat pauses grow with the heartbeat count and stop at a tenth of the budget', () => {
+  assert.equal(heartbeatPause(0, 1000), 5);
+  assert.equal(heartbeatPause(1, 1000), 10);
+  assert.equal(heartbeatPause(10, 1000), 100);
+  assert.equal(heartbeatPause(10, 1), 5);
+  // Covering 100 s at a 1000 ms budget takes about a thousand heartbeats; a fixed 5 ms pause would take 20 000.
+  let covered = 0,
+    heartbeats = 0;
+  while (covered < 100_000) covered += heartbeatPause(heartbeats++, 1000);
+  assert.ok(heartbeats <= 1010, `${heartbeats} heartbeats`);
 });
 
 test('recording mode measures a request past its budget to its end and reports the miss, without aborting it', async () => {

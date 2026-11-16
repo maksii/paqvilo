@@ -204,7 +204,8 @@ function addWebApiLookupAliases(fields, portal, mapping, columnType) {
 }
 
 function webApiPermissionProfiles(portal, store, mapping) {
-  const identity = portal.webApiIdentity ?? store.snapshot().simulator?.identity ?? {},
+  // The simulator section alone: a whole snapshot copied every table to read one identity.
+  const identity = portal.webApiIdentity ?? store.snapshot({ sections: ['simulator'] }).simulator?.identity ?? {},
     roleIds = new Set((identity.roleIds ?? []).map((value) => String(value).replace(/[{}]/g, '').toLowerCase()));
   if (identity.roleSource !== 'memberships')
     for (const role of portal.records ?? [])

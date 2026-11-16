@@ -1,44 +1,29 @@
 // @test-kind unproven: the checks in this file exercise mirage stop scope with local fixtures; no native capture establishes the behaviour they assert.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
-// Project stop hints: the advertised command stops exactly its runtime from other directories and
-// shells, across project edits. Catalogue, standalone and cleanup scopes have their own files.
+// Project stop hints: the advertised command stops exactly its runtime from other directories, across project edits.
+// Catalogue, standalone and cleanup scopes have their own files.
+//
+// The commands run in this process against runtime doubles (test/helpers/mirage-in-process.mjs), and a hint is
+// replayed as the argv it holds: which runtime that argv selects is decided from the ownership records. That each
+// native shell hands a hint over as exactly that argv, and that its replay ends a real detached runtime, is
+// test/mirage-process-boundary.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { listenerPort } from '../lense/stop-command.mjs';
 import mirage, { miragePaths, updateOwnedSessions } from '../lense/commands/mirage.mjs';
 import { standaloneMirageConfiguration } from '../lense/standalone-mirage.mjs';
-import { workspace, fixtureStatusURL, alive, stopped, portalProject } from './mirage-stop-workspace.mjs';
+import { workspace, alive, stopped, portalProject } from './helpers/mirage-in-process.mjs';
+import { workspace as realWorkspace, alive as realAlive, stopped as realStopped } from './mirage-stop-workspace.mjs';
 
-const execute = promisify(execFile);
+// @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories
+test('plain project stop hints stay readable and stop only the advertised runtime from other directories', async (t) => {
+  await plainProjectHints(t);
+});
 
-// One test per native shell, so the per-test limit covers a bounded number of runtimes. pwsh is optional on Windows.
-const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe', 'pwsh.exe'] : ['/bin/sh'];
-async function shellInstalled(shell) {
-  if (shell !== 'pwsh.exe') return true;
-  try {
-    await execute(shell, ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
-      windowsHide: true,
-    });
-    return true;
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    return false;
-  }
-}
-
-// @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories and shells
-for (const shell of nativeShells)
-  test(`plain project stop hints stay readable and stop only the advertised runtime from other directories and shells: ${shell}`, async (t) => {
-    if (!(await shellInstalled(shell))) return t.skip(`${shell} is not installed`);
-    await plainProjectHints(t, shell);
-  });
-
-async function plainProjectHints(t, shell) {
+async function plainProjectHints(t) {
   const work = await workspace(t);
   const project = path.join(work.directory, 'plain project', 'organization.json');
   await fs.mkdir(path.dirname(project));
@@ -70,7 +55,7 @@ async function plainProjectHints(t, shell) {
   ]);
   const running = new Set([session, literal]);
   const replayStops = async (selected) => {
-    await work.replay(selected.stop, false, elsewhere, shell);
+    await work.replay(selected.stop, elsewhere);
     await stopped(selected);
     running.delete(selected);
     await Promise.all([sibling, ...running].map(alive));
@@ -93,33 +78,6 @@ async function plainProjectHints(t, shell) {
   }
   await replayStops(literal);
 }
-
-// @test-kind security+contract: owned status probes admit only a numeric port on the fixed HTTP loopback endpoint
-test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {
-  assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:12345' }), 'http://127.0.0.1:12345/_sim/api/status');
-  assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:80/' }), 'http://127.0.0.1:80/_sim/api/status');
-  for (const url of [
-    'https://127.0.0.1:12345',
-    'http://invented.example.invalid:12345',
-    'http://127.0.0.1.invented.invalid:12345',
-    'http://localhost:12345',
-    'http://[::1]:12345',
-    'http://2130706433:12345',
-    'http://user:secret@127.0.0.1:12345',
-    'http://127.0.0.1:12345/other',
-    'http://127.0.0.1:12345/?value=invented',
-    'http://127.0.0.1:12345/#fragment',
-    'http://127.0.0.1:12345/?',
-    'http://127.0.0.1:12345/#',
-    'http://127.0.0.1:0',
-    'http://127.0.0.1:65536',
-    'http://127.0.0.1:00123',
-    'http://127.0.0.1:12345\\',
-    'http://127.0.0.1:12345\n',
-    'file:///invented',
-  ])
-    assert.throws(() => fixtureStatusURL({ url }), /owned HTTP loopback runtime address/);
-});
 
 // @test-kind contract: standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail
 test('standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail', async (t) => {
@@ -157,7 +115,7 @@ for (const edit of ['path-remap', 'portal-rename', 'portal-remove'])
   });
 
 async function editedProjectHint(t, edit) {
-  const work = await workspace(t);
+  const work = await realWorkspace(t);
   const config = path.join(work.directory, 'catalogue controls', 'selected.json');
   const other = path.join(path.dirname(config), 'unrelated.json');
   const project = path.join(work.directory, 'external projects', 'editable.json');
@@ -203,8 +161,8 @@ async function editedProjectHint(t, edit) {
   }
   await fs.writeFile(project, JSON.stringify(after));
   await work.replay(selected.stop, false, elsewhere);
-  await stopped(selected);
-  await alive(sibling);
+  await realStopped(selected);
+  await realAlive(sibling);
   if (edit !== 'portal-remove') return;
   // The project now lacks portal 'first': every action refuses it. They read the same files
   // and start nothing, so they run together.
@@ -231,7 +189,6 @@ async function editedProjectHint(t, edit) {
   );
 }
 
-// One test per mapping size, so the per-test limit covers a bounded number of runtimes.
 // @test-kind contract: a project stop without a portal selector includes recorded portals absent from current multi- and single-portal mappings
 for (const count of [2, 1])
   test(`unqualified project stop includes recorded portals absent from current multi- and single-portal mappings: ${count} portal(s)`, async (t) => {

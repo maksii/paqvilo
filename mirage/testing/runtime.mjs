@@ -1,7 +1,4 @@
 import path from 'node:path';
-import { loadConfig } from '../../lense/config.mjs';
-import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
-import { loadProjectConfig } from '../lib/project-config.mjs';
 import { createPortalSession } from './sessions.mjs';
 import { createPersonaSession } from './personas.mjs';
 import { eventLineParts } from './event-line.mjs';
@@ -77,8 +74,13 @@ export function runtimeOrigin(value) {
   return url.origin;
 }
 
+// The catalogue, project and discovery modules find a runtime that was not named by its origin. They load on that path
+// only: their module graph is most of this client's start-up, and a caller that passes an origin never needs it.
+const discovery = () => import('../../lense/commands/mirage.mjs');
+
 // The live runtime whose discovery record names this project (a standalone runtime or a project's portals).
 async function projectRuntimeOrigin(project) {
+  const { discoveries, miragePaths, samePath } = await discovery();
   const file = path.resolve(project);
   const owned = await discoveries(miragePaths(null, { project: file }), { probe: false });
   const urls = [
@@ -100,13 +102,31 @@ async function projectRuntimeOrigin(project) {
   return urls[0];
 }
 
-/** Connect to an existing local runtime. This never starts or stops it. */
-export async function connectRuntime({ origin, config, site, project, fetchImpl = globalThis.fetch } = {}) {
+/**
+ * Connect to an existing local runtime. This never starts or stops it. timeoutMs is the client deadline of each admin
+ * call and is inherited by createSession; 0 sets none. Starting a persona launches a runtime and is a long call, so
+ * its caller may pass a larger value or 0.
+ */
+export async function connectRuntime({
+  origin,
+  config,
+  site,
+  project,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 30000,
+} = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647)
+    throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
   let cfg;
   if (!origin && project) origin = await projectRuntimeOrigin(project);
+  let samePath;
   if (!origin) {
+    const { loadConfig } = await import('../../lense/config.mjs');
+    const { DEFAULT_PORT, discoveries, miragePaths, samePath: sameLocation } = await discovery();
+    samePath = sameLocation;
     cfg = await loadConfig({ config, site }, process.env, { checkSource: false });
     if (cfg.mirageConfig.project) {
+      const { loadProjectConfig } = await import('../lib/project-config.mjs');
       const project = await loadProjectConfig(cfg.mirageConfig.project);
       cfg.sourceDir =
         project.portals.find((item) => samePath(item.sourceDir, cfg.sourceDir))?.sourceDir ??
@@ -180,12 +200,12 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   };
   const request = async (
     route,
-    { method = 'GET', body, headers = {}, captureReport = false, timeoutMs = 30000 } = {},
+    { method = 'GET', body, headers = {}, captureReport = false, timeoutMs: requestTimeoutMs = timeoutMs } = {},
   ) => {
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647)
+    if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 0 || requestTimeoutMs > 2147483647)
       throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
     if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
-    const signal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+    const signal = requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : undefined;
     try {
       const response = await reach(`${origin}/_sim/api${route}`, {
         method,
@@ -206,10 +226,10 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
       if (captureReport && signal?.aborted)
         throw Object.assign(
           new Error(
-            `Shell capture client stopped waiting after ${timeoutMs} ms. Increase captureShell(path, { timeoutMs }) or capture-shell --timeout <milliseconds> (0 disables the timeout). The server may still be working.`,
+            `Shell capture client stopped waiting after ${requestTimeoutMs} ms. Increase captureShell(path, { timeoutMs }) or capture-shell --timeout <milliseconds> (0 disables the timeout). The server may still be working.`,
             { cause },
           ),
-          { code: 'SHELL_CAPTURE_TIMEOUT', timeoutMs },
+          { code: 'SHELL_CAPTURE_TIMEOUT', timeoutMs: requestTimeoutMs },
         );
       throw cause;
     }
@@ -319,10 +339,11 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   return Object.freeze({
     origin,
     transportDiagnostics: () => structuredClone(transportDiagnostics),
-    createSession: (options = {}) =>
-      options.personaKey || options.scenario
-        ? createPersonaSession({ ...options, origin, fetchImpl })
-        : createPortalSession({ ...options, origin, fetchImpl }),
+    createSession: (options = {}) => {
+      // Sessions accept 0 to 300000 ms; a connection outside that range leaves the session at its own default.
+      const session = { ...(timeoutMs <= 300000 ? { timeoutMs } : {}), ...options, origin, fetchImpl };
+      return options.personaKey || options.scenario ? createPersonaSession(session) : createPortalSession(session);
+    },
     personas: () => request('/personas'),
     savePersonaCatalog: (catalog, { expectedDigest } = {}) =>
       request('/persona-catalog', { method: 'PUT', body: { catalog, expectedDigest } }),

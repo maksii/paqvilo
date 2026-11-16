@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { eventLog, loopbackServer } from './shared-browser.mjs';
+import { eventLog, loopbackServer, openPortalPage } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -74,7 +74,7 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
     await answered.until(() => answered.length >= count);
     assert.equal(sent.length, count, 'one grid request per action');
   };
-  await page.goto(`http://127.0.0.1:${server.address().port}/page`);
+  await openPortalPage(page, `http://127.0.0.1:${server.address().port}/page`);
   await page.locator(".view-select [aria-label='Second']").waitFor({ state: 'attached' });
   // A deferred grid does not load until asked to.
   assert.deepEqual(posts, []);
@@ -155,7 +155,7 @@ test('create-form loading announcements end on load, cancellation and failed nav
     if (new URL(request.url()).origin !== `http://127.0.0.1:${server.address().port}`)
       foreignRequests.push(request.url());
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}/page`);
+  await openPortalPage(page, `http://127.0.0.1:${server.address().port}/page`);
   const notice = page.locator('.view-toolbar #notificationDiv');
   const modal = page.locator('.modal-form-insert');
   for (const outcome of ['load', 'cancel', 'failure']) {
@@ -305,7 +305,7 @@ test('a grid confirmation dialog is exposed to assistive technology while shown,
   const tab = await context.newPage();
   const errors = [];
   tab.on('pageerror', (error) => errors.push(error.message));
-  await tab.goto(`http://127.0.0.1:${server.address().port}/page`);
+  await openPortalPage(tab, `http://127.0.0.1:${server.address().port}/page`);
   await tab.locator("tr[data-id] button[data-toggle='dropdown']").click();
   await tab.locator('tr[data-id] a.delete-link').click();
   const confirm = tab.getByRole('dialog').getByRole('button', { name: 'Delete' });

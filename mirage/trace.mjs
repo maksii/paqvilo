@@ -289,7 +289,7 @@ function frameFilter(filters) {
 
 // Follows the trace channel; resolves after `count` printed lines, or when the stream ends (Ctrl+C or the runtime
 // stopping: one `stream ended` line on stderr).
-async function watch(client, { count, json, traceEnd, filters }) {
+async function watch(client, { count, json, traceEnd, filters }, io) {
   // The runtime validates the filters exactly as for list (InvalidTraceFilter) before the stream opens.
   if (Object.keys(filters).length) await client.trace.spans({ ...filters, pageSize: 1 });
   const matches = frameFilter(filters),
@@ -301,7 +301,7 @@ async function watch(client, { count, json, traceEnd, filters }) {
     if (json) line = JSON.stringify({ schemaVersion: 1, ok: true, command: 'watch', result: event });
     else if (traceEnd) line = traceLine(event.trace);
     else line = spanLine(event.span);
-    console.log(line);
+    io.print(line);
     if (count && ++printed >= count) unsubscribe();
   });
   process.once('SIGINT', unsubscribe);
@@ -310,11 +310,11 @@ async function watch(client, { count, json, traceEnd, filters }) {
   } finally {
     process.off('SIGINT', unsubscribe);
   }
-  if (!count || printed < count) console.error('stream ended');
+  if (!count || printed < count) io.report('stream ended');
 }
 
 // export without --json: the route's bytes as they arrive, in the chosen format.
-async function streamExport(client, filters) {
+async function streamExport(client, filters, io) {
   const response = await fetch(`${client.origin}/_sim/api/trace/export?${new URLSearchParams(filters)}`, {
     redirect: 'error',
   });
@@ -326,12 +326,15 @@ async function streamExport(client, filters) {
       response: value,
     });
   }
-  for await (const chunk of response.body) if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+  for await (const chunk of response.body) if (!io.stdout.write(chunk)) await once(io.stdout, 'drain');
 }
 
-// The action and whether the arguments were accepted, for the failure envelope.
-let command = null,
-  accepted = false;
+// The streams of one invocation: lines go to stdout (print) and stderr (report) as console.log and console.error write them.
+const invocationStreams = (stdout, stderr) => ({
+  stdout,
+  print: (line) => stdout.write(`${line}\n`),
+  report: (line) => stderr.write(`${line}\n`),
+});
 
 const SHOW_USAGE =
   'trace show needs one TRACE_ID (or a unique prefix of at least 8 characters of the id), or --latest.';
@@ -428,19 +431,20 @@ async function showTree(client, id, filters) {
   return treeOf(newest.traceId);
 }
 
-/* NOSONAR: single-pass routine, splitting it would change shared state */ async function main(argv) {
+// `progress` records the action and whether the arguments were accepted, for the failure envelope.
+/* NOSONAR: single-pass routine, splitting it would change shared state */ async function main(argv, io, progress) {
   const { values, positionals } = parseToolCommand('trace', argv, { allowPositionals: true });
-  if (values.help) return console.log(mirageToolHelp('trace').trim());
+  if (values.help) return io.print(mirageToolHelp('trace').trim());
   const [action, ...rest] = positionals;
   if (!ACTIONS.has(action)) throw usage();
-  command = action;
+  progress.command = action;
   validateTracePositionals(action, rest, values.latest);
   const filtered = FILTERS.filter((name) => values[name] !== undefined),
     change = settingsChange(values);
   validateTraceFilters(action, filtered, change, values.latest);
   validateTraceOptions(action, values);
   const filters = createTraceFilters(filtered, values);
-  accepted = true;
+  progress.accepted = true;
   const client = await connectRuntime({
     origin: values.origin,
     config: values.config,
@@ -448,55 +452,79 @@ async function showTree(client, id, filters) {
     project: values.project,
   });
   if (action === 'watch')
-    return watch(client, {
-      count: Number(values.count ?? 0),
-      json: values.json,
-      traceEnd: values['trace-end'],
-      filters,
-    });
+    return watch(
+      client,
+      { count: Number(values.count ?? 0), json: values.json, traceEnd: values['trace-end'], filters },
+      io,
+    );
   for (const name of ['format', 'limit']) if (values[name] !== undefined) filters[name] = values[name];
   // --format bundle: the activity export bundle (connectRuntime().exportBundle), one NDJSON document per line.
   if (action === 'export' && filters.format === 'bundle') {
     const { format: _format, ...bundleFilters } = filters; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const documents = await client.exportBundle(bundleFilters);
     if (values.json)
-      return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result: documents }));
-    for (const document of documents) console.log(JSON.stringify(document));
+      return io.print(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result: documents }));
+    for (const document of documents) io.print(JSON.stringify(document));
     return;
   }
-  if (action === 'export' && !values.json) return streamExport(client, filters);
+  if (action === 'export' && !values.json) return streamExport(client, filters, io);
   const result = await traceRequest(client, action, rest, filters, change);
-  if (values.json) return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result }));
-  for (const line of human(action, result, { utc: values.utc })) console.log(line);
+  if (values.json) return io.print(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result }));
+  for (const line of human(action, result, { utc: values.utc })) io.print(line);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
+/** The code, message and parameter of a failed trace command, from the runtime's error envelope when it sent one. */
+function traceFailure(error, accepted) {
+  // The runtime's own { code, message, parameter } when it answered with an error envelope; else the error itself.
+  const envelope = error.response?.error && typeof error.response.error === 'object' ? error.response.error : null;
+  // Codes the runtime or this command set (TraceNotFound, InvalidTraceFilter, RuntimeUnreachable, ...); node:util
+  // parseArgs codes and other refusals before connecting are InvalidArguments.
+  let code;
+  if (typeof error.code === 'string' && !error.code.startsWith('ERR_')) code = error.code;
+  else if (accepted) code = 'MIRAGE_FAILED';
+  else code = 'InvalidArguments';
+  // A refused filter or setting (the runtime's 400, or the same check before connecting) is a usage error.
+  const refused = error.status === 400 || error.code === 'InvalidTraceFilter';
+  return {
+    code,
+    envelope,
+    message: envelope?.message ?? error.message ?? String(error),
+    parameter: envelope?.parameter ?? error.parameter,
+    refused,
+  };
+}
+
+/** Prints a failed trace command as a JSON envelope or as text, and resolves to its exit code (2 when refused). */
+function printTraceFailure(failure, args, io, command) {
+  const { code, envelope, message, parameter, refused } = failure;
+  if (args.slice(0, args.includes('--') ? args.indexOf('--') : undefined).includes('--json'))
+    io.print(
+      JSON.stringify({
+        schemaVersion: 1,
+        ok: false,
+        command,
+        error: { code, message, ...(parameter ? { parameter } : {}) },
+      }),
+    );
+  else io.report(envelope || refused ? `${code}: ${message}` : message);
+  return refused ? 2 : 1;
+}
+
+/**
+ * Runs `paqvilo mirage trace` with these arguments and resolves to its exit code: 0, 1 for a failure, 2 for a refused
+ * filter or setting. Output goes to the given streams; the process entry below passes its own.
+ */
+export async function runTraceCommand(args, { stdout = process.stdout, stderr = process.stderr } = {}) {
+  const io = invocationStreams(stdout, stderr),
+    progress = { command: null, accepted: false };
   try {
-    await main(args);
+    await main(args, io, progress);
+    return 0;
   } catch (error) {
-    // The runtime's own { code, message, parameter } when it answered with an error envelope; else the error itself.
-    const envelope = error.response?.error && typeof error.response.error === 'object' ? error.response.error : null;
-    // Codes the runtime or this command set (TraceNotFound, InvalidTraceFilter, RuntimeUnreachable, ...); node:util
-    // parseArgs codes and other refusals before connecting are InvalidArguments.
-    let code;
-    if (typeof error.code === 'string' && !error.code.startsWith('ERR_')) code = error.code;
-    else if (accepted) code = 'MIRAGE_FAILED';
-    else code = 'InvalidArguments';
-    const message = envelope?.message ?? error.message ?? String(error);
-    const parameter = envelope?.parameter ?? error.parameter;
-    // A refused filter or setting (the runtime's 400, or the same check before connecting) is a usage error.
-    const refused = error.status === 400 || error.code === 'InvalidTraceFilter';
-    if (args.slice(0, args.includes('--') ? args.indexOf('--') : undefined).includes('--json'))
-      console.log(
-        JSON.stringify({
-          schemaVersion: 1,
-          ok: false,
-          command,
-          error: { code, message, ...(parameter ? { parameter } : {}) },
-        }),
-      );
-    else console.error(envelope || refused ? `${code}: ${message}` : message);
-    process.exitCode = refused ? 2 : 1;
+    const { command, accepted } = progress;
+    return printTraceFailure(traceFailure(error, accepted), args, io, command);
   }
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  process.exitCode = await runTraceCommand(process.argv.slice(2));

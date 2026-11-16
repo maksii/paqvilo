@@ -238,6 +238,8 @@ test('canonical model panel executes actual source controls, preserves Actions d
   await host.getByRole('button', { name: 'Local', exact: true }).waitFor();
   assert.match(await host.locator('[data-act=live]').getAttribute('title'), /off/);
   await host.locator('[data-act=live]').click();
+  // The click reaches Node through the panel binding; the redraw that reports live reload on follows the change.
+  await host.locator('[data-act=live][title^="Live reload is on"]').waitFor();
   assert.equal(f.getLive(), true);
   await host.getByRole('tab', { name: 'Explore', exact: true }).click();
   await host.getByText('x_script.js', { exact: true }).first().waitFor();
@@ -262,7 +264,11 @@ test('canonical model panel executes actual source controls, preserves Actions d
     await fs.mkdir(shots, { recursive: true });
     await page.screenshot({ path: path.join(shots, 'model-driven-canonical.png') });
   }
+  // Online switches the mode in Node and then reloads the page. The document that is open now already satisfies
+  // the waits below, so they start only after the reloaded document has arrived.
+  const reloaded = page.waitForEvent('framenavigated', { predicate: (frame) => frame === page.mainFrame() });
   await host.getByRole('button', { name: 'Online', exact: true }).click();
+  await reloaded;
   await page.waitForFunction(() => window.sourceRevision === 'same');
   await page.locator('#paqvilo-panel').waitFor();
   await page.keyboard.press('Alt+Shift+P');
@@ -300,7 +306,7 @@ test('canonical model panel executes actual source controls, preserves Actions d
     .asElement()
     .contentFrame()
     .then(async (inner) => {
-      await inner.waitForLoadState();
+      await inner.waitForURL(f.origin + '/frame');
       assert.equal(
         await inner.evaluate(() => typeof window.__paqviloModelPanelApi),
         'undefined',

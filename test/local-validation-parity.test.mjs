@@ -17,6 +17,7 @@ import {
   unpushedFiles,
   validationRepeat,
   validationSteps,
+  windowsPowerShellEnvironment,
 } from '../scripts/ci.mjs';
 import {
   CODEQL_BUNDLE,
@@ -282,6 +283,10 @@ test('repeated tests come from commits no remote branch contains, not from the w
   commit('test/pushed-next.test.mjs', 'this push');
   commit('mirage/test/also.test.mjs', 'this push too');
   assert.deepEqual(unpushedFiles(directory).sort(), ['mirage/test/also.test.mjs', 'test/pushed-next.test.mjs']);
+});
+
+test('a Windows PowerShell child runs without the caller PSModulePath, whatever its casing', () => {
+  assert.deepEqual(windowsPowerShellEnvironment({ PATH: 'p', PSModulePath: 'x', psmodulepath: 'y' }), { PATH: 'p' });
 });
 
 test('the changed-test repeat count is configured like the job count', () => {

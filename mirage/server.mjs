@@ -348,6 +348,7 @@ import {
   bootstrapVariant,
 } from './lib/platform-manifest.mjs';
 import { packEndpoints } from './lib/extensions.mjs';
+import { keepIdleConnections } from './lib/idle-connections.mjs';
 import { invokePackMutation } from './lib/pack-endpoint-writes.mjs';
 import { externalFrameOrigins, portalContentSecurityPolicy } from './lib/content-policy.mjs';
 import {
@@ -1127,6 +1128,7 @@ export async function createSimulator(options = {}) {
   const solutionMetadataOverlay = createSolutionMetadataOverlay({ appsOf: solutionApps });
   const mappedTables = createMappedTables({
     revision: () => (store.inTransaction() && !store.isUnmodifiedRead() ? null : store.dataRevision()),
+    readEpoch: () => solutionMetadataOverlay.readEpochToken(),
   });
   const modelMetadata = () => mappedTables(solutionMetadataOverlay(solutionMetadata, store.state), store.state);
   const storageAdapter = await createSimulationPersistence({
@@ -7461,9 +7463,9 @@ export async function createSimulator(options = {}) {
       .finally(() => activeRequests.delete(invocation));
     activeRequests.set(invocation, req);
   };
-  const server = http.createServer(onRequest);
-  const adminServer = http.createServer(onRequest);
-  const appsServer = http.createServer(onRequest);
+  const server = keepIdleConnections(http.createServer(onRequest));
+  const adminServer = keepIdleConnections(http.createServer(onRequest));
+  const appsServer = keepIdleConnections(http.createServer(onRequest));
   const onAdmin = (req) => adminServer.listening && req.socket.localPort === adminServer.address().port;
   const onApps = (req) => appsServer.listening && req.socket.localPort === appsServer.address().port;
   // The origin of the listener that received the request: the administration's, the apps' or the portal's.

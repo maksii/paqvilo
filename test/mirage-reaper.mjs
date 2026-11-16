@@ -8,9 +8,10 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { miragePaths, stopOwnedSessions, isAlive } from '../lense/commands/mirage.mjs';
+import { endRecordedWindowsProcess } from '../lense/process-identity.mjs';
 
 const OWNERSHIP = path.join('.paqvilo', 'mirage', 'sessions.json');
-// A CLI ends within its own deadline (the test's execFile timeout); the reaper waits slightly longer.
+// The reaper waits this long for the CLIs of an abruptly ended test process before it stops what they recorded.
 const CLI_WAIT_MS = 180_000;
 const CLI_POLL_MS = 250;
 const execute = promisify(execFile);
@@ -33,16 +34,11 @@ export async function stopRecordedRuntimes(directory) {
   for (const relative of entries.filter((entry) => entry.endsWith(OWNERSHIP))) {
     const file = path.join(directory, relative);
     const paths = miragePaths({ stateDir: path.dirname(path.dirname(file)) });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const { sessions = [] } = JSON.parse(await fs.readFile(file, 'utf8'));
-      if (!sessions.length) break;
-      // An identity that could not be read now (a slow PowerShell) is retried once.
-      const result = await stopOwnedSessions({ paths, pids: sessions.map((entry) => entry.pid) });
-      if (!result.unverified.length || attempt) {
-        left.push(...result.remaining, ...result.unverified);
-        break;
-      }
-    }
+    const { sessions = [] } = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (!sessions.length) continue;
+    // No identity read ends on elapsed time, so an unverified runtime is one a second stop would not verify either.
+    const result = await stopOwnedSessions({ paths, pids: sessions.map((entry) => entry.pid) });
+    left.push(...result.remaining, ...result.unverified);
   }
   return left;
 }
@@ -106,7 +102,8 @@ async function reap(directory) {
   // naming this unique temporary workspace on their command line can be such strays.
   const strays = await processesNaming(directory);
   for (const pid of strays) await endProcessTree(pid);
-  left.push(...(await processesNaming(directory)));
+  // Listing the processes starts a helper process on Windows: nothing was ended, so the first listing stands.
+  if (strays.length) left.push(...(await processesNaming(directory)));
   if (!left.length) await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   process.stdout.write(JSON.stringify({ reaped, strays, left }) + '\n');
 }
@@ -133,11 +130,14 @@ export async function processesNaming(text) {
     .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
 }
 
+/** Ends a stray and, on Windows, returns once it has exited: one still ending would be listed as left. */
 async function endProcessTree(pid) {
+  if (process.platform === 'win32') {
+    await endRecordedWindowsProcess(pid, null, { tree: true });
+    return;
+  }
   try {
-    if (process.platform === 'win32')
-      await execute('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true });
-    else process.kill(pid, 'SIGKILL');
+    process.kill(pid, 'SIGKILL');
   } catch {
     /* already ended */
   }

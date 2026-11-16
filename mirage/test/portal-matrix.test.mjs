@@ -555,7 +555,8 @@ function solutionTree() {
   };
 }
 
-test('matrix runs every stage for a two-portal project and checks multi-portal isolation', async (t) => {
+/** The two-portal project the matrix tests run: a standard and an enhanced export over one Solution. */
+async function matrixProject(t) {
   const root = await tree(t, {
     ...Object.fromEntries(
       Object.entries(standardExport).map(([name, content]) => [`portals/standard/${name}`, content]),
@@ -578,46 +579,56 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
       '',
     ].join('\n'),
   });
-  const out = path.join(root, 'matrix');
-  const matrix = await portalMatrix({ project: path.join(root, 'mirage.project.yml'), out, log: () => {} });
+  return { project: path.join(root, 'mirage.project.yml'), out: path.join(root, 'matrix') };
+}
+
+const assertFiles = async (out, files) => {
+  for (const file of files) assert.ok((await fs.stat(path.join(out, file))).isFile(), file);
+};
+
+/** Every portal stage of one portal. Each portal runs in a test of its own: the stages start a dozen runtimes. */
+async function portalStages(t, id) {
+  const { project, out } = await matrixProject(t);
+  const matrix = await portalMatrix({ project, out, portals: [id], skip: ['serve'], log: () => {} });
   assert.deepEqual(
     matrix.portals.map((portal) => portal.id),
-    ['std', 'enh'],
+    [id],
   );
-  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime', 'serve']);
+  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime']);
   assert.deepEqual(
     [matrix.personas, matrix.scaffoldPersonas, matrix.scaffoldProfile],
     [['anonymous'], ['anonymous', 'all-roles'], 'smoke'],
   );
-  for (const portal of matrix.portals) {
-    assert.deepEqual(portal.errors, [], `${portal.id}: ${JSON.stringify(portal.errors)}`);
-    assert.equal(portal.origin, 'https://reference.example.test');
-    assert.ok(portal.import.comparison.rows.length > 20);
-    assert.equal(portal.bootstrap.layers, 1);
-    assert.deepEqual(
-      portal.sweep.runs.map((run) => run.persona),
-      ['anonymous'],
-    );
-    assert.deepEqual(
-      portal.scaffold.runs.map((run) => run.persona),
-      ['scaffold anonymous', 'scaffold all-roles'],
-    );
-    assert.ok(portal.scaffold.personas >= 1, JSON.stringify(portal.scaffold));
-    assert.deepEqual(portal.scaffold.coverage.roles, ['Authenticated Users']);
-    assert.ok(portal.scaffold.startMs > 0);
-    assert.ok(portal.runtime.coldStartMs > 0 && portal.runtime.warmStartMs > 0);
-    assert.ok(portal.runtime.stateBytesAfterStart > 0);
-    assert.equal(portal.runtime.admin, 200);
-    assert.equal(portal.runtime.webApiProbe.tables, 1);
-    assert.equal(portal.runtime.webApiProbeAllRoles, undefined);
-  }
-  const [standard, enhanced] = matrix.portals;
+  assert.equal(matrix.serve, undefined);
+  const [portal] = matrix.portals;
+  assert.deepEqual(portal.errors, [], `${portal.id}: ${JSON.stringify(portal.errors)}`);
+  assert.equal(portal.origin, 'https://reference.example.test');
+  assert.ok(portal.import.comparison.rows.length > 20);
+  assert.equal(portal.bootstrap.layers, 1);
+  assert.deepEqual(
+    portal.sweep.runs.map((run) => run.persona),
+    ['anonymous'],
+  );
+  assert.deepEqual(
+    portal.scaffold.runs.map((run) => run.persona),
+    ['scaffold anonymous', 'scaffold all-roles'],
+  );
+  assert.ok(portal.scaffold.personas >= 1, JSON.stringify(portal.scaffold));
+  assert.deepEqual(portal.scaffold.coverage.roles, ['Authenticated Users']);
+  assert.ok(portal.scaffold.startMs > 0);
+  assert.ok(portal.runtime.coldStartMs > 0 && portal.runtime.warmStartMs > 0);
+  assert.ok(portal.runtime.stateBytesAfterStart > 0);
+  assert.equal(portal.runtime.admin, 200);
+  assert.equal(portal.runtime.webApiProbe.tables, 1);
+  assert.equal(portal.runtime.webApiProbeAllRoles, undefined);
+  await assertFiles(out, ['matrix.json', 'matrix.md', `${id}/sweep.json`, `${id}/scaffold.json`, `${id}/runtime.json`]);
+  assert.match(await fs.readFile(path.join(out, 'matrix.md'), 'utf8'), /## Scaffold data/);
+  return { portal, out };
+}
+
+test('matrix runs every portal stage for the standard portal of a two-portal project', async (t) => {
+  const { portal: standard, out } = await portalStages(t, 'std');
   assert.equal(standard.import.format, 'standard');
-  assert.equal(enhanced.import.format, 'enhanced');
-  assert.deepEqual(standard.liquid.missingIncludes.map(({ name, classification }) => [name, classification]).sort(), [
-    ['Absent Template', 'absent-from-export'],
-    ['Old', 'inactive-in-export'],
-  ]);
   // Contact read is granted to Authenticated Users only: anonymous 403, the signed-in coverage contact 200.
   assert.equal(standard.runtime.webApiProbe.results[0].status, 403);
   assert.equal(standard.scaffold.webApiProbe.results[0].status, 403);
@@ -631,6 +642,35 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
   assert.equal(work('scaffold anonymous'), 302);
   assert.equal(work('scaffold all-roles'), 200);
   assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
+});
+
+test('matrix runs every portal stage for the enhanced portal of a two-portal project', async (t) => {
+  const { portal: enhanced } = await portalStages(t, 'enh');
+  assert.equal(enhanced.import.format, 'enhanced');
+});
+
+test('matrix serves a two-portal project after its source stages and checks multi-portal isolation', async (t) => {
+  const { project, out } = await matrixProject(t);
+  const matrix = await portalMatrix({ project, out, skip: ['sweep', 'scaffold', 'runtime'], log: () => {} });
+  assert.deepEqual(
+    matrix.portals.map((portal) => portal.id),
+    ['std', 'enh'],
+  );
+  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'serve']);
+  assert.deepEqual(matrix.personas, ['anonymous']);
+  for (const portal of matrix.portals) {
+    assert.deepEqual(portal.errors, [], `${portal.id}: ${JSON.stringify(portal.errors)}`);
+    assert.equal(portal.origin, 'https://reference.example.test');
+    assert.ok(portal.import.comparison.rows.length > 20);
+    assert.equal(portal.bootstrap.layers, 1);
+  }
+  const [standard, enhanced] = matrix.portals;
+  assert.equal(standard.import.format, 'standard');
+  assert.equal(enhanced.import.format, 'enhanced');
+  assert.deepEqual(standard.liquid.missingIncludes.map(({ name, classification }) => [name, classification]).sort(), [
+    ['Absent Template', 'absent-from-export'],
+    ['Old', 'inactive-in-export'],
+  ]);
   assert.deepEqual(
     matrix.serve.checks.filter((item) => !item.passed),
     [],
@@ -640,17 +680,8 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
     ['std', 'enh'],
   );
   assert.ok(matrix.serve.stop.graceful);
-  for (const file of [
-    'matrix.json',
-    'matrix.md',
-    'std/import.json',
-    'std/sweep.json',
-    'std/scaffold.json',
-    'enh/runtime.json',
-  ])
-    assert.ok((await fs.stat(path.join(out, file))).isFile(), file);
+  await assertFiles(out, ['matrix.json', 'matrix.md', 'std/import.json', 'enh/import.json']);
   const markdown = await fs.readFile(path.join(out, 'matrix.md'), 'utf8');
-  assert.match(markdown, /## Scaffold data/);
   assert.match(markdown, /## Multi-portal serve/);
   assert.match(markdown, /\| std \| enh \|/);
 });

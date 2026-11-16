@@ -1,10 +1,13 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOptions } from '../cli-options.mjs';
-import { prepareProject } from '../project-scaffold.mjs';
-import { checkProject, readyProject } from '../project-check.mjs';
-import { refreshEditor } from '../project-editor.mjs';
 import { choose } from '../prompt.mjs';
+
+// Loaded by the operation that needs them: each brings in the catalogue schema and with it every Mirage setting parser
+// (some 300 modules), which help and argument errors never use.
+const scaffold = () => import('../project-scaffold.mjs');
+const check = () => import('../project-check.mjs');
+const editor = () => import('../project-editor.mjs');
 
 export const INIT_HELP = `Usage: paqvilo init [dir] [options]
 
@@ -129,7 +132,9 @@ async function generateInitProject(directory, values) {
       'msedge',
     );
   try {
-    return await prepareProject(directory, {
+    return await (
+      await scaffold()
+    ).prepareProject(directory, {
       name: values.name,
       sites: values.site,
       packs: values.pack,
@@ -182,10 +187,15 @@ export async function runInit(args = process.argv.slice(2)) {
   validateInitOperations(values);
   const directory = path.resolve(positionals[0] ?? '.');
   let report;
-  if (values.check) report = checkProject(directory, { config: values.config });
-  else if (values.ready) report = await readyProject(directory, { config: values.config });
+  if (values.check) report = (await check()).checkProject(directory, { config: values.config });
+  else if (values.ready) report = await (await check()).readyProject(directory, { config: values.config });
   else if (values['refresh-editor'])
-    report = await refreshEditor(directory, { config: values.config, workspaceOnly: values['workspace-only'] });
+    report = await (
+      await editor()
+    ).refreshEditor(directory, {
+      config: values.config,
+      workspaceOnly: values['workspace-only'],
+    });
   else report = await generateInitProject(directory, values);
   if (values.json) console.log(JSON.stringify(report, null, 2));
   else if (values.ready) printReadyReport(report);

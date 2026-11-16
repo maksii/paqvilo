@@ -304,8 +304,9 @@ async function closeLaunchedBrowser(context, stopKeeping, previousWindow, guardM
       }
     }
   } finally {
-    await context.close().catch((error) => {
-      if (!closedOnItsOwn(context, error)) throw error;
+    // A browser that stopped answering cannot hold the close: it ends at the guard like the steps before it.
+    await bounded(context.close(), guardMs).catch((error) => {
+      if (!closedOnItsOwn(context, error)) throw stepHangGuardError(error, 'Closing the browser', guardMs);
     });
   }
 }
@@ -640,7 +641,8 @@ const STYLE_TIMEOUT = 5000;
 
 // Reload through an explicit GET. Chromium's reload() can repeat the POST that produced a
 // form result, so a local save must never use it to replay the user's last submission.
-async function refreshDocument(page, signal) {
+// It waits only until the new document arrives: a page held at a breakpoint would never finish loading.
+export async function refreshDocument(page, signal) {
   if (signal?.aborted) return false;
   try {
     await bounded(

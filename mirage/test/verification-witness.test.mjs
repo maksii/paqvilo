@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own verification witness API; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -138,7 +139,7 @@ async function fixture(t) {
     port: 0,
   });
   ownedFixture(t).add(() => app.close());
-  return { app, runtime: await connectRuntime({ origin: app.url }) };
+  return { app, runtime: await connectRuntime({ origin: app.url, timeoutMs: 0 }) };
 }
 
 test('real witness route binds cookie-isolated visitors, remains anonymous without cookie and does not run queries/plugins', async (t) => {

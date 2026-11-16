@@ -8,7 +8,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
 import { runPluginPhase, pluginPhaseRequiresCheckpoint } from '../lib/exported-plugins.mjs';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
 const member = { contactId: 'own-contact', roles: ['Member'] };
@@ -214,8 +214,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
     persistence: { journalThresholdBytes: 0 },
     watch: false,
   };
-  let app = await createSimulator({ ...options, initial: fixtureApp.store.snapshot() });
-  ownedFixture(t).add(() => app.close());
+  let app = ownedClose(t, await createSimulator({ ...options, initial: fixtureApp.store.snapshot() }));
   const csrf = app.csrf,
     rowId = pluginId(80);
   const admin = (route, body) =>
@@ -256,7 +255,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
   assert.ok(audit.items.every((entry) => entry.saveMs >= 0));
   const expected = structuredClone(app.store.state.tables.fx_widget);
   await app.close();
-  app = await createSimulator(options);
+  app = ownedClose(t, await createSimulator(options));
   assert.deepEqual(app.store.state.tables.fx_widget, expected);
   assert.equal(expected[0].fx_title, 'mock');
   assert.equal(expected[0].fx_note, 'mock note');

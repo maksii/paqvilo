@@ -8,10 +8,15 @@ import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
-import { ensureVerifiedArchive } from './verified-download.mjs';
+import { ensureVerifiedArchive, extractZipOnWindows } from './verified-download.mjs';
 import { acquireCiWorkspaceLease, assertOwnedCiState, leaseAcquiredHere } from './ci-workspace-lease.mjs';
 import { npmCliPath } from './npm-cli.mjs';
-import { isAlive, processIdentity, processIdentityAsync } from '../lense/process-identity.mjs';
+import {
+  endRecordedWindowsProcess,
+  isAlive,
+  processIdentity,
+  processIdentityAsync,
+} from '../lense/process-identity.mjs';
 import { stopCodeAppDevServer } from '../lense/code-app-dev-stop.mjs';
 import { guardShutdownSignals } from '../lense/signal-forwarding.mjs';
 
@@ -93,19 +98,7 @@ async function clrFixture() {
     // Retire only the checked owned tree, including stale nested links, before extraction.
     fs.rmSync(destination, { recursive: true, force: true });
     fs.mkdirSync(destination);
-    // Expand-Archive requires .zip; all arguments are fixed paths under this checkout.
-    execute(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        'Expand-Archive -LiteralPath $env:PAQVILO_CI_ARCHIVE -DestinationPath $env:PAQVILO_CI_DESTINATION -Force',
-      ],
-      {
-        env: { ...process.env, PAQVILO_CI_ARCHIVE: archive, PAQVILO_CI_DESTINATION: destination },
-      },
-    );
+    extractZipOnWindows(archive, destination);
   }
   if (!fs.existsSync(sdk)) throw new Error('CLR SDK fixture extraction did not produce Microsoft.Xrm.Sdk.dll.');
   verifyClrSdk(sdk);
@@ -540,6 +533,13 @@ export const localBrowserChannels = (platform = process.platform) =>
   platform === 'win32' ? ['chromium', 'msedge'] : ['chromium'];
 
 /**
+ * The environment of a Windows PowerShell child without the caller's PSModulePath: PowerShell then builds its own
+ * default module path, instead of loading modules from a path that a PowerShell 7 caller set.
+ */
+export const windowsPowerShellEnvironment = (env) =>
+  Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'));
+
+/**
  * Hosted Windows runners expose TEMP through an 8.3 alias (C:\Users\RUNNER~1\...), so os.tmpdir() differs from its
  * real path there. Local Windows validation runs under the short alias of a long-named directory to reproduce that;
  * a volume without 8.3 names keeps the long path.
@@ -556,7 +556,11 @@ export function runnerTemporaryDirectory({ platform = process.platform, env = pr
       '-Command',
       '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:PAQ_CI_TEMPORARY).ShortPath',
     ],
-    { env: { ...process.env, PAQ_CI_TEMPORARY: directory }, encoding: 'utf8', windowsHide: true },
+    {
+      env: { ...windowsPowerShellEnvironment(process.env), PAQ_CI_TEMPORARY: directory },
+      encoding: 'utf8',
+      windowsHide: true,
+    },
   );
   const short = result.status === 0 ? result.stdout.trim() : '';
   return short || directory;
@@ -1095,9 +1099,18 @@ function exitedPromise(pid) {
 /** Ends the lane trees that an interrupted earlier run of this checkout left running. A record ends only while its PID
  * still has the start identity recorded for it; a PID that now belongs to something else is dropped, not signalled.
  * Lanes that this process still runs are left alone. */
-export async function reapLanes(runs, { identityOf = processIdentity, stopTree = endLaneTree } = {}) {
+export async function reapLanes(
+  runs,
+  {
+    identityOf = processIdentity,
+    stopTree = endLaneTree,
+    endRecorded = endRecordedWindowsProcess,
+    platform = process.platform,
+  } = {},
+) {
   for (const file of laneRecordFiles(runs))
-    for (const record of laneRecords(file)) await reapLane(file, record, identityOf, stopTree);
+    for (const record of laneRecords(file))
+      await reapLane(file, record, { identityOf, stopTree, endRecorded, platform });
 }
 
 /** The lane record files of a runs folder: its own, and one per run folder. */
@@ -1111,7 +1124,7 @@ function laneRecordFiles(runs) {
 /** Ends one recorded lane tree when its PID still has the recorded start identity. Any other record is dropped without
  * signalling its PID: a record without an identity, a root that has already ended (its descendants cannot be identified
  * from the record) and a PID that now has another start identity. */
-async function reapLane(file, { pid, identity, label }, identityOf, stopTree) {
+async function reapLane(file, { pid, identity, label }, { identityOf, stopTree, endRecorded, platform }) {
   if (liveLanes.has(pid)) return;
   if (typeof identity !== 'string') {
     console.log(`[ci] lane record "${label}" (pid ${pid}) has no start identity; its process is not ended`);
@@ -1123,6 +1136,10 @@ async function reapLane(file, { pid, identity, label }, identityOf, stopTree) {
       `[ci] lane "${label}" (pid ${pid}) left by an earlier run has already ended; any descendants it left running cannot be identified from its record`,
     );
     forgetLane(file, pid);
+    return;
+  }
+  if (platform === 'win32' && identityOf === processIdentity && stopTree === endLaneTree) {
+    await reapWindowsLane(file, pid, identity, label, endRecorded);
     return;
   }
   if (identityOf(pid) !== identity) {
@@ -1137,6 +1154,23 @@ async function reapLane(file, { pid, identity, label }, identityOf, stopTree) {
   } catch (error) {
     console.log(
       `[ci] lane "${label}" (pid ${pid}) left running by an earlier run did not end (${error.message}); the next run retries it.`,
+    );
+  }
+}
+
+/** Windows marks a terminated process as exited before it closes the handles it held, such as a listening port. A lane
+ * is therefore ended through its held process handle, which is signalled only once those handles are closed. */
+async function reapWindowsLane(file, pid, identity, label, endRecorded) {
+  const answer = await endRecorded(pid, identity, { tree: true });
+  if (answer === 'ended' || answer === 'gone') {
+    console.log(`[ci] ended lane "${label}" (pid ${pid}) left running by an earlier run`);
+    forgetLane(file, pid);
+  } else if (answer === 'other') {
+    console.log(`[ci] lane record "${label}" (pid ${pid}) names a process that has since changed; it is not ended`);
+    forgetLane(file, pid);
+  } else {
+    console.log(
+      `[ci] lane "${label}" (pid ${pid}) left running by an earlier run did not end (${answer}); the next run retries it.`,
     );
   }
 }

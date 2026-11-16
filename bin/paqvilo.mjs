@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { parseOptions } from '../lense/cli-options.mjs';
 import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
 import { parseToolHelp } from '../mirage/tool-options.mjs';
-import { forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
+import { exitOnUnhandledTermination, exitStatus, forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
 
 const HELP = `paqvilo — Power Platform source development
 
@@ -49,6 +49,7 @@ Review declared Power Platform sources locally, including standalone Dataverse p
 
 Analysis does not run builds, project modules, native tools, flows or live requests.
 See docs/static-analysis.md for supported source formats and evidence boundaries.`;
+const LENSE_CLI = '../lense/cli.mjs';
 const argv = process.argv.slice(2);
 const [product, ...args] = argv;
 // A flag after the option terminator is a positional value, never a request for help/JSON.
@@ -62,11 +63,6 @@ function failure(error, code, label = 'paqvilo', items = args) {
 }
 // A repeated single-value option is an invalid_argument whatever the command's fallback code is.
 const argumentFailureCode = (error, fallback) => (error.code === 'invalid_argument' ? error.code : fallback);
-const exitStatus = (code, signal) => {
-  if (code != null) return code;
-  if (signal === 'SIGINT') return 130;
-  return signal === 'SIGTERM' ? 143 : 1;
-};
 if (['--version', '-v', '--help', '-h'].includes(product)) {
   try {
     const { values } = parseArgs({
@@ -178,16 +174,16 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     program = '../lense/dataverse/cli.mjs';
     forwarded = args;
   } else if (product === 'analyze') {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = ['analyze', ...args];
   } else if (product === 'lense') {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = args;
   } else if (args[0] === 'demo') {
     program = '../lense/commands/demo.mjs';
     forwarded = args.slice(1);
   } else if (lifecycle.has(args[0])) {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = ['mirage', ...args];
   } else if (tools.has(args[0])) {
     program = `../mirage/${args[0]}.mjs`;
@@ -201,19 +197,29 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
       helpSupplement +=
         '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).';
   }
-  const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
-    stdio: 'inherit',
-    windowsHide: true,
-  });
-  child.on('error', (error) => {
-    failure(error, 'SPAWN_FAILED');
-  });
-  // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
-  const stopForwarding = forwardTerminationSignals(child);
-  child.on('exit', (code, signal) => {
-    stopForwarding();
-    process.exitCode = exitStatus(code, signal);
-    // A failed help parse must not prefix a JSON error with human-readable help.
-    if (code === 0 && helpSupplement) console.log(helpSupplement);
-  });
+  if (program === LENSE_CLI) {
+    // The lense command line (lense, analyze and the Mirage lifecycle) runs in this process: a second Node process
+    // only to relay its arguments, output and exit code cost every command a process start.
+    process.argv.splice(1, Infinity, fileURLToPath(new URL(program, import.meta.url)), ...forwarded);
+    // A signal that ends the command when nothing handles it ends it with the exit code of that signal, as the
+    // relaying process reported it. Windows reports a console interrupt by its own exit code, in one process as in two.
+    exitOnUnhandledTermination();
+    await import(program);
+  } else {
+    const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.on('error', (error) => {
+      failure(error, 'SPAWN_FAILED');
+    });
+    // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
+    const stopForwarding = forwardTerminationSignals(child);
+    child.on('exit', (code, signal) => {
+      stopForwarding();
+      process.exitCode = exitStatus(code, signal);
+      // A failed help parse must not prefix a JSON error with human-readable help.
+      if (code === 0 && helpSupplement) console.log(helpSupplement);
+    });
+  }
 }

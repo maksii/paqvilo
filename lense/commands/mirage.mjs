@@ -14,18 +14,65 @@ import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
-import { readStartupPhases } from '../startup-progress.mjs';
+import { RUNTIME_ALIVE, RUNTIME_READY } from '../startup-progress.mjs';
+import { START_CHANNEL_ENV, openStartChannel } from '../start-channel.mjs';
 import { CODE_APP_STARTUP_CANCELLED } from '../code-app-dev-servers.mjs';
 import { readLocalFile } from '../local-file.mjs';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../stop-command.mjs';
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
 import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
 import { guardShutdownSignals } from '../signal-forwarding.mjs';
-// Startup keeps its heartbeat and cancellation responsive while Windows resolves process ownership: it reads
-// identities through the awaited processIdentityAsync.
-import { isAlive, processIdentity, processIdentityAsync } from '../process-identity.mjs';
+// Every identity read of a recorded PID is awaited, so a start keeps its heartbeat and cancellation responsive.
+import {
+  endRecordedWindowsProcess,
+  isAlive,
+  newStartIdentity,
+  processIdentity,
+  processIdentityAsync,
+  recordedIdentityNow,
+  START_TOKEN_OPTION,
+  startTokenOf,
+} from '../process-identity.mjs';
 
 export { isAlive, processIdentity, processIdentityAsync };
+
+/**
+ * The identity of the process that holds a recorded PID now, for comparison with the identity `recorded` for it
+ * (recordedIdentityNow): a start token costs a pipe listing, an operating-system start time a read of the process.
+ * The default `identityOf` of start, stop and status; a caller that injects its own reader gets the same arguments.
+ */
+const recordedIdentity = (pid, { signal, recorded } = {}) => recordedIdentityNow(pid, recorded, { signal });
+
+/**
+ * How the lifecycle commands reach the operating system's processes, as one object a caller may replace in part:
+ * `spawnRuntime` starts a runtime, `identityOf` reads the identity of the process that holds a recorded PID,
+ * `alive` says whether a PID is running, `kill` signals one, `openChannel` opens the endpoint a starting runtime
+ * announces itself on, `portAvailable` says whether a loopback port can be bound, and `commandHint` formats the
+ * commands a report advertises. The default export `mirage`
+ * takes it as its fourth argument and hands it to every start, stop and status it performs, so the selection, reuse
+ * and hint logic of a command runs unchanged against runtimes that are not operating-system processes.
+ */
+const hostOf = (host = {}) => {
+  const processes = Object.fromEntries(
+    ['identityOf', 'alive', 'kill'].filter((key) => host[key] !== undefined).map((key) => [key, host[key]]),
+  );
+  const launch = Object.fromEntries(
+    ['spawnRuntime', 'openChannel', 'portAvailable']
+      .filter((key) => host[key] !== undefined)
+      .map((key) => [key, host[key]]),
+  );
+  return {
+    alive: host.alive ?? isAlive,
+    commandHint: host.commandHint ?? mirageCommandHint,
+    start: (cfg, args, options) => start(cfg, args, { ...options, ...processes, ...launch }),
+    stop: (options) => stopOwnedSessions({ ...options, ...processes }),
+    status: (paths, options) => {
+      const { kill: ignoredKill, ...read } = processes; // NOSONAR: binding is excluded from the rest object
+      return mirageStatus(paths, { ...options, ...read });
+    },
+  };
+};
+const SYSTEM_HOST = hostOf();
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -178,49 +225,6 @@ const loopbackUrl = (url) => {
     return false;
   }
 };
-
-/**
- * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
- * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
- * @returns {Map<number, string|null>}
- */
-export function processIdentities(pids) {
-  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
-  const identities = new Map();
-  if (process.platform === 'win32' && unique.length > 1) readWindowsProcessIdentities(unique, identities);
-  for (const pid of unique) if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
-  return identities;
-}
-
-function readWindowsProcessIdentities(unique, identities) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const result = spawnSync(
-      'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        // Each PID is read on its own: a missing or inaccessible process yields an empty identity.
-        `$ErrorActionPreference = 'Stop'; foreach ($id in ${unique.join(',')}) { try { "$id=$((Get-Process -Id $id).StartTime.ToUniversalTime().Ticks)" } catch { "$id=" } }`,
-      ],
-      { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
-    );
-    if (result.error || result.signal != null) {
-      // Three timed-out reads leave every identity unread, as processIdentity() does.
-      if (attempt === 2) for (const pid of unique) identities.set(pid, null);
-      continue;
-    }
-    storeWindowsProcessIdentities(result.stdout, unique, identities);
-    break;
-  }
-}
-
-function storeWindowsProcessIdentities(stdout, unique, identities) {
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^(\d+)=(\d*)$/.exec(line.trim());
-    if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
-  }
-}
 
 const UNIX_EPOCH_TICKS = 621_355_968_000_000_000n; // .NET ticks (100 ns since 0001-01-01) at 1970-01-01
 // Candidate kernel clock tick rates (USER_HZ); the one used is confirmed against this process's own start time.
@@ -747,55 +751,85 @@ async function discoveryRecords(paths, { signal } = {}) {
   return records;
 }
 
-async function readRuntime(url, fallbackSite = null, { signal, timeout = 2500 } = {}) {
+/**
+ * What a status probe showed. 'answered': the runtime described itself. 'refused': it answered that it is not ready
+ * (an error status or an unreadable body). 'no-answer': nothing came back, within the probe's limit or at all — the
+ * runtime may be busy, so this says nothing about its state. 'not-probed': no loopback address to ask.
+ */
+const PROBE_ANSWERED = 'answered',
+  PROBE_REFUSED = 'refused',
+  PROBE_NO_ANSWER = 'no-answer',
+  PROBE_NOT_PROBED = 'not-probed';
+
+// timeout null leaves the wait to the caller's signal: for a caller that has observed the runtime ready.
+async function readRuntime(url, fallbackSite = null, options = {}) {
+  return (await probeRuntime(url, fallbackSite, options)).runtime;
+}
+
+/** The fields of an answered status document that a probe keeps; `data` is the parsed body of the status read. */
+function answeredRuntime(data, fallbackSite) {
+  const status = data?.status ?? data ?? {};
+  return {
+    site: status.site ?? fallbackSite,
+    pageCount: status.pageCount ?? 0,
+    sourceFingerprint: status.sourceFingerprint ?? null,
+    revision: status.revision ?? null,
+    // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
+    liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
+    platformStyles: status.platformStyles ?? { mode: 'placeholder' },
+    startupPreset: status.startupPreset ?? null,
+    observed: status.observed ?? null,
+    runtime: status.runtime ?? { kind: 'power-pages' },
+    capabilities: status.capabilities ?? null,
+    links: status.links ?? null,
+    simulation: status.simulation ?? null,
+  };
+}
+
+/** The signal that ends the status reads of one probe: the caller's, and the probe's own limit unless `timeout` is null. */
+function probeSignal(signal, timeout) {
+  const limits = [signal, timeout == null ? null : AbortSignal.timeout(timeout)].filter(Boolean);
+  return limits.length ? AbortSignal.any(limits) : undefined;
+}
+
+async function probeRuntime(url, fallbackSite = null, { signal, timeout = 2500 } = {}) {
   signal?.throwIfAborted();
-  if (!url || !loopbackUrl(url)) return null;
+  const outcome = (probe, runtime = null) => ({ probe, runtime });
+  if (!url || !loopbackUrl(url)) return outcome(PROBE_NOT_PROBED);
+  const readSignal = probeSignal(signal, timeout);
   // The light status endpoint first; older runtimes answer 404 there and expose the state summary.
   for (const pathname of ['/_sim/api/status', '/_sim/api/state?summary=1', '/__sim/api/state?summary=1']) {
     let response;
     try {
-      response = await fetch(new URL(pathname, url), {
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
-      });
+      response = await fetch(new URL(pathname, url), { signal: readSignal });
     } catch {
       signal?.throwIfAborted();
-      return null;
+      return outcome(PROBE_NO_ANSWER);
     }
     if (response.status === 404) continue;
-    if (!response.ok) return null;
+    if (!response.ok) return outcome(PROBE_REFUSED);
     try {
-      const data = await response.json();
-      const status = data?.status ?? data ?? {};
-      return {
-        site: status.site ?? fallbackSite,
-        pageCount: status.pageCount ?? 0,
-        sourceFingerprint: status.sourceFingerprint ?? null,
-        revision: status.revision ?? null,
-        // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
-        liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
-        platformStyles: status.platformStyles ?? { mode: 'placeholder' },
-        startupPreset: status.startupPreset ?? null,
-        observed: status.observed ?? null,
-        runtime: status.runtime ?? { kind: 'power-pages' },
-        capabilities: status.capabilities ?? null,
-        links: status.links ?? null,
-        simulation: status.simulation ?? null,
-      };
-    } catch {
+      return outcome(PROBE_ANSWERED, answeredRuntime(await response.json(), fallbackSite));
+    } catch (error) {
       signal?.throwIfAborted();
-      return null;
+      // A body that did not arrive in time is no answer; one that is not a status document is a refusal.
+      return outcome(error?.name === 'SyntaxError' ? PROBE_REFUSED : PROBE_NO_ANSWER);
     }
   }
-  return null;
+  return outcome(PROBE_REFUSED);
 }
 
-/** Discovered Mirage portals; `probe` asks each live process whether its runtime answers. */
-export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal } = {}) {
+/**
+ * Discovered Mirage portals; `probe` asks each live process whether its runtime answers. `ready` is true for a runtime
+ * that answered; `probe` says what the question showed (see probeRuntime), so a caller can tell a runtime that gave
+ * no answer in time from one that is not ready.
+ */
+export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal, probeTimeout, alive = isAlive } = {}) {
   const sessions = [];
   for (const { record, file } of await discoveryRecords(paths, { signal })) {
     signal?.throwIfAborted();
-    const processAlive = isAlive(record.pid);
-    if (!processAlive && !isAlive(record.pid)) {
+    const processAlive = alive(record.pid);
+    if (!processAlive) {
       await fs.rm(file, { force: true }).catch(() => {});
       continue;
     }
@@ -803,21 +837,40 @@ export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal 
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
       signal?.throwIfAborted();
-      const runtime = processAlive && probe ? await readRuntime(entry.url, entry.id ?? null, { signal }) : null;
-      sessions.push({ ...entry, discovery: file, processAlive, ready: Boolean(runtime), runtime });
+      const asked =
+        processAlive && probe
+          ? await probeRuntime(entry.url, entry.id ?? null, { signal, timeout: probeTimeout })
+          : { probe: PROBE_NOT_PROBED, runtime: null };
+      sessions.push({
+        ...entry,
+        discovery: file,
+        processAlive,
+        ready: Boolean(asked.runtime),
+        probe: asked.probe,
+        runtime: asked.runtime,
+      });
     }
   }
   return sessions.sort((a, b) => a.pid - b.pid);
 }
 
-async function requestShutdown(url) {
+const anySignal = (...signals) => {
+  const list = signals.filter(Boolean);
+  return list.length ? AbortSignal.any(list) : undefined;
+};
+
+/**
+ * Asks the runtime at `url` to shut down. There is no elapsed limit: a runtime that answers late under load still
+ * stops gracefully instead of being signalled, and the caller's `signal` or interrupt ends the wait.
+ */
+async function requestShutdown(url, { signal } = {}) {
   if (!loopbackUrl(url)) return false;
   try {
     let prefix = '/_sim/api';
-    let response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal: AbortSignal.timeout(5000) });
+    let response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal });
     if (response.status === 404) {
       prefix = '/__sim/api';
-      response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal: AbortSignal.timeout(5000) });
+      response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal });
     }
     if (!response.ok) return false;
     const state = await response.json();
@@ -825,7 +878,7 @@ async function requestShutdown(url) {
     const stopped = await fetch(new URL(`${prefix}/shutdown`, url), {
       method: 'POST',
       headers: { 'x-sim-csrf': state.csrf },
-      signal: AbortSignal.timeout(2500),
+      signal,
     });
     return stopped.status === 202;
   } catch {
@@ -836,7 +889,9 @@ async function requestShutdown(url) {
 /**
  * Stops toolkit-owned Mirage processes selected by portal source folder or PID. An entry is only
  * acted on while its PID still has the recorded start identity; entries of exited processes (or of a
- * reused PID) are pruned, and discovery files of exited processes are removed.
+ * reused PID) are pruned, and discovery files of exited processes are removed. An acknowledged shutdown is
+ * waited for until the runtime exits; `interrupt` (Ctrl+C) or `signal` ends the wait; after an interrupt a runtime
+ * still running gets the grace before it is ended.
  */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function stopOwnedSessions({
   paths = DEFAULT_PATHS,
@@ -844,8 +899,11 @@ async function requestShutdown(url) {
   sourceDirs = null,
   pids = null,
   deadline = STOP_DEADLINE,
-  identityOf = processIdentity,
+  identityOf = recordedIdentity,
   alive = isAlive,
+  kill = process.kill,
+  signal,
+  interrupt,
 } = {}) {
   const folders = sourceDirs ?? (sourceDir ? [sourceDir] : []);
   const owned = await ownedSessions(paths);
@@ -853,11 +911,31 @@ async function requestShutdown(url) {
   const stale = [],
     targets = [],
     unverified = [];
-  const known =
-    identityOf === processIdentity
-      ? processIdentities(owned.filter((entry) => alive(entry.pid)).map((entry) => entry.pid))
-      : null;
-  classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified });
+  const current = (entry) => identityOf(entry.pid, { signal, recorded: entry.processIdentity });
+  await classifyOwnedTargets(owned, { alive, current, folders, pids, stale, targets, unverified });
+  // A runtime that did not acknowledge its shutdown, or did not exit after it, is ended: only while its PID still has
+  // the recorded identity. Windows ends a process at once on either signal and reads it as exited before its listening
+  // port is released, so there one helper checks the identity, ends the process and waits for the observed exit
+  // (endRecordedWindowsProcess); a graceful runtime closes its listeners itself before it exits.
+  const ended = new Set(),
+    foreign = new Set();
+  const force = async (entry, name) => {
+    if (process.platform === 'win32' && identityOf === recordedIdentity) {
+      // Another program holds the PID: asking again would start the helper for the same answer.
+      if (foreign.has(entry)) return;
+      const answer = await endRecordedWindowsProcess(entry.pid, entry.processIdentity, { signal });
+      if (answer === 'ended' || answer === 'gone') ended.add(entry);
+      if (answer === 'other') foreign.add(entry);
+      return;
+    }
+    if ((await current(entry)) !== entry.processIdentity) return;
+    try {
+      kill(entry.pid, name);
+      if (name === 'SIGKILL') ended.add(entry);
+    } catch {
+      /* already stopped */
+    }
+  };
   const results = [];
   for (const entry of targets) {
     const record = records.find((item) => item.record.pid === entry.pid)?.record;
@@ -868,37 +946,36 @@ async function requestShutdown(url) {
       ),
     ];
     let graceful = false;
-    for (const url of urls) if (!graceful) graceful = await requestShutdown(url);
-    if (!graceful && identityOf(entry.pid) === entry.processIdentity) {
-      try {
-        process.kill(entry.pid, 'SIGTERM');
-      } catch {
-        /* already stopped */
-      }
-    }
+    for (const url of urls)
+      if (!graceful) graceful = await requestShutdown(url, { signal: anySignal(signal, interrupt) });
+    if (!graceful) await force(entry, 'SIGTERM');
     results.push({ entry, graceful });
   }
-  const waitForExit = async (ms) => {
-    const end = Date.now() + ms;
-    while (Date.now() < end && targets.some((entry) => alive(entry.pid))) await sleep(100);
-  };
-  await waitForExit(deadline);
-  for (const entry of targets) {
-    // POSIX signals can be handled; force only the process that still has the recorded identity.
-    if (alive(entry.pid) && identityOf(entry.pid) === entry.processIdentity) {
-      try {
-        process.kill(entry.pid, 'SIGKILL');
-      } catch {
-        /* already stopped */
-      }
-    }
+  // A runtime that acknowledged its shutdown is waited for until it exits; one that did not gets `deadline` to exit
+  // by itself. After that the runtime is ended, never reported on elapsed time alone.
+  const acked = new Set(results.filter((item) => item.graceful).map((item) => item.entry));
+  let graceEnd = Date.now() + deadline;
+  // Ctrl+C ends the wait for an acknowledged shutdown; whatever still runs then gets `deadline` to exit before SIGKILL.
+  const extend = () => (graceEnd = Math.max(graceEnd, Date.now() + deadline));
+  interrupt?.addEventListener('abort', extend, { once: true });
+  const waiting = () =>
+    targets.some((entry) => alive(entry.pid) && ((acked.has(entry) && !interrupt?.aborted) || Date.now() < graceEnd));
+  try {
+    while (waiting() && !signal?.aborted) await sleep(100);
+  } finally {
+    interrupt?.removeEventListener('abort', extend);
   }
-  if (targets.some((entry) => alive(entry.pid))) await waitForExit(2000);
-  const remaining = targets.filter((entry) => {
-    if (!alive(entry.pid)) return false;
-    const current = identityOf(entry.pid);
-    return current == null || current === entry.processIdentity;
-  });
+  // POSIX signals can be handled; force only the process that still has the recorded identity.
+  for (const entry of targets) if (alive(entry.pid)) await force(entry, 'SIGKILL');
+  // A process that was ended exits: the wait for it has no time limit and ends with the caller's signal. One that
+  // could not be ended (its identity unread, or the system refused) is not waited for and is reported as remaining.
+  while ([...ended].some((entry) => !hasExited(entry.pid, alive)) && !signal?.aborted) await sleep(100);
+  const remaining = [];
+  for (const entry of targets) {
+    if (hasExited(entry.pid, alive)) continue;
+    const now = await current(entry);
+    if (now == null || now === entry.processIdentity) remaining.push(entry);
+  }
   const removedDiscoveries = [];
   for (const { record, file } of await discoveryRecords(paths)) {
     if (alive(record.pid)) continue;
@@ -951,9 +1028,29 @@ async function requestShutdown(url) {
   };
 }
 
-function classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified }) {
+/**
+ * Whether a process that was signalled has exited. A Linux zombie (ended, not yet collected by its parent) has
+ * released everything it held and still answers signal 0, so its state is read; elsewhere liveness decides.
+ */
+function hasExited(pid, alive = isAlive) {
+  if (!alive(pid)) return true;
+  // A caller that supplies its own liveness answers for the process: the system's table is not asked about it.
+  if (process.platform !== 'linux' || alive !== isAlive) return false;
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) === 'Z';
+  } catch {
+    return true;
+  }
+}
+
+/** The failure of a stop that left a selected runtime running (`remaining`): it was not ended, whatever time passed. */
+const stillRunning = (report) =>
+  `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} is still running: it could not be ended, or its start identity could not be read. Run the stop again, or end the process by its ID.`;
+
+async function classifyOwnedTargets(owned, { alive, current, folders, pids, stale, targets, unverified }) {
   for (const entry of owned) {
-    const status = inspectOwnedTarget(entry, { alive, identityOf, known });
+    const status = await inspectOwnedTarget(entry, { alive, current });
     if (status.kind === 'unverified') {
       unverified.push({ entry, reason: status.reason });
       continue;
@@ -966,13 +1063,10 @@ function classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, 
   }
 }
 
-function inspectOwnedTarget(entry, { alive, identityOf, known }) {
+async function inspectOwnedTarget(entry, { alive, current: read }) {
   const running = alive(entry.pid);
-  let current = null;
-  if (running) {
-    if (known?.has(entry.pid)) current = known.get(entry.pid);
-    else current = identityOf(entry.pid);
-  }
+  // A record without an identity is never read: nothing could be compared with it.
+  const current = running && entry.processIdentity ? await read(entry) : null;
   // A live process whose start identity was never recorded or cannot be read now is neither
   // proof of a reused process ID nor safe to signal: its record stays for a later stop.
   if (running && (!entry.processIdentity || current == null))
@@ -991,53 +1085,48 @@ function isSelectedOwnedTarget(entry, pids, folders) {
   return Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
 }
 
-/** The batch reads the real identities, so an injected reader is asked for each PID instead. */
-function batchedIdentities(pids, identityOf) {
-  return identityOf === processIdentity ? processIdentities(pids) : new Map();
-}
-
 /** Sessions with ownership, project and portal information merged from both record kinds. */
-export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = processIdentity } = {}) {
+export async function mirageStatus(
+  paths = DEFAULT_PATHS,
+  { identityOf = recordedIdentity, alive = isAlive, signal, probeTimeout } = {},
+) {
   const owned = await ownedSessions(paths);
-  const found = await discoveries(paths);
-  // Read every identity this status can compare in one batch, not one PowerShell start per PID.
-  const pids = [
-    ...found
-      .filter(
-        (session) =>
-          session.processAlive &&
-          owned.some(
-            (item) => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity,
-          ),
-      )
-      .map((session) => session.pid),
-    ...owned
-      .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
-      .map((entry) => entry.pid),
-  ];
-  const identities = batchedIdentities(pids, identityOf);
-  const identity = (pid) => {
-    if (!identities.has(pid)) identities.set(pid, identityOf(pid));
-    return identities.get(pid);
+  const found = await discoveries(paths, { signal, probeTimeout, alive });
+  // Each record's PID is read once, against the identity that record names.
+  const reads = new Map();
+  const ours = (entry) => {
+    const key = `${entry.pid} ${entry.processIdentity}`;
+    if (!reads.has(key))
+      reads.set(
+        key,
+        Promise.resolve(identityOf(entry.pid, { signal, recorded: entry.processIdentity })).then(
+          (current) => current === entry.processIdentity,
+        ),
+      );
+    return reads.get(key);
   };
-  const sessions = found.map((session) => {
+  const sessions = [];
+  for (const session of found) {
     const owner = owned.find((item) => item.pid === session.pid && item.discovery === session.discovery);
-    const isOwned = Boolean(
-      owner && session.processAlive && owner.processIdentity && owner.processIdentity === identity(session.pid),
-    );
-    return {
+    const isOwned = Boolean(owner && session.processAlive && owner.processIdentity && (await ours(owner)));
+    sessions.push({
       ...session,
+      // A runtime this toolkit recorded as ready, whose process still has the recorded identity, stays ready when a
+      // probe got no answer in time: a busy runtime answers late. Only an answer (or the process ending, which
+      // removes the session) changes what is known about it.
+      ready: session.ready || (session.probe === PROBE_NO_ANSWER && isOwned && owner.ready === true),
       adminUrl: session.adminUrl ?? (session.url ? adminUrlOf(session.url) : null),
       owned: isOwned,
       project: session.project ?? owner?.project ?? null,
       portal: session.id ?? owner?.portal ?? null,
-    };
-  });
+    });
+  }
   for (const entry of owned) {
     if (
       found.some((session) => session.pid === entry.pid) ||
-      !isAlive(entry.pid) ||
-      entry.processIdentity !== identity(entry.pid)
+      !alive(entry.pid) ||
+      !entry.processIdentity ||
+      !(await ours(entry))
     )
       continue;
     sessions.push({
@@ -1052,6 +1141,7 @@ export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = process
       discovery: entry.discovery ?? null,
       processAlive: true,
       ready: false,
+      probe: PROBE_NOT_PROBED,
       starting: true,
       owned: true,
       runtime: null,
@@ -1061,6 +1151,37 @@ export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = process
 }
 
 // ---- configuration
+/**
+ * The configuration `paqvilo mirage <action>` runs with for the options of its command line (lense/cli.mjs): a
+ * standalone runtime's own configuration, else the catalogue site's. Status reads only the records, so it has none.
+ * `pick` may complete the site and environment selection in `values` before the catalogue site is loaded.
+ */
+export async function mirageCommandConfiguration(values, action = 'status', { env = process.env, pick = null } = {}) {
+  if (action === 'status') return null;
+  let standaloneProject = null;
+  if (values.project && !values.config && !values.site) {
+    const { loadProjectConfig } = await import('../../mirage/lib/project-config.mjs');
+    const candidate = await loadProjectConfig(values.project);
+    if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
+  }
+  if (!values.project && (values.config || values.site)) {
+    const catalogue = loadCatalogue(values),
+      name = values.site ?? catalogue.root.defaultSite;
+    if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')
+      return (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, values);
+  }
+  if (standaloneProject || (values.runtime && values.runtime !== 'power-pages'))
+    return (await import('../standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
+  if (values.pick) await pick?.(values);
+  const cfg = await loadConfig(values, env, { checkSource: !values.project });
+  if (values.project && !values.config) {
+    cfg.configDir = path.dirname(path.resolve(values.project));
+    cfg.stateDir = path.join(cfg.configDir, '.paqvilo');
+    cfg.portals = 'selected';
+  }
+  return cfg;
+}
+
 async function loadProject(file) {
   const { loadProjectConfig } = await import('../../mirage/lib/project-config.mjs');
   return loadProjectConfig(path.resolve(file));
@@ -1528,11 +1649,13 @@ export async function start(
     paths = miragePaths(cfg, args),
     command = 'mirage start',
     spawnRuntime = spawn,
-    identityOf = processIdentityAsync,
+    identityOf = recordedIdentity,
     sleep = (ms, options) => delay(ms, undefined, options),
     now = Date.now,
     alive = isAlive,
     kill = process.kill,
+    openChannel = openStartChannel,
+    portAvailable: available = portAvailable,
   } = {},
 ) {
   let interrupted = false,
@@ -1560,10 +1683,15 @@ export async function start(
       command,
       spawnRuntime,
       identityOf,
+      // The launcher names the identity of the runtime it starts (a start token) where reading it from the operating
+      // system is expensive. A caller that injects its own reader is asked for the identity instead.
+      startIdentity: identityOf === recordedIdentity ? newStartIdentity() : null,
       sleep,
       now,
       alive,
       kill,
+      openChannel,
+      available,
       check,
       signal: controller.signal,
       cancelled: () => interrupted,
@@ -1634,24 +1762,23 @@ export async function start(
   const owned = await ownedSessions(paths);
   // Listing local records is cheap. Probe only runtimes eligible for this
   // launch; unrelated listeners can each consume the full probe timeout.
-  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal })).filter((session) =>
-    isReusableRuntimeCandidate(session, owned, identity),
+  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal, alive: startup.alive })).filter(
+    (session) => isReusableRuntimeCandidate(session, owned, identity),
   );
   startup.check();
   let existing;
   for (const session of candidates) {
-    const currentIdentity = await startup.identityOf(session.pid, { signal: startup.signal });
+    const owner = owned.find(
+      (item) =>
+        item.pid === session.pid &&
+        item.discovery === session.discovery &&
+        item.processIdentity &&
+        identityMatches(item.identity, identity),
+    );
+    const currentIdentity =
+      owner && (await startup.identityOf(session.pid, { signal: startup.signal, recorded: owner.processIdentity }));
     startup.check();
-    const owner =
-      currentIdentity &&
-      owned.find(
-        (item) =>
-          item.pid === session.pid &&
-          item.discovery === session.discovery &&
-          item.processIdentity === currentIdentity &&
-          identityMatches(item.identity, identity),
-      );
-    if (owner) {
+    if (owner && currentIdentity === owner.processIdentity) {
       const runtime = await ownedRuntime(session, owner, { started, timeout, startup });
       if (runtime) {
         existing = { ...session, log: owner.log, ready: true, runtime };
@@ -1665,19 +1792,24 @@ export async function start(
     throw new Error(
       `Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`,
     );
-  if (port !== '0' && !(await portAvailable(Number(port))))
+  if (port !== '0' && !(await startup.available(Number(port))))
     throw new Error(
       `Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`,
     );
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
+  // On the command line, so the operating system can show which process was started with it.
+  if (startup.startIdentity) values.push(START_TOKEN_OPTION, startTokenOf(startup.startIdentity));
   let child, exited;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await pruneStartupLogs(paths, await ownedSessions(paths));
   await fs.mkdir(paths.logRoot, { recursive: true });
   const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`); // NOSONAR: pseudo-random value for simulation, not a secret
   const logHandle = await fs.open(log, 'a');
+  // The runtime announces its start-up progress and its readiness to this command here (lense/start-channel.mjs).
+  let channel;
   try {
     startup.check();
+    channel = await startup.openChannel();
     // The /_setup/ page this child mounts names the command and catalogue site that started it (lense/setup/server.mjs).
     const setupRuntime = JSON.stringify({
       command: startup.command,
@@ -1688,12 +1820,18 @@ export async function start(
       detached: true,
       stdio: ['ignore', logHandle.fd, logHandle.fd],
       windowsHide: true,
-      env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime },
+      env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime, [START_CHANNEL_ENV]: channel.address },
     });
-    exited = new Promise((resolve) => child.once?.('exit', (code, signal) => resolve({ code, signal })));
+    // The exit of the runtime's process, as the event of this child; a handle that already shows its exit has it.
+    exited = new Promise((resolve) => {
+      if (child.exitCode != null || child.signalCode != null)
+        resolve({ code: child.exitCode ?? null, signal: child.signalCode ?? null });
+      else child.once?.('exit', (code, signal) => resolve({ code, signal }));
+    });
     startup.child(child);
   } catch (error) {
     await logHandle.close();
+    await channel?.close().catch(() => {});
     throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`, { cause: error });
   }
   await logHandle.close();
@@ -1701,6 +1839,7 @@ export async function start(
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
   let registered = false;
   startup.cleanup(async () => {
+    await channel.close().catch(() => {});
     await fs.rm(discovery, { force: true }).catch(() => {});
     // No ownership entry was published if cancellation interrupted its lock
     // acquisition. Published records get a bounded best-effort cleanup; a
@@ -1711,7 +1850,8 @@ export async function start(
       }).catch(() => {});
   });
   args.startup?.phase('process ownership', cfg.siteName);
-  const childIdentity = await startup.identityOf(child.pid, { signal: startup.signal });
+  const childIdentity =
+    startup.startIdentity ?? (await startup.identityOf(child.pid, { signal: startup.signal, recorded: null }));
   startup.check();
   if (!childIdentity) {
     const error = !startup.alive(child.pid)
@@ -1749,10 +1889,21 @@ export async function start(
   startup.check();
   const abandon = async () => {
     startup.check();
-    if (
+    // This command holds the runtime as its own child: while that handle shows no exit, a signal through it reaches
+    // the runtime and nothing else. A PID would have to be shown to still be the runtime's first (an identity read,
+    // which a start token's pipe alone does not prove), so a PID is signalled only for a caller that supplies `kill`.
+    if (startup.kill === process.kill && typeof child.kill === 'function') {
+      if (child.exitCode == null && child.signalCode == null) {
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* already exited */
+        }
+      }
+    } else if (
       childIdentity &&
       startup.alive(child.pid) &&
-      (await startup.identityOf(child.pid, { signal: startup.signal })) === childIdentity
+      (await startup.identityOf(child.pid, { signal: startup.signal, recorded: childIdentity })) === childIdentity
     ) {
       try {
         startup.kill(child.pid, 'SIGTERM');
@@ -1769,87 +1920,106 @@ export async function start(
   };
   const capAt = started + STARTUP_ABSOLUTE_CAP;
   args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
-  let progressCursor,
-    lastProgress = startup.now(),
-    discovered = false;
-  try {
-    while (startup.now() < Math.min(lastProgress + timeout, capAt) && !startup.cancelled()) {
-      const progress = await readStartupPhases(log, progressCursor).catch(() => null);
-      if (progress) {
-        progressCursor = progress.cursor;
-        if (progress.events.length) lastProgress = startup.now();
-        for (const event of progress.events)
-          args.startup?.phase(
-            event.phase.replaceAll('-', ' '),
-            `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`,
-          );
-      }
-      try {
-        const record = JSON.parse(await fs.readFile(discovery, 'utf8'));
-        if (!discovered) {
-          discovered = true;
-          lastProgress = startup.now();
-        }
-        const portal = Array.isArray(record.portals)
-          ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
-          : null;
-        const { portals: ignoredPortals, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
-        const session = {
-          ...base,
-          ...portal,
-          id: portal?.id,
+  /**
+   * The session of the runtime once it has published its discovery record and answers its status; null until then.
+   * `limit` bounds the status question in milliseconds.
+   */
+  const readySession = async (limit) => {
+    let record;
+    try {
+      record = JSON.parse(await fs.readFile(discovery, 'utf8'));
+    } catch {
+      startup.check(); /* the runtime has not written its discovery file yet */
+      return null;
+    }
+    const portal = Array.isArray(record.portals)
+      ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
+      : null;
+    const { portals: ignoredPortals, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    const session = { ...base, ...portal, id: portal?.id, discovery, processAlive: true, ready: false, runtime: null };
+    session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, {
+      signal: startup.signal,
+      timeout: limit,
+    });
+    startup.check();
+    session.ready = Boolean(session.runtime);
+    if (!session.ready) return null;
+    await updateOwnedSessions(
+      paths,
+      (sessions) => [
+        ...sessions.filter((item) => item.pid !== session.pid),
+        {
+          pid: session.pid,
+          processIdentity: childIdentity,
+          sourceDir: session.sourceDir,
+          project: identity.project,
+          portal: session.id ?? identity.portal,
           discovery,
-          processAlive: true,
-          ready: false,
-          runtime: null,
-        };
-        session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, { signal: startup.signal });
-        session.ready = Boolean(session.runtime);
-        if (session.ready) {
-          await updateOwnedSessions(
-            paths,
-            (sessions) => [
-              ...sessions.filter((item) => item.pid !== session.pid),
-              {
-                pid: session.pid,
-                processIdentity: childIdentity,
-                sourceDir: session.sourceDir,
-                project: identity.project,
-                portal: session.id ?? identity.portal,
-                discovery,
-                url: session.url,
-                appsUrl: session.appsUrl,
-                stateFile: session.stateFile,
-                identity,
-                log,
-                ready: true,
-                startedAt: new Date(started).toISOString(),
-              },
-            ],
-            { signal: startup.signal },
-          );
-          startup.check();
-          const result = {
-            ...session,
-            owned: true,
-            started: true,
-            log,
-            launch,
-            writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(
-              (file) => file && fsSync.existsSync(file),
-            ),
-          };
-          Object.defineProperty(result, 'exited', { value: exited, enumerable: false });
-          return result;
-        }
-      } catch {
-        startup.check(); /* server has not written its discovery file yet */
+          url: session.url,
+          appsUrl: session.appsUrl,
+          stateFile: session.stateFile,
+          identity,
+          log,
+          ready: true,
+          startedAt: new Date(started).toISOString(),
+        },
+      ],
+      { signal: startup.signal },
+    );
+    startup.check();
+    await channel.close().catch(() => {});
+    const result = {
+      ...session,
+      owned: true,
+      started: true,
+      log,
+      launch,
+      writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(
+        (file) => file && fsSync.existsSync(file),
+      ),
+    };
+    Object.defineProperty(result, 'exited', { value: exited, enumerable: false });
+    return result;
+  };
+  // The start waits for what happens next, never for an interval: an announcement of the runtime (a phase, that its
+  // event loop turns, that it is ready), the exit of its process, the caller's interrupt, or the end of the start-up
+  // silence bound, which every announcement moves.
+  let lastProgress = startup.now();
+  const silenceEnd = () => Math.min(lastProgress + timeout, capAt);
+  const runtimeExit = exited.then(() => ({ exit: true }));
+  try {
+    while (!startup.cancelled()) {
+      const bound = silenceEnd() - startup.now();
+      if (bound <= 0) {
+        // An announcement can be lost (its channel is best effort); the record it would have announced is not.
+        const late = await readySession();
+        if (late) return late;
+        break;
       }
-      if (!startup.alive(child.pid)) {
+      const waiting = new AbortController();
+      const silent = () => ({ silent: true });
+      const event = await Promise.race([
+        channel.next(),
+        runtimeExit,
+        Promise.resolve(startup.sleep(bound, { signal: AbortSignal.any([startup.signal, waiting.signal]) })).then(
+          silent,
+          silent,
+        ),
+      ]);
+      waiting.abort();
+      startup.check();
+      if (event.exit) {
         await abandon();
         throw await exitedBeforeReady(log, paths.logRoot);
       }
-      await startup.sleep(150, { signal: startup.signal });
+      if (!event.phase) continue;
+      lastProgress = startup.now();
+      if (event.phase === RUNTIME_READY) {
+        // The CLI reports a fractional elapsed time; a fetch deadline is whole milliseconds.
+        const session = await readySession(Math.max(1, Math.ceil(silenceEnd() - lastProgress)));
+        if (session) return session;
+      } else if (event.phase !== RUNTIME_ALIVE)
+        args.startup?.phase(event.phase.replaceAll('-', ' '), `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`);
     }
     await abandon();
     startup.check();
@@ -1891,7 +2061,8 @@ async function ownedRuntime(session, owner, { started, timeout, startup }) {
     if (runtime) return runtime;
     if (
       !startup.alive(session.pid) ||
-      (await startup.identityOf(session.pid, { signal: startup.signal })) !== owner.processIdentity
+      (await startup.identityOf(session.pid, { signal: startup.signal, recorded: owner.processIdentity })) !==
+        owner.processIdentity
     )
       return null;
     startup.check();
@@ -1942,13 +2113,14 @@ async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive
   for (const entry of owned) {
     if (!entry.processIdentity || !alive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
     if (identityMatches(entry.identity, identity)) continue;
-    if ((await identityOf(entry.pid, { signal })) === entry.processIdentity) throw stateFileConflict(entry, identity);
+    if ((await identityOf(entry.pid, { signal, recorded: entry.processIdentity })) === entry.processIdentity)
+      throw stateFileConflict(entry, identity);
   }
 }
 
 /**
- * Identities of the live records on this state file, read before the ownership lock: one read (PowerShell on
- * Windows) takes far longer than a read-modify-write, and other commands would wait on the lock meanwhile.
+ * Identities of the live records on this state file, read before the ownership lock: a read of the operating system
+ * can take far longer than a read-modify-write, and other commands would wait on the lock meanwhile.
  */
 async function rivalIdentities(paths, { childPid, identity, startup }) {
   const identities = new Map();
@@ -1957,7 +2129,7 @@ async function rivalIdentities(paths, { childPid, identity, startup }) {
     if (sharesStateFile(item, identity.stateFile))
       identities.set(item.pid, {
         recorded: item.processIdentity,
-        current: await startup.identityOf(item.pid, { signal: startup.signal }),
+        current: await startup.identityOf(item.pid, { signal: startup.signal, recorded: item.processIdentity }),
       });
   }
   return identities;
@@ -2676,14 +2848,14 @@ function projectStartPlans(cfg, effective, portals) {
 }
 
 /** Starts (or reuses) every planned Mirage at once; a portal that fails does not stop the others. */
-async function startPlans(plans, paths) {
+async function startPlans(plans, paths, host = SYSTEM_HOST) {
   const clashes = portClashes(plans.filter((plan) => !plan.error));
   if (clashes.length)
     throw new Error(
       `Each Mirage needs its own port (${clashes.join('; ')}). Set sites.<id>.mirage.port to distinct ports, or 0 for any free port.`,
     );
   const results = await Promise.allSettled(
-    plans.map((plan) => (plan.error ? Promise.reject(plan.error) : start(plan.cfg, plan.args, { paths }))),
+    plans.map((plan) => (plan.error ? Promise.reject(plan.error) : host.start(plan.cfg, plan.args, { paths }))),
   );
   return plans.map((plan, index) => ({
     ...plan,
@@ -2743,12 +2915,12 @@ export async function stopStarted(
   portals,
   paths,
   stop = stopOwnedSessions,
-  { source = process, alive = isAlive } = {},
+  { source = process, alive = isAlive, host = SYSTEM_HOST } = {},
 ) {
   await guardShutdownSignals(
-    async () => {
+    async (interrupt) => {
       for (const portal of portals.filter((item) => item.session?.started)) {
-        const report = await stop({ paths, pids: [portal.session.pid] }).catch((error) => ({
+        const report = await stop({ paths, pids: [portal.session.pid], interrupt }).catch((error) => ({
           stopped: [],
           error,
         }));
@@ -2759,7 +2931,7 @@ export async function stopStarted(
         } else {
           let retry;
           try {
-            retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
+            retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false, host })}`;
           } catch (error) {
             retry = `a retry command could not be prepared: ${error.message}`;
           }
@@ -2775,10 +2947,10 @@ export async function stopStarted(
 }
 
 /** Starts the planned portals, then reports them (start) or opens them with the live targets (dev). */
-async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
-  const portals = await startPlans(plans, paths);
+async function runPortals({ cfg, args, action, plans, paths, initialSite, host = SYSTEM_HOST }) {
+  const portals = await startPlans(plans, paths, host);
   const running = portals.filter((portal) => portal.session);
-  const stop = await sessionStopHint(running, paths);
+  const stop = await sessionStopHint(running, paths, { host });
   const summary = portals.map(portalStartSummary);
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
@@ -2810,7 +2982,7 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
       () => runDev(selection.initial, { ...args, devSelection: selection }),
     );
   } finally {
-    await stopStarted(portals, paths);
+    await stopStarted(portals, paths, host.stop, { alive: host.alive, host });
   }
 }
 
@@ -2854,7 +3026,7 @@ export function printStandalonePortalSessions(running, portalSessions) {
     );
 }
 
-/* NOSONAR */ async function miragePortals(cfg, args, action, paths) {
+/* NOSONAR */ async function miragePortals(cfg, args, action, paths, host = SYSTEM_HOST) {
   const entries = await portalConfigs(cfg, args, action);
   if (action === 'init') {
     const projects = [];
@@ -2873,7 +3045,7 @@ export function printStandalonePortalSessions(running, portalSessions) {
       {
         action: 'init',
         projects,
-        next: mirageCommandHint([['mirage', 'dev', ...hintScope(cfg, args, true)]], { cli: TOOLKIT_CLI }),
+        next: host.commandHint([['mirage', 'dev', ...hintScope(cfg, args, true)]], { cli: TOOLKIT_CLI }),
       },
       args.json,
     );
@@ -2896,11 +3068,8 @@ export function printStandalonePortalSessions(running, portalSessions) {
         )),
       );
     }
-    const report = await stopOwnedSessions({ paths, pids });
-    if (report.remaining.length)
-      throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
-      );
+    const report = await guardShutdownSignals((interrupt) => host.stop({ paths, pids, interrupt }));
+    if (report.remaining.length) throw new Error(stillRunning(report));
     print(
       {
         action: 'stop',
@@ -2918,11 +3087,12 @@ export function printStandalonePortalSessions(running, portalSessions) {
     plans: catalogueStartPlans(entries, args, cfg.siteName),
     paths,
     initialSite: cfg.siteName,
+    host,
   });
 }
 
 /** A project with several portals and no --portal: one runtime per portal of that project. */
-async function mirageProjectPortals(cfg, args, effective, action, project, paths) {
+async function mirageProjectPortals(cfg, args, effective, action, project, paths, host = SYSTEM_HOST) {
   if (action === 'stop') {
     const pids = [];
     const base = args.port === undefined ? undefined : runtimePort(args.port, DEFAULT_PORT);
@@ -2940,11 +3110,8 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
             port: String(base + index),
           })),
         );
-    const report = await stopOwnedSessions({ paths, pids });
-    if (report.remaining.length)
-      throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
-      );
+    const report = await guardShutdownSignals((interrupt) => host.stop({ paths, pids, interrupt }));
+    if (report.remaining.length) throw new Error(stillRunning(report));
     print(
       {
         action: 'stop',
@@ -2966,6 +3133,7 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
     plans: projectStartPlans(cfg, effective, project.portals),
     paths,
     initialSite: project.defaultPortal,
+    host,
   });
 }
 
@@ -3030,11 +3198,12 @@ function sessionStopArguments(cfg, args, session) {
   return parts;
 }
 
-/* NOSONAR */ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
+/* NOSONAR */ async function sessionStopHint(portals, paths, { cleanupOnError = true, host = SYSTEM_HOST } = {}) {
   const commands = stopCommands(portals);
   if (!commands.length) return null;
   const options = stopHintOptions(portals, commands);
-  const format = (storePayload) => formatStopHint(commands, options, storePayload);
+  // One command is the stop hint of its runtime; several are one batch with each runtime's own selectors.
+  const format = (storePayload) => host.commandHint(commands, { ...options, storePayload });
   const externalPayload = new Error('Owned command payload storage is required.');
   const files = [];
   try {
@@ -3065,7 +3234,7 @@ function sessionStopArguments(cfg, args, session) {
     if (started.length) {
       let cleanup;
       try {
-        cleanup = await stopOwnedSessions({ paths, pids: started });
+        cleanup = await guardShutdownSignals((interrupt) => host.stop({ paths, pids: started, interrupt }));
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
@@ -3132,12 +3301,6 @@ function stopHintOptions(portals, commands) {
   if (catalogueStandaloneProject) cwd = path.dirname(catalogueStandaloneProject.cfg.stateDir);
   else if (!projectAnchored && portals.some(({ cfg }) => !catalogueOwnedState(cfg))) cwd = process.cwd();
   return { cli: TOOLKIT_CLI, ...(cwd ? { cwd } : {}) };
-}
-
-function formatStopHint(commands, options, storePayload) {
-  return commands.length === 1
-    ? mirageStopCommand(commands[0].slice(2), { ...options, storePayload })
-    : mirageCommandHint(commands, { ...options, storePayload });
 }
 
 /** A diagnostic inspection can legitimately return a report with exit status 1. */
@@ -3249,7 +3412,8 @@ function printSessions(sessions) {
 /* NOSONAR: single-pass routine, splitting it would change shared state */ function printSession(session) {
   let state;
   if (session.ready) state = 'ready';
-  else if (session.processAlive) state = 'starting';
+  // A runtime that was not known to be ready and gave no answer in time may be busy: that is not "starting".
+  else if (session.processAlive) state = session.probe === PROBE_NO_ANSWER ? 'no answer yet' : 'starting';
   else state = 'stopped';
   const site = session.site ? '  [' + session.site + ']' : '';
   const runtime = session.runtime?.site
@@ -3411,18 +3575,23 @@ function validateAllowedOptions(args, action, allowedOptions) {
       });
 }
 
-/* NOSONAR */ export default async function mirage(cfg, args, positionals = []) {
+/**
+ * `paqvilo mirage <action>`. `runtimeHost` replaces how the command reaches processes (see hostOf); the command line
+ * passes none.
+ */
+/* NOSONAR */ export default async function mirage(cfg, args, positionals = [], runtimeHost = undefined) {
   const action = positionals[0] ?? 'status';
   validateMirageArguments(args, action);
   const paths = miragePaths(cfg, args);
+  const host = runtimeHost ? hostOf(runtimeHost) : SYSTEM_HOST;
   if (action === 'status') {
-    const sessions = await mirageStatus(paths);
+    const sessions = await host.status(paths);
     const sites = catalogueSiteFolders(args);
     assignCatalogueSites(sessions, sites);
     print({ action: 'status', sessions }, args.json);
     return 0;
   }
-  if (severalPortals(cfg, args, action)) return miragePortals(cfg, args, action, paths);
+  if (severalPortals(cfg, args, action)) return miragePortals(cfg, args, action, paths, host);
   if (action === 'init') {
     print(await initProject(cfg, args), args.json);
     return 0;
@@ -3431,7 +3600,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
   if (['start', 'dev', 'stop'].includes(action) && effective.project && !effective.portal) {
     const project = await loadProject(effective.project);
     if (hasSeveralPowerPagesPortals(effective, project))
-      return mirageProjectPortals(cfg, args, effective, action, project, paths);
+      return mirageProjectPortals(cfg, args, effective, action, project, paths, host);
   }
   if (action === 'stop') {
     let sourceDir = cfg.sourceDir;
@@ -3440,7 +3609,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     if (runtimeKind && runtimeKind !== 'power-pages') {
       const kind = runtimeKind;
       const pids = await selectedSessionPids(paths, cfg, kind, selectedProject, args);
-      const report = await stopOwnedSessions({ paths, pids });
+      const report = await guardShutdownSignals((interrupt) => host.stop({ paths, pids, interrupt }));
       if (report.remaining.length) throw new Error('An owned standalone Mirage session did not stop.');
       print(
         {
@@ -3456,11 +3625,8 @@ function validateAllowedOptions(args, action, allowedOptions) {
     // legitimately point elsewhere or no longer contain the launched portal.
     if (selectedProject) sourceDir = null;
     const pids = await selectedSessionPids(paths, cfg, 'power-pages', selectedProject, args, sourceDir);
-    const report = await stopOwnedSessions({ paths, pids });
-    if (report.remaining.length)
-      throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
-      );
+    const report = await guardShutdownSignals((interrupt) => host.stop({ paths, pids, interrupt }));
+    if (report.remaining.length) throw new Error(stillRunning(report));
     print({ action: 'stop', message: stopSummary(report, cfg.siteName, cfg.siteName), ...report }, args.json);
     return stopExitStatus(report, pids);
   }
@@ -3482,7 +3648,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     else process.stdout.write(result.stdout);
     return exitCode;
   }
-  const session = await start(cfg, effective, { paths, command: `mirage ${action}` });
+  const session = await host.start(cfg, effective, { paths, command: `mirage ${action}` });
   args.startup?.phase(
     'runtime listener',
     session.started ? 'listening; application readiness pending' : 'reused; application readiness pending',
@@ -3490,7 +3656,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
   const { launch } = session;
   const adminUrl = session.adminUrl ?? adminUrlOf(session.url);
   const stateFile = session.stateFile ?? launch.stateFile;
-  const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
+  const stop = await sessionStopHint([{ cfg, args: effective, session }], paths, { host });
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
       const { controller, interrupt, runtimeEnded, interrupted } = codeAppInterrupt();
@@ -3517,8 +3683,13 @@ function validateAllowedOptions(args, action, allowedOptions) {
       } finally {
         process.off('SIGINT', interrupt);
         process.off('SIGTERM', interrupt);
-        await guardShutdownSignals(() =>
-          stopDevelopmentSession(servers, session, paths, stop, { runtime: codeAppRuntime }),
+        await guardShutdownSignals((interrupt) =>
+          stopDevelopmentSession(servers, session, paths, stop, {
+            runtime: codeAppRuntime,
+            stopSessions: host.stop,
+            alive: host.alive,
+            interrupt,
+          }),
         );
       }
     }
@@ -3535,7 +3706,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
       process.off('SIGTERM', interrupt);
       runtime.ending = true;
       if (session.started && !runtime.exit)
-        await guardShutdownSignals(() => stopOwnedSessions({ paths, pids: [session.pid] }));
+        await guardShutdownSignals((interrupt) => host.stop({ paths, pids: [session.pid], interrupt }));
       if (codeAppStartupInterrupted(error)) return 0;
       throw error;
     }
@@ -3595,7 +3766,14 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      await guardShutdownSignals(() => stopDevelopmentSession(codeAppServers, session, paths, stop, { runtime }));
+      await guardShutdownSignals((interrupt) =>
+        stopDevelopmentSession(codeAppServers, session, paths, stop, {
+          runtime,
+          stopSessions: host.stop,
+          alive: host.alive,
+          interrupt,
+        }),
+      );
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
@@ -3612,7 +3790,7 @@ export async function stopDevelopmentSession(
   session,
   paths,
   stop,
-  { stopSessions = stopOwnedSessions, report = console.error, alive = isAlive, runtime } = {},
+  { stopSessions = stopOwnedSessions, report = console.error, alive = isAlive, runtime, interrupt } = {},
 ) {
   // The teardown starts here: the runtime's exit from now on is expected, so its listener stays silent.
   if (runtime) runtime.ending = true;
@@ -3620,7 +3798,7 @@ export async function stopDevelopmentSession(
     await codeAppServers?.close();
   } finally {
     if (session.started) {
-      const outcome = await stopSessions({ paths, pids: [session.pid] }).catch((error) => ({
+      const outcome = await stopSessions({ paths, pids: [session.pid], interrupt }).catch((error) => ({
         stopped: [],
         remaining: [{ pid: session.pid }],
         error,

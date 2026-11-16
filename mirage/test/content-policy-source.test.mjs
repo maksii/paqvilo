@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { createMirageContext } from '../api.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function portal(t) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-content-policy-'));
@@ -21,23 +21,27 @@ async function portal(t) {
 test('persisted project policy retains its value but reports current default drift consistently', async (t) => {
   const root = await portal(t),
     stateFile = path.join(root, 'local-state.json');
-  let app;
-  ownedFixture(t).add(() => app?.close());
-  app = await createSimulator({
-    sourceDir: root,
-    stateFile,
-    watch: false,
-    contentPolicyDefaults: { confinePortalPages: true },
-  });
+  let app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: root,
+      stateFile,
+      watch: false,
+      contentPolicyDefaults: { confinePortalPages: true },
+    }),
+  );
   assert.equal(app.state().config.contentPolicySource, 'project defaults');
   await app.store.compact();
   await app.close();
-  app = await createSimulator({
-    sourceDir: root,
-    stateFile,
-    watch: false,
-    contentPolicyDefaults: { confinePortalPages: false },
-  });
+  app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: root,
+      stateFile,
+      watch: false,
+      contentPolicyDefaults: { confinePortalPages: false },
+    }),
+  );
   assert.equal(app.state().config.confinePortalPages, true);
   assert.equal(app.state().config.contentPolicySource, 'runtime state (project default differs)');
   assert.equal(
@@ -58,27 +62,33 @@ test('persisted project policy retains its value but reports current default dri
   await app.store.compact();
   assert.equal(JSON.parse(readFileSync(stateFile)).simulator.contentPolicySource, 'project defaults');
   await app.close();
-  app = await createSimulator({
-    sourceDir: root,
-    stateFile,
-    watch: false,
-    contentPolicyDefaults: { confinePortalPages: true },
-  });
+  app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: root,
+      stateFile,
+      watch: false,
+      contentPolicyDefaults: { confinePortalPages: true },
+    }),
+  );
   assert.equal(app.state().config.contentPolicySource, 'project defaults');
   await app.close();
-  app = await createSimulator({
-    sourceDir: root,
-    stateFile,
-    watch: false,
-    contentPolicyDefaults: { externalAssets: false },
-  });
+  app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: root,
+      stateFile,
+      watch: false,
+      contentPolicyDefaults: { externalAssets: false },
+    }),
+  );
   assert.equal(
     app.state().config.contentPolicySource,
     'runtime state (project default differs)',
     'removing the confined default also counts as drift when another policy default remains',
   );
   await app.close();
-  app = await createSimulator({ sourceDir: root, stateFile, watch: false });
+  app = ownedClose(t, await createSimulator({ sourceDir: root, stateFile, watch: false }));
   assert.equal(app.state().config.contentPolicySource, 'project defaults (no longer configured)');
 });
 

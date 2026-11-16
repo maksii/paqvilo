@@ -27,6 +27,44 @@ export function forwardTerminationSignals(child, { platform = process.platform, 
   };
 }
 
+/** The exit status of a process that ended with `code`, or else by `signal` (130 for SIGINT, 143 for SIGTERM). */
+export function exitStatus(code, signal) {
+  if (code != null) return code;
+  if (signal === 'SIGINT') return 130;
+  return signal === 'SIGTERM' ? 143 : 1;
+}
+
+const UNHANDLED_TERMINATION_SIGNALS = ['SIGINT', 'SIGTERM'];
+
+/** Marks a listener that stands in for the default action of a signal: it does not count as an owner of the stop. */
+export const TERMINATION_FALLBACK = Symbol.for('paqvilo.terminationFallback');
+
+/** The listeners of `signal` on `source` that own its stop, that is all of them except the fallbacks. */
+export const stopOwners = (source, signal) => source.listeners(signal).filter((l) => !l[TERMINATION_FALLBACK]).length;
+
+/**
+ * Ends a lense command that nothing else handles with the exit status of the signal that ended it. Windows reports a
+ * console interrupt by its own exit code, so nothing is registered there. Returns a function that removes the listeners.
+ */
+export function exitOnUnhandledTermination({
+  platform = process.platform,
+  source = process,
+  exit = (code) => process.exit(code),
+} = {}) {
+  if (platform === 'win32') return () => {};
+  const listeners = UNHANDLED_TERMINATION_SIGNALS.map((signal) => {
+    const listener = () => {
+      if (stopOwners(source, signal) === 0) exit(exitStatus(null, signal));
+    };
+    listener[TERMINATION_FALLBACK] = true;
+    return [signal, listener];
+  });
+  for (const [signal, listener] of listeners) source.on(signal, listener);
+  return () => {
+    for (const [signal, listener] of listeners) source.off(signal, listener);
+  };
+}
+
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
 const FORCED_EXIT_SIGNAL_COUNT = 3;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
@@ -51,20 +89,28 @@ export function shutdownSignalCounter({
 }
 
 /**
- * Keeps SIGINT/SIGTERM from ending the process while shutdown work runs. The first signal prints a notice,
- * the second is absorbed, and the third ends the process with the exit code of that signal.
- * The signals are read from `source`, which defaults to the process.
+ * Keeps SIGINT/SIGTERM from ending the process while shutdown work runs. The first signal prints a notice and aborts
+ * the signal given to `work`, so waits that honour it end early; the second is absorbed, and the third ends the
+ * process with the exit code of that signal. The signals are read from `source`, which defaults to the process.
  */
 export async function guardShutdownSignals(
   work,
   write = (line) => console.error(line),
   { exit = (code) => process.exit(code), source = process } = {},
 ) {
-  const absorb = shutdownSignalCounter({ onFirst: () => write('stopping…'), write, exit });
+  const interrupted = new AbortController();
+  const absorb = shutdownSignalCounter({
+    onFirst: () => {
+      write('stopping…');
+      interrupted.abort(new Error('stop interrupted'));
+    },
+    write,
+    exit,
+  });
   const listeners = SHUTDOWN_SIGNALS.map((signal) => [signal, () => absorb(signal)]);
   for (const [signal, listener] of listeners) source.on(signal, listener);
   try {
-    return await work();
+    return await work(interrupted.signal);
   } finally {
     for (const [signal, listener] of listeners) source.off(signal, listener);
   }

@@ -3,7 +3,7 @@ import { setMaxListeners } from 'node:events';
 import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
-import { readEndedByContextClose } from './portal-provenance-transport.mjs';
+import { readEndedByContextClose, trackDefaultDocuments } from './portal-provenance-transport.mjs';
 
 const unanswered = Symbol('unanswered');
 // A command or sideband read waits until it answers or the attachment is disposed (its page closed or interception
@@ -152,7 +152,9 @@ export function createDomProvenanceTransport(context, configs) {
   const slot = '__paqviloDom_' + randomBytes(16).toString('hex'),
     secret = randomBytes(32).toString('hex');
   const binding = '__paqviloDomEvent_' + randomBytes(16).toString('hex');
-  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, binding })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
+  // Closes a registry without its writer; unlike `secret` it cannot admit evidence.
+  const releaseKey = randomBytes(32).toString('hex');
+  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, binding, releaseKey })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
   return {
     slot,
     async onAttach({ cdp, configure, report }) {
@@ -165,6 +167,7 @@ export function createDomProvenanceTransport(context, configs) {
         initial = new Map(),
         script,
         closed = false;
+      const { documents, tracking } = trackDefaultDocuments(targets);
       const lost = (error) => {
         if (!closed) report?.(error);
       };
@@ -174,6 +177,7 @@ export function createDomProvenanceTransport(context, configs) {
           closed &&
           ![
             'Runtime.callFunctionOn',
+            'Runtime.evaluate',
             'Runtime.releaseObjectGroup',
             'Runtime.removeBinding',
             'Page.removeScriptToEvaluateOnNewDocument',
@@ -410,6 +414,8 @@ export function createDomProvenanceTransport(context, configs) {
         contexts.set(record.id, record);
         (async () => {
           record.loaderId = frameLoaders((await command('Page.getFrameTree'))?.frameTree).get(record.frameId);
+          // A document that was open before the bootstrap was registered has no registry to retire.
+          if (record.loaderId && record.loaderId === initial.get(record.frameId)) documents.delete(record.id);
           if (!record.loaderId || record.loaderId === initial.get(record.frameId)) return;
           loaders.set(record.frameId, record.loaderId);
           for (let attempt = 0; attempt < 12 && !closed && !record.closed; attempt++) {
@@ -647,18 +653,25 @@ export function createDomProvenanceTransport(context, configs) {
         if (closed) return;
         closed = true;
         for (const [event, handler] of listeners) cdp.off(event, handler);
+        // The bootstrap is removed first, while contexts are still tracked: a document that commits during disposal
+        // announces its context before the removal is answered, so its registry is retired below as well.
+        if (script?.identifier)
+          await command('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
+        for (const [event, handler] of tracking) cdp.off(event, handler);
+        // A registry is retired through its context, not through its claimed writer: the writer of a claim that is
+        // still in flight never reaches this transport, and the browser runs this command after that claim.
         await Promise.allSettled(
-          [...contexts.values()]
-            .filter((record) => record.objectId)
-            .map((record) =>
-              command('Runtime.callFunctionOn', {
-                objectId: record.objectId,
-                functionDeclaration: 'function(){this.dispose()}',
-                returnByValue: true,
-              }),
-            ),
+          [...documents].map((contextId) =>
+            command('Runtime.evaluate', {
+              expression: `window[${JSON.stringify(slot)}]?.release?.(${JSON.stringify(releaseKey)})`,
+              contextId,
+              silent: true,
+              returnByValue: true,
+            }),
+          ),
         );
         controller.abort();
+        documents.clear();
         contexts.clear();
         requests.clear();
         acknowledgements.clear();
@@ -666,9 +679,6 @@ export function createDomProvenanceTransport(context, configs) {
         reading.clear();
         await Promise.allSettled([
           command('Runtime.removeBinding', { name: binding }),
-          ...(script?.identifier
-            ? [command('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier })]
-            : []),
           command('Runtime.releaseObjectGroup', { objectGroup: slot }),
           command('Debugger.disable'),
         ]);
@@ -677,7 +687,7 @@ export function createDomProvenanceTransport(context, configs) {
         await configure('Page.enable');
         loaders = frameLoaders((await configure('Page.getFrameTree')).frameTree);
         initial = new Map(loaders);
-        for (const [event, handler] of listeners) cdp.on(event, handler);
+        for (const [event, handler] of [...tracking, ...listeners]) cdp.on(event, handler);
         await configure('Runtime.addBinding', { name: binding });
         script = await configure('Page.addScriptToEvaluateOnNewDocument', { source: bootstrap });
         await configure('Debugger.enable');

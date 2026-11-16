@@ -142,11 +142,11 @@ test('isolated contexts reuse setup, preserve parent and support stop/restart an
 
 test('public testing clients resolve personas and scenarios for independent parallel visitors', async (t) => {
   const { app } = await personaFixture(t);
-  const runtime = await connectRuntime({ origin: app.url });
+  const runtime = await connectRuntime({ origin: app.url, timeoutMs: 0 });
   assert.equal((await runtime.personas()).total, 60);
   const [first, second] = await Promise.all([
-    runtime.createSession({ personaKey: 'person-1' }),
-    createPersonaSession({ origin: app.url, personaKey: 'person-2', instanceKey: 'automated' }),
+    runtime.createSession({ personaKey: 'person-1', timeoutMs: 0 }),
+    createPersonaSession({ origin: app.url, personaKey: 'person-2', instanceKey: 'automated', timeoutMs: 0 }),
   ]);
   try {
     assert.equal((await first.session()).contactId, contactId(1));

@@ -13,11 +13,13 @@ import { browserChannel } from '../mirage/lib/browser-launch.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
+import { runningRuntimeOrigins } from './helpers/mirage-status.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
 const APP = '77777777-7777-4777-8777-777777777777';
-// Resolves with the first match of `pattern` in the child's output, or rejects when the child exits first.
+// Resolves with the first match of `pattern` in the child's output, or rejects when the child ends first. 'close' follows
+// the child's last output, unlike 'exit', so the rejection carries everything the child printed (startOnFreePort reads it).
 function announced(child, pattern) {
   return new Promise((resolve, reject) => {
     let output = '';
@@ -36,11 +38,11 @@ function announced(child, pattern) {
     const stop = () => {
       child.stdout.off('data', read);
       child.stderr.off('data', read);
-      child.off('exit', exit);
+      child.off('close', exit);
     };
     child.stdout.on('data', read);
     child.stderr.on('data', read);
-    child.once('exit', exit);
+    child.once('close', exit);
   });
 }
 
@@ -156,10 +158,13 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     assert.equal(await page.getByRole('link', { name: 'Project setup', exact: true }).count(), 0);
     return { url, browser, child, exited };
   };
+  // The project's own records say whether its runtime runs; its released port may already answer for another process.
+  const running = () => runningRuntimeOrigins(['--project', project], { cwd: directory, signal: t.signal });
   const owned = await develop();
+  assert.ok((await running()).includes(owned.url), 'the runtime that dev started is recorded as running');
   await closeBrowser(owned.browser);
   assert.deepEqual(await owned.exited, { code: 0, signal: null });
-  await assert.rejects(fetch(owned.url + '/_sim/api/status'), /fetch failed/);
+  assert.ok(!(await running()).includes(owned.url), 'dev stops the runtime it started');
   assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
 
   const background = await commands(project, 'start', '--port', '0'),

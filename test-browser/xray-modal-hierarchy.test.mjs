@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own X-ray evidence and editor feedback for a Mirage-rendered modal form on an invented loopback portal
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -177,7 +178,13 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   await page.getByRole('button', { name: 'Open editor', exact: true }).click();
   await page.keyboard.up('Control');
   await input.waitFor();
-  const reopened = await select();
+  await select();
+  // The reopened frame's evidence arrives after its document, like the first one's.
+  await page.waitForFunction(() => {
+    const identity = document.getElementById('paqvilo-xray').__px.selection();
+    return identity?.evidence.owner.status === 'exact' && identity.evidence.owner.component.entity === 'fx_widget';
+  });
+  const reopened = await page.evaluate(() => document.getElementById('paqvilo-xray').__px.selection());
   assert.notEqual(reopened.evidence.scope.documentId, selected.evidence.scope.documentId);
   assert.equal(reopened.evidence.owner.component.entity, 'fx_widget');
   assert.equal(

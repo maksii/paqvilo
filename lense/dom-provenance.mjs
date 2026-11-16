@@ -1,6 +1,6 @@
 /** Early owned-browser instrumentation. Arguments/text/values never enter evidence. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
-export function installDomProvenance({ slot, secret, binding, limit = 10000 } = {}) {
+export function installDomProvenance({ slot, secret, binding, releaseKey, limit = 10000 } = {}) {
   if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   // Serialized into the page with this function, so it must stay nested here.
   /* NOSONAR */ function stackFrameOf(raw, match, methods, NativeEncoder) {
@@ -530,6 +530,13 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       if (claimed || value !== secret || closed) return null;
       claimed = true;
       return writer;
+    },
+    // The backend retires a registry by its context when the writer never reached it: a claim still in flight, a claim
+    // that was never admitted, a context beyond its record limit. The key only closes this registry; it admits nothing.
+    release(value) {
+      if (!releaseKey || value !== releaseKey) return false;
+      writer.dispose();
+      return true;
     },
   });
   define(window, slot, { value: reader, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding

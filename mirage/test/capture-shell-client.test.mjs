@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own shell capture client and command; no native behaviour is claimed.
 import test from 'node:test';
 import { inventedProjectFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
@@ -16,6 +17,7 @@ import {
   captureShell,
   captureSummary,
   captureExitCode,
+  runCaptureShellCommand,
 } from '../capture-shell.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
@@ -74,6 +76,19 @@ function runCli(args) {
     child.once('exit', (code) => resolve({ code, stdout, stderr }));
     child.once('error', reject);
   });
+}
+
+// The capture-shell entry function with its output captured: no process of its own.
+async function runEntry(args) {
+  const captured = { stdout: '', stderr: '' };
+  const stream = (name) => ({
+    write: (chunk) => {
+      captured[name] += String(chunk);
+      return true;
+    },
+  });
+  const code = await runCaptureShellCommand(args, { stdout: stream('stdout'), stderr: stream('stderr') });
+  return { code, stdout: captured.stdout, stderr: captured.stderr };
 }
 
 test('capture client preserves incomplete reports and other errors preserve the server message', async () => {
@@ -373,9 +388,7 @@ test('installed CLI accepts applied partial shells and strict mode rejects their
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
   // Sequential: one runtime accepts one live connection at a time.
   for (const strict of [false, true]) {
-    const { code, stdout, stderr } = await runCli([
-      'mirage',
-      'capture-shell',
+    const { code, stdout, stderr } = await runEntry([
       '--config',
       config,
       '--site',
@@ -431,9 +444,7 @@ test('capture CLI prints failed resources, exits one and disconnects the running
   ownedFixture(t).add(() => app.close());
   const config = path.join(root, 'paqvilo.config.yml');
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
-  const { code, stdout, stderr } = await runCli([
-    'mirage',
-    'capture-shell',
+  const { code, stdout, stderr } = await runEntry([
     '--config',
     config,
     '--site',
@@ -453,6 +464,17 @@ test('capture CLI prints failed resources, exits one and disconnects the running
   assert.ok(report.reports[0].failures.some((item) => item.code === 'SHELL_JQUERY_MISSING' && item.blocking));
   assert.equal(bridge.connected, false);
   assert.match(captureSummary(report), /BLOCKING SHELL_JQUERY_MISSING[\s\S]*observed NATIVE_ASSET_HTTP/);
+});
+
+// @test-kind contract: the installed capture-shell command passes the entry function's output and exit code through unchanged
+test("the installed capture-shell command passes the entry function's output and exit code through unchanged", async (t) => {
+  const root = await project(t),
+    config = path.join(root, 'paqvilo.config.yml');
+  // Refused before any connection: the CDP URL is not loopback.
+  for (const json of [[], ['--json']]) {
+    const args = ['--config', config, '--site', 'invented', '--cdp', 'http://external.example.test:9222', ...json];
+    assert.deepEqual(await runCli(['mirage', 'capture-shell', ...args]), await runEntry(args));
+  }
 });
 
 test('capture rejects untrusted CDP URLs, caution environments and absolute paths before launching a browser', async (t) => {

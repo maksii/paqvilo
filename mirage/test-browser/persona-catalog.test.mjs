@@ -6,6 +6,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { personaFixture, contactId } from '../test/fixtures/persona-catalog.mjs';
 import { createPersonaBrowserContext } from '../testing/personas.mjs';
+import { workspaceSettled } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -21,6 +22,8 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(app.url + '/_sim/#identity?q=requester&tag=edit');
+  // The picker is mounted again by each render of the view: it is used once the view has everything it asked for.
+  await workspaceSettled(page);
   const picker = page.locator('#browser-persona-picker');
   await picker.locator('[data-persona-result-count]').filter({ hasText: '1 of 60' }).waitFor();
   assert.equal(await picker.locator('[data-persona-query]').inputValue(), 'requester');
@@ -39,6 +42,7 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   await picker.locator('[data-persona-result-count]').filter({ hasText: '27 of 60' }).waitFor();
   assert.match(page.url(), /tag=review/);
   await page.reload();
+  await workspaceSettled(page);
   await page.locator('#browser-persona-picker [data-persona-result-count]').filter({ hasText: '27 of 60' }).waitFor();
   await page.getByRole('button', { name: 'Choose persona', exact: true }).click();
   const dialog = page.locator('dialog.persona-picker-dialog');
@@ -93,6 +97,7 @@ test('native grouped sign-in remains usable without JS; browser automation appli
     origin: app.url,
     personaKey: 'person-2',
     instanceKey: 'browser-test',
+    timeoutMs: 0,
   });
   assert.notEqual(opened.origin, app.url);
   assert.deepEqual(opened.context.pages(), []);

@@ -63,6 +63,10 @@ function recordingHandler(writes, respond) {
  * Opens the driver on the reference server's origin in an owned browser. The driver, the browser, both servers and the
  * directory close with the test.
  */
+// These settles are expected to succeed. The bound is longer than the runner's hang guard, so it never decides a
+// result: settle() requires a finite timeout.
+const STEP_GUARD_MS = 600_000;
+
 async function openDriver(t, directory, reference, frame, options = {}) {
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
   let driver;
@@ -224,7 +228,12 @@ test('a page with a cross-site frame settles without waiting for the settle limi
     ),
   );
   const driver = await openDriver(t, directory, reference, frame);
-  const observation = await driver.page('/', { roots: ['main'], settleMs: 0, quietMs: 300 });
+  const observation = await driver.page('/', {
+    roots: ['main'],
+    settleMs: 0,
+    quietMs: 300,
+    settleTimeout: STEP_GUARD_MS,
+  });
   assert.equal(observation.settled, true, 'the page settles while its cross-site frame is loaded');
   assert.deepEqual(observation.pendingRequests, [], 'no request is left pending after the frame has loaded');
 });
@@ -616,7 +625,7 @@ test('a page is not settled while its cross-site frame still has a request in fl
   gateOpen = true;
   for (const res of held) res.end('ok');
   frameRead = Promise.withResolvers();
-  const released = await driver.page('/', { roots: ['main'], quietMs: 300 });
+  const released = await driver.page('/', { roots: ['main'], quietMs: 300, settleTimeout: STEP_GUARD_MS });
   assert.equal(released.settled, true, 'the page settles once the frame read has finished');
   assert.deepEqual(released.pendingRequests, [], 'no request is left pending');
 });
@@ -688,7 +697,7 @@ test('a page is not settled while a frame nested inside its cross-site frame sti
   gateOpen = true;
   for (const res of held) res.end('ok');
   nestedRead = Promise.withResolvers();
-  const released = await driver.page('/', { roots: ['main'], quietMs: 300 });
+  const released = await driver.page('/', { roots: ['main'], quietMs: 300, settleTimeout: STEP_GUARD_MS });
   assert.equal(released.settled, true, 'the page settles once the nested frame read has finished');
   assert.deepEqual(released.pendingRequests, [], 'no request is left pending');
 });
@@ -746,7 +755,7 @@ for (const where of ['cross-site frame', 'root page']) {
       );
     });
     const driver = await openDriver(t, directory, reference, frame, { WebSocketImpl: recordFailedWrites(fates) });
-    const observation = await driver.page('/', { roots: ['main'], quietMs: 300, settleTimeout: 15000 });
+    const observation = await driver.page('/', { roots: ['main'], quietMs: 300, settleTimeout: STEP_GUARD_MS });
     assert.equal(observation.settled, true, 'the page settles once the worker and its requests have finished');
     assert.deepEqual(observation.pendingRequests, [], 'no request of the page or of the worker is left pending');
     assert.deepEqual(posts, [], 'no worker write reached a fixture server');

@@ -924,13 +924,18 @@ async function runBackgroundJob(api, config, { id, payload, event }) {
   const { store } = api;
   const stamp = () => new Date(api.clock()).toISOString();
   let claimed = false;
+  // The claim and the final state find the job row by id inside their transaction: each backs up only the tables it
+  // reaches (DataStore#transact `tracked`), not the whole state.
   await api.change(() =>
-    store.transact(() => {
-      const { rows, index } = liveJob(store, id);
-      if (index < 0 || Number(rows[index].statecode) !== 0) return;
-      Object.assign(rows[index], { statecode: 2, statuscode: 20, startedon: stamp() });
-      claimed = true;
-    }),
+    store.transact(
+      () => {
+        const { rows, index } = liveJob(store, id);
+        if (index < 0 || Number(rows[index].statecode) !== 0) return;
+        Object.assign(rows[index], { statecode: 2, statuscode: 20, startedon: stamp() });
+        claimed = true;
+      },
+      { tracked: true },
+    ),
   );
   if (!claimed) return;
   let patch;
@@ -964,10 +969,13 @@ async function runBackgroundJob(api, config, { id, payload, event }) {
     };
   }
   await api.change(() =>
-    store.transact(() => {
-      const { rows, index } = liveJob(store, id);
-      if (index >= 0) Object.assign(rows[index], patch);
-    }),
+    store.transact(
+      () => {
+        const { rows, index } = liveJob(store, id);
+        if (index >= 0) Object.assign(rows[index], patch);
+      },
+      { tracked: true },
+    ),
   );
 }
 

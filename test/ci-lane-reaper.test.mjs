@@ -141,6 +141,29 @@ test('a lane record whose PID has another start identity is dropped and its proc
   await unrelatedExited;
 });
 
+// @test-kind contract: on Windows a recorded lane is ended through the held-handle helper and its answer decides the record
+test('Windows lane reaping ends a lane through its held handle and keeps only records it could not end', async (t) => {
+  for (const [answer, kept] of [
+    ['ended', false],
+    ['gone', false],
+    ['other', false],
+    ['refused', true],
+    ['unread', true],
+  ]) {
+    const { runs, run, write } = fixture(t);
+    const file = path.join(run, 'lanes.json');
+    write([{ pid: process.pid, identity: 'recorded-identity', label: answer }]);
+    const calls = [];
+    await reapLanes(runs, {
+      platform: 'win32',
+      endRecorded: async (...args) => (calls.push(args), answer),
+    });
+    assert.deepEqual(calls, [[process.pid, 'recorded-identity', { tree: true }]], answer);
+    const remaining = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map(({ label }) => label) : [];
+    assert.deepEqual(remaining, kept ? [answer] : [], answer);
+  }
+});
+
 test('a validation lane is recorded while it runs, and its record is removed when it ends', async (t) => {
   const { directory, runs } = fixture(t);
   const lane = startLane(directory, runs, 'recorded');

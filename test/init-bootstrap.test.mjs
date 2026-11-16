@@ -11,6 +11,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownedChildren } from './helpers/owned-children.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () =>
@@ -32,19 +33,25 @@ async function workspace(t) {
 // A child is ended by the running test's signal when the runner stops that test, never by a timer of its own. Tests in
 // this file run one at a time, so the signal recorded before each test is that test's.
 let testSignal;
+// A command may run its work in further processes (the generated test runner starts `node --test`), which hold the
+// project folder on Windows: the children are ended before the test's workspace is removed.
+const children = ownedChildren();
 beforeEach((t) => {
   testSignal = t.signal;
+  ownedFixture(t).add(() => children.end());
 });
 function run(args, { cwd, env = cleanEnv() } = {}) {
   return withProcessSlot(async () => {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, args, {
-        cwd,
-        env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        signal: testSignal,
-      });
+      const child = children.own(
+        spawn(process.execPath, args, {
+          cwd,
+          env,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          signal: testSignal,
+        }),
+      );
       let stdout = '',
         stderr = '';
       child.stdout.setEncoding('utf8').on('data', (value) => {

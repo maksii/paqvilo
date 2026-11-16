@@ -614,3 +614,65 @@ test('cancelled and superseded repairs release their navigation ownership', asyn
       );
     });
 });
+
+test('a draft tracker whose installation answer is outstanding when setup ends is removed from the page', async (t) => {
+  const installed = Promise.withResolvers(),
+    gate = Promise.withResolvers();
+  let opening;
+  const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    gate.resolve();
+    await opening?.then(
+      (detach) => detach(),
+      () => {},
+    );
+  });
+  const context = await browser.newContext({ serviceWorkers: 'block' }),
+    page = await context.newPage();
+  await page.goto(origin);
+  // Setup guards fire only when the test fires them; release guards are never fired.
+  const guards = new Set();
+  const clock = {
+    setTimeout: (fire, ms, ...args) => {
+      const guard = { fire: () => fire(...args), ms };
+      guards.add(guard);
+      return guard;
+    },
+    clearTimeout: (guard) => guards.delete(guard),
+  };
+  const attach = context.newCDPSession.bind(context);
+  const removed = [];
+  let registration;
+  t.mock.method(context, 'newCDPSession', async (...args) => {
+    const cdp = await attach(...args),
+      send = cdp.send.bind(cdp);
+    cdp.send = async (method, params) => {
+      if (method === 'Page.removeScriptToEvaluateOnNewDocument') removed.push(params.identifier);
+      const answer = await send(method, params);
+      if (
+        method === 'Page.addScriptToEvaluateOnNewDocument' &&
+        params.runImmediately &&
+        params.source?.includes('function installLateDraftTracker')
+      ) {
+        // The browser has registered and installed the tracker; only its answer is withheld.
+        registration = answer.identifier;
+        installed.resolve();
+        await gate.promise;
+      }
+      return answer;
+    };
+    return cdp;
+  });
+  const trackerGlobals = () =>
+    page.evaluate(() => Object.getOwnPropertyNames(window).filter((name) => name.startsWith('__paqviloLateDraft_')));
+  opening = interceptOrigin(context, origin, (route) => route.fallback(), { onError: () => {}, clock });
+  await installed.promise;
+  assert.notDeepEqual(await trackerGlobals(), [], 'the tracker is installed while its answer is outstanding');
+  // The setup stops waiting for the answer, and its release starts before the answer arrives.
+  const waiting = [...guards].filter(({ ms }) => ms === 30_000);
+  assert.equal(waiting.length, 1, 'only the installation command is awaited');
+  waiting[0].fire();
+  gate.resolve();
+  await assert.rejects(opening, /Page\.addScriptToEvaluateOnNewDocument did not answer within 30000 ms/);
+  assert.deepEqual(await trackerGlobals(), [], 'the tracker and its binding global are removed from the document');
+  assert.deepEqual(removed, [registration], 'the tracker registration is removed');
+});

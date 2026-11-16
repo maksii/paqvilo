@@ -542,11 +542,15 @@ export function openInEditor(editor, file, line = 1, col = 1) {
  * login to a signed-in account instead of switching), reads an antiforgery token the way the
  * portal does (/_layout/tokenhtml) and posts the sign-in form: ExternalLogin with a login_hint, or
  * the local persona sign-in page. The navigation starts just after this returns, so the panel's
- * request is still answered. Returns true, or the reason it could not start.
+ * request is still answered. Returns true, or the reason it could not start. A session stopped meanwhile retires its
+ * token in this document (removePanelUi); the deferred navigation then does not run.
  */
-async function runSessionFlow(flow) {
+export async function runSessionFlow(flow) {
+  // ponytail: any session retired in this document while the flow runs cancels it; pass the token if two sessions ever share a document.
+  const retired = () => globalThis.__paqviloRetiredSessions?.at(-1);
+  const before = retired();
   if (flow.navigate) {
-    setTimeout(() => location.assign(flow.navigate), 50);
+    setTimeout(() => retired() === before && location.assign(flow.navigate), 50);
     return true;
   }
   if (flow.logOff) await fetch(flow.logOff, { credentials: 'same-origin', redirect: 'manual', cache: 'no-store' });
@@ -568,7 +572,7 @@ async function runSessionFlow(flow) {
     form.append(input);
   }
   (document.body ?? document.documentElement).append(form);
-  setTimeout(() => HTMLFormElement.prototype.submit.call(form), 50);
+  setTimeout(() => retired() === before && HTMLFormElement.prototype.submit.call(form), 50);
   return true;
 }
 
@@ -1279,6 +1283,8 @@ export function enablePanel(context, session, opts = {}) {
         /* A missing display name must not block the portal's sign-in flow. */
       }
     }
+    // The session and persona reads above can outlast the dev loop: a stopped loop starts no flow in the page.
+    if (disposed) return { ok: false, error: 'The dev loop has stopped.' };
     let started;
     try {
       started = await page.evaluate(runSessionFlow, flow);
@@ -1303,14 +1309,20 @@ export function enablePanel(context, session, opts = {}) {
    */
   const nextLoad = (page) => {
     let listener;
-    const promise = new Promise((resolve) => {
-      listener = () => resolve();
-      page.once?.('load', listener);
-    });
-    return {
-      promise,
-      cancel: () => page.off?.('load', listener),
+    // Registered with the panel's listeners, so dispose() drops a load that never came.
+    const cancel = () => {
+      page.off?.('load', listener);
+      listeners.delete(cancel);
     };
+    const promise = new Promise((resolve) => {
+      listener = () => {
+        cancel();
+        resolve();
+      };
+      page.on?.('load', listener);
+    });
+    listeners.add(cancel);
+    return { promise, cancel };
   };
   const lineOf = (file, find) => {
     if (typeof find !== 'string' || !find || find.length > 300) return null;

@@ -192,8 +192,18 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   );
   await scope.locator('[data-act="inspect-section"][data-v="components"]').click();
   assert.equal(await scope.locator('[data-group="runtime-page-sources"]').count(), 0);
+  // The panel removes the outline again 2.5 s after it locates the field, so every outline the field receives is
+  // recorded by an observer installed before the click instead of being read afterwards.
+  await page.locator('#fx_title').evaluate((node) => {
+    window.locatedOutlines = [];
+    new MutationObserver(() => window.locatedOutlines.push(node.style.outline)).observe(node, {
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+  });
   await scope.locator('[data-group="runtime-columns"] [data-act="inspect-locate"][data-field="fx_title"]').click();
-  assert.match(await page.locator('#fx_title').evaluate((node) => node.style.outline), /3px/);
+  await page.waitForFunction(() => window.locatedOutlines.length > 0);
+  assert.match(await page.evaluate(() => window.locatedOutlines[0]), /3px/);
   await scope.locator('[data-act="inspect-pick"]').click();
   const fieldBox = await page.locator('#fx_title').boundingBox();
   await page.mouse.click(fieldBox.x + 10, fieldBox.y + 10);
@@ -244,7 +254,9 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   fs.writeFileSync(path.join(fx.portal, 'content-snippets/Banner.contentsnippet.value.html'), 'Updated banner');
   await scope.locator('[data-act="inspect-refresh"]').click();
   await scope.locator('[data-group="runtime-snippets"]').getByText('“Updated banner”').waitFor();
-  await page.locator('#other').click();
+  // The link's document is awaited before the panel is used: a click or a text match in the page being left would
+  // act on the old panel.
+  await Promise.all([page.waitForURL(origin + '/other/'), page.locator('#other').click()]);
   await scope
     .locator('[data-act="tab"][data-v="runtime"]')
     .click()

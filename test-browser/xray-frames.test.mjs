@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own X-ray frame picking, outline geometry and input guards (lense/xray-ui.mjs) on invented routed fixtures
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,6 +7,7 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { inspectRenderedPage } from '../lense/source-inspection.mjs';
 import { elementSourceHints } from '../lense/element-provenance.mjs';
+import { navigateFrame } from './helpers/frame-navigation.mjs';
 
 let browser;
 before(async () => {
@@ -147,7 +149,8 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
       (row) => row.component.entity === 'fx_b' && row.component.name === 'title',
     ),
   );
-  await page.locator('#dynamic').evaluate((node) => (node.src = '/form?entityformid=A'));
+  // The replaced document also has a #title; pick only in the navigated one.
+  await navigateFrame(page, '#dynamic', '/form?entityformid=A');
   await dynamic.locator('#title').waitFor();
   selected = await pick(page, dynamic.locator('#title'));
   assert.ok(

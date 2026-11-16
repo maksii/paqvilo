@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_CORE_COMMANDS, MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertReportOutput } from '../lib/report-output.mjs';
+import { runMirageCommand } from '../cli-command.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
@@ -20,6 +21,18 @@ const run = (program, ...args) =>
     timeout: CLI_HANG_GUARD_MS,
   });
 const fixture = path.join(root, 'mirage/test/fixtures/wet-boew-bilingual');
+// The Mirage command's entry function with its output captured, shaped like the spawnSync result the assertions read.
+const runMirage = async (...args) => {
+  const captured = { stdout: '', stderr: '' };
+  const stream = (name) => ({
+    write: (chunk) => {
+      captured[name] += String(chunk);
+      return true;
+    },
+  });
+  const status = await runMirageCommand(args, { stdout: stream('stdout'), stderr: stream('stderr'), cwd: root });
+  return { status, stdout: captured.stdout, stderr: captured.stderr };
+};
 
 // @test-kind tooling: a command name must not be both a core command and a public tool with two different usages
 test('core command names and public tool names are disjoint and mirage help prints each usage once', () => {
@@ -37,17 +50,17 @@ test('core command names and public tool names are disjoint and mirage help prin
   );
 });
 
-test('core commands reject extra positionals and retain preflight invocation exit code', () => {
+test('core commands reject extra positionals and retain preflight invocation exit code', async () => {
   for (const [command, code] of [
     ['inspect', 1],
     ['preflight', 2],
   ]) {
-    const result = run('mirage/cli.mjs', command, 'unexpected', '--source', fixture, '--json');
+    const result = await runMirage(command, 'unexpected', '--source', fixture, '--json');
     assert.equal(result.status, code, result.stderr);
     assert.match(JSON.parse(result.stdout).error.message, /Unexpected positional argument: unexpected/);
     assert.equal(result.stderr, '');
   }
-  const help = run('mirage/cli.mjs', '-h');
+  const help = await runMirage('-h');
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /Commands:/);
 });
@@ -119,19 +132,19 @@ test('every public Mirage tool rejects unknown flags with an error and empty std
   }
 });
 
-test('core commands reject options belonging to another command with JSON errors when requested', () => {
+test('core commands reject options belonging to another command with JSON errors when requested', async () => {
   for (const [command, flag] of [
     ['inspect', '--rows=2'],
     ['preflight', '--port=42'],
     ['serve', '--scenario=file'],
     ['data', '--no-watch'],
   ]) {
-    const result = run('mirage/cli.mjs', command, flag, '--json');
+    const result = await runMirage(command, flag, '--json');
     assert.equal(result.status, command === 'preflight' ? 2 : 1);
     assert.match(JSON.parse(result.stdout).error.message, /not supported/);
     assert.equal(result.stderr, '');
   }
-  const result = run('mirage/cli.mjs', 'preflight', '--unknown', '--json');
+  const result = await runMirage('preflight', '--unknown', '--json');
   assert.equal(result.status, 2);
   assert.match(JSON.parse(result.stdout).error.message, /--unknown/);
   assert.equal(result.stderr, '');
@@ -157,19 +170,19 @@ test('JSON-capable tools return one structured error for invalid flags', () => {
   }
 });
 
-test('unknown core command does not become successful help', () => {
-  const result = run('mirage/cli.mjs', 'inspekt', '--help');
+test('unknown core command does not become successful help', async () => {
+  const result = await runMirage('inspekt', '--help');
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Unknown command: inspekt/);
   assert.equal(result.stdout, '');
 });
 
-test('JSON and preflight detection respect option values and the terminator', () => {
-  const positional = run('mirage/cli.mjs', 'inspect', '--', '--json');
+test('JSON and preflight detection respect option values and the terminator', async () => {
+  const positional = await runMirage('inspect', '--', '--json');
   assert.equal(positional.status, 1);
   assert.equal(positional.stdout, '');
   assert.match(positional.stderr, /Unexpected positional/);
-  const value = run('mirage/cli.mjs', 'render', '--path', 'preflight', '--bogus');
+  const value = await runMirage('render', '--path', 'preflight', '--bogus');
   assert.equal(value.status, 1);
   const tool = run('mirage/query-inventory.mjs', '--', '--json');
   assert.equal(tool.status, 1);
@@ -207,9 +220,9 @@ test('JSON tools report missing inputs without reading a configured site', async
   }
 });
 
-test('core rejects explicitly empty option values before source resolution', () => {
+test('core rejects explicitly empty option values before source resolution', async () => {
   for (const option of ['--source=', '--project=', '--site=', '--port=']) {
-    const result = run('mirage/cli.mjs', 'inspect', option, '--json');
+    const result = await runMirage('inspect', option, '--json');
     assert.equal(result.status, 1);
     assert.match(JSON.parse(result.stdout).error.message, /requires a nonempty value|not supported/);
     assert.equal(result.stderr, '');
@@ -229,14 +242,14 @@ test('missing selectors write usage to stderr while help succeeds on stdout', ()
   }
 });
 
-test('explicit source selectors and data flags are validated before source reads', () => {
+test('explicit source selectors and data flags are validated before source reads', async () => {
   for (const args of [
     ['inspect', '--source', fixture, '--portal', 'missing'],
     ['inspect', '--project', 'missing-project', '--source', fixture],
     ['data', 'scaffold', '--pack', 'ignored'],
     ['data', 'scaffold', 'unexpected'],
   ]) {
-    const result = run('mirage/cli.mjs', ...args, '--json');
+    const result = await runMirage(...args, '--json');
     assert.equal(result.status, 1, args.join(' '));
     const message = JSON.parse(result.stdout).error.message;
     assert.match(
@@ -262,13 +275,13 @@ test('public tool option tables reject empty string values', () => {
   }
 });
 
-test('data counts fail before resolving a missing catalogue', () => {
+test('data counts fail before resolving a missing catalogue', async () => {
   for (const args of [
     ['scaffold', '--rows', 'invalid'],
     ['generate', '--materialize-persona-memberships', '--count', 'items=invalid'],
     ['generate', '--materialize-persona-memberships', '--count', 'items=1', '--count', 'items=2'],
   ]) {
-    const result = run('mirage/cli.mjs', 'data', ...args, '--config', 'missing-catalogue.yml', '--json');
+    const result = await runMirage('data', ...args, '--config', 'missing-catalogue.yml', '--json');
     assert.equal(result.status, 1);
     assert.match(JSON.parse(result.stdout).error.message, /--rows|--count/);
     assert.equal(result.stderr, '');
@@ -359,7 +372,7 @@ test('render refuses to overwrite a portal source or linked workspace state befo
     const stateLink = path.join(dir, 'state-link.json');
     await fs.link(state, stateLink);
     for (const output of [sourceFile, linked, stateLink]) {
-      const result = run('mirage/cli.mjs', 'render', '--source', source, '--state', state, '--output', output);
+      const result = await runMirage('render', '--source', source, '--state', state, '--output', output);
       assert.equal(result.status, 1, result.stderr);
       assert.match(result.stderr, /Report output must/);
       assert.doesNotMatch(result.stderr, /runtime-startup/);

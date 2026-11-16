@@ -165,11 +165,22 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), false);
   assert.equal(await page.evaluate(() => window.__inspectionRequests), 1);
   const response = page.waitForResponse((res) => res.url().includes('/__paqvilo/api/inspect'));
+  // The panel reads the inspection answer with Response.json() and accepts or rejects it in the promise reactions of
+  // that read, so its handling has ended once the read has settled and the page has run another task.
   await page.evaluate(() => {
+    const json = Response.prototype.json;
+    window.__inspectionAnswersRead = 0;
+    Response.prototype.json = function (...args) {
+      const read = json.apply(this, args);
+      if (this.url.includes('/__paqvilo/api/inspect'))
+        read.finally(() => window.__inspectionAnswersRead++).catch(() => {});
+      return read;
+    };
     window.__inspectionMode = 'pass';
     window.__releaseInspection();
   });
   await response;
+  await page.waitForFunction(() => window.__inspectionAnswersRead === 1);
   assert.equal(
     await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled),
     false,
@@ -243,6 +254,7 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
     window.__releaseCatalogue();
   });
   await scope.locator('.loading-state').waitFor({ state: 'hidden' });
+  const firstOpen = new Promise((resolve) => (openArrived = resolve));
   await scope.locator('[data-act="open"]').first().click();
   await scope.locator('.working').getByText('Opening the source editor…', { exact: true }).waitFor();
   assert.equal(await scope.locator('[data-act="open"]').first().isDisabled(), true);
@@ -254,6 +266,8 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   assert.equal(await page.evaluate(() => window.__openRequests), 1, 'duplicate source opening is coalesced');
   await scope.getByRole('tab', { name: 'Activity' }).click();
   await scope.locator('.working').waitFor();
+  // The dev loop assigns the release when the request reaches it, which the click does not wait for.
+  await firstOpen;
   releaseOpen();
   await scope.locator('.working').waitFor({ state: 'hidden' });
   await scope

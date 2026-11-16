@@ -170,11 +170,14 @@ test('same-document history and fragments leave pending reads visible and bounde
   const observer = await observePageLifecycle(page, { origin });
   ownedFixture(t).add(() => observer.dispose());
   await page.goto(origin);
+  // The read has reached the network before settling starts: its request event can arrive after the bound under load.
+  const observed = page.waitForRequest((request) => request.url().includes('/pending?token='));
   await page.evaluate(() => {
     fetch('/pending?token=secret').catch(() => {});
     location.hash = 'fragment';
     history.pushState({}, '', '/history');
   });
+  await observed;
   const result = await observer.settle({ timeout: 250 });
   assert.equal(result.settled, false);
   assert.equal(result.pendingRequests.length, 1);

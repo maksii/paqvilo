@@ -1,5 +1,6 @@
 // Thin git helpers: the baseline version of a source file and the set of files changed against it.
 import { execFile, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const GIT_ARGS = ['-c', 'core.quotepath=off', '-c', 'core.longpaths=true'];
@@ -76,13 +77,31 @@ export async function gitHead(sourceDir) {
 }
 
 /**
+ * The nearest `.git` entry of the folder or of one of its parents, or null. Git finds a working tree's repository
+ * only through that entry (the variables that would name a repository elsewhere are removed from Git's environment
+ * here), so which repository a folder is in can change only when this path, or the file it names, changes.
+ */
+function nearestGitMarker(sourceDir) {
+  for (let dir = path.resolve(sourceDir); ; dir = path.dirname(dir)) {
+    const marker = path.join(dir, '.git');
+    if (fs.existsSync(marker)) return marker;
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+
+/** Whether the folder or one of its parents holds a `.git` entry: without one it is in no repository. */
+export const gitMarkerExists = (sourceDir) => nearestGitMarker(sourceDir) !== null;
+
+/**
  * Directories whose files change when HEAD or a ref moves: the checkout's own git dir (HEAD of a
- * linked worktree lives there) and the common dir (refs, packed-refs). Null when Git answers that the folder is
- * not in a working tree; rejects when Git gives no answer.
- * @returns {Promise<{gitDir: string, commonDir: string, toplevel: string}|null>}
+ * linked worktree lives there) and the common dir (refs, packed-refs). `marker` is the `.git` entry Git found them
+ * through (null when it changed while Git was answering). Null when Git answers that the folder is not in a working
+ * tree; rejects when Git gives no answer.
+ * @returns {Promise<{gitDir: string, commonDir: string, toplevel: string, sourceDir: string, marker: string|null}|null>}
  */
 export async function gitDirectories(sourceDir) {
   sourceDir = path.resolve(sourceDir);
+  const marker = nearestGitMarker(sourceDir);
   let output;
   try {
     output = await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel']);
@@ -96,7 +115,123 @@ export async function gitDirectories(sourceDir) {
     gitDir: path.resolve(sourceDir, gitDir),
     commonDir: path.resolve(sourceDir, commonDir),
     toplevel: path.resolve(toplevel),
+    sourceDir,
+    marker: marker === nearestGitMarker(sourceDir) ? marker : null,
   };
+}
+
+// Where Git looks for a short ref name, in its order (gitrevisions: <refname>).
+const refCandidates = (name) => [
+  name,
+  `refs/${name}`,
+  `refs/tags/${name}`,
+  `refs/heads/${name}`,
+  `refs/remotes/${name}`,
+  `refs/remotes/${name}/HEAD`,
+];
+
+/** The text of a ref file; 'absent' or 'directory' when there is no such file. Any other failure throws. */
+function readRefFile(file) {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    if (text.length > 1024) throw new Error('not a ref file');
+    return text;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return 'absent';
+    if (error.code === 'EISDIR') return 'directory';
+    throw error;
+  }
+}
+
+/**
+ * The value of a symbolic ref line that starts with `prefix`, without its trailing whitespace; undefined for any other
+ * text. Trailing whitespace is removed by trimEnd rather than a lazy match, which backtracks quadratically on long
+ * values; a value spanning lines does not match, as `.` does not match a line terminator.
+ */
+function symbolicRefValue(text, prefix = 'ref: ') {
+  if (!text.startsWith(prefix)) return undefined;
+  const value = text.slice(prefix.length).trimEnd();
+  return /[\n\r\p{Zl}\p{Zp}]/u.test(value) ? undefined : value;
+}
+
+const fileStamp = (file) => {
+  const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
+  return stat ? `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : 'absent';
+};
+
+/**
+ * Everything in the repository's files that decides which commits `names` resolve to: the text of every loose ref
+ * file Git would read for them (in the checkout's own git dir and in the common dir, following symbolic refs), and
+ * the identity of packed-refs, of the shallow and grafts files and of the replace refs. Two equal states resolve to
+ * the same commits, so a Git answer read between two equal states stays true until the state differs. Null when the
+ * files cannot show it (no repository known, another `.git` entry now decides which repository the folder is in, the
+ * reftable backend, a file that cannot be read, a symbolic ref that leaves refs/): the caller asks Git then.
+ */
+function repositoryRefState(directories, names) {
+  if (!directories?.marker || !names) return null;
+  const { gitDir, commonDir, sourceDir, marker } = directories;
+  const roots = [...new Set([gitDir, commonDir])];
+  const parts = [];
+  const seen = new Set();
+  const follow = (name) => {
+    if (seen.has(name)) return true;
+    if (seen.size >= 64) return false;
+    seen.add(name);
+    for (const root of roots) {
+      const text = readRefFile(path.join(root, name));
+      parts.push(`${root}\0${name}\0${text}`);
+      const target = symbolicRefValue(text);
+      if (target === undefined) continue;
+      if (!/^refs\/[\w./-]+$/.test(target) || target.includes('..') || !follow(target)) return false;
+    }
+    return true;
+  };
+  try {
+    if (nearestGitMarker(sourceDir) !== marker) return null;
+    // A linked worktree and a submodule name their repository in a `.git` file.
+    parts.push(`marker\0${readRefFile(marker)}`);
+    if (fs.existsSync(path.join(commonDir, 'reftable'))) return null;
+    if (!names.every(follow)) return null;
+    for (const name of ['packed-refs', 'shallow', 'info/grafts'])
+      parts.push(`${name}\0${fileStamp(path.join(commonDir, name))}`);
+    const replace = path.join(commonDir, 'refs', 'replace');
+    if (fs.existsSync(replace))
+      for (const name of fs.readdirSync(replace).sort())
+        parts.push(`replace\0${name}\0${fileStamp(path.join(replace, name))}`);
+  } catch {
+    return null;
+  }
+  return parts.join('\n');
+}
+
+/** The ref names a baseline spec is resolved from, or null when only Git can tell (revision syntax, object ids). */
+function specRefNames(spec) {
+  const target = spec.startsWith('merge-base:') ? spec.slice('merge-base:'.length) : null;
+  const name = target ?? spec;
+  if (name !== 'HEAD') {
+    if (!/^\w[\w./-]*$/.test(name) || name.includes('..')) return null;
+    // An abbreviated object id and a describe name (v1-3-gabc) are resolved from the object store, not from refs.
+    if (/^[0-9a-f]{4,}$/i.test(name) || /-g[0-9a-f]+$/i.test(name)) return null;
+  }
+  const names = name === 'HEAD' ? ['HEAD'] : refCandidates(name);
+  return target === null ? names : ['HEAD', ...names]; // a merge base also depends on HEAD
+}
+
+/**
+ * The repository state that decides gitHead(): HEAD, the branch it names and every ref that could make the short
+ * branch name ambiguous. Null when files cannot show it; see repositoryRefState.
+ * @param {{gitDir: string, commonDir: string}|null} directories from gitDirectories()
+ */
+export function gitHeadState(directories) {
+  if (!directories) return null;
+  let head;
+  try {
+    head = readRefFile(path.join(directories.gitDir, 'HEAD'));
+  } catch {
+    return null;
+  }
+  const branch = symbolicRefValue(head, 'ref: refs/heads/');
+  return repositoryRefState(directories, branch ? ['HEAD', ...refCandidates(branch)] : ['HEAD']);
 }
 
 /** Blob contents (null for a missing path or a non-blob) of a `cat-file --batch` response, in request order. */
@@ -167,6 +302,11 @@ export class GitBaseline {
     this.pendingChanges = 0;
     this.changeQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.pendingRefCheck = null;
+    this.repository = null;
+    this.noRepository = false;
+    this.resolvedRefState = null;
+    this.tree = null;
+    this.treeLoad = null;
     try {
       this.refArgs = refArgs(ref);
       this.#acceptCommit(commit ?? git(this.sourceDir, this.refArgs).trim());
@@ -185,12 +325,42 @@ export class GitBaseline {
     }
   }
 
+  /**
+   * Tells the baseline where the repository keeps its refs (gitDirectories()). From then on a change scan asks Git
+   * for the baseline commit only when the files that decide it differ from the state Git last answered for; see
+   * repositoryRefState for what that state covers and when it is unknown. Null is Git's answer that the folder is in
+   * no repository: the baseline then stays unavailable, unasked, until a `.git` entry appears (gitMarkerExists).
+   */
+  followRepository(directories) {
+    this.repository = directories ?? null;
+    this.noRepository = directories === null;
+    this.resolvedRefState = null;
+  }
+
+  #refState() {
+    return this.repository ? repositoryRefState(this.repository, specRefNames(this.spec)) : null;
+  }
+
+  /** Keeps `before` as the state of the commit just accepted, unless the refs moved while Git was answering. */
+  #recordRefState(before) {
+    this.resolvedRefState = before !== null && before === this.#refState() ? before : null;
+  }
+
+  /** Whether the accepted commit is still what the ref resolves to, without asking Git. */
+  #refIsCurrent() {
+    if (!this.available) return this.noRepository && !gitMarkerExists(this.sourceDir);
+    if (this.spec === this.commit) return true; // a full commit id names that commit for good
+    return this.resolvedRefState !== null && this.resolvedRefState === this.#refState();
+  }
+
   #acceptCommit(commit) {
     const changed = !this.available || this.commit !== commit;
     if (changed) {
       this.baselineVersion++;
       this.cache.clear();
       this.changedSnapshot = null;
+      this.tree = null;
+      this.treeLoad = null;
     }
     this.commit = commit;
     this.available = true;
@@ -205,6 +375,9 @@ export class GitBaseline {
     this.commit = null;
     this.cache.clear();
     this.changedSnapshot = null;
+    this.tree = null;
+    this.treeLoad = null;
+    this.resolvedRefState = null;
     this.error = `Cannot read baseline ${this.spec}: ${err.message.split('\n')[0]}`;
     return changed;
   }
@@ -212,12 +385,18 @@ export class GitBaseline {
   /** Non-blocking ref check for the watcher, including merge-base changes and lost/recovered refs. */
   async checkForUpdate() {
     if (!this.refArgs) return false;
+    // Git answered that the folder is in no repository: it is asked again once a `.git` entry could make it one.
+    if (!this.available && this.#refIsCurrent()) return false;
     if (this.pendingRefCheck) return this.pendingRefCheck; // NOSONAR: optional pending promise, awaited only when set
     const generation = ++this.refGeneration;
     const pending = (async () => {
+      const before = this.#refState();
       try {
         const commit = (await gitAsync(this.sourceDir, this.refArgs)).trim();
-        return generation === this.refGeneration ? this.#acceptCommit(commit) : false;
+        if (generation !== this.refGeneration) return false;
+        const changed = this.#acceptCommit(commit);
+        this.#recordRefState(before);
+        return changed;
       } catch (err) {
         return generation === this.refGeneration ? this.#unavailable(err) : false;
       } finally {
@@ -341,6 +520,56 @@ export class GitBaseline {
     };
   }
 
+  /**
+   * The paths of the baseline commit below sourceDir, read once per commit (a commit's tree never changes). Null
+   * when Git did not list them.
+   * @returns {Set<string>|null|Promise<Set<string>|null>}
+   */
+  #treePaths() {
+    if (this.tree) return this.tree;
+    const version = this.baselineVersion;
+    this.treeLoad ??= gitAsync(this.sourceDir, ['ls-tree', '-r', '--name-only', '-z', this.commit]).then(
+      (output) => {
+        if (version !== this.baselineVersion) return null;
+        this.treeLoad = null;
+        this.tree = new Set(output.split('\0').filter(Boolean));
+        return this.tree;
+      },
+      () => {
+        if (version === this.baselineVersion) this.treeLoad = null;
+        return null;
+      },
+    );
+    return this.treeLoad;
+  }
+
+  /**
+   * Whether the untracked-files listing can add anything for these saved paths. It cannot for a path that is a
+   * file of the baseline commit: while it is tracked, `diff` compares it; once it is removed from the index, `diff`
+   * reports it as deleted. A directory on disk can hold untracked files whatever the commit has under that name.
+   */
+  #untrackedPossible(scoped, tree) {
+    if (!tree) return true;
+    return scoped.some(
+      (rel) =>
+        !tree.has(rel) || fs.statSync(path.resolve(this.sourceDir, rel), { throwIfNoEntry: false })?.isDirectory(),
+    );
+  }
+
+  /** Runs the commands of a change plan; settled results in the order [diff, untracked]. */
+  async #scan({ scoped, commands: [diff, untracked] }) {
+    const run = (args) => gitAsync(this.sourceDir, args);
+    if (!scoped) return Promise.allSettled([run(diff), run(untracked)]);
+    const known = this.#treePaths();
+    if (known instanceof Set)
+      return Promise.allSettled([run(diff), this.#untrackedPossible(scoped, known) ? run(untracked) : '']);
+    // First scoped scan of this commit: its paths are listed alongside the diff, and the untracked listing runs
+    // afterwards only when a saved path needs it.
+    const [changed, tree] = await Promise.allSettled([run(diff), known]);
+    const [others] = await Promise.allSettled([this.#untrackedPossible(scoped, tree.value) ? run(untracked) : '']);
+    return [changed, others];
+  }
+
   #mergeChanges({ scoped, previous }, lists) {
     const out = new Set();
     for (const list of lists) {
@@ -369,9 +598,11 @@ export class GitBaseline {
     this.changeGeneration++;
     if (!this.refArgs) return new Set();
     try {
-      if (refreshRef) {
+      if (refreshRef && !this.#refIsCurrent()) {
         this.refGeneration++;
+        const before = this.#refState();
         this.#acceptCommit(git(this.sourceDir, this.refArgs).trim());
+        this.#recordRefState(before);
       }
       if (!this.available) return new Set();
       const plan = this.#changePlan(files, this.pendingChanges > 0);
@@ -400,13 +631,16 @@ export class GitBaseline {
       await previous;
       if (generation !== this.changeGeneration || !this.refArgs) return current();
       try {
-        if (refreshRef) {
+        if (refreshRef && !this.#refIsCurrent()) {
           const refGeneration = ++this.refGeneration;
+          const before = this.#refState();
           try {
             const commit = (await gitAsync(this.sourceDir, this.refArgs)).trim();
             if (generation !== this.changeGeneration) return current();
-            if (refGeneration === this.refGeneration) this.#acceptCommit(commit);
-            else if (this.pendingRefCheck) await this.pendingRefCheck;
+            if (refGeneration === this.refGeneration) {
+              this.#acceptCommit(commit);
+              this.#recordRefState(before);
+            } else if (this.pendingRefCheck) await this.pendingRefCheck;
           } catch (error) {
             if (generation !== this.changeGeneration) return current();
             if (refGeneration === this.refGeneration) this.#unavailable(error);
@@ -418,8 +652,8 @@ export class GitBaseline {
           const version = this.baselineVersion;
           const plan = this.#changePlan(files, forceFull);
           if (plan.scoped?.length === 0) return current();
-          // Wait for both commands even on failure before another queued scan can start.
-          const results = await Promise.allSettled(plan.commands.map((args) => gitAsync(this.sourceDir, args)));
+          // Wait for every command even on failure before another queued scan can start.
+          const results = await this.#scan(plan);
           if (generation !== this.changeGeneration) return current();
           // A ref poll changed the baseline during the scan. Recompute against its new commit.
           if (version !== this.baselineVersion) {

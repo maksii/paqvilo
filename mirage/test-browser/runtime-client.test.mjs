@@ -30,7 +30,7 @@ test('running-runtime client signs a Playwright context in and out with the conf
     browser = await chromium.launch(browserLaunchOptions({ headless: true }));
     const context = await browser.newContext();
     try {
-      const client = await connectRuntime({ origin: simulator.url });
+      const client = await connectRuntime({ origin: simulator.url, timeoutMs: 0 });
       await client.signIn(context, { configuredPersona: true });
       let session = await (await context.request.get(simulator.url + '/_sim/api/session')).json();
       assert.equal(session.contactId, 'synthetic');

@@ -337,6 +337,8 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
     .getByText('R', { exact: true })
     .waitFor();
   await panelLocator('[data-act="copypage"]').first().click();
+  // The panel writes the clipboard asynchronously and names the copy in its toast once the write has settled.
+  await panelLocator('.toast').getByText('Address copied', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), `${app.url}/secure/`);
 
   // _sim deep link: requests for this page open in the admin, which the panel leaves alone.
@@ -352,9 +354,9 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   assert.equal(new URL(admin.url()).hash, '#activity?path=%2Fsecure%2F');
   await admin.getByRole('button', { name: 'Remove filter Path: /secure/' }).waitFor();
   await admin.waitForFunction(() => document.querySelector('#content tbody')?.textContent.includes('/secure/'));
-  // No event marks a draw that never happens. Panel draws run 250 ms after a page event (schedule
-  // in lense/panel.mjs); a quiet period beyond that debounce proves the panel stays absent.
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Every draw of a tab, scheduled or not, goes through the panel's draw: one asked for this tab here has
+  // completed when it returns, and has drawn nothing.
+  await panel.draw(admin);
   assert.equal(await admin.locator('#paqvilo-panel').count(), 0);
   await admin.close();
   // Diagnostics opens the Findings tab of Activity (DV-N4-1).
@@ -394,17 +396,29 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await evidence('panel-tweaks-confirmation');
   // Regression: the sign-out waited for the Mirage's reload for at most 4 s, then ran in the
   // document that a slower reload destroyed, and this browser stayed signed in (hosted Edge).
-  // Holding the reload's document past that old fallback proves the sign-out waits for the reload itself.
+  // The reload's document is held until the panel's scenario request has been answered, so the sign-out below
+  // follows the reload itself. That no deadline starts it earlier is checked with virtual time in
+  // test/panel.test.mjs ('a scenario sign-in starts at the reload itself, however long the reload takes').
   let heldReloadObserved = false;
+  const scenarioAnswered = Promise.withResolvers(),
+    panelApi = session.api;
+  session.api = async (route, name) => {
+    try {
+      return await panelApi(route, name);
+    } finally {
+      if (name === 'scenario') scenarioAnswered.resolve();
+    }
+  };
   const reloadHeld = async (route) => {
     if (!route.request().isNavigationRequest()) return route.fallback();
     heldReloadObserved = true;
     await page.unroute(`${app.url}/secure/`, reloadHeld);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await scenarioAnswered.promise;
     return route.fallback();
   };
   await page.route(`${app.url}/secure/`, reloadHeld);
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panelLocator('[data-act="confirm-yes"]').click()]);
+  session.api = panelApi;
   assert.equal(heldReloadObserved, true, 'the sign-out navigation entered the held reload route');
   assert.equal(app.state().config.permissionMode, 'enforce');
   assert.equal(app.state().config.activeScenario.id, 'anonymous-enforced');

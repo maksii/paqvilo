@@ -1,15 +1,23 @@
 // @test-kind contract: scoped stop commands preserve ownership and report stopped project processes
 // Catalogue site/portal scope: shared IDs and runtime dispatch never broaden a stop, and legacy
 // ownership records without a catalogue marker require exact selectors.
+//
+// Which record a stop selects is decided by the command from its configuration and the ownership records, so the
+// commands run in this process against runtime doubles (test/helpers/mirage-in-process.mjs): no scenario here
+// depends on a runtime being an operating-system process.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { miragePaths } from '../lense/commands/mirage.mjs';
 import { listenerPort } from '../lense/stop-command.mjs';
-import { workspace, alive, stopped } from './mirage-stop-workspace.mjs';
+import { workspace, alive, stopped } from './helpers/mirage-in-process.mjs';
 
-test('catalogue site/portal ID collisions never broaden project stop and ambiguous legacy records require exact selectors', async (t) => {
+/**
+ * A workspace whose catalogue names two sites over one two-portal project, so the launches of both sites share every
+ * ID but the catalogue site. Each test below starts its own runtimes in it.
+ */
+async function sharedProjectCatalogue(t) {
   const work = await workspace(t);
   const config = path.join(work.directory, 'catalogue controls', 'shared.json');
   const project = path.join(work.directory, 'external projects', 'shared.json');
@@ -40,12 +48,18 @@ test('catalogue site/portal ID collisions never broaden project stop and ambiguo
     '--port',
     '0',
   ];
+  const broadArgs = ['mirage', 'stop', '--config', config, '--site', 'first', '--project', project, '--json'];
+  const paths = miragePaths({ stateDir: path.join(path.dirname(config), '.paqvilo') });
+  return { work, config, project, catalogue, firstArgs, secondArgs, broadArgs, paths };
+}
+
+test('catalogue site/portal ID collisions never broaden project stop', async (t) => {
+  const { work, firstArgs, secondArgs, broadArgs } = await sharedProjectCatalogue(t);
   // Different catalogue sites and portals: independent launches.
   const [first, second] = await Promise.all([work.start(firstArgs), work.start(secondArgs)]);
   const reused = await work.start(firstArgs);
   assert.equal(reused.pid, first.pid);
   assert.equal(reused.started, false);
-  const broadArgs = ['mirage', 'stop', '--config', config, '--site', 'first', '--project', project, '--json'];
   const wrongSite = await work.run([
     ...broadArgs,
     '--portal',
@@ -70,28 +84,34 @@ test('catalogue site/portal ID collisions never broaden project stop and ambiguo
   );
   await alive(second);
   const restarted = await work.start(firstArgs);
-  const paths = miragePaths({ stateDir: path.join(path.dirname(config), '.paqvilo') });
+  assert.notEqual(restarted.pid, first.pid, 'the stopped site starts again on its state file');
+  assert.equal(restarted.started, true);
+});
+
+test('ambiguous legacy records require exact selectors until the catalogue names one site', async (t) => {
+  const { work, config, project, catalogue, firstArgs, secondArgs, broadArgs, paths } = await sharedProjectCatalogue(t);
+  const [legacy, second] = await Promise.all([work.start(firstArgs), work.start(secondArgs)]);
   const records = JSON.parse(await fs.readFile(paths.ownershipFile, 'utf8'));
   for (const entry of records.sessions) {
     delete entry.identity.scope.version;
     delete entry.identity.scope.catalogueSite;
   }
   await fs.writeFile(paths.ownershipFile, JSON.stringify(records));
-  // The restarted runtime is still alive on the first portal's state file, so this start uses its own.
+  // The legacy runtime is alive on the first portal's state file, so this start uses its own.
   const modernAfterLegacy = await work.start([...firstArgs, '--state', path.join(work.directory, 'modern state.json')]);
-  assert.notEqual(modernAfterLegacy.pid, restarted.pid, 'markerless scope cannot satisfy the new identity for reuse');
+  assert.notEqual(modernAfterLegacy.pid, legacy.pid, 'markerless scope cannot satisfy the new identity for reuse');
   assert.equal(modernAfterLegacy.started, true);
   const ambiguous = await work.run(broadArgs);
   assert.equal(ambiguous.status, 1, ambiguous.stdout + ambiguous.stderr);
   assert.match(JSON.parse(ambiguous.stdout).error.message, /legacy.*ownership.*ambiguous/i);
-  const requestedZero = await work.run([...broadArgs, '--state', restarted.stateFile, '--port', '0']);
+  const requestedZero = await work.run([...broadArgs, '--state', legacy.stateFile, '--port', '0']);
   assert.equal(requestedZero.status, 1, requestedZero.stdout + requestedZero.stderr);
   assert.match(JSON.parse(requestedZero.stdout).error.message, /legacy.*ownership.*ambiguous/i);
-  await alive(restarted);
+  await alive(legacy);
   await alive(modernAfterLegacy);
   await alive(second);
-  await work.replay(restarted.stop);
-  await stopped(restarted);
+  await work.replay(legacy.stop);
+  await stopped(legacy);
   await work.replay(modernAfterLegacy.stop);
   await stopped(modernAfterLegacy);
   await alive(second);
@@ -116,6 +136,10 @@ test('catalogue site/portal ID collisions never broaden project stop and ambiguo
     [second.pid],
   );
   await stopped(second);
+});
+
+test('a legacy record of a project override on another catalogue site stays ambiguous', async (t) => {
+  const { work, config, project, catalogue, broadArgs, paths } = await sharedProjectCatalogue(t);
   const overridden = structuredClone(catalogue);
   delete overridden.sites.second.mirage.project;
   await fs.writeFile(config, JSON.stringify(overridden));
@@ -180,14 +204,13 @@ test('standalone catalogue scope survives inferred/explicit runtime dispatch ind
     ];
     const wrong = await work.run(
       [...stop, '--state', second.stateFile, '--port', listenerPort(second.url)],
-      {},
       ownershipCwd,
     );
     assert.equal(wrong.status, 0, wrong.stdout + wrong.stderr);
     assert.deepEqual(JSON.parse(wrong.stdout).stopped, []);
     await alive(first);
     await alive(second);
-    const broad = await work.run(stop, {}, ownershipCwd);
+    const broad = await work.run(stop, ownershipCwd);
     assert.equal(broad.status, 0, broad.stdout + broad.stderr);
     assert.deepEqual(
       JSON.parse(broad.stdout).stopped.map(({ pid }) => pid),
@@ -195,7 +218,7 @@ test('standalone catalogue scope survives inferred/explicit runtime dispatch ind
     );
     await stopped(first);
     await alive(second);
-    await work.replay(second.stop, false, elsewhere);
+    await work.replay(second.stop, elsewhere);
     await stopped(second);
   }
   const invalid = await work.run([

@@ -1,6 +1,7 @@
 import { types } from 'node:util';
 import { pagedRecordsOf, recordTablesCreated } from './record-tables.mjs';
 import { cloneRecordGraph } from './record-clone.mjs';
+import { untracked } from './state-tracking.mjs';
 
 const BULK_ROWS = 100000;
 const MEMO_PARTITION_LIMIT = 4000000;
@@ -181,7 +182,9 @@ const stateTables = (value) => {
 // structured-cloneable: a graph holding one elsewhere is detected by that clone
 // failing, and is then copied by the record-aware cloner (which reports every
 // other unsupported value with the same DataCloneError).
-export const cloneStateData = (value, options) => {
+export const cloneStateData = (source, options) => {
+  // A state whose containers a running transaction tracks is read without handing its members out.
+  const value = untracked(source);
   if (recordTablesCreated && (pagedRecordsOf(value) || stateTables(value))) return cloneRecordGraph(value, options);
   try {
     return bulkRows(value) || bulkMetadata(value) || bulkSourceComponents(value)

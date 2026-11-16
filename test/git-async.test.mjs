@@ -115,7 +115,14 @@ test('overlapping async save bursts keep pending paths and bound Git subprocess 
   hold.release();
   const [, , latest] = await Promise.all([first, second, third]);
   assert.deepEqual(latest, new Set(['a', 'b', 'c'].map((name) => fx.file(`web-files/${name}.js`))));
-  assert.equal(hold.commands.length, 4, 'the superseded queued middle save starts no Git commands');
+  // The first save lists the paths of the baseline commit once; each of the two scans that run is one diff and one
+  // untracked listing (the saved files are new).
+  const started = (command) => hold.commands.filter((args) => args.includes(command)).length;
+  assert.deepEqual(
+    [started('diff'), started('ls-files'), started('ls-tree'), hold.commands.length],
+    [2, 2, 1, 5],
+    'the superseded queued middle save starts no Git commands',
+  );
   assert.ok(hold.peak <= 2, `at most two subprocesses, observed ${hold.peak}`);
   assert.deepEqual(baseline.changedFiles({ refreshRef: false }), latest);
 });

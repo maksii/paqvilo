@@ -1,5 +1,6 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -56,7 +57,7 @@ test('preform guards jQuery class fast paths across form iframe documents and th
   );
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   const result = await page.evaluate(async () => {
     const iframe = document.createElement('iframe');
     iframe.srcdoc =
@@ -152,7 +153,7 @@ test('exported scripts and styles carry file maps and CDP binds a breakpoint to 
     if (event.hitBreakpoints.includes(breakpoint.breakpointId)) hit = true;
     void cdp.send('Debugger.resume');
   });
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   assert.equal(hit, true);
   assert.equal(await page.evaluate(() => window.assetMarker), 2);
   const template = parsed.find((event) => event.url === pathToFileURL(templateFile).href + '?inline=1');
@@ -186,7 +187,7 @@ test('inline template blocks have stable distinct debugger URLs and a breakpoint
     paused.push(event);
     void cdp.send('Debugger.resume');
   });
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   assert.deepEqual(
     parsed.map((event) => event.url),
     [file + '?inline=1', file + '?inline=2'],
@@ -248,7 +249,7 @@ test('list scripts and extensionless assets retain debugger provenance and decla
     if (event.hitBreakpoints.includes(breakpoint.breakpointId)) hits++;
     void cdp.send('Debugger.resume');
   });
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   assert.equal(hits, 1);
   assert.equal(await page.evaluate(() => window.listMarker), 2);
   assert.equal(await page.evaluate(() => window.extensionlessMarker), 1);
@@ -264,7 +265,7 @@ test('timeago updates time elements, retains dates across title changes, and hon
     t,
     '<html><head><script src="/resource/powerappsportal/dist/preform.BootstrapV5.moment_2_29_4.bundle-abcdef.js"></script><script src="/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js"></script></head><body></body></html>',
   );
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   const result = await page.evaluate(() => {
     const $ = window.jQuery,
       ago = $.timeago;

@@ -15,6 +15,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
+import { setupNotice } from './helpers/setup-notice.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -103,10 +104,7 @@ async function saveForm(page, form) {
     form.locator('button[type=submit]').click(),
   ]);
   assert.equal(response.ok(), true, await response.text());
-  await page
-    .locator('#notice')
-    .filter({ hasText: /^Saved\./ })
-    .waitFor();
+  await setupNotice(page, /^Saved\./);
 }
 
 test('background preview polling preserves an unsaved settings draft', async (t) => {
@@ -123,8 +121,11 @@ test('background preview polling preserves an unsaved settings draft', async (t)
   const response = page.waitForResponse((item) => item.url().endsWith('/_setup/api/preview'));
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await (await response).finished();
-  // Allow the response handlers and their paint to finish before reading the draft.
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  // The page handles that answer in a task queued when its body arrived. An answer the page requests now is delivered
+  // by the same queue after it, so the handling (and any repaint of the form) has run when this returns.
+  await page.evaluate(() =>
+    fetch('/_setup/api/preview', { headers: { accept: 'application/json' } }).then((r) => r.json()),
+  );
   assert.equal(await input.inputValue(), './unsaved-draft');
 });
 
@@ -253,6 +254,16 @@ test('setup UI configures an independent scaffold with two local Git exports and
     selector.value = option.value;
     selector.dispatchEvent(new Event('change', { bubbles: true }));
   });
+  // A label rendered as markup would run its handler when its image fails to load, after the change handler returned.
+  // An image of the same address created now fails no earlier, so its failure marks the point to read the flag at.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const probe = new Image();
+        probe.onerror = resolve;
+        probe.src = 'x';
+      }),
+  );
   assert.equal(await page.evaluate(() => window.invalidLayerExecuted), undefined);
   assert.equal(
     await page.locator('form[data-form=files] .muted').filter({ hasText: 'Writes the shared settings file.' }).count(),
@@ -371,6 +382,14 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   );
   // The command of the latest start; a start that lost its debugging port has already closed.
   let child, exited, output, remote, setupUrl;
+  // The settings file the setup server at setupUrl serves; undefined when nothing answers there as a setup server.
+  const setupProject = () =>
+    fetch(new URL('api/status', setupUrl))
+      .then((response) => response.json())
+      .then(
+        (status) => status?.layers?.shared?.file,
+        () => undefined,
+      );
   t.resources.push(async () => {
     if (remote) {
       const cdp = await remote.newBrowserCDPSession().catch(() => null);
@@ -379,7 +398,8 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
     }
     if (child?.exitCode === null) child.kill('SIGTERM');
     await exited;
-    if (setupUrl) await assert.rejects(fetch(setupUrl), /fetch failed/, 'the owned setup server stops with dev');
+    // Whatever answers on the released port afterwards, on a busy host, is not this project's setup server.
+    if (setupUrl) assert.notEqual(await setupProject(), configFile, 'the owned setup server stops with dev');
   });
   const port = await startOnFreePort(async (port) => {
     child = spawn(
@@ -416,6 +436,7 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   });
   setupUrl = output.match(/setup\s+(http:\/\/127\.0\.0\.1:\d+\/_setup\/)/)?.[1];
   assert.ok(setupUrl, output);
+  assert.equal(await setupProject(), configFile, 'the setup server reports the project it serves');
   remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   const context = remote.contexts()[0];
   const page = context.pages()[0];

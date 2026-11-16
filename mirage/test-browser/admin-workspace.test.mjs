@@ -270,6 +270,25 @@ test('deep links open records and portal items; access rules, personas and diagn
   await page.getByRole('button', { name: 'Apply override', exact: true }).click();
   await notice('Simulation override: Casey Editor has Member in this browser.');
   assert.deepEqual([(await browserSession()).roles, (await browserSession()).roleSource], [['Member'], 'override']);
+  // The override is saved, but its read-back fails: the workspace must report that, not the override as applied.
+  const readBack = '**/__sim/api/state?summary=1';
+  await page.route(readBack, (route) => route.abort());
+  try {
+    await page.getByLabel('Web roles for Casey Editor', { exact: true }).fill('Editor');
+    await page.getByRole('button', { name: 'Apply override', exact: true }).click();
+    // Gate on a toast this override produced (the previous toast's text stays in the element): the error, or the
+    // success notice naming Editor. Only the error is correct.
+    await page.waitForFunction(() =>
+      /could not be read back|has Editor in this browser/.test(
+        document.getElementById('notification')?.textContent ?? '',
+      ),
+    );
+    const toast = await page.locator('#notification').textContent();
+    assert.match(toast, /could not be read back/);
+    assert.doesNotMatch(toast, /has Editor in this browser/);
+  } finally {
+    await page.unroute(readBack);
+  }
   await page.getByRole('button', { name: 'Clear override', exact: true }).click();
   await notice("The simulation override is cleared: the session uses the contact's web roles again.");
   assert.deepEqual((await browserSession()).roles, ['Editor']);
@@ -512,7 +531,27 @@ test('scenarios, environment variables, references, enrichment, state transfer a
   await variable.getByText('https://default.example.test', { exact: true }).first().waitFor();
   await variable.getByRole('button', { name: 'Edit value', exact: true }).click();
   await page.locator('#editor-json').fill(JSON.stringify({ value: 'https://local.example.test' }));
+  // The variable editor stays open until the environment has been read back: the read is held to observe that.
+  const environmentReadHeld = Promise.withResolvers();
+  const environmentRelease = Promise.withResolvers();
+  await page.route(
+    '**/__sim/api/environment',
+    async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      environmentReadHeld.resolve();
+      await environmentRelease.promise;
+      return route.continue();
+    },
+    { times: 1 },
+  );
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await environmentReadHeld.promise;
+  assert.equal(
+    await page.locator('#editor').isVisible(),
+    true,
+    'the variable editor is open while the environment is read back',
+  );
+  environmentRelease.resolve();
   await notice('Environment variable saved.');
   await variable.getByText('https://local.example.test', { exact: true }).first().waitFor();
   await variable.getByText('Local override', { exact: true }).waitFor();

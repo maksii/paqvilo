@@ -146,7 +146,8 @@ function disposeOwnedProviderIn(frame, token) {
   return frame.evaluate(disposeOwnedProvider, token).catch(() => {});
 }
 // Runs in the page: records the retired session in both retired-session lists (64 entries each) and disposes the
-// panel inspector it owned.
+// panel inspector it owned. A panel the session drew and its inspector has not adopted yet is disposed as well: the
+// adoption call that follows finds the session retired and would leave that panel on the page.
 function retireInspectorSession(retired) {
   const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
   retiredSessions.push(retired);
@@ -154,8 +155,18 @@ function retireInspectorSession(retired) {
   const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
   canonicalRetired.push(retired);
   if (canonicalRetired.length > 64) canonicalRetired.shift();
-  const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;
-  if (inspector?.token === retired) inspector.dispose();
+  const host = document.getElementById('paqvilo-panel');
+  if (host?.__paqModelInspector?.token === retired) host.__paqModelInspector.dispose();
+  else if (host?.__pp?.token === retired) host.__pp.dispose();
+  // The panel disposes its X-ray; an X-ray the session drew without a panel left on the page is disposed here. The
+  // live panel and X-ray of the realm are also reached through their registries, as removePanelUi does, so one whose
+  // host the page removed from the document is still torn down.
+  for (const ui of new Set([
+    globalThis.__paqviloPanelUi,
+    document.getElementById('paqvilo-xray')?.__px,
+    globalThis.__paqviloXrayUi,
+  ]))
+    if (ui?.token === retired) ui.dispose();
 }
 /** Native SPA transitions do not emit a document navigation. Keep this key in
  * the browser; no route values or record IDs are returned through the binding.
@@ -362,10 +373,12 @@ export async function startModelDrivenInspector({
       facts: panelSources.state.facts,
       scope: panelSources.state.scope,
     });
+  // Each call is skipped once the inspector is closed: close retires the session only in the document shown then, so
+  // a later call would draw into a document that never heard of the retirement.
   const drawPanel = async () => {
-    await page.evaluate(panelUi, panelData());
-    await page.evaluate(xrayUi, panelData());
-    await page.evaluate(modelDrivenInspectorUi, { origin: cfg.origin, token });
+    if (!closed) await page.evaluate(panelUi, panelData());
+    if (!closed) await page.evaluate(xrayUi, panelData());
+    if (!closed) await page.evaluate(modelDrivenInspectorUi, { origin: cfg.origin, token });
   };
   const update = async () => {
     timer = undefined;
@@ -551,6 +564,47 @@ export async function startModelDrivenInspector({
     refresh();
   });
   on(page, 'domcontentloaded', () => refresh());
+  // Stops the session and retires its page code: used by close and by a start that fails after the page listeners are
+  // registered. Cleanup failures are appended to failures.
+  const retire = async (failures) => {
+    closed = true;
+    clearTimeout(timer);
+    identityRevision++;
+    const drain = async (callback) => {
+      try {
+        await callback();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    await drain(() => identity.close());
+    for (const remove of removers) await drain(remove);
+    await drain(() => pageBindings?.close());
+    // A cleanup call that misses the guard leaves owned page code live, and close still completes. Closing the page
+    // bindings first waits up to the binding call timeout for a panel call in progress. Disposals and retirement
+    // then share one guard, so a paused page with a panel call in flight costs that timeout plus one guard.
+    const settle = async (operation, what) => {
+      if ((await guarded(operation, nativeReadGuardMs, scheduleGuard)) !== GUARD_EXPIRED) return;
+      recordProblem({
+        type: 'error',
+        code: 'cleanup-timed-out',
+        text: `${what} did not answer within ${nativeReadGuardMs} ms (the page may be paused in a debugger), so the owned page code may stay live until the page reloads.`,
+      });
+    };
+    problems.length = 0;
+    await Promise.all([
+      ...page
+        .frames()
+        .map((frame) => drain(() => settle(disposeOwnedProviderIn(frame, token), 'Owned provider disposal'))),
+      drain(async () => {
+        if (!page.isClosed())
+          await settle(
+            page.evaluate(retireInspectorSession, token).catch(() => {}),
+            'Panel inspector retirement',
+          );
+      }),
+    ]);
+  };
   try {
     const bindings = {};
     /* NOSONAR */ bindings.__paqviloModelPanelApi = async (source, input) => {
@@ -843,59 +897,17 @@ export async function startModelDrivenInspector({
       prepareRequest: (route) => identity.prepare(route),
       close: async () => {
         if (closed) return;
-        closed = true;
-        clearTimeout(timer);
-        identityRevision++;
         const failures = [];
-        const drain = async (callback) => {
-          try {
-            await callback();
-          } catch (error) {
-            failures.push(error);
-          }
-        };
-        await drain(() => identity.close());
-        for (const remove of removers) await drain(remove);
-        await drain(() => pageBindings?.close());
-        // A cleanup call that misses the guard leaves owned page code live, and close still completes. Closing the page
-        // bindings first waits up to the binding call timeout for a panel call in progress. Disposals and retirement
-        // then share one guard, so a paused page with a panel call in flight costs that timeout plus one guard.
-        const settle = async (operation, what) => {
-          if ((await guarded(operation, nativeReadGuardMs, scheduleGuard)) !== GUARD_EXPIRED) return;
-          recordProblem({
-            type: 'error',
-            code: 'cleanup-timed-out',
-            text: `${what} did not answer within ${nativeReadGuardMs} ms (the page may be paused in a debugger), so the owned page code may stay live until the page reloads.`,
-          });
-        };
-        problems.length = 0;
-        await Promise.all([
-          ...page
-            .frames()
-            .map((frame) => drain(() => settle(disposeOwnedProviderIn(frame, token), 'Owned provider disposal'))),
-          drain(async () => {
-            if (!page.isClosed())
-              await settle(
-                page.evaluate(retireInspectorSession, token).catch(() => {}),
-                'Panel inspector retirement',
-              );
-          }),
-        ]);
+        await retire(failures);
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, 'Model-driven inspector cleanup failed.');
       },
     };
   } catch (error) {
-    closed = true;
-    clearTimeout(timer);
+    // A refresh from a page event may have drawn the panel while the bindings were being created, so a failed start
+    // retires the session exactly as close does.
     const failures = [error];
-    for (const cleanup of [() => identity.close(), ...removers, () => pageBindings?.close()]) {
-      try {
-        await cleanup();
-      } catch (cause) {
-        failures.push(cause);
-      }
-    }
+    await retire(failures);
     if (failures.length > 1)
       throw new AggregateError(failures, 'Model-driven inspector initialization and cleanup failed.', { cause: error });
     throw error;

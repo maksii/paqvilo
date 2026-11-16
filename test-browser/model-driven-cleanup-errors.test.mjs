@@ -18,10 +18,11 @@ import { modelDrivenActionAvailability } from '../lense/model-driven-action-runn
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
+import { manualClock } from '../test/helpers/startup-page.mjs';
 
-// A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
-// asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
-// connection) however slow the host is.
+// The startup deadline of scenarios whose target phase stalls until cleanup. Each of them gives the run a clock that
+// only the test moves (`startupClock`), so no real guard is armed: the deadline ends the start when the test expires
+// it, never because the earlier phases (browser launch or CDP connection) took long on a slow host.
 const STALLED_STARTUP_DEADLINE_MS = 30_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
@@ -146,52 +147,28 @@ test('model-driven startup deadline disposes a late owned browser context before
   const sibling = await browser.newContext(),
     siblingPage = await sibling.newPage();
   await siblingPage.setContent('<input value="sibling draft">');
-  // The test, not the host's speed, decides when the silence guard fires: it captures the run's one deadline timer.
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  const deadlines = [];
-  const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    const handle = nativeSetTimeout(callback, delay, ...args);
-    if (delay > STALLED_STARTUP_DEADLINE_MS / 2 && delay <= STALLED_STARTUP_DEADLINE_MS)
-      deadlines.push({ callback, handle, args });
-    return handle;
-  });
-  const expireDeadline = () => {
-    const [deadline] = deadlines;
-    nativeClearTimeout(deadline.handle);
-    // The deadline callback re-checks the clock (a silence guard): present it a clock at the silence limit.
-    const expiredAt = Date.now() + STALLED_STARTUP_DEADLINE_MS;
-    const clock = t.mock.method(Date, 'now', () => expiredAt);
-    try {
-      deadline.callback(...deadline.args);
-    } finally {
-      clock.mock.restore();
-    }
-  };
+  // The test, not the host's speed, decides when the silence guard fires: the run's deadline reads this clock.
+  const clock = manualClock();
   let late,
     lateClosed = false;
   t.mock.method(chromium, 'launchPersistentContext', async () => {
     // The silence guard ends the start while this owned launch is in flight; the launch then completes late.
-    expireDeadline();
+    clock.expire(STALLED_STARTUP_DEADLINE_MS);
     late = await browser.newContext();
     late.once('close', () => {
       lateClosed = true;
     });
     return late;
   });
-  let running;
-  try {
-    running = run(null, {
-      project: setup.project,
-      url: setup.origin,
-      headless: true,
-      browser: setup.channel,
-      'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
-    });
-  } finally {
-    timeoutMock.mock.restore();
-  }
-  assert.equal(deadlines.length, 1, 'run must create exactly one configured startup deadline timer');
+  const running = run(null, {
+    project: setup.project,
+    url: setup.origin,
+    headless: true,
+    browser: setup.channel,
+    'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
+    startupClock: clock,
+  });
+  assert.equal(clock.armed, 1, 'run must create exactly one configured startup deadline timer');
   await assert.rejects(running, (error) => error.code === 'startup_timeout' && error.phase === 'browser setup');
   assert.ok(late, 'the owned launch completed after the deadline ended the start');
   assert.equal(lateClosed, true, 'the run returns only after its late owned context is closed');
@@ -353,51 +330,24 @@ test('initial document deadline detaches an external CDP browser and preserves i
       resolve({ page, closed });
     }),
   );
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  const matchedTimers = [];
-  let running;
-  let settled;
-  let deadline;
-  let deadlineFired = false;
-  const fireDeadline = () => {
-    if (!deadline || deadlineFired) return;
-    nativeClearTimeout(deadline.handle);
-    deadlineFired = true;
-    // The deadline callback re-checks the clock (a silence guard): present it a clock at the silence limit.
-    const expiredAt = Date.now() + STALLED_STARTUP_DEADLINE_MS;
-    const clock = t.mock.method(Date, 'now', () => expiredAt);
-    try {
-      deadline.callback(...deadline.args);
-    } finally {
-      clock.mock.restore();
-    }
-  };
-  const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    const handle = nativeSetTimeout(callback, delay, ...args);
-    // The guard arms for its remaining time, so a millisecond that passes before arming shortens the delay.
-    if (delay > STALLED_STARTUP_DEADLINE_MS / 2 && delay <= STALLED_STARTUP_DEADLINE_MS)
-      matchedTimers.push({ callback, handle, args });
-    return handle;
+  // The run's deadline reads a clock that only this test moves: the silence guard fires when the test expires it.
+  const clock = manualClock();
+  const fireDeadline = () => clock.expire(STALLED_STARTUP_DEADLINE_MS);
+  const running = run(null, {
+    project: setup.project,
+    url: setup.origin,
+    headless: true,
+    'cdp-url': `http://127.0.0.1:${port}`,
+    'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
+    startupClock: clock,
   });
+  const settled = running.then(
+    (value) => ({ status: 'fulfilled', value }),
+    (error) => ({ status: 'rejected', error }),
+  );
+  const armed = clock.armed;
   try {
-    running = run(null, {
-      project: setup.project,
-      url: setup.origin,
-      headless: true,
-      'cdp-url': `http://127.0.0.1:${port}`,
-      'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
-    });
-    settled = running.then(
-      (value) => ({ status: 'fulfilled', value }),
-      (error) => ({ status: 'rejected', error }),
-    );
-  } finally {
-    timeoutMock.mock.restore();
-  }
-  if (matchedTimers.length === 1) deadline = matchedTimers[0];
-  try {
-    assert.equal(matchedTimers.length, 1, 'run must create exactly one configured startup deadline timer');
+    assert.equal(armed, 1, 'run must create exactly one configured startup deadline timer');
     const first = await Promise.race([
       setup.requested.then(() => ({ kind: 'document-requested' })),
       settled.then((result) => ({ kind: 'run-settled', result })),
@@ -424,11 +374,11 @@ test('initial document deadline detaches an external CDP browser and preserves i
   } finally {
     releaseOwnerClose();
     setup.releaseDocument();
-    if (matchedTimers.length === 1) fireDeadline();
+    fireDeadline();
     try {
       await external.close();
     } finally {
-      if (settled) await settled;
+      await settled;
     }
   }
 });
@@ -540,6 +490,9 @@ test('model-driven navigation and real filesystem cleanup failures both survive 
       headless: true,
       'debug-port': '0',
       timeout: '20000',
+      // The document is held until this test releases it: on a clock nobody moves, the start-up silence guard
+      // cannot end that wait first.
+      startupClock: manualClock(),
       output: path.join(directory, 'overlay.json'),
     },
     ['dev'],

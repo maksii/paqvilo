@@ -8,7 +8,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { warmState } from './shared-browser.mjs';
+import { refreshWorkspace, warmState } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 import { canvasLocalIdentity, canvasPlayerFixture } from '../test/canvas-player-fixture.mjs';
 
@@ -54,6 +54,10 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     ],
   };
   const mutations = [];
+  // Set by a step to hold the workspace state read that follows its next mutation.
+  let stateGate;
+  // Set by a step to hold the first view probe the page sends.
+  let probeGate;
   const server = http.createServer((req, res) => {
     Promise.resolve()
       .then(async () => {
@@ -92,6 +96,12 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
           );
           return;
         }
+        if (probeGate && req.method === 'GET' && req.headers.accept === 'application/json, text/event-stream') {
+          const gate = probeGate;
+          probeGate = undefined;
+          gate.arrived();
+          await gate.release;
+        }
         res.setHeader('Content-Type', 'application/json');
         const route = url.pathname.slice('/__sim/api'.length).split('/').filter(Boolean).map(decodeURIComponent);
         let body = {};
@@ -110,6 +120,15 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
           return;
         }
         if (route[0] === 'state') {
+          if (stateGate?.fail && mutations.length > stateGate.after) {
+            stateGate = undefined;
+            res.writeHead(500).end(JSON.stringify({ error: 'Synthetic workspace read failure.' }));
+            return;
+          }
+          if (stateGate && mutations.length > stateGate.after) {
+            stateGate.arrived();
+            await stateGate.release;
+          }
           res.end(JSON.stringify(workspace));
           return;
         }
@@ -225,7 +244,18 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
   context.on('request', (req) => {
     if (!req.url().startsWith(origin)) unexpected.push(req.url());
   });
+  // The workspace stays busy while the first view probe is unanswered: the probe is held to observe that.
+  const probeArrived = Promise.withResolvers();
+  const probeRelease = Promise.withResolvers();
+  probeGate = { arrived: probeArrived.resolve, release: probeRelease.promise };
   await page.goto(`${origin}/__sim/`);
+  await probeArrived.promise;
+  assert.equal(
+    await page.locator('#content').getAttribute('aria-busy'),
+    'true',
+    'the workspace is busy while a view probe is unanswered',
+  );
+  probeRelease.resolve();
   await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
   await page.locator('[data-panel="checklist"]').getByText('Portal sources loaded').waitFor();
   const evidenceDir = process.env.PAQVILO_MIRAGE_ADMIN_EVIDENCE;
@@ -272,12 +302,38 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
       lastname: 'Contact',
     }),
   );
+  // The editor stays open until the list behind it shows the saved record: a list still showing the old values is
+  // not offered for searching or editing. The refresh after the save is held to observe that order.
+  const refreshArrived = Promise.withResolvers();
+  const refreshRelease = Promise.withResolvers();
+  stateGate = { after: mutations.length, arrived: refreshArrived.resolve, release: refreshRelease.promise };
   await editor.getByRole('button', { name: 'Save changes' }).click();
+  await refreshArrived.promise;
+  stateGate = undefined;
+  assert.equal(await editor.isVisible(), true, 'the editor is open while the saved record is being read back');
+  refreshRelease.resolve();
   await editor.waitFor({ state: 'hidden' });
   // D-M-11: the record search sits in the toolbar row.
   await page.locator('#record-search').fill('updated');
   assert.equal(await page.locator('tbody tr').count(), 1);
   await page.getByRole('button', { name: 'Delete c2' }).click();
+  await page.locator('#confirm').getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.locator('#confirm').waitFor({ state: 'hidden' });
+  assert.equal(workspace.data.contact.length, 1);
+  // The save goes through, but the workspace read that follows it fails: the editor closes and says so.
+  await page.locator('#record-search').fill('');
+  await page.getByRole('button', { name: 'Create record', exact: true }).click();
+  await page
+    .locator('#editor-json')
+    .fill(JSON.stringify({ contactid: 'c3', firstname: 'Unread', lastname: 'Contact' }));
+  stateGate = { after: mutations.length, fail: true };
+  await editor.getByRole('button', { name: 'Save changes' }).click();
+  await editor.waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#notification').getAttribute('role'), 'alert');
+  await page.locator('#notification[role="alert"]').filter({ hasText: 'could not be read back' }).waitFor();
+  assert.equal(workspace.data.contact.length, 2);
+  await refreshWorkspace(page);
+  await page.getByRole('button', { name: 'Delete c3' }).click();
   await page.locator('#confirm').getByRole('button', { name: 'Delete', exact: true }).click();
   await page.locator('#confirm').waitFor({ state: 'hidden' });
   assert.equal(workspace.data.contact.length, 1);
@@ -424,7 +480,7 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     views: 0,
     unresolved: 0,
   };
-  await page.locator('#refresh').click();
+  await refreshWorkspace(page);
   await page.getByText('No solution sources', { exact: true }).waitFor();
   assert.equal(await page.getByText('Import reported', { exact: true }).count(), 0);
   workspace.status.solutionMetadata = {
@@ -432,10 +488,20 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     sources: ['synthetic solution root'],
     unresolved: [{ code: 'missing-view', message: 'Example unresolved view' }],
   };
-  await page.locator('#refresh').click();
+  // The heading and the collapsed sources are on screen before this refresh too: the refreshed view is the one to open.
+  await refreshWorkspace(page);
   await page.getByRole('heading', { name: 'Imported solution metadata', exact: true }).waitFor();
   await page.getByText('Metadata sources', { exact: true }).click();
   await page.getByText('synthetic solution root', { exact: false }).first().waitFor();
+  // A section stays open when the view is rendered again before the browser has reported that it was opened: the
+  // section is opened and the view rendered within one task, so the toggle event has not been delivered yet.
+  const counts = page.locator('details[data-ui-section="solution-metadata-counts"]');
+  assert.equal(await counts.evaluate((node) => node.open), false);
+  await counts.evaluate((node) => {
+    node.open = true;
+    globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
+  });
+  assert.equal(await counts.evaluate((node) => node.open), true);
   await page.getByRole('button', { name: 'Edit schemas', exact: true }).click();
   const schemas = {
     'Contact form': {
@@ -444,7 +510,15 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     },
   };
   await page.locator('#editor-json').fill(JSON.stringify(schemas));
+  // The schema editor stays open until the saved configuration has been read back: the read is held to observe that.
+  const schemaRefreshArrived = Promise.withResolvers();
+  const schemaRefreshRelease = Promise.withResolvers();
+  stateGate = { after: mutations.length, arrived: schemaRefreshArrived.resolve, release: schemaRefreshRelease.promise };
   await editor.getByRole('button', { name: 'Save changes' }).click();
+  await schemaRefreshArrived.promise;
+  stateGate = undefined;
+  assert.equal(await editor.isVisible(), true, 'the schema editor is open while the saved configuration is read back');
+  schemaRefreshRelease.resolve();
   await editor.waitFor({ state: 'hidden' });
   assert.deepEqual(workspace.config.componentSchemas, schemas);
 

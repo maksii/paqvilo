@@ -21,7 +21,12 @@ function panelBrowserImpl(data) {
     host.id = ID;
     document.body.appendChild(host);
   }
-  if (!host.__pp) host.__pp = create(host);
+  if (!host.__pp) {
+    // A panel whose host the page removed or replaced is not reachable through the document: release it before another
+    // one is created. Its X-ray is the current one and stays.
+    globalThis.__paqviloPanelUi?.release?.();
+    host.__pp = globalThis.__paqviloPanelUi = create(host);
+  }
   host.__pp.update(data);
 
   function create(host) {
@@ -680,6 +685,8 @@ function panelBrowserImpl(data) {
     // ---- feedback
     let toastTimer = 0;
     const toast = (text, bad = false) => {
+      // An answer that arrives after the panel was removed arms no timer.
+      if (lifetime.signal.aborted) return;
       el.toast.textContent = text;
       el.toast.className = 'toast show' + (bad ? ' bad' : '');
       clearTimeout(toastTimer);
@@ -2714,11 +2721,23 @@ function panelBrowserImpl(data) {
         url.searchParams.set('paqvilo', `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`); // NOSONAR: pseudo-random value for simulation, not a secret
       location.assign(url.href);
     };
+    let reloadTimer = 0;
     /** A Mirage change reloads open pages through its own event; reload here only if that never comes. */
     const reloadAfterTweak = (text) => {
       toast(text);
-      const timer = setTimeout(reloadPage, 2000);
-      window.addEventListener('pagehide', () => clearTimeout(timer), { once: true, signal: lifetime.signal });
+      if (reloadTimer) return;
+      reloadTimer = setTimeout(() => {
+        reloadTimer = 0;
+        reloadPage();
+      }, 2000);
+      window.addEventListener(
+        'pagehide',
+        () => {
+          clearTimeout(reloadTimer);
+          reloadTimer = 0;
+        },
+        { once: true, signal: lifetime.signal },
+      );
     };
     const setMode = async (online) => {
       if (S.d.mirageMode) return;
@@ -3496,13 +3515,21 @@ function panelBrowserImpl(data) {
       },
       dispose() {
         stopPicking();
-        document.getElementById('paqvilo-xray')?.__px?.dispose();
+        // The X-ray of this realm, also when the page removed its host from the document.
+        (globalThis.__paqviloXrayUi ?? document.getElementById('paqvilo-xray')?.__px)?.dispose();
+        host.__pp.release();
+      },
+      /** Ends this panel alone: its listeners, timers and host. */
+      release() {
+        stopPicking();
         lifetime.abort();
         clearTimeout(toastTimer);
         clearTimeout(floatTimer);
         clearTimeout(saveTimer);
         clearTimeout(placeTimer);
+        clearTimeout(reloadTimer);
         host.remove();
+        if (globalThis.__paqviloPanelUi === host.__pp) globalThis.__paqviloPanelUi = null;
       },
       /* NOSONAR: single-pass routine, splitting it would change shared state */ update(d) {
         if (lifetime.signal.aborted) return;
@@ -3584,8 +3611,13 @@ export function removePanelUi({ token }) {
   if (!retired.includes(token)) retired.push(token);
   if (retired.length > 32) retired.splice(0, retired.length - 32);
   globalThis.__paqviloRetiredSessions = retired;
-  const host = document.getElementById('paqvilo-panel');
-  if (host?.__pp?.token === token) host.__pp.dispose();
-  const xray = document.getElementById('paqvilo-xray');
-  if (xray?.__px?.token === token) xray.__px.dispose();
+  // The live panel and X-ray of this realm are registered at creation, so a host the page removed from the document
+  // (a body swap) is still torn down: its listeners, timers and attachShadow hook do not outlive the session.
+  for (const ui of new Set([
+    document.getElementById('paqvilo-panel')?.__pp,
+    globalThis.__paqviloPanelUi,
+    document.getElementById('paqvilo-xray')?.__px,
+    globalThis.__paqviloXrayUi,
+  ]))
+    if (ui?.token === token) ui.dispose();
 }

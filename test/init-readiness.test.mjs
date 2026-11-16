@@ -16,6 +16,7 @@ import {
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
+import { ownedChildren } from './helpers/owned-children.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
@@ -24,16 +25,19 @@ const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
 );
 // Asynchronous so that independent invocations of one test run concurrently.
+const children = ownedChildren();
 const run = (directory, ...args) =>
   withProcessSlot(
     () =>
       new Promise((resolve) =>
-        execFile(
-          process.execPath,
-          [cli, 'init', directory, ...args],
-          { env, encoding: 'utf8', windowsHide: true },
-          (error, stdout, stderr) =>
-            resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
+        children.own(
+          execFile(
+            process.execPath,
+            [cli, 'init', directory, ...args],
+            { env, encoding: 'utf8', windowsHide: true },
+            (error, stdout, stderr) =>
+              resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
+          ),
         ),
       ),
   );
@@ -45,6 +49,7 @@ const write = async (directory, file, body) => {
 const configFile = 'paqvilo.config.json';
 async function fixture(t) {
   const directory = await tempDir('paqvilo-ready-');
+  t.after(() => children.end());
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const config = {
     sourceRoot: './sources',
@@ -222,10 +227,7 @@ test('adoption diagnoses missing wiring read-only and leaves unrelated existing 
   await write(directory, '.gitignore', 'custom-output/\n');
   const files = ['package.json', configFile, '.gitignore', 'pack.mjs'];
   const before = await Promise.all(files.map((file) => fs.readFile(path.join(directory, file))));
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await check(directory),
-      report = JSON.parse(result.stdout);
-    assert.equal(result.status, 1);
+  const assertMissingWiring = (report) => {
     assert.equal(report.adoption.ok, false);
     for (const code of [
       'PAQVILO_DEPENDENCY_MISSING',
@@ -234,8 +236,22 @@ test('adoption diagnoses missing wiring read-only and leaves unrelated existing 
       'DEVELOPMENT_SCRIPT_DRIFT',
     ])
       assert.ok(report.adoption.diagnostics.some((item) => item.code === code));
-    assert.doesNotMatch(result.stdout, /PRIVATE_SCRIPT_VALUE/);
     assert.ok(report.adoption.diagnostics.some((item) => item.script === 'dev' && item.requiresReview));
+  };
+  // The first check runs the command line; the second asks the same readiness question in-process, which starts no
+  // second process and reports the same verdict the command maps to exit status 1.
+  {
+    const result = await check(directory),
+      report = JSON.parse(result.stdout);
+    assert.equal(result.status, 1);
+    assertMissingWiring(report);
+    assert.doesNotMatch(result.stdout, /PRIVATE_SCRIPT_VALUE/);
+  }
+  {
+    const report = await readyProject(directory, { config: configFile, processEnv: {} });
+    assert.equal(report.ok, false);
+    assertMissingWiring(report);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SCRIPT_VALUE/);
   }
   for (const [index, file] of files.entries())
     assert.deepEqual(await fs.readFile(path.join(directory, file)), before[index], file);

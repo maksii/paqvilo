@@ -1,3 +1,4 @@
+// @test-kind contract: X-ray ownership and source evidence for rendered forms, lists, modals and quick views on invented loopback fixtures.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -5,6 +6,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { inspectRenderedPage } from '../lense/source-inspection.mjs';
+import { navigateFrame } from './helpers/frame-navigation.mjs';
 
 let browser;
 before(async () => {
@@ -208,11 +210,7 @@ test('native generic modal layouts join only their rendered list or subgrid acti
     const evidence = await inspect(field('edit'));
     assert.equal(evidence.owner.status, query.includes('xml-edit') ? 'exact' : 'conflicting');
   }
-  const navigated = page.waitForEvent('framenavigated', {
-    predicate: (frame) => frame.url() === data.origin + modalPath,
-  });
-  await page.locator('#edit').evaluate((frame, path) => (frame.src = path), modalPath);
-  await (await navigated).waitForLoadState('domcontentloaded');
+  await navigateFrame(page, '#edit', modalPath);
   await populate('edit');
   exactColumn(await inspect(field('edit')), 'x_first', 'x_title');
   await page
@@ -226,18 +224,17 @@ test('native generic modal layouts join only their rendered list or subgrid acti
   await page
     .locator('[data-listid=first] > .entity-grid')
     .evaluate((node) => node.setAttribute('data-selected-view', 'view-one'));
+  // Moving the frame element reloads it from its address. Until that commits the element holds a blank, already
+  // complete document, so the reload is awaited as a navigation whose listener exists before the move.
+  const reloaded = page.waitForEvent('framenavigated', {
+    predicate: (frame) => frame.url() === new URL(modalPath, page.url()).href,
+  });
   await page.locator('#ChildRows').evaluate((node) => {
     const grid = node.querySelector('.entity-grid');
     node.classList.add('entity-grid');
     node.replaceChildren(...grid.childNodes);
   });
-  await page.locator('#subgrid').evaluate(
-    (frame) =>
-      new Promise((resolve) => {
-        if (frame.contentDocument?.readyState === 'complete') resolve();
-        else frame.addEventListener('load', resolve, { once: true });
-      }),
-  );
+  await (await reloaded).waitForLoadState('load');
   await populate('subgrid');
   exactColumn(await inspect(field('subgrid')), 'x_first', 'x_title');
   await populate('edit', 'x_second');
@@ -627,7 +624,7 @@ test('rendered modal/quick-view identities survive replacement and source change
     exactColumn(await inspect(frame.locator('input')), entity, 'x_title');
   }
   exactColumn(await inspect(page.locator('#x_title')), 'x_first', 'x_title');
-  await page.locator('#first').evaluate((node) => (node.src = '/replacement?entityformid=basic-a'));
+  await navigateFrame(page, '#first', '/replacement?entityformid=basic-a');
   const first = page.frameLocator('#first');
   await first
     .locator('body')
@@ -742,13 +739,13 @@ test('native quick-view placements join their observed parent and exported targe
     node.removeAttribute('data-form-layout');
     node.removeAttribute('data-entityname');
   });
-  await page.locator('#one').evaluate((node) => (node.src = '/quick-one?navigation=next'));
+  await navigateFrame(page, '#one', '/quick-one?navigation=next');
   await page
     .frameLocator('#one')
     .locator('body')
     .evaluate((body) => (body.innerHTML = '<input id="x_title">'));
   exactColumn(await inspect(page.frameLocator('#one').locator('input')), 'x_first', 'x_title');
-  await page.locator('#two').evaluate((node) => (node.src = '/quick-two?entityname=x_first'));
+  await navigateFrame(page, '#two', '/quick-two?entityname=x_first');
   await page
     .frameLocator('#two')
     .locator('body')
@@ -758,7 +755,7 @@ test('native quick-view placements join their observed parent and exported targe
     'conflicting',
     'a navigated document can contradict the rendered placement',
   );
-  await page.locator('#two').evaluate((node) => (node.src = '/quick-two'));
+  await navigateFrame(page, '#two', '/quick-two');
   await page
     .frameLocator('#two')
     .locator('body')
@@ -815,4 +812,37 @@ test('native quick-view placements join their observed parent and exported targe
     'matching iframe declarations cannot replace parent proof',
   );
   assert.equal(await page.evaluate(() => window.forbiddenDefinitionReads), 0);
+});
+
+test('markup written after a frame address change lands in the navigated document', async (t) => {
+  const { page } = await fixture(t, '<iframe id="one" src="/first"></iframe>');
+  let requested, release;
+  const held = new Promise((resolve) => {
+    requested = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  ownedFixture(t).add(async () => {
+    release();
+  });
+  // The navigated document is answered only after the gate opens, so the frame keeps its previous document until then.
+  await page.context().route('http://127.0.0.1:11942/second', async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ contentType: 'text/html', body: '<!doctype html><body></body>' });
+  });
+  let returned = false;
+  const navigation = navigateFrame(page, '#one', '/second').then(() => {
+    returned = true;
+  });
+  await held;
+  const body = page.frameLocator('#one').locator('body');
+  await body.evaluate((node) => (node.innerHTML = '<input id="previous">'));
+  assert.equal(returned, false, 'the frame still shows the document that the navigation replaces');
+  release();
+  await navigation;
+  await body.evaluate((node) => (node.innerHTML = '<input id="x_title">'));
+  assert.deepEqual(await body.evaluate((node) => [...node.children].map((child) => child.id)), ['x_title']);
+  assert.equal(await body.evaluate(() => location.pathname), '/second');
 });

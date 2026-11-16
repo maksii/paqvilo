@@ -61,8 +61,11 @@ before(async () => {
   });
   receiver = {
     origin: `http://127.0.0.1:${port}`,
+    // A connection of its own per read: a pooled one may sit idle past the receiver's keep-alive timeout between tests.
     log: async (prefix) =>
-      (await (await fetch(`http://127.0.0.1:${port}/__log`)).json()).filter((entry) => entry.path.startsWith(prefix)),
+      (await (await fetch(`http://127.0.0.1:${port}/__log`, { headers: { connection: 'close' } })).json()).filter(
+        (entry) => entry.path.startsWith(prefix),
+      ),
     async stop() {
       if (child.exitCode === null && child.signalCode === null) {
         const exited = new Promise((resolve) => child.once('exit', resolve));

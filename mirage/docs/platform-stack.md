@@ -165,6 +165,7 @@ Runtime modules are flat files in `mirage/lib/`; `model-driven/` holds the model
 - A placeholder or unsupported path answers a documented `501` or diagnostic. It never succeeds.
 - Read pack overrides with `packOverrides(api, name)` and report repeated diagnostics once with `onceReporter` (`dataverse-addon-common.mjs`).
 - Register the setting parser or pack export when the module loads, and import the module from `provider-modules.mjs`.
+- Keep the validation of a setting in its own `<area>-settings.mjs` module that imports no runtime, and add its parser to `settings-contracts.mjs`. Commands that only read a catalogue import that file, so they validate every setting without loading a provider runtime; `test/settings-contracts.test.mjs` checks both.
 
 **A new pack export.** Call `registerPackExport(name, { check, key?, entries?, collide? })` in the owning module. Until the module loads, the export is checked only for shape and reported as `PACK_EXPORT_PENDING`. Add any new public export to `test/fixtures/public-api.json`.
 
