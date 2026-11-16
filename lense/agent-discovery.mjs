@@ -114,6 +114,17 @@ export function discoveryOwnerGone(discovery, file) {
   return current !== null && current !== processStart;
 }
 
+/** A discovery file read through one handle: size and contents come from the same file; null when over 64 KiB. */
+function readDiscoveryFile(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    if (fs.fstatSync(fd).size > 64 * 1024) return null;
+    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Removes the discovery files of a state folder's `agents` directory whose owner is gone. Files this process owns,
  * files of live owners and anything that is not a discovery file are left alone.
@@ -129,8 +140,7 @@ export function sweepStaleDiscovery(directory) {
     const file = path.resolve(directory, name);
     if (live.has(file)) continue;
     try {
-      if (fs.statSync(file).size > 64 * 1024) continue;
-      const discovery = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const discovery = readDiscoveryFile(file);
       if (discovery?.schemaVersion === 1 && typeof discovery.token === 'string' && discoveryOwnerGone(discovery, file))
         fs.rmSync(file, { force: true });
     } catch {

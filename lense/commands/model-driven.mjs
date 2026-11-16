@@ -68,15 +68,17 @@ export function savedContentGate() {
   const applied = new Map();
   const touched = new Map();
   const read = async (file) => {
+    let handle;
     try {
-      const stat = await fs.stat(file);
-      return stat.isFile()
-        ? createHash('sha256')
-            .update(await fs.readFile(file))
-            .digest('hex')
-        : null;
+      handle = await fs.open(file, 'r');
+      if (!(await handle.stat()).isFile()) return null;
+      return createHash('sha256')
+        .update(await handle.readFile())
+        .digest('hex');
     } catch (error) {
       return error.code === 'ENOENT' ? 'absent' : null;
+    } finally {
+      await handle?.close();
     }
   };
   return {

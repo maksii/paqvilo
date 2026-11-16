@@ -1186,6 +1186,35 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   return result;
 }
 
+function reconcilePendingFrames({
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  audit,
+  localOrigin,
+  observedIdentity,
+  frameEvents,
+  currentFrames,
+}) {
+  for (const [request, record] of pending) {
+    const proof = reconcileSupersededRead(proofInputs.get(request), {
+      cdpRecords: [...cdpRecords.values()],
+      audit,
+      origin: localOrigin,
+      identity: observedIdentity,
+      frameEvents,
+      currentFrames,
+    });
+    if (proof) {
+      record.navigationObservation = proof;
+      observation.supersededReads ??= [];
+      observation.supersededReads.push(proof);
+      pending.delete(request);
+    }
+  }
+}
+
 /**
  * Reconciles the pending frame records with the simulator's audit export and the page's frame tree. A failed export
  * leaves them as they are; the next check asks again.
@@ -1218,35 +1247,6 @@ async function reconcileFrameProof({
     frameEvents,
     currentFrames,
   });
-}
-
-function reconcilePendingFrames({
-  observation,
-  pending,
-  proofInputs,
-  cdpRecords,
-  audit,
-  localOrigin,
-  observedIdentity,
-  frameEvents,
-  currentFrames,
-}) {
-  for (const [request, record] of pending) {
-    const proof = reconcileSupersededRead(proofInputs.get(request), {
-      cdpRecords: [...cdpRecords.values()],
-      audit,
-      origin: localOrigin,
-      identity: observedIdentity,
-      frameEvents,
-      currentFrames,
-    });
-    if (proof) {
-      record.navigationObservation = proof;
-      observation.supersededReads ??= [];
-      observation.supersededReads.push(proof);
-      pending.delete(request);
-    }
-  }
 }
 
 function flattenFrameTree(node) {

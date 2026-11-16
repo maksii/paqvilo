@@ -928,13 +928,16 @@ function loadView() {
     } catch {
       /* storage unavailable: Home keeps the step open */
     }
-  if (!viewLoads.has(view))
-    viewLoads.set(
-      view,
-      oneAtATime(() => loadViewOnce(view)),
-    );
+  // Each turn belongs to an entry of the fixed `views` list, never to a name read from the address.
+  const entry = views.find(({ id }) => id === view);
+  if (!entry) return loadViewOnce(view).finally(beginRequest({}));
+  let turn = viewLoads.get(entry);
+  if (!turn) {
+    turn = oneAtATime(() => loadViewOnce(view));
+    viewLoads.set(entry, turn);
+  }
   // The workspace stays marked busy for the whole load, also between its requests.
-  return viewLoads.get(view)().finally(beginRequest({}));
+  return turn().finally(beginRequest({}));
 }
 /* NOSONAR: single-pass routine, splitting it would change shared state */ async function loadViewOnce(view) {
   // The user left this view (while its turn was waiting, or while one of its reads was unanswered): the view that is

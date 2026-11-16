@@ -317,7 +317,8 @@ test('module views render their data on first entry, act through the real app an
   await page.getByRole('button', { name: 'Answer wait fx-approval' }).click();
   await page.getByLabel('Responder').fill('reviewer@example.test');
   assert.deepEqual(await undescribed(page), []);
-  // The answer is announced when the lists show it: the refresh that follows the answer is held to observe that order.
+  // The answer is announced at once; the answer form stays locked until the refresh that follows the answer has shown
+  // the lists, so the stale wait cannot be answered again. That refresh is held to observe it.
   const answered = 'POST /__sim/api/flow-waits/fx-approval';
   const refreshHeld = Promise.withResolvers();
   const refreshRelease = Promise.withResolvers();
@@ -331,10 +332,19 @@ test('module views render their data on first entry, act through the real app an
   await page.route('**/__sim/api/state*', holdRefresh);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await refreshHeld.promise;
-  const announcement = /Run \S+ (is scheduled to resume|keeps waiting)/;
-  assert.doesNotMatch(await page.locator('#notification').textContent(), announcement);
+  assert.match(await page.locator('#notification').textContent(), /Run \S+ (is scheduled to resume|keeps waiting)/);
+  const answerForm = page.locator('#flow-wait-form');
+  assert.equal(
+    await answerForm.locator('button[aria-busy="true"]').count(),
+    1,
+    'the answer is pending while the lists are stale',
+  );
+  assert.equal(
+    await answerForm.locator('button:not([disabled]), input:not([disabled])').count(),
+    0,
+    'the stale answer form cannot be used',
+  );
   refreshRelease.resolve();
-  await page.locator('#notification').filter({ hasText: announcement }).waitFor();
   await page.unroute('**/__sim/api/state*', holdRefresh);
   await page.getByText('No run is waiting.').waitFor();
   assert.equal(await page.locator('[data-ui-section="flows:waits"] .ui-section-summary').innerText(), '0 waiting');

@@ -2,7 +2,10 @@ import { registerRuntimeShutdown } from './lib/runtime-shutdown.mjs';
 import { holdStartToken } from '../lense/process-identity.mjs';
 import { startChannelReporter } from '../lense/start-channel.mjs';
 import fs from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 import { assertPortalSource } from './lib/source-dialect.mjs';
 import { shareSolutionParses } from './lib/solution-cache.mjs';
@@ -1074,10 +1077,10 @@ Live access uses the selected connected browser identity. Exact parity requires 
               if (target.origin !== simulator.url) throw new Error('Render path escaped the local simulator.');
               // A redirect is reported, never followed: the runtime's answer is the render result.
               const response = await fetch(target, { redirect: 'manual' });
-              const html = await response.text();
               const location = response.headers.get('location');
               const redirected = response.status >= 300 && response.status < 400;
               if (redirected) {
+                await response.body?.cancel();
                 if (!args.output) {
                   await simulator.close();
                   throw new Error(
@@ -1099,7 +1102,11 @@ Live access uses the selected connected browser identity. Exact parity requires 
               } else if (args.output) {
                 const output = path.resolve(args.output);
                 await fs.mkdir(path.dirname(output), { recursive: true });
-                await fs.writeFile(output, html);
+                // A response without a body (204, 304) still writes the file, empty.
+                await pipeline(
+                  response.body ? Readable.fromWeb(response.body) : Readable.from([]),
+                  createWriteStream(output),
+                );
                 out(
                   JSON.stringify(
                     {
@@ -1111,7 +1118,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
                     2,
                   ),
                 );
-              } else out(html);
+              } else out(await response.text());
               exitCode = response.ok ? 0 : 1;
               await simulator.close();
             } else {

@@ -439,10 +439,23 @@ test('all 60 invented provenance scenarios execute current DOM/provider observat
           '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       );
       // A page holds one provider: the part's own details replace the previous part's, so that one is disposed first.
-      const install = (token, scope, details) =>
-        hostPage.evaluate(
-          `(() => { globalThis.__paqviloModelDrivenProvider?.dispose(); return (${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token, origin: appsOrigin(sim, sim.url), localSimulation: true, ...details, validatedScope: scope, validatedAnchorGeneration: 1 })}); })()`,
+      const install = async (token, scope, details) => {
+        await hostPage.evaluate(`globalThis.__paqviloCorpusRuntime = (${modelDrivenObservationRuntime.toString()});`);
+        return hostPage.evaluate(
+          (options) => {
+            globalThis.__paqviloModelDrivenProvider?.dispose();
+            return globalThis.__paqviloCorpusRuntime().install(options);
+          },
+          {
+            token,
+            origin: appsOrigin(sim, sim.url),
+            localSimulation: true,
+            ...details,
+            validatedScope: scope,
+            validatedAnchorGeneration: 1,
+          },
         );
+      };
       const inspect = async (locator, scope) => {
         const packet = await locator.evaluate(
           (node, suppliedScope) =>

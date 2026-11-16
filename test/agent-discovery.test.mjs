@@ -200,6 +200,7 @@ test('an agent start sweeps the stale discovery files of its state folder and ke
   write('other.json', JSON.stringify({ pid: NO_PROCESS, note: 'not a discovery file' }));
   write('broken.json', 'not json');
   write('notes.txt', 'kept');
+  write('large.json', JSON.stringify({ ...discovery({ pid: NO_PROCESS }), pad: 'x'.repeat(65 * 1024) }));
   const release = writeOwnedDiscovery(path.join(agents, 'owned.json'), discovery());
   t.after(release);
   const context = Object.assign(new EventEmitter(), { pages: () => [] });
@@ -211,7 +212,7 @@ test('an agent start sweeps the stale discovery files of its state folder and ke
   const started = path.basename(server.discoveryFile);
   assert.deepEqual(
     fs.readdirSync(agents).sort(),
-    ['broken.json', 'notes.txt', 'other.json', 'owned.json', 'parent.json', started].sort(),
+    ['broken.json', 'large.json', 'notes.txt', 'other.json', 'owned.json', 'parent.json', started].sort(),
   );
   const written = JSON.parse(fs.readFileSync(server.discoveryFile, 'utf8'));
   assert.equal(written.pid, process.pid);

@@ -69,12 +69,22 @@ const RUNTIME_MODULES = [
 // provider runtimes. The headroom allows new settings modules; a runtime graph is several times larger.
 const CONFIG_MODULE_BOUND = 60;
 
+// The Markdown files under `folder` (relative to `root`). Installed packages (node_modules, whose paqvilo entry links
+// back to this checkout), dot folders (.paqvilo, .git, .vscode: local state other tests create and remove) and links
+// are not documentation, so the walk never enters them.
+async function markdownUnder(root, folder, files = []) {
+  for (const entry of await fs.readdir(path.join(root, folder), { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+    const relative = `${folder}/${entry.name}`;
+    if (entry.isDirectory()) await markdownUnder(root, relative, files);
+    else if (entry.isFile() && entry.name.endsWith('.md')) files.push(relative);
+  }
+  return files;
+}
+
 async function markdownFiles() {
   const files = [...DOCUMENT_FILES];
-  for (const folder of DOCUMENT_FOLDERS)
-    for (const entry of await fs.readdir(path.join(ROOT, folder), { recursive: true, withFileTypes: true }))
-      if (entry.isFile() && entry.name.endsWith('.md') && !entry.parentPath.includes('node_modules'))
-        files.push(path.relative(ROOT, path.join(entry.parentPath, entry.name)).replaceAll('\\', '/'));
+  for (const folder of DOCUMENT_FOLDERS) await markdownUnder(ROOT, folder, files);
   return [...new Set(files)].sort((left, right) => left.localeCompare(right));
 }
 
@@ -274,6 +284,18 @@ async function workspace(t) {
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+// @test-kind tooling: the documentation harvest of the settings corpus reads the checkout's own Markdown only
+test('the settings corpus walk skips node_modules, dot folders and links', async (t) => {
+  const root = await workspace(t);
+  const outside = path.join(root, 'outside');
+  for (const dir of ['docs/guide', 'docs/.cache', 'docs/node_modules/pkg', 'outside'])
+    await fs.mkdir(path.join(root, dir), { recursive: true });
+  for (const file of ['docs/a.md', 'docs/guide/b.md', 'docs/.cache/c.md', 'docs/node_modules/pkg/d.md', 'outside/e.md'])
+    await fs.writeFile(path.join(root, file), '# x');
+  await fs.symlink(outside, path.join(root, 'docs', 'linked'), 'junction');
+  assert.deepEqual((await markdownUnder(root, 'docs')).sort(), ['docs/a.md', 'docs/guide/b.md']);
+});
 
 test('the settings contracts resolve every settings sample as the provider runtimes do, without loading them', async (t) => {
   const directory = await workspace(t);
