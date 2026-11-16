@@ -34,7 +34,10 @@ export async function openStartChannel({ platform = process.platform } = {}) {
   let pending = null,
     wake = null;
   const announce = (event) => {
-    if (!wake) return void queue.push(event);
+    if (!wake) {
+      queue.push(event);
+      return;
+    }
     const resolve = wake;
     wake = null;
     pending = null;

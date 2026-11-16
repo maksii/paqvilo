@@ -1081,6 +1081,13 @@
       "reason": "Test seam: the CLR SDK fixture (mirage/test/fixtures/clr-sdk.mjs) forms its cache keys with this digest; the module also uses it to identify compilers."
     },
     {
+      "key": "runtime:exports:mirage/lib/connection-settings.mjs:connectionSettings",
+      "file": "mirage/lib/connection-settings.mjs",
+      "type": "exports",
+      "name": "connectionSettings",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/lib/connector-runtime.mjs:connectionSettings",
       "file": "mirage/lib/connector-runtime.mjs",
       "type": "exports",

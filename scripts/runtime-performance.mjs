@@ -88,7 +88,7 @@ export async function heartbeatsWhile(
     duration = await probe();
     if (!isComplete()) {
       const wait = pause(Math.max(5, duration));
-      await (completed ? Promise.race([wait, completed]) : wait);
+      await (completed ? Promise.race([Promise.resolve(wait), Promise.resolve(completed)]) : wait);
     }
   } while (!isComplete());
 }

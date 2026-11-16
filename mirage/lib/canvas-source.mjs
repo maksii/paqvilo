@@ -19,7 +19,6 @@ import { readLocalFile } from '../../lense/local-file.mjs';
 import { unsupportedControls } from './canvas-controls.mjs';
 import { CANVAS_ASSETS, CANVAS_ASSET_MAX_BYTES, CANVAS_ASSET_TOTAL_BYTES, canvasAssetName } from './canvas-assets.mjs';
 import { prepareCanvasSource } from './canvas-components.mjs';
-import { canvasSettings } from './canvas-settings.mjs';
 
 const CANVAS_SCHEMA_VERSIONS = Object.freeze(['3.0']);
 const TOP_LEVEL = new Set(['App', 'Screens', 'ComponentDefinitions', 'DataSources', 'EditorState']);
@@ -1027,4 +1026,4 @@ export function canvasSourceWatch(sources = [], projectRoot = process.cwd()) {
 }
 
 // The `canvas` contract lives in canvas-settings.mjs, so the config-load path validates it without this module.
-export { canvasSettings };
+export { canvasSettings } from './canvas-settings.mjs';

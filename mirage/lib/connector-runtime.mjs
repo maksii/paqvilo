@@ -21,7 +21,7 @@ import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
 import { parseExpand, parseSelect } from './odata-query.mjs';
 import { registerSettingParser } from './config-keys.mjs';
-import { CONNECTION_REFERENCE, connectionSettings, connectionsSettingParser } from './connection-settings.mjs';
+import { CONNECTION_REFERENCE, connectionsSettingParser } from './connection-settings.mjs';
 import { registerPackExport } from './pack-exports.mjs';
 import { createScheduler, MAX_TIMER_DELAY, storeScheduler } from './runtime-clock.mjs';
 import {
@@ -2334,7 +2334,7 @@ export function createConnectorRuntime({
 // ---- validators the project config and pack-export registries call
 
 // The `connections` contract lives in connection-settings.mjs, so the config-load path validates it without this module.
-export { connectionSettings };
+export { connectionSettings } from './connection-settings.mjs';
 
 const packFail = (packId, message) => {
   throw new Error(`Data pack ${packId}: ${message}`);
