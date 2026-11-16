@@ -57,6 +57,7 @@ function fixture(t) {
 /** Records the Git subcommand of every Git process the product starts, synchronous or not. */
 function gitStarts(t) {
   const started = [];
+  let marked = 0;
   const subcommand = (args) => args.find((arg, index) => !arg.startsWith('-') && args[index - 1] !== '-c');
   const mocks = ['execFile', 'execFileSync'].map((name) => {
     const original = childProcess[name];
@@ -73,60 +74,102 @@ function gitStarts(t) {
   return {
     /** The Git processes `work` starts. */
     async during(work) {
-      started.length = 0;
+      const from = started.length;
       await work();
-      return [...started];
+      return started.slice(from);
     },
+    /** Marks the moment `since()` counts from. */
+    mark() {
+      marked = started.length;
+    },
+    /** The Git processes started since the last mark. */
+    since: () => started.slice(marked),
   };
 }
 
-test('a save in a watched dev session starts one Git process once the repository is known', async (t) => {
-  const fx = fixture(t);
-  const cfg = { sourceDir: fx.dir, site: structuredClone(SITE), origin: 'https://portal.example' };
-  const s = await OverlaySession.create(cfg);
-  const original = fx.read(CSS);
-  const starts = gitStarts(t);
-  const follow = s.followRepository.bind(s);
-  let followed;
-  const located = new Promise((resolve) => {
-    followed = resolve;
+/** A promise with its resolve function. */
+function gate() {
+  let open;
+  const opened = new Promise((resolve) => {
+    open = resolve;
   });
-  t.mock.method(s, 'followRepository', (directories) => {
-    follow(directories);
-    followed(directories);
-  });
-  // No repository watcher and no poll: every Git process counted below belongs to the save.
-  const watcher = watchSources(s, { pages: () => [] }, { gitWatch: false, baselinePollMs: 2 ** 31 - 1, log: () => {} });
-  ownedFixture(t).add(() => watcher.close());
-  await watcher.ready;
-  assert.deepEqual(await located, await gitDirectories(fx.dir));
-  const save = (rel, text) => async () => {
-    const refreshed = once(s, 'refreshed');
-    fx.write(rel, text);
-    await refreshed;
-  };
-  const recolour = (shade) => original.replace('color: red', `color: rgb(${shade}, 2, 3)`);
-  // The first save reads the facts that later saves reuse: the baseline commit and the paths of its tree.
-  const first = await starts.during(save(CSS, recolour(1)));
-  assert.deepEqual(first.filter((name) => name !== 'cat-file').sort(), ['diff', 'ls-tree', 'rev-parse']);
-  for (let shade = 2; shade <= 4; shade++)
-    assert.deepEqual(
-      await starts.during(save(CSS, recolour(shade))),
-      ['diff'],
-      `save ${shade} of a file of the baseline commit compares it with one Git process`,
+  return { open, opened };
+}
+
+// The source watcher reconciles when its file watch is ready and follows the repository once Git has named it; the
+// two are independent, so either can come first. Each order is held by a gate here: whichever comes first, the
+// baseline commit is resolved once after the repository is followed and its tree is listed once, by the first save.
+for (const reconcileFirst of [true, false])
+  test(`a save in a watched dev session starts one Git process once the repository is known (${
+    reconcileFirst ? 'reconciled before' : 'reconciled after'
+  } the repository is followed)`, async (t) => {
+    const fx = fixture(t);
+    const cfg = { sourceDir: fx.dir, site: structuredClone(SITE), origin: 'https://portal.example' };
+    const s = await OverlaySession.create(cfg);
+    const original = fx.read(CSS);
+    const repository = await gitDirectories(fx.dir); // before the recorder: this lookup is the test's own
+    const starts = gitStarts(t);
+    const located = gate();
+    const reconciled = gate();
+    const follow = s.followRepository.bind(s);
+    t.mock.method(s, 'followRepository', (directories) => {
+      const followNow = () => {
+        starts.mark();
+        follow(directories);
+        located.open(directories);
+      };
+      if (reconcileFirst) reconciled.opened.then(followNow);
+      else followNow();
+    });
+    const reconcile = s.reconcile.bind(s);
+    t.mock.method(s, 'reconcile', () => {
+      const reconcileNow = () => reconciled.open(reconcile());
+      if (reconcileFirst) reconcileNow();
+      else located.opened.then(reconcileNow);
+    });
+    // No repository watcher and no poll: every Git process counted below belongs to the reconcile or the save.
+    const watcher = watchSources(
+      s,
+      { pages: () => [] },
+      { gitWatch: false, baselinePollMs: 2 ** 31 - 1, log: () => {} },
     );
-  assert.ok(s.changedFiles.has(fx.file(CSS)));
-  // A file the baseline commit does not have can be untracked or ignored: that takes the untracked listing too.
-  const added = await starts.during(save('web-files/added.js', 'window.added = true;'));
-  assert.deepEqual(added.filter((name) => name !== 'cat-file').sort(), ['diff', 'ls-files']);
-  assert.ok(s.changedFiles.has(fx.file('web-files/added.js')));
-  // A commit moves HEAD: the next save asks Git for the commit again.
-  fx.commit();
-  const afterCommit = await starts.during(save(CSS, recolour(9)));
-  assert.ok(afterCommit.includes('rev-parse'), `the moved ref is resolved again: ${afterCommit}`);
-  assert.equal(s.baseline.commit, commitOf(fx.dir, 'HEAD'));
-  assert.deepEqual([...s.changedFiles], [fx.file(CSS)]);
-});
+    ownedFixture(t).add(() => watcher.close());
+    await watcher.ready;
+    assert.deepEqual(await located.opened, repository);
+    await reconciled.opened;
+    const save = (rel, text) => async () => {
+      const refreshed = once(s, 'refreshed');
+      fx.write(rel, text);
+      await refreshed;
+    };
+    const recolour = (shade) => original.replace('color: red', `color: rgb(${shade}, 2, 3)`);
+    // The first save reads the facts that later saves reuse: the paths of the baseline tree, and the baseline commit
+    // unless the reconcile already resolved it after the repository was followed.
+    const first = await starts.during(save(CSS, recolour(1)));
+    assert.deepEqual(
+      first.filter((name) => name !== 'cat-file').sort(),
+      reconcileFirst ? ['diff', 'ls-tree', 'rev-parse'] : ['diff', 'ls-tree'],
+    );
+    const facts = starts.since().filter((name) => name === 'rev-parse' || name === 'ls-tree');
+    assert.deepEqual(facts.sort(), ['ls-tree', 'rev-parse'], 'each fact is read once after the repository is followed');
+    for (let shade = 2; shade <= 4; shade++)
+      assert.deepEqual(
+        await starts.during(save(CSS, recolour(shade))),
+        ['diff'],
+        `save ${shade} of a file of the baseline commit compares it with one Git process`,
+      );
+    assert.ok(s.changedFiles.has(fx.file(CSS)));
+    // A file the baseline commit does not have can be untracked or ignored: that takes the untracked listing too.
+    const added = await starts.during(save('web-files/added.js', 'window.added = true;'));
+    assert.deepEqual(added.filter((name) => name !== 'cat-file').sort(), ['diff', 'ls-files']);
+    assert.ok(s.changedFiles.has(fx.file('web-files/added.js')));
+    // A commit moves HEAD: the next save asks Git for the commit again.
+    fx.commit();
+    const afterCommit = await starts.during(save(CSS, recolour(9)));
+    assert.ok(afterCommit.includes('rev-parse'), `the moved ref is resolved again: ${afterCommit}`);
+    assert.equal(s.baseline.commit, commitOf(fx.dir, 'HEAD'));
+    assert.deepEqual([...s.changedFiles], [fx.file(CSS)]);
+  });
 
 test('HEAD awareness asks Git only when the repository shows a change', async (t) => {
   const fx = fixture(t);
