@@ -67,14 +67,19 @@ function marker(value) {
   if (
     value?.schemaVersion !== 1 ||
     value.synthetic !== true ||
-    !['acceptance', 'model-driven'].includes(value.kind) ||
+    !['acceptance', 'model-driven', 'reference'].includes(value.kind) ||
     !Array.isArray(value.reportRoots) ||
     !value.reportRoots.length ||
     value.reportRoots.length > 2 ||
     Object.keys(value).some((key) => !['schemaVersion', 'synthetic', 'kind', 'origin', 'reportRoots'].includes(key))
   )
     throw new Error('Invalid synthetic fixture registration');
-  const allowed = value.kind === 'model-driven' ? ['report.json'] : ['evidence', 'failed-evidence'];
+  const allowed =
+    value.kind === 'model-driven'
+      ? ['report.json']
+      : value.kind === 'reference'
+        ? ['reference-evidence']
+        : ['evidence', 'failed-evidence'];
   if (
     value.reportRoots.some((name) => !allowed.includes(name)) ||
     new Set(value.reportRoots).size !== value.reportRoots.length
@@ -265,6 +270,62 @@ function auxiliaryProjection(directory, index) {
   }
   return result;
 }
+function referenceProjection(report, registration) {
+  if (
+    report?.version !== 1 ||
+    loopbackOrigin(report.localOrigin) !== registration.origin ||
+    !Array.isArray(report.contracts)
+  )
+    throw new Error('Unexpected synthetic reference report');
+  const digest = (value) => (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : undefined);
+  const scalar = (value, keys) =>
+    Object.fromEntries(
+      keys.flatMap((key) =>
+        typeof value?.[key] === 'boolean' || (typeof value?.[key] === 'number' && Number.isFinite(value[key]))
+          ? [[key, value[key]]]
+          : [],
+      ),
+    );
+  const fingerprints = (value, keys) =>
+    Object.fromEntries(keys.flatMap((key) => (digest(value?.[key]) ? [[key, value[key]]] : [])));
+  const errors = new Map([
+    ['The response lacks the configured collection.', 'missing-collection'],
+    ['The response lacks a configured field.', 'missing-field'],
+    ['HTTP status differs from the contract.', 'status-mismatch'],
+    ['Result count differs from the contract.', 'count-mismatch'],
+    ['Projected response differs.', 'projection-mismatch'],
+    ['Reference comparison failed; inspect the connected browser and explicit contract.', 'comparison-failed'],
+  ]);
+  return {
+    ...scalar(report, ['version', 'passed', 'stateUnchanged']),
+    ...fingerprints(report, [
+      'sourceFingerprint',
+      'implementationFingerprint',
+      'identityFingerprint',
+      'planFingerprint',
+    ]),
+    localVisitor: {
+      ...scalar(report.localVisitor, ['signedIn', 'unchanged']),
+      ...fingerprints(report.localVisitor, ['identityFingerprint']),
+    },
+    contracts: list(report.contracts, 100).map((contract, index) => ({
+      index,
+      ...scalar(contract, [
+        'passed',
+        'statusOnly',
+        'referenceStatus',
+        'localStatus',
+        'expectedCount',
+        'referenceCount',
+        'localCount',
+      ]),
+      ...fingerprints(contract, ['referenceDigest', 'localDigest']),
+      comparisonError: typeof contract?.error === 'string',
+      ...(errors.has(contract?.error) ? { errorKind: errors.get(contract.error) } : {}),
+    })),
+    contractsLimit: limits(report.contracts, 100),
+  };
+}
 function reportDirectories(root, registration) {
   if (registration.kind === 'model-driven') return [root];
   return registration.reportRoots.flatMap((name) => {
@@ -274,7 +335,12 @@ function reportDirectories(root, registration) {
     return fs
       .readdirSync(parent, { withFileTypes: true })
       .filter(
-        (entry) => entry.isDirectory() && !entry.isSymbolicLink() && /^\d{4}-\d{2}-\d{2}T\d{9}Z$/.test(entry.name),
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          (registration.kind === 'reference'
+            ? /^\d{4}$/.test(entry.name)
+            : /^\d{4}-\d{2}-\d{2}T\d{9}Z$/.test(entry.name)),
       )
       .slice(0, 100)
       .map((entry) => path.join(parent, entry.name));
@@ -296,13 +362,15 @@ export function recoverFixtureDiagnostics({ fixtureRoot, outputRoot }) {
         .every((part) => part !== '..')
     )
       throw new Error('Synthetic report directory escaped its fixture');
-    const file = path.join(directory, 'report.json');
+    const file = path.join(directory, registration.kind === 'reference' ? 'reference-parity.json' : 'report.json');
     if (!fs.existsSync(file)) continue;
     const report = decode(readOwnedFixtureBytes(file, directory, 4 * 1024 * 1024));
     const projection =
       registration.kind === 'model-driven'
         ? modelProjection(report, registration)
-        : acceptanceProjection(report, registration);
+        : registration.kind === 'reference'
+          ? referenceProjection(report, registration)
+          : acceptanceProjection(report, registration);
     if (registration.kind === 'acceptance')
       projection.flows = projection.flows.map((flow, index) => ({
         ...flow,

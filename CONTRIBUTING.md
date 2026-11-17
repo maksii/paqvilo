@@ -136,6 +136,26 @@ example project's exact dependency pins (it has no lockfile); the example instal
 `npm run ci:sdk:prepare` prepares the SDK client fixtures and `npm run ci:sdk` runs them; the ServiceClient gate needs
 loopback port 80 free.
 
+### Temporary dependency risk acceptance
+
+On **2026-11-17**, the user approved: “Approve the exact temporary exception until November 24.” This accepts the remaining risk of [GHSA-fc5q-39xc-vjpf / CVE-2026-112366](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) only until **2026-11-24T00:00:00Z**. It does not fix the dependency. The locked Picomatch implementations can still block a process when processing hostile patterns. The audit retains the reported high severities and prints **TEMPORARY RISK ACCEPTANCE (not fixed)** with the approval date and UTC expiry.
+
+The approval covers exactly these five development dependency graphs:
+
+- The toolkit root (`.`).
+- `examples/project/components/pcf-dataset-control`.
+- `examples/project/components/pcf-field-control`.
+- `examples/project/components/pcf-field-types`.
+- `examples/project/components/pcf-web-api-control`.
+
+The source-development policy at `scripts/dependency-risk-acceptance.json` pins each manifest and canonical lockfile SHA-256, every affected node's version/development flag and `via`/`effects` graph fingerprint, and the normalized security-report hash. Original complete canonical report hashes remain recorded as `reportSha256` provenance. Only a `fixAvailable` object’s recommendation `name` and `version` are normalized after checking a valid semver and an affected direct ancestor reachable through the already pinned `effects` graph. Object/boolean state, `isSemVerMajor`, unknown fields, the complete advisory object (source `1247710`, range `<=4.0.7`), severity counts and every metadata counter remain bound. The approved decision proposal SHA-256 is `1f871954564e882d498eafdf0e0764c00cc3b42eccd5241a8dc58468c3e72e06`; its scope graph SHA-256 is `4eb83e02e72427e84c305c9f5a73d39d468da4144c6512ea032de298269e5a26`. Do not regenerate these pins to make a changed report pass. Remove or independently reconsider this acceptance when an official fix becomes available or any bound evidence changes.
+
+Pinned npm 12.2.2 Arborist propagates one top-level remediation recommendation through `via`; its `vuln.js` setter keeps the first semver-major object when another equally major hint arrives. `audit-report.js` adds calculated ancestors to a Set from asynchronous completion, so equivalent reports can select `vite` or `knip`, or `typescript-eslint` or `pcf-start`, without changing any installed exposure. These non-installed hints are not authoritative proof of an official fixed Picomatch release. No `npm audit fix`, downgrade or package override is performed. Re-evaluate an official patch independently; the approval still expires at the same UTC deadline.
+
+All ten existing contexts still run ordinary `npm audit --json`; the other five contexts receive no temporary acceptance. Before the root audit, generated `package-lock.json` must equal canonical `paqvilo-lock.json` byte for byte. Changes during an audit, extra advisories or nodes, production edges, missing/invalid report or time evidence and expiry fail closed. A zero-findings report for the same pinned inputs requires re-evaluation; changed inputs with a valid clean report do not need this exception. The CLI uses the current clock without an environment or command-line time override. The existing historical minimatch guard and its security regressions are unchanged. Registry signatures, dependency review, CodeQL configurations, SDK/build/functional/security lanes and final PR checks remain required; this local policy does not alter GitHub's separate dependency-review decision.
+
+The bounded source review found real pattern inputs in configurable Vite filters/watch ignores/optimizer entries, dependency export metadata and CSS plugin messages. Vite 8.3.8's installed `dist/node/chunks/node.js` contains those consumers; its `import.meta.glob` path separately disables extglobs. PCF 1.51.1's `pcf-start/bin/pcf-start.js` supplies the local build output path to BrowserSync's watched files; BrowserSync's nested Chokidar 3 can interpret glob-like paths through `anymatch`/Picomatch. Custom webpack `ts-loader.reportFiles` and TypeScript ESLint project globs can add other configurable pattern inputs. These are development/build tools, including downstream copies of the shipped examples and applications using the public Code Apps Vite adapter. Development flags and loopback binding do not prove universal non-exploitability. Lense's route/exclusion matching uses [its own resolver](lense/resolver.mjs); the inspected ordinary toolkit request/watch flows did not demonstrate a remote arbitrary-pattern input. The source evidence report SHA-256 is `303ce344317d4d5b9f1ad68db9a795ec0c8ae460c960855f78620c86ab65978d` (2026-11-17); this conclusion is bounded source tracing, not an exploitation test.
+
 ## Project boundary
 
 - Reusable source-overlay behavior belongs in `lense/`; rendering, platform semantics and simulation in `mirage/`.

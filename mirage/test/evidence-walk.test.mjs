@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import { removeAtMetadataStat } from './support/metadata-worker-gate.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { settleFileTimes } from './support/file-times.mjs';
@@ -64,7 +65,7 @@ test('the fingerprint digest keeps name order across files and directories read 
 test('entries removed during a walk are left out, and other read failures still fail the fingerprint', async (t) => {
   const root = await tree(t, { 'keep.txt': 'kept', 'gone/inner.txt': 'removed', 'late.txt': 'removed' });
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
-  const { readdir, readFile, stat } = fs;
+  const { readdir, readFile } = fs;
   // The directory and the file disappear after the parent listing named them.
   t.mock.method(fs, 'readdir', (dir, ...rest) =>
     path.basename(dir) === 'gone' ? Promise.reject(missing(dir)) : readdir(dir, ...rest),
@@ -72,9 +73,7 @@ test('entries removed during a walk are left out, and other read failures still 
   t.mock.method(fs, 'readFile', (file, ...rest) =>
     path.basename(file) === 'late.txt' ? Promise.reject(missing(file)) : readFile(file, ...rest),
   );
-  t.mock.method(fs, 'stat', (file, ...rest) =>
-    path.basename(file) === 'late.txt' ? Promise.reject(missing(file)) : stat(file, ...rest),
-  );
+  removeAtMetadataStat(t, path.join(root, 'late.txt'));
   const expected = createHash('sha256').update('keep.txt').update('\0').update('kept').update('\0').digest('hex');
   assert.equal(await sourceFingerprint(root), expected);
   assert.equal(await cachedImplementationSourceFingerprint(root), expected);

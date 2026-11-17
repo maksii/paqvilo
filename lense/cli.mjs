@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { startupProgress } from './startup-progress.mjs';
-import { commandExitCode, parseOptions, LENSE_OPTIONS as options } from './cli-options.mjs';
+import {
+  commandExitCode,
+  parseOptions,
+  LENSE_OPTIONS as options,
+  LENSE_COMMAND_OPTIONS as allowed,
+} from './cli-options.mjs';
+import { lenseCommandHelp } from './cli-help.mjs';
 import { failureDocument, jsonEnvelope } from './cli-envelope.mjs';
 
 // Loaded by the commands that read the catalogue: its settings contracts load the Mirage library, which help, a
@@ -232,7 +238,7 @@ if (!Object.hasOwn(commands, command)) {
 }
 
 if (values.help) {
-  const usage = command === 'mirage' && positionals[1] === 'init' ? MIRAGE_INIT_HELP : HELP;
+  const usage = lenseCommandHelp(command, positionals[1], HELP, MIRAGE_INIT_HELP);
   if (values.json || command === 'agent')
     console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage }));
   else console.log(usage);
@@ -250,107 +256,6 @@ try {
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
   if (command === 'mirage' && positionals.length > 2)
     throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
-  const selection = ['site', 'env', 'url', 'source', 'repo', 'config', 'scope', 'baseline'];
-  const browserSelection = ['browser', 'profile', 'user-data-dir', 'profile-directory'];
-  const allowed = {
-    dev: [
-      ...selection,
-      ...browserSelection,
-      'cdp-url',
-      'portals',
-      'pick',
-      'path',
-      'headless',
-      'headed',
-      'no-reload',
-      'no-overrides',
-      'debug-port',
-    ],
-    map: [...selection, 'pick', 'check', 'no-write', 'json'],
-    status: [...selection, 'pick', 'json'],
-    verify: [
-      ...selection,
-      ...browserSelection,
-      'pick',
-      'path',
-      'headless',
-      'headed',
-      'signed-in',
-      'json',
-      'strict',
-      'sign-in-timeout',
-    ],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
-    analyze: ['site', 'env', 'source', 'repo', 'config', 'project', 'all', 'fail-on', 'json'],
-    list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
-    audit: [...selection, 'all', 'strict', 'json'],
-    use: ['config', 'repo', 'site', 'env'],
-    resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
-    agent: [
-      'config',
-      'session',
-      'page-id',
-      'selector',
-      'limit',
-      'after',
-      'output',
-      'timeout',
-      'full-page',
-      'include-panel',
-      'width',
-      'height',
-      'styles',
-      'path',
-      'json',
-    ],
-    'model-driven': [
-      'config',
-      ...browserSelection,
-      'cdp-url',
-      'project',
-      'env',
-      'url',
-      'path',
-      'resource-map',
-      'event-cursor',
-      'include-event-parameters',
-      'local-simulation',
-      'startup-timeout',
-      'headless',
-      'headed',
-      'no-reload',
-      'debug-port',
-      'timeout',
-      'output',
-      'json',
-    ],
-    mirage: [
-      ...selection,
-      ...browserSelection,
-      'cdp-url',
-      'portals',
-      'project',
-      'portal',
-      'path',
-      'port',
-      'state',
-      'preset',
-      'preset-mode',
-      'apply-configuration',
-      'solution-root',
-      'startup-timeout',
-      'allow-live-writes',
-      'headless',
-      'headed',
-      'no-reload',
-      'debug-port',
-      'out',
-      'force',
-      'json',
-      'runtime',
-      'simulation',
-    ],
-  };
   for (const option of Object.keys(values))
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });

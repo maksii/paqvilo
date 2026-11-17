@@ -3,6 +3,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmCliPath } from './npm-cli.mjs';
+import {
+  readAuditInputs,
+  unchangedAuditInputs,
+  validateAuditReport,
+  temporaryRiskAcceptance,
+  matchesApprovedRiskInputs,
+} from './dependency-risk-acceptance.mjs';
 
 export { npmCliPath };
 
@@ -32,8 +39,6 @@ const accepted = [
     via: { name: 'eslint-plugin-import-x', version: '4.17.1' },
   },
 ];
-const lockfileOf = (cwd, project) =>
-  JSON.parse(fs.readFileSync(path.join(cwd, project === '.' ? 'paqvilo-lock.json' : 'package-lock.json'), 'utf8'));
 // The packages whose installed dependency on `name` resolves to the hoisted node_modules/<name>.
 const dependentsOfHoisted = (lockfile, name) =>
   Object.entries(lockfile.packages ?? {})
@@ -63,11 +68,35 @@ export function acceptedFinding(project, name, finding, report, lockfile) {
     return name === entry.via.name && JSON.stringify(finding.via) === JSON.stringify([entry.dependency]);
   });
 }
-function auditProject(project, cli) {
-  const cwd = path.resolve(root, project);
-  if (!fs.existsSync(path.join(cwd, project === '.' ? 'paqvilo-lock.json' : 'package-lock.json')))
-    throw new Error(`Missing lockfile in ${project}.`);
-  const result = spawnSync(process.execPath, [cli, 'audit', '--json'], {
+function findingDisposition(historical, riskAccepted) {
+  if (riskAccepted) return ' temporarily risk accepted (not fixed)';
+  if (historical) return ' accepted';
+  return '';
+}
+
+function findingsFailAudit(project, report, status, evidence, { now, error }) {
+  const lockfile = JSON.parse(evidence.lock);
+  const temporary = temporaryRiskAcceptance(project, report, status, evidence, { now });
+  if (temporary.accepted) error(`${project}: ${temporary.message}`);
+  else error(`${project}: temporary risk acceptance not applicable: ${temporary.reason}`);
+  let failed = false;
+  for (const [name, finding] of Object.entries(report.vulnerabilities ?? {})) {
+    const historical = acceptedFinding(project, name, finding, report, lockfile);
+    const riskAccepted = temporary.accepted && temporary.names.includes(name);
+    if (!historical && !riskAccepted) failed = true;
+    error(`${project}: ${name} (${finding.severity})${findingDisposition(historical, riskAccepted)}`);
+  }
+  return failed;
+}
+
+export function auditProject(
+  project,
+  cli,
+  { rootDirectory = root, runAudit = spawnSync, now = Date.now, log = console.log, error = console.error } = {},
+) {
+  const cwd = path.resolve(rootDirectory, project);
+  const before = readAuditInputs(rootDirectory, project);
+  const result = runAudit(process.execPath, [cli, 'audit', '--json'], {
     cwd,
     encoding: 'utf8',
     windowsHide: true,
@@ -75,6 +104,7 @@ function auditProject(project, cli) {
     maxBuffer: 8 * 1024 * 1024,
   });
   if (result.error) throw result.error;
+  if (result.signal) throw new Error(`Dependency audit was interrupted for ${project}.`);
   let report;
   try {
     report = JSON.parse(result.stdout);
@@ -83,28 +113,37 @@ function auditProject(project, cli) {
   }
   if (report.error || !report.metadata?.vulnerabilities)
     throw new Error(`Dependency audit unavailable for ${project}: ${report.error?.summary ?? result.stderr}`);
+  validateAuditReport(report, result.status);
+  const evidence = readAuditInputs(rootDirectory, project);
+  if (!unchangedAuditInputs(before, evidence))
+    throw new Error(`Dependency inputs changed during audit for ${project}.`);
   const counts = report.metadata.vulnerabilities;
-  console.log(`${project}: ${JSON.stringify(counts)}`);
-  if (counts.total > 0) {
-    const lockfile = lockfileOf(cwd, project);
-    let failed = false;
-    for (const [name, finding] of Object.entries(report.vulnerabilities ?? {})) {
-      const isAccepted = acceptedFinding(project, name, finding, report, lockfile);
-      if (!isAccepted) failed = true;
-      console.error(`${project}: ${name} (${finding.severity})${isAccepted ? ' accepted' : ''}`);
-    }
-    return failed;
-  } else if (result.status !== 0) throw new Error(`Dependency audit failed for ${project} (${result.status}).`);
+  log(`${project}: ${JSON.stringify(counts)}`);
+  if (counts.total === 0 && matchesApprovedRiskInputs(project, evidence))
+    throw new Error(
+      `The unchanged approved dependency graph in ${project} returned zero advisory findings; this report change requires re-evaluation.`,
+    );
+  if (counts.total > 0) return findingsFailAudit(project, report, result.status, evidence, { now, error });
   return false;
+}
+
+export function auditAllProjects(cli, options = {}) {
+  let failed = false;
+  for (const project of auditedProjects) {
+    try {
+      if (auditProject(project, cli, options)) failed = true;
+    } catch (error) {
+      failed = true;
+      (options.error ?? console.error)(`${project}: ${error.message}`);
+    }
+  }
+  return failed;
 }
 
 function main() {
   const cli = npmCliPath();
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
-  let failed = false;
-  for (const project of auditedProjects) {
-    if (auditProject(project, cli)) failed = true;
-  }
+  const failed = auditAllProjects(cli);
   process.exitCode = failed ? 1 : 0;
 }
 

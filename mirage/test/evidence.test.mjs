@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { removeAtMetadataStat } from './support/metadata-worker-gate.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -67,27 +68,20 @@ test('implementation hashes ignore only generated SDK directories and retain aut
 test('cached fingerprints tolerate files and directories removed at their read gates without hiding other errors', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-removal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const originalStat = fs.stat,
-    originalReaddir = fs.readdir;
+  const originalReaddir = fs.readdir;
   t.after(() => {
-    fs.stat = originalStat;
     fs.readdir = originalReaddir;
   });
   for (const fingerprint of [cachedSourceFingerprint, cachedImplementationSourceFingerprint]) {
     const file = path.join(root, 'gone.mjs');
     await fs.writeFile(file, 'owned source');
-    fs.stat = async function (name, ...args) {
-      if (name === file) {
-        await fs.unlink(file);
-        fs.stat = originalStat;
-      }
-      return Reflect.apply(originalStat, this, [name, ...args]);
-    };
+    const restoreStat = removeAtMetadataStat(t, file);
     assert.equal(
       await fingerprint(root),
       await sourceFingerprint(root),
       'a file removed after directory discovery is absent from both hashes',
     );
+    restoreStat();
     const directory = path.join(root, 'gone');
     await fs.mkdir(directory);
     await fs.writeFile(path.join(directory, 'source.mjs'), 'owned source');
@@ -345,12 +339,9 @@ test('cached implementation fingerprints skip a file removed while the signature
   const removed = path.join(root, 'removed.mjs');
   await fs.writeFile(removed, 'export const removed = true;');
   // Another process (a test cleaning up its fixture) removes the file between the listing and its stat.
-  const stat = fs.stat;
-  t.mock.method(fs, 'stat', async (file, ...rest) => {
-    if (file === removed) await fs.rm(removed);
-    return stat.call(fs, file, ...rest);
-  });
+  const restoreStat = removeAtMetadataStat(t, removed);
   const digest = await cachedImplementationSourceFingerprint(root);
+  restoreStat();
   t.mock.restoreAll();
   assert.equal(digest, await implementationSourceFingerprint(root));
 });

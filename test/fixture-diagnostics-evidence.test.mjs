@@ -321,3 +321,129 @@ test('a timed-out owner retains its fixture until a gated late producer is recov
   assert.equal(diagnostic.report.applied, 3);
   assert.equal(JSON.stringify(diagnostic).includes(privateMarker), false);
 });
+
+function referenceFixture(t) {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-reference-diagnostics-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fixtureRoot = path.join(root, 'fixture'),
+    outputRoot = path.join(root, 'published');
+  fs.mkdirSync(fixtureRoot);
+  const registration = registerFixtureDiagnostics({
+    fixtureRoot,
+    outputRoot,
+    kind: 'reference',
+    origin,
+    reportRoots: ['reference-evidence'],
+  });
+  const directory = path.join(fixtureRoot, 'reference-evidence', '0001');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, 'reference-parity.json');
+  const report = {
+    version: 1,
+    localOrigin: origin,
+    passed: false,
+    stateUnchanged: true,
+    sourceFingerprint: 'a'.repeat(64),
+    implementationFingerprint: 'b'.repeat(64),
+    identityFingerprint: privateMarker,
+    planFingerprint: 'c'.repeat(64),
+    localVisitor: {
+      signedIn: true,
+      unchanged: false,
+      contactId: privateMarker,
+      cookie: privateMarker,
+      identityFingerprint: 'd'.repeat(64),
+    },
+    contracts: [
+      {
+        id: privateMarker,
+        path: '/private?token=' + privateMarker,
+        passed: true,
+        referenceStatus: 200,
+        localStatus: 200,
+        referenceDigest: 'e'.repeat(64),
+        localDigest: 'e'.repeat(64),
+        body: privateMarker,
+        fields: [privateMarker],
+        error: privateMarker,
+      },
+    ],
+    token: privateMarker,
+    headers: privateMarker,
+    report: privateMarker,
+  };
+  return { root, fixtureRoot, outputRoot, registration, file, report };
+}
+
+test('reference diagnostics retain each completed comparison with only numeric, boolean and digest fields', (t) => {
+  const fx = referenceFixture(t);
+  fs.writeFileSync(fx.file, JSON.stringify(fx.report));
+  const second = path.join(fx.fixtureRoot, 'reference-evidence', '0002');
+  fs.mkdirSync(second);
+  fs.writeFileSync(
+    path.join(second, 'reference-parity.json'),
+    JSON.stringify({
+      ...fx.report,
+      passed: true,
+      contracts: [{ ...fx.report.contracts[0], error: 'HTTP status differs from the contract.' }],
+    }),
+  );
+  fs.writeFileSync(path.join(path.dirname(fx.file), 'discovery.json'), privateMarker);
+  const result = finalizeFixtureDiagnostics(fx.registration);
+  assert.equal(result.canRemove, true);
+  assert.equal(result.reports, 2);
+  const values = diagnostics(result.files);
+  assert.equal(values.length, 2);
+  assert.deepEqual(
+    values.map((row) => row.report.passed),
+    [false, true],
+  );
+  for (const row of values) {
+    assert.equal(row.producer, 'reference');
+    assert.equal(row.complete, true);
+    assert.equal(row.reportWritten, true);
+    assert.deepEqual(row.report.localVisitor, {
+      signedIn: true,
+      unchanged: false,
+      identityFingerprint: 'd'.repeat(64),
+    });
+    assert.equal(row.report.contracts[0].referenceStatus, 200);
+    assert.equal(row.report.contracts[0].comparisonError, true);
+    assert.equal(row.report.contracts[0].referenceDigest, 'e'.repeat(64));
+    assert.equal(JSON.stringify(row).includes(privateMarker), false);
+    assert.equal(JSON.stringify(row).includes('/private'), false);
+  }
+  assert.equal(values[0].report.contracts[0].errorKind, undefined, 'arbitrary errors are not exported');
+  assert.equal(values[1].report.contracts[0].errorKind, 'status-mismatch');
+  fs.rmSync(fx.fixtureRoot, { recursive: true, force: true });
+  assert.ok(result.files.every((file) => fs.statSync(file).isFile()));
+  const collected = collectSyntheticEvidence(fx.outputRoot);
+  assert.equal(collected.files.length, 2);
+});
+
+test('reference diagnostics distinguish no report from a completed report and retain an aborted producer root', (t) => {
+  const fx = referenceFixture(t);
+  const result = finalizeFixtureDiagnostics(fx.registration, AbortSignal.abort());
+  assert.equal(result.canRemove, false);
+  assert.equal(result.reports, 0);
+  assert.equal(fs.statSync(fx.fixtureRoot).isDirectory(), true);
+  const [row] = diagnostics(result.files);
+  assert.equal(row.complete, false);
+  assert.equal(row.reportWritten, false);
+  assert.equal(row.missingReason, 'report-not-written');
+});
+
+test('reference diagnostics reject a foreign report origin, hard links and unregistered report roots', (t) => {
+  const fx = referenceFixture(t);
+  assert.throws(
+    () => registerFixtureDiagnostics({ ...fx.registration, reportRoots: ['discovery.json'] }),
+    /Unapproved/,
+  );
+  fs.writeFileSync(fx.file, JSON.stringify({ ...fx.report, localOrigin: 'http://127.0.0.1:12346' }));
+  assert.throws(() => recoverFixtureDiagnostics(fx.registration), /Unexpected synthetic reference/);
+  assert.equal(fs.existsSync(fx.outputRoot), false);
+  fs.writeFileSync(fx.file, JSON.stringify(fx.report));
+  fs.linkSync(fx.file, path.join(fx.root, 'substituted.json'));
+  assert.throws(() => recoverFixtureDiagnostics(fx.registration), /ordinary|owned|link/i);
+  assert.equal(fs.existsSync(fx.outputRoot), false);
+});

@@ -187,8 +187,10 @@ export async function createPortalSession({
       changing = false;
     }
   };
-  const state = await administration('/state?summary=1');
-  if (state.config?.mode === 'live' || state.config?.pageMode === 'live')
+  // Session controls need the current transport modes and CSRF token, not a
+  // verification snapshot and a walk of every implementation file.
+  const state = await administration('/status');
+  if (state.mode === 'live' || state.pageMode === 'live')
     throw failure('Portal session automation requires a local Mirage runtime.', 'LocalRuntimeRequired', 409);
   csrf = state.csrf;
   if (typeof csrf !== 'string' || !csrf)

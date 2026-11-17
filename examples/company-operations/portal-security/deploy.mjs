@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConnection, connectedClient } from 'paqvilo/dataverse';
+import { parseArgs } from 'node:util';
 import { buildBlueprint, validateBlueprint, assertNoActiveOrphans } from './blueprint.mjs';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -296,32 +296,74 @@ async function verifySecurityDeployment(client, siteId, blueprint, evidenceDirec
     throw new Error('Security verification has unresolved changes.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
-    };
-  const siteId = arg('--site');
-  if (!/^[0-9a-f-]{36}$/i.test(siteId ?? '')) throw new Error('--site GUID is required.');
-  const schema = JSON.parse(await fs.readFile(path.join(project, 'dataverse/manifest.json'))),
-    catalogue = JSON.parse(await fs.readFile(arg('--catalogue') ?? path.join(project, 'data/catalogue.json'))),
-    b = buildBlueprint(schema, catalogue);
-  validateBlueprint(b, schema);
-  await fs.writeFile(path.join(project, 'portal-security/blueprint.json'), JSON.stringify(b, null, 2) + '\n');
-  const variant = arg('--variant');
-  if (variant)
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HELP = `Usage: node portal-security/deploy.mjs --site GUID --catalogue FILE [--connection FILE] [--apply]
+
+  --site GUID        explicit isolated website target
+  --catalogue FILE   explicit fixture catalogue used to build the deployment in memory
+  --connection FILE  connection with organisationId (default: .paqvilo/dataverse/provisioning.connection.json)
+  --apply            reconcile native components; otherwise save a read-only plan
+  --help, -h         show help without reading local inputs or connecting
+
+Plans and before/after snapshots stay under ignored .paqvilo/portal-security.
+This command never rewrites the committed portal-security/blueprint.json.
+`;
+
+function deploymentArguments(args) {
+  const { values, tokens } = parseArgs({
+    args,
+    options: {
+      site: { type: 'string' },
+      catalogue: { type: 'string' },
+      connection: { type: 'string' },
+      variant: { type: 'string' },
+      apply: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+    tokens: true,
+    allowPositionals: false,
+    strict: true,
+  });
+  const seen = new Set();
+  for (const token of tokens) {
+    if (token.kind !== 'option') continue;
+    if (seen.has(token.name)) throw new Error(`--${token.name} may be given only once.`);
+    seen.add(token.name);
+  }
+  if (values.help) return values;
+  if (!GUID.test(values.site ?? '')) throw new Error('--site requires a canonical GUID.');
+  if (!values.catalogue?.trim())
+    throw new Error('--catalogue FILE is required; choose the fixture catalogue explicitly.');
+  if (values.connection !== undefined && !values.connection.trim()) throw new Error('--connection must not be empty.');
+  if (values.variant !== undefined)
     throw new Error(
       'Parent-only permission variants are blocked after observed broad visibility leakage. Use the bounded complete-subtree deep variant; recorded orphan faults are negative security evidence.',
     );
-  const connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
-    client = connectedClient(connection);
+  return values;
+}
+
+async function runDeployment(args) {
+  const values = deploymentArguments(args);
+  if (values.help) {
+    console.log(HELP);
+    return;
+  }
+  const siteId = values.site;
+  const schema = JSON.parse(await fs.readFile(path.join(project, 'dataverse/manifest.json'))),
+    catalogue = JSON.parse(await fs.readFile(values.catalogue)),
+    b = buildBlueprint(schema, catalogue);
+  validateBlueprint(b, schema);
+  const { loadConnection, connectedClient } = await import('paqvilo/dataverse');
+  const connection = await loadConnection(values.connection ?? '.paqvilo/dataverse/provisioning.connection.json');
+  if (!GUID.test(connection.organisationId ?? ''))
+    throw new Error('Connection organisationId GUID is required to verify the deployment target.');
+  const client = connectedClient(connection);
   await client.verify(connection.organisationId);
   let count = 0;
   console.log(
     JSON.stringify(
       await deploySecurity(client, siteId, b, {
-        apply: args.includes('--apply'),
+        apply: values.apply === true,
         evidenceDirectory: path.join(project, '.paqvilo/portal-security'),
         onProgress: (e) => {
           count++;
@@ -332,3 +374,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ),
   );
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  await runDeployment(process.argv.slice(2));

@@ -45,14 +45,19 @@ model and does not prove runtime authorization.
 Run from the toolkit checkout against an isolated site:
 
 ```powershell
-node examples/company-operations/portal-security/deploy.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json
+node examples/company-operations/portal-security/deploy.mjs --site <website-guid> --catalogue examples/company-operations/data/catalogue.json --connection .paqvilo/dataverse/provisioning.connection.json
 node examples/company-operations/portal-security/deploy.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json --catalogue examples/company-operations/data/stress-catalogue.json --apply
 node --test examples/company-operations/test/portal-security.test.mjs
 ```
 
-- Without `--apply` the script reads configuration and saves a plan; it writes nothing. Apply creates or reconciles only the
-  registered CO components and adds fixture Contact-to-role links, verifies native content and Contact associations, and
-  requires zero remaining changes. The journal and before/after snapshots stay in ignored `.paqvilo/portal-security/`.
+- `--catalogue FILE` and a canonical `--site` GUID are required: select the intended fixture catalogue explicitly. The
+  connection defaults to `.paqvilo/dataverse/provisioning.connection.json`; its organisation GUID is required and verified
+  before site inspection. `--help` reads no catalogue, connection or blueprint.
+- Without `--apply` the script performs remote reads and saves a local plan and before-snapshot under ignored
+  `.paqvilo/portal-security/`; it makes no Dataverse writes. The selected catalogue is compiled in memory and deployment
+  never rewrites the committed `portal-security/blueprint.json`. Apply creates or reconciles only the registered CO
+  components and adds fixture Contact-to-role links, verifies native content and Contact associations, and requires zero
+  remaining changes. Journals and before/after snapshots stay in that ignored evidence directory.
   Uncertain writes are not retried; rerun the plan to reconcile GUIDs first.
 - The site must use the enhanced data model with traditional authorization (`datamodelversion=2.0`,
   `enhancedauthorization=0`). Web roles and permissions are native `powerpagecomponent` types 11 and 18; role links are read

@@ -205,7 +205,9 @@ const TOOL_SCHEMAS = {
     entity: string('LOGICAL_NAME'),
     'record-id': string('ID'),
     status: string('ok|error|denied|cancelled|running'),
-    host: string('power-pages|standalone|model-driven|canvas|code-app|dataverse-api|tds|soap|job|sim'),
+    host: string(
+      'power-pages|standalone|model-driven|canvas|code-app|dataverse-api|tds|soap|job|sim|identity-provider|sharepoint',
+    ),
     'actor-kind': string('KIND'),
     'actor-id': string('ID'),
     'session-key': string('KEY'),

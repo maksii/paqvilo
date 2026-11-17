@@ -1,0 +1,57 @@
+{
+  "source": "Raw npm 12.2.2 audit JSON captured 2026-11-17; registry metadata only, no pattern execution.",
+  "capturedAt": "2026-11-17T19:32:45.802708+00:00",
+  "scopeGraphSha256": "4eb83e02e72427e84c305c9f5a73d39d468da4144c6512ea032de298269e5a26",
+  "projects": {
+    ".": {
+      "file": "root.json",
+      "rawAuditSha256": "a63ba76a80cdeb6d41d3cde4f5e15f4d8c8321d5e9f9a3175b6ef48bdd47b2a7",
+      "status": 1
+    },
+    "examples/project/components/pcf-dataset-control": {
+      "file": "examples__project__components__pcf-dataset-control.json",
+      "rawAuditSha256": "39ac54169efb21e50d8bcc3a56200f93cdafd498825658ec1cdaf26ce284eab3",
+      "status": 1
+    },
+    "examples/project/components/pcf-field-control": {
+      "file": "examples__project__components__pcf-field-control.json",
+      "rawAuditSha256": "eaa34242a50e60fa75a08efa367400b52f56bf1a34d15329413d19f3d08b84d5",
+      "status": 1
+    },
+    "examples/project/components/pcf-field-types": {
+      "file": "examples__project__components__pcf-field-types.json",
+      "rawAuditSha256": "39ac54169efb21e50d8bcc3a56200f93cdafd498825658ec1cdaf26ce284eab3",
+      "status": 1
+    },
+    "examples/project/components/pcf-web-api-control": {
+      "file": "examples__project__components__pcf-web-api-control.json",
+      "rawAuditSha256": "eaa34242a50e60fa75a08efa367400b52f56bf1a34d15329413d19f3d08b84d5",
+      "status": 1
+    },
+    "mirage": {
+      "file": "mirage.json",
+      "rawAuditSha256": "39e4b0971e9ba37e1c162ff6d3a92d6fa15fbf7291ab32dacdd3b166ddd3793f",
+      "status": 0
+    },
+    "examples/company-operations": {
+      "file": "examples__company-operations.json",
+      "rawAuditSha256": "6d31e957dc14f2847573c528dd4fdfd3b80883e8f4d401404880b25afa9bf1b6",
+      "status": 0
+    },
+    "mirage/test-sdk/tds": {
+      "file": "mirage__test-sdk__tds.json",
+      "rawAuditSha256": "64d3ed05717c631b2a25fbab02a145173311903394657d10a4a5277b0fc4f5ee",
+      "status": 0
+    },
+    "mirage/test-sdk/dynamics-web-api": {
+      "file": "mirage__test-sdk__dynamics-web-api.json",
+      "rawAuditSha256": "8ceaac796f97679723053e3107d0f90f5c3e0642413e9203da2f832c6b6ebbbd",
+      "status": 0
+    },
+    "mirage/test-sdk/cert-auth": {
+      "file": "mirage__test-sdk__cert-auth.json",
+      "rawAuditSha256": "480cfd59738ce08d55b250ab000d6a1a9f077317add1e2721e30511566d6b2fb",
+      "status": 0
+    }
+  }
+}

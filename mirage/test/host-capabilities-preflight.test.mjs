@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import workerThreads from 'node:worker_threads';
 import { createSimulator } from '../api.mjs';
 import { assertAcceptanceCapabilities, runAcceptance } from '../acceptance.mjs';
 import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -227,15 +228,22 @@ test('strict missing capability is refused without a full state fingerprint, whi
   const outputDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'acceptance-capability-order-'));
   t.after(() => fs.rm(outputDir, { recursive: true, force: true }));
   const serverFile = path.resolve(import.meta.dirname, '../server.mjs');
-  const stat = fs.stat;
+  const OriginalWorker = workerThreads.Worker;
+  const metadataWorker = new URL('../lib/file-stamps-worker.mjs', import.meta.url).href;
   let implementationStats = 0;
-  t.mock.method(fs, 'stat', (file, ...args) => {
-    if (typeof file === 'string' && path.resolve(file) === serverFile) {
-      implementationStats++;
-      return Promise.reject(Object.assign(new Error('Invented implementation evidence failure'), { code: 'EACCES' }));
-    }
-    return stat(file, ...args);
-  });
+  t.mock.method(
+    workerThreads,
+    'Worker',
+    class extends OriginalWorker {
+      constructor(url, options) {
+        if (url.href === metadataWorker && options?.workerData?.files?.includes(serverFile)) {
+          implementationStats++;
+          throw Object.assign(new Error('Invented implementation evidence failure'), { code: 'EACCES' });
+        }
+        super(url, options);
+      }
+    },
+  );
   await assert.rejects(
     runAcceptance({
       localUrl: sim.url,

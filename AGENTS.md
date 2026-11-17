@@ -2,6 +2,30 @@
 
 Follow the user's scope.
 
+## Agent rules
+
+1. **Understand first.** Inspect the relevant code, architecture, dependencies and repository conventions before editing.
+2. **Verify assumptions.** Check source code, tests or official documentation. State any uncertainty that affects the
+   implementation or the claims you can make about it.
+3. **Plan proportionally.** For complex work, define acceptance criteria and outline a short plan. Handle trivial changes
+   directly.
+4. **Keep it simple.** Reuse existing solutions and choose the smallest complete implementation. Avoid speculative
+   features, abstractions and dependencies.
+5. **Make surgical changes.** Edit only what the task requires. Preserve existing behavior, public interfaces and backward
+   compatibility unless the user authorizes a change.
+6. **Debug systematically.** Reproduce the failure, identify the root cause and add a regression test that exercises the
+   failure mode. Fix the cause and avoid workarounds that hide symptoms.
+7. **Prove correctness.** Run the relevant tests, lint and builds. Never weaken assertions, skip failing tests or claim
+   success without verification.
+8. **Delegate intelligently.** Parallelize independent work with clear ownership and expected outputs. Integrate the
+   results, require independent review of complex changes and verify the combined result.
+9. **Protect boundaries.** Validate untrusted inputs, keep secrets out of logs and commits, and obtain the user's approval
+   before destructive or irreversible actions.
+10. **Communicate efficiently.** Report what changed, what you verified and any remaining risks or blockers. Keep it
+    concise and retain the technical details needed to verify or reproduce the result.
+
+## Runtime boundaries
+
 - `paqvilo lense` overlays local sources in a dedicated browser on a live portal; browser actions can affect live data.
   It does not deploy, upload, run PAC or execute Liquid/Dataverse locally.
 - `paqvilo mirage` serves exported sources and simulated data on loopback, with `/_sim/` for administration.

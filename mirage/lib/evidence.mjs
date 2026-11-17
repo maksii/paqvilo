@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { orderedMap } from '../../lense/async-map.mjs';
 import { stateDigest } from './state-stream.mjs';
+import { statFiles } from './file-stamps.mjs';
 
 export const stateFingerprint = (state) => stateDigest({ config: state.config, data: state.data });
 
@@ -130,8 +131,11 @@ async function signedFingerprint(root, implementation, cacheKey) {
   const walked = BigInt(Date.now()) * 1_000_000n;
   let newest = 0n;
   const files = await fingerprintFiles(root, implementation);
-  const stamps = await orderedMap(files, 2 * READ_CONCURRENCY, async (file) => {
-    const stat = await fs.stat(file, { bigint: true }).catch(gone);
+  // Batch the complete metadata walk off the event loop: each tiny native stat
+  // no longer needs its own thread-pool callback and event-loop turn.
+  const stats = await statFiles(files);
+  const stamps = stats.map((stat, index) => {
+    const file = files[index];
     if (!stat) return null;
     for (const time of [stat.mtimeNs, stat.ctimeNs]) if (time > newest) newest = time;
     return `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`;

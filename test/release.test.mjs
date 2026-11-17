@@ -14,6 +14,15 @@ import {
 } from '../scripts/release-check.mjs';
 import { packageDependencyEvidence } from '../scripts/package-dependency-evidence.mjs';
 
+test('release requires the lightweight Lense command-help dependency', () => {
+  const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  assert.ok(REQUIRED_RELEASE_FILES.includes('lense/cli-help.mjs'));
+  assert.throws(
+    () => validateReleaseFiles(required.filter((file) => file.path !== 'lense/cli-help.mjs')),
+    /Required release file is missing: lense\/cli-help\.mjs/,
+  );
+});
+
 test('distribution evidence preserves transitive version, integrity and layout differences', () => {
   const source = {
     packages: {
@@ -299,6 +308,17 @@ test('the package names its GitHub repository, which npm provenance requires', (
   assert.doesNotThrow(() => checkPackageMetadata(pkg));
   for (const repository of [undefined, {}, { url: '' }, { url: 'https://example.com/repo' }])
     assert.throws(() => checkPackageMetadata({ repository }), /repository\.url/);
+});
+
+test('release requires the metadata reader and its separately loaded worker asset', () => {
+  const files = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  for (const file of ['mirage/lib/file-stamps.mjs', 'mirage/lib/file-stamps-worker.mjs']) {
+    assert.ok(REQUIRED_RELEASE_FILES.includes(file));
+    assert.throws(
+      () => validateReleaseFiles(files.filter((entry) => entry.path !== file)),
+      /Required release file is missing/,
+    );
+  }
 });
 
 test('CI collects only synthetic outputs and ignores profile/token/live files and links', (t) => {

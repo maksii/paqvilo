@@ -108,8 +108,8 @@ test('receipt comparison rejects incomplete/tampered hashes and row order is ord
 test('pending visitor session inspections protect role changes and closing just like portal requests', async () => {
   let finish;
   const fetchImpl = async (url) =>
-    new URL(url).pathname.endsWith('/state')
-      ? Response.json({ csrf: 'fixture-csrf', config: { mode: 'local', pageMode: 'local' } })
+    new URL(url).pathname.endsWith('/status')
+      ? Response.json({ csrf: 'fixture-csrf', mode: 'local', pageMode: 'local' })
       : new Promise((resolve) => {
           finish = () => resolve(Response.json({ contactId: 'fixture-visitor' }));
         });

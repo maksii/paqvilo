@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { channel } from 'node:diagnostics_channel';
 import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
@@ -365,8 +366,8 @@ test('visitor cookies persist with path/deletion scope and pending requests prot
     const pathname = new URL(url).pathname,
       headers = new Headers(options.headers);
     requests.push({ pathname, cookie: headers.get('cookie') });
-    if (pathname === '/_sim/api/state')
-      return Response.json({ csrf: 'fixture-csrf', config: { mode: 'local', pageMode: 'local' } });
+    if (pathname === '/_sim/api/status')
+      return Response.json({ csrf: 'fixture-csrf', mode: 'local', pageMode: 'local' });
     if (pathname === '/form/start') {
       const response = Response.json({ started: true });
       response.headers.append('set-cookie', 'fixture-visitor=visitor-one; Path=/; HttpOnly');
@@ -416,7 +417,7 @@ test('a session with timeoutMs 0 sets no client deadline: its request outlives o
           held.push(() => resolve(Response.json({ answered: true })));
           init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
         })
-      : Response.json({ csrf: 'fixture-csrf', config: { mode: 'local', pageMode: 'local' } });
+      : Response.json({ csrf: 'fixture-csrf', mode: 'local', pageMode: 'local' });
   const origin = 'http://127.0.0.1:8787';
   const unbounded = await createPortalSession({ origin, fetchImpl, timeoutMs: 0 }),
     bounded = await createPortalSession({ origin, fetchImpl, timeoutMs: 1 });
@@ -427,4 +428,51 @@ test('a session with timeoutMs 0 sets no client deadline: its request outlives o
   held[0]();
   assert.deepEqual((await waiting).body, { answered: true });
   await assert.rejects(createPortalSession({ origin, fetchImpl, timeoutMs: -1 }), { code: 'InvalidPortalSession' });
+});
+
+test('session bootstrap reads cheap current status while verification still walks implementation files', async (t) => {
+  const { app } = await fixture(t);
+  let implementationStats = 0;
+  const metadata = channel('paqvilo.metadata-walk');
+  const observeMetadata = (event) => {
+    if (event.stage === 'started') implementationStats++;
+  };
+  metadata.subscribe(observeMetadata);
+  t.after(() => metadata.unsubscribe(observeMetadata));
+  const routes = [];
+  const visitor = await createPortalSession({
+    origin: app.url,
+    fetchImpl: (url, options) => {
+      routes.push(new URL(url).pathname);
+      return fetch(url, options);
+    },
+  });
+  ownedFixture(t).add(() => visitor.close());
+  assert.deepEqual(routes, ['/_sim/api/status']);
+  assert.equal(implementationStats, 0, 'establishing session controls does not walk the implementation');
+  const state = await (await fetch(app.url + '/_sim/api/state?summary=1')).json();
+  assert.equal(typeof state.status.implementationFingerprint, 'string');
+  assert.ok(implementationStats > 0, 'verification state still checks implementation freshness');
+});
+
+test('session status bootstrap preserves both live-mode refusals and requires current session controls', async () => {
+  const origin = 'http://127.0.0.1:8787';
+  for (const property of ['mode', 'pageMode']) {
+    const requests = [];
+    await assert.rejects(
+      createPortalSession({
+        origin,
+        fetchImpl: async (url) => {
+          requests.push(new URL(url).pathname);
+          return Response.json({ csrf: 'fixture-csrf', mode: 'local', pageMode: 'local', [property]: 'live' });
+        },
+      }),
+      { code: 'LocalRuntimeRequired', status: 409 },
+    );
+    assert.deepEqual(requests, ['/_sim/api/status']);
+  }
+  await assert.rejects(
+    createPortalSession({ origin, fetchImpl: async () => Response.json({ mode: 'local', pageMode: 'local' }) }),
+    { code: 'PortalSessionControlUnavailable' },
+  );
 });
