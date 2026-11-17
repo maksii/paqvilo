@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo host registry summaries, preflight reports and strict acceptance capability admission.
 // One capability registry per host (organization-host.mjs): status() / state() carry its legacy summary and its report,
 // GET /_sim/api/preflight and simulator.preflight() answer the live preflight, and strict acceptance refuses a required
 // capability below behaviour before any browser starts.
@@ -218,4 +219,36 @@ test('strict acceptance refuses a required capability that is not executable bef
     (error) => error.code === 'CapabilityUnavailable' && /codeApps is contract/.test(error.message),
   );
   assert.equal(await assertAcceptanceCapabilities({ localUrl: sim.url, requires: ['canvas'] }), true);
+});
+
+// @test-kind contract: unavailable capability rejection does not depend on reading unrelated implementation evidence.
+test('strict missing capability is refused without a full state fingerprint, while explicit state still fails closed', async (t) => {
+  const sim = await portal();
+  const outputDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'acceptance-capability-order-'));
+  t.after(() => fs.rm(outputDir, { recursive: true, force: true }));
+  const serverFile = path.resolve(import.meta.dirname, '../server.mjs');
+  const stat = fs.stat;
+  let implementationStats = 0;
+  t.mock.method(fs, 'stat', (file, ...args) => {
+    if (typeof file === 'string' && path.resolve(file) === serverFile) {
+      implementationStats++;
+      return Promise.reject(Object.assign(new Error('Invented implementation evidence failure'), { code: 'EACCES' }));
+    }
+    return stat(file, ...args);
+  });
+  await assert.rejects(
+    runAcceptance({
+      localUrl: sim.url,
+      outputDir,
+      flows: [{ name: 'Invented', steps: [{ action: 'navigate', path: '/' }] }],
+      requires: ['x-invented-capability'],
+      strict: true,
+    }),
+    (error) => error.code === 'CapabilityUnavailable' && /x-invented-capability is not registered/.test(error.message),
+  );
+  assert.equal(implementationStats, 0);
+  const full = await fetch(`${sim.url}/__sim/api/state?summary=1`);
+  assert.equal(full.status, 500, 'full evidence state still observes and refuses the injected source-read failure');
+  await full.text();
+  assert.equal(implementationStats, 1);
 });

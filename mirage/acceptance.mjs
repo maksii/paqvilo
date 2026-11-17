@@ -299,9 +299,11 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
     )
       throw new Error('Local acceptance requires local data/page providers and no live endpoint routing.');
   };
+  // A refused requirement needs only the host's capability report. Do not make it wait for the
+  // unrelated implementation evidence scan which a successful acceptance run still requires below.
+  if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
   const state = await readState();
   requireLocal(state);
-  if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
   if (!state.status?.sourceFingerprint || !state.status?.implementationFingerprint)
     throw new Error('Acceptance requires the portal source and loaded mirage implementation fingerprints.');
   const result = {

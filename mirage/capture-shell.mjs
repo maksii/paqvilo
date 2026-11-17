@@ -207,7 +207,7 @@ function captureFailure(error) {
       if (running.length > 1) throw new Error('Multiple runtimes match; stop extras before capturing');
       let client;
       if (running.length) {
-        client = await connectRuntime({ origin: running[0].url });
+        client = await connectRuntime({ origin: running[0].url, timeoutMs });
         const status = await client.status(),
           state = await client.state({ summary: true });
         if (all && state.config.live?.origin !== cfg.origin) {
@@ -266,7 +266,7 @@ function captureFailure(error) {
         state.simulator.live = { ...state.simulator.live, origin: cfg.origin };
         await simulator.store.replaceState(state);
         simulator.live.configure(state.simulator.live);
-        client = await connectRuntime({ origin: simulator.url });
+        client = await connectRuntime({ origin: simulator.url, timeoutMs });
       }
       let cdpUrl = cdp;
       if (cdpUrl === null || cdpUrl === undefined) {

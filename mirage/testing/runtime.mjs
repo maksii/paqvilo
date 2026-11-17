@@ -204,7 +204,9 @@ export async function connectRuntime({
   ) => {
     if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 0 || requestTimeoutMs > 2147483647)
       throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
-    if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
+    // Status carries the current CSRF token without a full implementation-evidence walk. Explicit
+    // state() calls retain that fresh evidence contract independently of configuration writes.
+    if (method !== 'GET') headers['x-sim-csrf'] = (await request('/status')).csrf;
     const signal = requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : undefined;
     try {
       const response = await reach(`${origin}/_sim/api${route}`, {

@@ -48,3 +48,44 @@ test('connectRuntime without timeoutMs keeps the 30-second client deadline for a
   // The mocked AbortSignal.timeout aborts with AbortError; the real one reports TimeoutError.
   await assert.rejects(pending, (error) => error.name === 'AbortError' || error.name === 'TimeoutError');
 });
+
+// @test-kind contract: configuration CSRF refresh uses live status without requesting unrelated implementation evidence.
+test('runtime writes refresh their CSRF token through status while explicit state evidence remains a separate read', async (t) => {
+  let statusReads = 0;
+  let stateReads = 0;
+  const server = http.createServer(async (request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/_sim/api/status') {
+      statusReads++;
+      return response.end(JSON.stringify({ sourceDir: null, csrf: `invented-token-${statusReads}` }));
+    }
+    if (request.url.startsWith('/_sim/api/state')) {
+      stateReads++;
+      response.statusCode = 500;
+      return response.end(
+        JSON.stringify({
+          error: { code: 'InventedEvidenceUnavailable', message: 'Implementation evidence is unavailable' },
+        }),
+      );
+    }
+    if (request.url === '/_sim/api/experiments' && request.method === 'POST') {
+      request.resume();
+      const accepted = request.headers['x-sim-csrf'] === 'invented-token-2';
+      response.statusCode = accepted ? 201 : 403;
+      return response.end(JSON.stringify({ accepted }));
+    }
+    response.statusCode = 404;
+    response.end('{}');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const client = await connectRuntime({ origin: `http://127.0.0.1:${server.address().port}` });
+  assert.deepEqual(await client.saveExperiment({ name: 'Invented' }), { accepted: true });
+  assert.equal(statusReads, 2, 'the mutation gets a current token instead of caching the connection token');
+  assert.equal(stateReads, 0, 'a CSRF refresh must not request expensive implementation evidence');
+  await assert.rejects(client.state({ summary: true }), { code: 'InventedEvidenceUnavailable', status: 500 });
+  assert.equal(stateReads, 1, 'an explicit state read retains its evidence contract and failure');
+});

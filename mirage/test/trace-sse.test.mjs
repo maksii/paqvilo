@@ -221,7 +221,7 @@ test('the trace channel delivers every frame of a burst to connectRuntime().trac
     }
     if (url.pathname === '/_sim/api/status') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ sourceDir: null }));
+      return res.end(JSON.stringify({ sourceDir: null, csrf: CSRF }));
     }
     if (url.pathname === '/_sim/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });

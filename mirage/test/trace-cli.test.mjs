@@ -77,7 +77,7 @@ async function fixture(t, { endStream = false, failures = false } = {}) {
       });
     if (url.pathname === '/_sim/api/status') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ sourceDir: null }));
+      return res.end(JSON.stringify({ sourceDir: null, csrf: CSRF }));
     }
     if (url.pathname === '/_sim/api/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
