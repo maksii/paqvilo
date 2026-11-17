@@ -1,7 +1,7 @@
 {
   "name": "paqvilo",
   "version": "0.9.8",
-  "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
+  "description": "Local development toolkit for Microsoft Power Pages, Dataverse and Power Platform: a local simulator (Mirage) and live-portal source previews (Lense).",
   "keywords": [
     "power-pages",
     "power-platform",
@@ -12,7 +12,15 @@
     "developer-tools",
     "local-development",
     "simulation",
-    "testing"
+    "testing",
+    "power-apps",
+    "model-driven-apps",
+    "pcf",
+    "power-automate",
+    "dataverse-plugins",
+    "dataverse-web-api",
+    "code-apps",
+    "canvas-apps"
   ],
   "repository": {
     "type": "git",

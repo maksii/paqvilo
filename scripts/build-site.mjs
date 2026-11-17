@@ -17,10 +17,11 @@ if (
   throw new Error('The site output must be a generated directory inside this checkout.');
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
-for (const name of ['index.html', 'coverage.html', 'guide.html', 'guide.js', 'style.css'])
+// sitemap.xml names the published project-site URLs (a project site cannot serve the host's robots.txt).
+for (const name of ['index.html', 'coverage.html', 'guide.html', 'guide.js', 'style.css', 'favicon.svg', 'sitemap.xml'])
   fs.copyFileSync(path.join(root, 'site', name), path.join(output, name));
 fs.mkdirSync(path.join(output, 'assets'), { recursive: true });
-for (const name of ['overview.svg', 'lense-visual.png', 'mirage-visual.png'])
+for (const name of ['overview.svg', 'lense-visual.png', 'mirage-visual.png', 'social-preview.png'])
   fs.copyFileSync(path.join(root, 'docs/assets', name), path.join(output, 'assets', name));
 // Guide recordings: every file in site/media, flat (stills as WebP, clips as MP4).
 fs.mkdirSync(path.join(output, 'media'), { recursive: true });
