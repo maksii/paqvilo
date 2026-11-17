@@ -6,12 +6,18 @@ import { createHash } from 'node:crypto';
 // The clock dependency is in-memory only for policy tests. The CLI never takes a time or policy override.
 const policy = JSON.parse(fs.readFileSync(new URL('./dependency-risk-acceptance.json', import.meta.url), 'utf8'));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// Cryptographic fingerprints retain UTF-16 ordinal key order, independently of the host locale.
+function compareCanonicalKeys(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
 const canonical = (value) => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort()
+        .sort(compareCanonicalKeys)
         .map((key) => [key, canonical(value[key])]),
     );
   return value;

@@ -136,6 +136,12 @@ example project's exact dependency pins (it has no lockfile); the example instal
 `npm run ci:sdk:prepare` prepares the SDK client fixtures and `npm run ci:sdk` runs them; the ServiceClient gate needs
 loopback port 80 free.
 
+### Dependency audit process bounds
+
+The ten dependency contexts run serially, once each, with fresh `npm audit --json` reports. Pinned npm 12.2.2 can perform several expensive synchronous metadata calculations in a cold audit. The former flat 60-second whole-process deadline could interrupt legitimate finite work. The audit now retains a 60-second guard for bootstrap, each synchronous metadata load, each pending I/O operation excluding only observed synchronous load time, inter-work silence and exit. Authenticated IPC from npm's typed lifecycle admits each operation; ordinary output cannot extend a guard.
+
+The whole-process allowance explicitly changes to `(1 + A + E) * 60000` milliseconds, anchored before the child starts: `A` is the fresh bulk advisory count and `E` is the reachable installed node-instance inbound-edge count. Arborist visits each vulnerable installed node instance once, so metadata calculations are bounded by `A + E`; packuments are shared per reachable package name. The inventory fixes this allowance once; replayed or unknown work cannot enlarge it. With no advisories the whole allowance stays 60 seconds. A failed operation is terminated and its owned process and output streams must close before another context starts. Reports, risk-policy pins, severity checks, all ten contexts, the workflow's 15-minute limit and project test guards remain required and unchanged. The supervisor does not retry audits, run `npm audit fix` or accept a cached report.
+
 ### Temporary dependency risk acceptance
 
 On **2026-11-17**, the user approved: “Approve the exact temporary exception until November 24.” This accepts the remaining risk of [GHSA-fc5q-39xc-vjpf / CVE-2026-112366](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) only until **2026-11-24T00:00:00Z**. It does not fix the dependency. The locked Picomatch implementations can still block a process when processing hostile patterns. The audit retains the reported high severities and prints **TEMPORARY RISK ACCEPTANCE (not fixed)** with the approval date and UTC expiry.

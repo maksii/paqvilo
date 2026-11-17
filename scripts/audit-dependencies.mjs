@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { runNpmAudit } from './audit-process.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmCliPath } from './npm-cli.mjs';
 import {
@@ -92,7 +92,14 @@ function findingsFailAudit(project, report, status, evidence, { now, error }) {
 export function auditProject(
   project,
   cli,
-  { rootDirectory = root, runAudit = spawnSync, now = Date.now, log = console.log, error = console.error } = {},
+  {
+    rootDirectory = root,
+    runAudit = runNpmAudit,
+    now = Date.now,
+    log = console.log,
+    error = console.error,
+    signal,
+  } = {},
 ) {
   const cwd = path.resolve(rootDirectory, project);
   const before = readAuditInputs(rootDirectory, project);
@@ -102,7 +109,13 @@ export function auditProject(
     windowsHide: true,
     timeout: 60_000,
     maxBuffer: 8 * 1024 * 1024,
+    ...(signal ? { signal } : {}),
   });
+  const inspect = (value) => inspectAuditResult(project, value, { rootDirectory, before, now, log, error });
+  return result && typeof result.then === 'function' ? result.then(inspect) : inspect(result);
+}
+
+function inspectAuditResult(project, result, { rootDirectory, before, now, log, error }) {
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`Dependency audit was interrupted for ${project}.`);
   let report;
@@ -128,23 +141,47 @@ export function auditProject(
 }
 
 export function auditAllProjects(cli, options = {}) {
-  let failed = false;
-  for (const project of auditedProjects) {
+  const reportFailure = (project, error) => (options.error ?? console.error)(`${project}: ${error.message}`);
+  function visit(index, failed) {
+    if (options.signal?.aborted) throw new Error('Dependency audit cancelled.');
+    if (index === auditedProjects.length) return failed;
+    const project = auditedProjects[index];
     try {
-      if (auditProject(project, cli, options)) failed = true;
+      const result = auditProject(project, cli, options);
+      if (result && typeof result.then === 'function') {
+        return result.then(
+          (finding) => visit(index + 1, failed || finding),
+          (error) => {
+            if (error.auditOwnershipFailure) throw error;
+            reportFailure(project, error);
+            return visit(index + 1, true);
+          },
+        );
+      }
+      return visit(index + 1, failed || result);
     } catch (error) {
-      failed = true;
-      (options.error ?? console.error)(`${project}: ${error.message}`);
+      if (error.auditOwnershipFailure) throw error;
+      reportFailure(project, error);
+      return visit(index + 1, true);
     }
   }
-  return failed;
+  return visit(0, false);
 }
 
-function main() {
+async function main() {
   const cli = npmCliPath();
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
-  const failed = auditAllProjects(cli);
-  process.exitCode = failed ? 1 : 0;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  process.once('SIGINT', abort);
+  process.once('SIGTERM', abort);
+  try {
+    const failed = await auditAllProjects(cli, { signal: controller.signal });
+    process.exitCode = failed ? 1 : 0;
+  } finally {
+    process.off('SIGINT', abort);
+    process.off('SIGTERM', abort);
+  }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main();
