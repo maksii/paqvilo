@@ -16,6 +16,7 @@ import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { bearerCall, signedInRequester } from './support/web-api.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -116,6 +117,7 @@ function fixtureState() {
   return state;
 }
 
+const clock = fixedClock(Date.parse('2026-10-20T10:03:04.567Z'));
 let api;
 let store;
 let origin;
@@ -125,7 +127,7 @@ let metadata;
 
 before(async () => {
   process.env[SECRET_VAR] = 'misc-messages-secret';
-  store = await new DataStore({ state: fixtureState() }).init();
+  store = await new DataStore({ state: fixtureState(), clock }).init();
   const settings = dataverseSettings({
     enabled: true,
     tenantId: TENANT,
@@ -140,7 +142,7 @@ before(async () => {
     ],
     users: [{ domainname: 'none@example.test', fullname: 'None', objectId: NONE_OID, roles: [] }],
   });
-  api = await startDataverseApi({ store, settings, log: () => {}, extensions: EXTENSIONS });
+  api = await startDataverseApi({ store, settings, clock: clock.now, log: () => {}, extensions: EXTENSIONS });
   origin = api.origin;
   const organizationId = api.organizationId;
   await store.transact(() => {
@@ -400,13 +402,14 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
   });
 
   it('RetrieveTimestamp returns the current server time as an ISO timestamp', async () => {
-    // The organization runs on wall time here, so the answer lies between the moments the call started and ended.
-    const started = Date.now();
+    // Sample the configured organization clock: host clock corrections cannot reverse this call bracket.
+    const started = clock.now();
     const body = await (await call(webApi('RetrieveTimestamp'))).json();
-    const ended = Date.now();
+    const ended = clock.now();
     assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     const answered = Date.parse(body.Timestamp);
     assert.ok(answered >= started && answered <= ended, `${body.Timestamp} outside the call`);
+    assert.equal(body.Timestamp, new Date(started).toISOString());
   });
 
   it('FullTextSearchKnowledgeArticle finds articles by text, filters by state and drops older versions on request', async () => {

@@ -8,6 +8,8 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { ownerColumns } from '../lib/dataverse-security.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
+import { tokenFor as applicationToken } from './support/dataverse-fixtures.mjs';
 
 const APP_ID = '55555555-5555-5555-5555-555555555555';
 const SECRET_VAR = 'PAQVILO_WORKQUEUE_SECRET';
@@ -106,13 +108,14 @@ const SEED_ITEMS = [
 ];
 
 describe('dataverse work-queue messages over HTTP', () => {
+  const clock = fixedClock(Date.parse('2026-10-20T10:03:04.567Z'));
   let api;
   let store;
   let token;
 
   before(async () => {
     process.env[SECRET_VAR] = 'workqueue-secret';
-    store = await new DataStore({ state: emptyState() }).init();
+    store = await new DataStore({ state: emptyState(), clock }).init();
     const settings = dataverseSettings({
       enabled: true,
       applications: [
@@ -124,18 +127,8 @@ describe('dataverse work-queue messages over HTTP', () => {
         },
       ],
     });
-    api = await startDataverseApi({ store, settings, log: () => {}, extensions: EXTENSIONS });
-    const response = await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: APP_ID,
-        client_secret: process.env[SECRET_VAR],
-        scope: `${api.origin}/.default`,
-      }),
-    });
-    token = (await response.json()).access_token;
+    api = await startDataverseApi({ store, settings, clock: clock.now, log: () => {}, extensions: EXTENSIONS });
+    token = await applicationToken(api, APP_ID, SECRET_VAR);
     await store.transact(() => {
       store.state.tables.workqueue ??= [];
       store.state.tables.workqueue.push(...SEED_QUEUES);
@@ -180,12 +173,23 @@ describe('dataverse work-queue messages over HTTP', () => {
     assert.match(metadata, /Name="EnqueueWorkQueueItemResponse"/);
   });
 
-  it('enqueue creates a queued item with TTL expiry and an SLA threshold', async () => {
-    const before = Date.now();
-    const result = await queueCall(Q.main, 'EnqueueWorkQueueItem', {
-      workQueueItem: { name: 'job 1', input: '{"a":1}', priority: 2 },
-    });
-    const after = Date.now();
+  it('enqueue creates a queued item with TTL expiry and an SLA threshold', async (t) => {
+    const wallBefore = Date.now();
+    let wallNow = wallBefore;
+    const wall = t.mock.method(Date, 'now', () => wallNow);
+    let before, after, result;
+    try {
+      before = clock.now();
+      result = await queueCall(Q.main, 'EnqueueWorkQueueItem', {
+        workQueueItem: { name: 'job 1', input: '{"a":1}', priority: 2 },
+      });
+      // The HTTP response is the protocol gate: enqueue has finished before wall time moves backwards.
+      wallNow -= MINUTE;
+      after = clock.now();
+    } finally {
+      wall.mock.restore();
+    }
+    assert.equal(wallNow, wallBefore - MINUTE, 'the controlled wall-clock rollback occurred');
     assert.equal(result.status, 200);
     assert.match(result.body.workQueueItemId, /^[0-9a-f-]{36}$/);
     assert.equal(result.body.workQueueItemRecord, undefined);
@@ -198,13 +202,59 @@ describe('dataverse work-queue messages over HTTP', () => {
     assert.equal(row.retrycount, 0);
     assert.equal(row.slastatus, 1);
     const created = Date.parse(row.createdon);
+    t.diagnostic(
+      JSON.stringify({
+        kind: 'workqueue-fixture-clock',
+        before,
+        after,
+        created,
+        expiry: Date.parse(row.expirydate),
+        slaThreshold: Date.parse(row.slathresholddate),
+        createdFinite: Number.isFinite(created),
+        wallBefore,
+        wallAfter: wallNow,
+      }),
+    );
     assert.ok(created >= before && created <= after);
+    assert.equal(row.createdon, new Date(before).toISOString());
+    assert.equal(Date.parse(row.expirydate), before + 60 * MINUTE);
+    assert.equal(Date.parse(row.slathresholddate), before + 30 * MINUTE);
     // TTL 60 minutes; the threshold is 50 percent of the TTL after creation.
     assert.ok(Date.parse(row.expirydate) >= before + 60 * MINUTE && Date.parse(row.expirydate) <= after + 60 * MINUTE);
     assert.ok(
       Date.parse(row.slathresholddate) >= before + 30 * MINUTE &&
         Date.parse(row.slathresholddate) <= after + 30 * MINUTE,
     );
+  });
+
+  it('the default API and store clock follow controlled wall-clock corrections', async (t) => {
+    let wallNow = Date.parse('2026-10-20T12:00:00.789Z');
+    const wall = t.mock.method(Date, 'now', () => wallNow);
+    let defaultApi;
+    try {
+      const defaultStore = await new DataStore({ state: emptyState() }).init();
+      defaultApi = await startDataverseApi({
+        store: defaultStore,
+        settings: dataverseSettings({ enabled: true }),
+        log: () => {},
+        extensions: EXTENSIONS,
+      });
+      const current = () => {
+        assert.equal(defaultApi.organization.clock(), wallNow);
+        assert.equal(defaultStore.clock.now(), wallNow);
+      };
+      current();
+      wallNow -= MINUTE;
+      current();
+      wallNow += 2 * MINUTE;
+      current();
+    } finally {
+      try {
+        await defaultApi?.close();
+      } finally {
+        wall.mock.restore();
+      }
+    }
   });
 
   it('returnCreated returns the record', async () => {

@@ -153,16 +153,31 @@ function jobExecutionFrame(store, id, event) {
 // copies only what the job reached (DataStore#transact `tracked`), not the whole state per job.
 const TRACKED = { tracked: true };
 
+// UTC remains wall time. Only elapsed SYSTEM time is monotonic; a virtual clock owns its elapsed time.
+function executionTimer(clock, wallNow) {
+  const systemElapsed = (clock ?? systemClock) === systemClock;
+  const elapsedNow = systemElapsed ? () => performance.now() : wallNow;
+  let startedElapsedMs;
+  return {
+    start(wallStartMs) {
+      // Reuse the existing virtual wall sample, rather than advancing a caller-supplied clock again.
+      startedElapsedMs = systemElapsed ? elapsedNow() : wallStartMs;
+    },
+    seconds: () => (elapsedNow() - startedElapsedMs) / 1000,
+  };
+}
+
 function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
   const clockMs = () => clockFunction(store.clock ?? systemClock)();
   const now = () => new Date(clockMs()).toISOString();
-  // The start of this attempt (store clock, ms). retry, finish, cancel and stepMissing add its elapsed seconds to
-  // executiontimespan, accumulated across retries (each retry claims again); a removed row takes no time.
+  // UTC stamps follow the configured wall clock. System elapsed time follows the monotonic clock so a host
+  // correction cannot make executiontimespan negative or inflate it. Virtual clocks retain their own elapsed time.
+  const execution = executionTimer(store.clock, clockMs);
+  // retry, finish, cancel and stepMissing accumulate each claimed attempt's elapsed seconds; a removed row takes no time.
   let startedMs = null;
   const addExecution = (row) => {
     if (startedMs === null) return;
-    const nowMs = clockMs();
-    row.executiontimespan = Math.round(((row.executiontimespan ?? 0) + (nowMs - startedMs) / 1000) * 1000) / 1000;
+    row.executiontimespan = Math.round(((row.executiontimespan ?? 0) + execution.seconds()) * 1000) / 1000;
   };
   const { rows, index } = liveJob(store, id);
   if (index < 0 || rows[index].statecode !== 0) return null;
@@ -193,6 +208,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
     rows[index].data = JSON.stringify({ ...payload, pluginAttempts: attempt });
   }
   startedMs = clockMs();
+  execution.start(startedMs);
   Object.assign(rows[index], {
     statecode: 2,
     statuscode: 20,

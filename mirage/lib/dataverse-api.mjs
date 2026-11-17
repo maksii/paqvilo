@@ -21,6 +21,7 @@ import { ownsChange, runOwned, runAtomic } from './dataverse-transaction-context
 import { createRequestContext, currentRequest, runWithRequest } from './request-context.mjs';
 export { runAtomic } from './dataverse-transaction-context.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
+import { systemClock } from './runtime-clock.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
@@ -2252,7 +2253,7 @@ export async function startDataverseApi({
   metadataFields = () => undefined,
   observed = null,
   errorTemplates = null,
-  clock = () => Date.now(),
+  clock = systemClock,
   tls = null,
   records = null,
   log = () => {},
