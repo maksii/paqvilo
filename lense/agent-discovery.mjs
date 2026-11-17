@@ -11,6 +11,16 @@ const live = new Set();
 // Signals whose default action ends the process without an 'exit' event.
 const END_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const handlers = new Map();
+let earliestOwnProcessStart = performance.timeOrigin;
+
+// Wall time can step backwards after Node records timeOrigin. Sample wall time first, then subtract monotonic
+// elapsed time: a delayed second read only makes this start bound earlier. Keep every observed lower bound so a
+// later forward correction cannot reject owner metadata written during an observed backward correction.
+function observeOwnProcessStart() {
+  const now = Date.now();
+  earliestOwnProcessStart = Math.min(earliestOwnProcessStart, now - performance.now());
+  return Math.floor(earliestOwnProcessStart);
+}
 
 function removeLiveFiles() {
   for (const file of live) {
@@ -57,8 +67,15 @@ function ownProcessStart() {
   return process.platform === 'linux' ? processIdentity(process.pid) : null;
 }
 
+function ownProcessStartDiffers(recorded) {
+  if (process.platform !== 'linux' || typeof recorded !== 'string' || !recorded) return false;
+  const current = ownProcessStart();
+  return current !== null && current !== recorded;
+}
+
 /** The fields that bind a discovery file to the process that writes it. */
 export function discoveryOwner() {
+  observeOwnProcessStart();
   return { pid: process.pid, processStart: ownProcessStart() };
 }
 
@@ -82,6 +99,7 @@ export function writeOwnedDiscovery(file, discovery) {
     if (!live.size) unwatchProcess();
   };
   try {
+    observeOwnProcessStart();
     fs.writeFileSync(file, JSON.stringify(discovery, null, 2), { flag: 'wx', mode: 0o600 });
   } catch (error) {
     live.delete(file);
@@ -93,7 +111,8 @@ export function writeOwnedDiscovery(file, discovery) {
 
 /**
  * Whether the process that wrote a discovery file is gone, as far as that can be told without starting a process:
- * its PID names no process; or the PID is this process but the file is not one it owns and predates it; or (Linux)
+ * its PID names no process; or the PID is this process but the file is not one it owns and predates every observed
+ * start bound; or (Linux)
  * the process under that PID has another start identity. A file whose owner is gone is stale: its token
  * authenticates nothing, because the agent API that knew it ended with the process. False means "not known to be
  * gone": on Windows and macOS a PID reused by another live process is not detected here, since reading a start
@@ -103,9 +122,11 @@ export function discoveryOwnerGone(discovery, file) {
   const { pid, processStart, startedAt } = discovery ?? {};
   if (!Number.isInteger(pid) || pid <= 0) return true;
   if (pid === process.pid) {
+    const startedBefore = observeOwnProcessStart();
     if (file && live.has(path.resolve(file))) return false;
+    if (ownProcessStartDiffers(processStart)) return true;
     const written = Date.parse(startedAt);
-    return Number.isFinite(written) && written < Math.floor(performance.timeOrigin);
+    return Number.isFinite(written) && written < startedBefore;
   }
   if (!isAlive(pid)) return true;
   if (process.platform !== 'linux' || typeof processStart !== 'string' || !processStart) return false;

@@ -223,3 +223,55 @@ test('an agent start sweeps the stale discovery files of its state folder and ke
   assert.equal(fs.existsSync(server.discoveryFile), false);
   sweepStaleDiscovery(path.join(dir, 'missing'));
 });
+
+test('current owner metadata survives observed clock corrections without accepting an older or replaced owner', async (t) => {
+  // The child owns its module's clock history. Its private owner-metadata file contains no bearer token.
+  const source = `
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { mock } from 'node:test';
+import { discoveryOwner, discoveryOwnerGone } from ${JSON.stringify(MODULE)};
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-owner-clock-')));
+const file = path.join(root, 'owner-metadata.json');
+try {
+const origin = Math.floor(performance.timeOrigin);
+const current = () => ({ ...discoveryOwner(), startedAt: new Date().toISOString() });
+const before = current();
+mock.timers.enable({ apis: ['Date'], now: origin + 3_600_000 });
+assert.equal(discoveryOwnerGone(before), false, 'a forward step does not age a previously written current owner');
+mock.timers.setTime(origin - 3_600_000);
+const duringBackstep = current();
+fs.writeFileSync(file, JSON.stringify(duringBackstep));
+assert.equal(discoveryOwnerGone(JSON.parse(fs.readFileSync(file)), file), false, 'an owner written during a backward step is current');
+mock.timers.setTime(origin + 3_600_000);
+assert.equal(discoveryOwnerGone(JSON.parse(fs.readFileSync(file)), file), false, 'recovery forwards keeps the same file current without rewriting it');
+mock.timers.setTime(origin - 7_200_000);
+const writtenWithoutRead = current();
+mock.timers.setTime(origin + 7_200_000);
+assert.equal(discoveryOwnerGone(writtenWithoutRead), false, 'the writer observed the second correction before any reader');
+assert.equal(discoveryOwnerGone(duringBackstep), false, 'earlier clock history survives another correction');
+assert.equal(discoveryOwnerGone({ ...current(), startedAt: new Date(origin - 86_400_000).toISOString() }), true, 'metadata older than every observed start bound remains stale');
+assert.equal(discoveryOwnerGone({ ...current(), processStart: 'a different process start' }), process.platform === 'linux', 'a known different Linux owner remains rejected independently of the clock');
+assert.equal(discoveryOwnerGone({ ...current(), pid: ${NO_PROCESS} }), true, 'an absent owner is still rejected');
+mock.timers.reset();
+} finally { fs.rmSync(root, { recursive: true, force: true }); }
+`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT'));
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  });
+  let error = '';
+  child.stderr.on('data', (chunk) => {
+    error += chunk;
+  });
+  const closed = once(child, 'close').then(([code]) => code);
+  ownedFixture(t).add(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  });
+  assert.equal(await closed, 0, error);
+});
