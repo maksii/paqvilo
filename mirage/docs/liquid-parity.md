@@ -1,51 +1,143 @@
-# Liquid rendering
+# Liquid and portal rendering
 
-Mirage implements Power Pages/DotLiquid-shaped parsing and rendering: platform tags and filters, portal objects, snippets/settings, page/template relationships, FetchXML result drops, permissions, errors and whitespace behavior. Shopify Liquid is not the parity target. Source inventories identify constructs and diagnostics expose unsupported or uncertain behavior.
+Mirage parses and renders Liquid the way Power Pages does on top of DotLiquid: platform tags and filters, portal
+objects, snippets and settings, page and template relationships, FetchXML result drops, permissions, errors and
+whitespace. Shopify Liquid is not the target. Where a deployment is known to differ from the DotLiquid default, a site
+can select the observed behavior with [`observed` settings](#site-observations). A local fallback for an unsupported
+service is a diagnostic, not proof that the service behaves the same online.
 
-Use `paqvilo mirage liquid-inventory --portal <export> --json` to inventory constructs and `render-sweep --site <site> --persona all --out .paqvilo/sweep` to exercise local pages. The inventory is static coverage; the sweep is local rendering coverage. Neither establishes live parity. Record reference comparisons with a project-owned golden suite.
+## Check sources
 
-`paqvilo mirage inspect --source <export> --json` (or `--project`) also reports `liquidSyntax`: syntax diagnostics for imported active templates, page HTML/JavaScript/CSS, snippets, basic form/list JavaScript and advanced form step JavaScript, including imported language variants. `templateCount` and `parsePassed` describe templates; `sourceCount` and `sourceParsePassed` describe nonempty source fields. This check does not execute scripts or prove include resolution, data coverage or browser behavior. Use `liquid-inventory --include-inactive --sources` to review inactive and nonselected export sources as well.
+```sh
+paqvilo mirage liquid-inventory --portal <export> --json
+paqvilo mirage render-sweep --site <site> --persona all --out .paqvilo/sweep
+paqvilo mirage inspect --source <export> --json
+```
 
-Filters and native adapters follow the documented platform contracts. A local fallback for an unsupported service is a diagnostic, not proof the service behaves identically online. See [conformance](liquid-conformance.md) and [parity evidence](parity-evidence.md).
+- `liquid-inventory` lists Liquid constructs and diagnostics in the export (static coverage). Add
+  `--include-inactive --sources` to include inactive and unselected export sources.
+- `render-sweep` renders the local pages for each persona (local rendering coverage).
+- `inspect` (or `--project`) reports `liquidSyntax`: syntax diagnostics for active templates, page HTML, JavaScript and
+  CSS, snippets, basic form and list JavaScript and advanced form step JavaScript, including language variants.
+  `templateCount`/`parsePassed` count templates; `sourceCount`/`sourceParsePassed` count nonempty source fields. It
+  does not run scripts or prove include resolution, data coverage or browser behavior.
 
-`strip_html` preserves the DotLiquid text-transform contract and is not an HTML sanitizer. Use `escape` when displaying literal untrusted text, or `html_safe_escape` to retain safe formatting in untrusted HTML. The latter uses a parser with an explicit tag, attribute, style and URI-scheme allowlist; it removes executable markup and unsafe styles and may normalize malformed markup or void-tag spacing.
+None of these establishes live parity; compare with a reference as described in
+[reference parity evidence](parity-evidence.md).
+
+## Filters and HTML
+
+`strip_html` keeps the DotLiquid text-transform contract and is not a sanitizer. Use `escape` to show untrusted text,
+or `html_safe_escape` to keep safe formatting in untrusted HTML: it parses against an explicit tag, attribute, style
+and URI-scheme allowlist, removes executable markup and unsafe styles, and may normalize malformed markup and void-tag
+spacing.
 
 ## Site observations
 
-Where a deployment differs from DotLiquid, a site's `observed` block can select the observed behaviour. Each setting requires `observed.evidence` naming where you observed it, and omitting it keeps the default.
+Set these in the site's `observed` block together with `observed.evidence` naming where you observed the behavior.
+Omitting a setting keeps the default.
 
-`liquidEscapeOnce: "passthrough"` preserves the input of `escape_once` instead of escaping it.
-`liquidStripHtmlScriptText: "preserve"` preserves script element text when stripping tags. `strip_html`
-is a text transform, not an HTML sanitizer; use `html_safe_escape` to sanitize HTML.
+| Setting                         | Default      | Observed value and behavior                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `liquidEscapeOnce`              | `dotliquid`  | `passthrough`: `escape_once` returns its input unchanged                                                                                                                                                                                                                                                                                             |
+| `liquidStripHtmlScriptText`     | `remove`     | `preserve`: `strip_html` keeps script element text                                                                                                                                                                                                                                                                                                   |
+| `liquidDecimalStringMultiply`   | `dotliquid`  | `convert`: string inputs, including string site settings, are converted before multiplying by a decimal                                                                                                                                                                                                                                              |
+| `liquidTimesDispatch`           | `dotliquid`  | `observed`: captured `times` errors for an integer input with a string operand and for string-array inputs; a decimal input converts a numeric string operand                                                                                                                                                                                        |
+| `liquidFilterErrors`            | `dotliquid`  | `observed`: captured overload, array batch/order and arithmetic error messages; floating-point division by zero keeps its numeric type                                                                                                                                                                                                               |
+| `liquidFilterRegistration`      | `dotliquid`  | `observed`: captured filter registration and currency signature; unknown filters still pass through                                                                                                                                                                                                                                                  |
+| `liquidHtmlVoidSerialization`   | `dotliquid`  | `html`: parser-based void-element serialization for sanitized HTML and generated line breaks                                                                                                                                                                                                                                                         |
+| `liquidHtmlSafeInput`           | `excluded`   | `observed`: sanitized `input` elements keep `type`, `value` and `disabled`; executable attributes and unsafe schemes stay excluded                                                                                                                                                                                                                   |
+| `liquidPathAndQueryFragment`    | `uri`        | `query`: captured fragment handling by `path_and_query`                                                                                                                                                                                                                                                                                              |
+| `liquidRelativeQueryResolution` | `preserve`   | `root`: relative `add_query`/`remove_query` paths resolve from the site root and drop their fragment                                                                                                                                                                                                                                                 |
+| `liquidRuntimeCompatibility`    | `dotliquid`  | `observed`: string-array bounds errors, blank comparison and assignment, nil string-filter input, unsupported increment/decrement and for/else, parenthesized conditions, multiline parse errors, request-entry lookup restrictions, HTML-encoded request/params aliases; iterating `request.params` yields no key/value pairs (direct lookup works) |
+| `liquidObjectCompatibility`     | `dotliquid`  | `observed`: captured object member visibility and drop types; identity data and dynamic backend metadata errors are not synthesized                                                                                                                                                                                                                  |
+| `liquidServiceTags`             | `dotliquid`  | `observed`: captured errors or empty output for absent form, list, view and server-logic records and unavailable search, and source-derived chart placeholders; no successful service execution or chart data                                                                                                                                        |
+| `liquidMissingData`             | `diagnostic` | `empty`: captured empty FetchXML and nil entity for an unmapped root table; known-table query, permission, linked-table and infrastructure failures stay intact                                                                                                                                                                                      |
+| `liquidEditableMetadata`        | `minimal`    | `observed`: source-derived CMS metadata URLs for the current page with the captured working flag; no authoring endpoints. Without the setting the metadata still renders for a signed-in user whose web role is on an exported website access permission (`adx_websiteaccess`)                                                                       |
+| `redirect301`                   | `configured` | `temporary`: redirect records configured as 301 answer 302; canonical slash redirects and other codes are unchanged                                                                                                                                                                                                                                  |
+| `webTemplateResponseNewline`    | `none`       | `crlf`: no-header web template responses (including text and JSON) end with an appended CRLF                                                                                                                                                                                                                                                         |
+| `webFileMimeCharset`            | `utf8`       | `source`: web files keep the attachment MIME type without an added UTF-8 charset                                                                                                                                                                                                                                                                     |
+| `siteMarkerRedirect`            | `resolve`    | `null-reference`: marker-only redirect records answer 500 with the captured exception message (a URL or page target still wins); the body is a local diagnostic                                                                                                                                                                                      |
+| `pageErrorPresentation`         | `diagnostic` | `generic-error`: see [error pages](#error-pages)                                                                                                                                                                                                                                                                                                     |
 
-| Setting                                  | Behaviour selected                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `liquidDecimalStringMultiply: "convert"` | String inputs, including string-valued site settings, are converted before multiplication by a decimal operand. Default `"dotliquid"`.                                                                                                                                                                                                                                                                                                                               |
-| `liquidTimesDispatch: "observed"`        | Captured `times` errors for an integer input with a string operand and for string-array inputs; a decimal input converts a numeric string operand. Default `"dotliquid"`.                                                                                                                                                                                                                                                                                            |
-| `liquidFilterErrors: "observed"`         | Captured overload, array batch/order and arithmetic error messages; floating-point division by zero retains its numeric type through subsequent filters.                                                                                                                                                                                                                                                                                                             |
-| `liquidFilterRegistration: "observed"`   | Captured filter registration and currency signature. Unknown filters retain the normal pass-through behavior.                                                                                                                                                                                                                                                                                                                                                        |
-| `liquidHtmlVoidSerialization: "html"`    | Parser-based void-element serialization for sanitized HTML and generated line breaks.                                                                                                                                                                                                                                                                                                                                                                                |
-| `liquidHtmlSafeInput: "observed"`        | Sanitized input elements keep their `type`, `value` and `disabled` attributes; executable attributes and unsafe URI schemes remain excluded.                                                                                                                                                                                                                                                                                                                         |
-| `liquidPathAndQueryFragment: "query"`    | Captured fragment handling by `path_and_query`; other URL filters keep their contracts.                                                                                                                                                                                                                                                                                                                                                                              |
-| `liquidRelativeQueryResolution: "root"`  | Resolve relative `add_query` and `remove_query` paths from the site root and omit their fragments; absolute URL behavior is unchanged. Default `"preserve"`.                                                                                                                                                                                                                                                                                                         |
-| `liquidRuntimeCompatibility: "observed"` | String-array bounds errors, blank comparisons and assignment, nil string-filter input, unsupported increment/decrement and for/else, parenthesized conditions, multiline parse errors, numeric and named request-entry lookup restrictions and HTML encoding of request/params aliases. Iteration over `request.params` (and its `params` alias) yields no key/value pairs by index, `Key`/`Value`, `Name` or entry equality; direct parameter lookup keeps working. |
-| `liquidObjectCompatibility: "observed"`  | Captured object member visibility and drop types. Identity data and dynamic backend metadata errors are not synthesized.                                                                                                                                                                                                                                                                                                                                             |
-| `liquidServiceTags: "observed"`          | Captured errors/empty output for absent form/list/view/server-logic records and unavailable search, and source-derived chart placeholder markup. This does not implement successful service execution or chart data.                                                                                                                                                                                                                                                 |
-| `liquidMissingData: "empty"`             | Captured empty FetchXML/nil entity behavior for an unmapped root table. Local preflight leaves known-table query, permission, linked-table and infrastructure failures intact and does not override live providers.                                                                                                                                                                                                                                                  |
-| `liquidEditableMetadata: "observed"`     | Source-derived current-page CMS metadata URLs with distinct root/content identities and the captured working flag. This does not install authoring endpoints. The metadata also renders without the setting for a signed-in user whose web role is listed on an exported website access permission (`adx_websiteaccess`), as the live portal does for content editors.                                                                                               |
+## Configuration records
 
-## Search
-
-`{% searchindex %}` runs portal search (`portal-search.mjs`). `Search/Enabled` false returns no results (`PORTAL_SEARCH_DISABLED`). A table is indexed when it has a view named by `Search/IndexQueryName` (default "Portal Search"); its view filters apply and its first column is the result title. Tables outside the default set also need `Search/EnableAdditionalEntities`. Rows come from the same secured view query lists use, so the visitor's table permissions filter results. Knowledge articles are searchable only when published and not internal: both conditions are added to the view's FetchXML, so they hold whatever columns the Portal Search view selects. An article with no stored `isinternal` counts as not internal (the platform default is No). Each result carries `entity`, `fragment` (matches in `<em>`), `id`, `logical_name`, `number`, `score`, `title` and `url`, built from the site marker `<logicalname>_SearchResultPage` (`Case` for incident, `Knowledge Article` for knowledgearticle) with `?id=`; without a marker the url is empty. `query`, `filter` (`+column:value`, `-column:value` only; other clauses answer 501 `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10) are read. Matching is a token match (any term, `term*` prefixes; score is the number of matched terms), not Dataverse relevance search: Lucene operators, fuzzy and proximity are ignored, and the default search page's `Search/Query` weights are a contract (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`). Without an indexed table or with Dataverse search turned off for the organization, search answers no results and `PORTAL_SEARCH_UNAVAILABLE`; with `liquidServiceTags: "observed"` it renders the observed Liquid error instead.
-
-Search reads every page of each indexed table's view query (the grid's own paging), so `approximate_total_hits` is the number of matching rows the visitor may read. A fragment is the first matching value, cut at 200 characters, with each matching word in `<em>`; the text is escaped segment by segment, so an entity in the value is never split. When the export has no page at `/search/`, the host serves a default search page there (see [local portal routes](operations.md#local-portal-routes)).
+- **Record status.** Enhanced component XML keeps the record's lifecycle `statuscode` in the component envelope;
+  content fields are independent (a redirect's content `statuscode` is its HTTP status). Legacy sources without the
+  envelope derive status from state.
+- **Page template type.** An explicit Type selects Rewrite or Web Template even when both references are set. Rewrite
+  uses the ASP.NET layout and its page copy; the web template header/footer switch applies only to web template
+  responses, and resource inspection leaves an unselected web template out of the include chain. A populated portal
+  route is not a physical rewrite target and answers a route-handler error; other `.aspx` layouts are not rendered.
+- **Children and associations.** Language children, component envelopes, binary attachments and role associations are
+  imported as their own records. A successful association request alone does not create an effective relationship or
+  permission.
 
 ## Pages and web links
 
-Liquid `page.id` uses an exported language-content identity when available; host navigation retains the root page identity. Exact comparisons must use equivalent authentication contexts. A synthetic signed-in persona establishes the local authentication class, but does not establish equality of contact IDs or business data.
+Liquid `page.id` uses the exported language-content identity when there is one; host navigation keeps the root page
+identity. Compare like authentication contexts: a synthetic signed-in persona gives the local authentication class,
+not equal contact IDs or business data.
 
-Web link sets retain their exported title, copy and logical attributes when accessed by name or ID. Standard exports can supply copy in a separate source file; localized titles select the import LCID while raw attributes remain available. A web link's `is_sitemap_ancestor` follows the linked page's place in the current page's ancestor chain, so sibling routes with a shared URL prefix are not ancestors. See Microsoft's [web link configuration](https://learn.microsoft.com/en-us/power-pages/configure/manage-web-links) and [Liquid object reference](https://learn.microsoft.com/en-us/power-pages/configure/liquid/liquid-objects).
+Web link sets keep their exported title, copy and logical attributes by name or ID; standard exports can supply copy in
+a separate file, and localized titles use the import LCID. `is_sitemap_ancestor` follows the linked page's place in the
+current page's ancestor chain, so sibling routes sharing a URL prefix are not ancestors. See Microsoft's
+[web links](https://learn.microsoft.com/en-us/power-pages/configure/manage-web-links) and
+[Liquid objects](https://learn.microsoft.com/en-us/power-pages/configure/liquid/liquid-objects).
+
+## Search
+
+`{% searchindex %}` runs portal search (`mirage/lib/portal-search.mjs`).
+
+- `Search/Enabled` false returns no results (`PORTAL_SEARCH_DISABLED`). A table is indexed when it has a view named by
+  `Search/IndexQueryName` (default "Portal Search"); the view's filters apply and its first column is the title. Tables
+  outside the default set also need `Search/EnableAdditionalEntities`.
+- Rows come from the same secured view query as lists, so table permissions filter them. Knowledge articles must be
+  published and not internal (both added to the view's FetchXML); a missing `isinternal` counts as not internal.
+- Each result has `entity`, `fragment`, `id`, `logical_name`, `number`, `score`, `title` and `url`. The URL comes from
+  the site marker `<logicalname>_SearchResultPage` (`Case` for incident, `Knowledge Article` for knowledgearticle) with
+  `?id=`, and is empty without a marker. The fragment is the first matching value, cut at 200 characters, with each
+  matching word in `<em>` and escaped segment by segment.
+- Parameters read: `query`, `filter` (`+column:value` and `-column:value` only; others answer 501
+  `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10). Every page of each
+  indexed view is read, so `approximate_total_hits` counts the matching rows the visitor may read.
+- Matching is token matching (any term, `term*` prefixes; the score is the number of matched terms), not Dataverse
+  relevance search: Lucene operators, fuzzy and proximity are ignored, and `Search/Query` weights are not applied
+  (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`).
+- With no indexed table, or Dataverse search off for the organization, search returns no results and
+  `PORTAL_SEARCH_UNAVAILABLE`; with `liquidServiceTags: observed` it renders the observed Liquid error. When the export
+  has no `/search/` page, the host serves a default one ([local portal routes](operations.md#local-portal-routes)).
 
 ## Error pages
 
-`observed.pageErrorPresentation: "generic-error"` selects an evidenced GET page-query rejection structure: the generic title and heading, a fresh local Error ID in square brackets, and the fixed visible rejection message. The default `"diagnostic"` keeps simulator diagnostics. Only HTTP 500 with `PAGE_QUERY_REQUEST_VALIDATION` selects this structure; unrelated errors, other methods and API responses retain their handling. The structure does not reproduce native CSS, scripts, opaque identifiers or complete HTML bytes, and custom `Portal Generic Error` snippets are not used. On the platform, Liquid inside that snippet is not evaluated ([error-log documentation](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log)).
+`pageErrorPresentation: generic-error` replaces the simulator diagnostic for an HTTP 500
+`PAGE_QUERY_REQUEST_VALIDATION` GET page-query rejection (raised only with `observed.requestValidation: aspnet-query`,
+which rejects dangerous decoded query values before Liquid runs) with the generic title and heading, a fresh local Error ID in
+square brackets and the fixed rejection message. Other errors, methods and API responses are unchanged. It does not
+reproduce native CSS, scripts, opaque identifiers or exact HTML, and custom `Portal Generic Error` snippets are not used
+(on the platform, Liquid in that snippet is not evaluated;
+[error log](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log)).
+
+## Golden-liquid conformance
+
+`paqvilo mirage liquid-conformance` runs a [golden-liquid](https://github.com/jg-rp/golden-liquid) suite file through
+the renderer and classifies each case that differs from the Shopify Liquid expectation. The suite is not bundled:
+download the version pinned in `mirage/lib/liquid-conformance-rules.json`.
+
+```sh
+paqvilo mirage liquid-conformance --suite <golden_liquid.json> --markdown --out .paqvilo/liquid-conformance.md
+```
+
+Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `--json` or `--markdown`, `--out FILE`,
+`--timeout MS`. The report is informational; the command fails only when the suite or rules cannot be read.
+
+| Category               | Meaning                                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `platform-unsupported` | A tag, filter or syntax that DotLiquid and Power Pages do not provide                                      |
+| `dotliquid-divergence` | Mirage renders what DotLiquid (or the filter Power Pages registers over it) renders, unlike Shopify Liquid |
+| `engine-gap`           | Mirage differs from DotLiquid; a differing case without a rule lands here too                              |
+
+Rules whose cases now pass are listed as stale. The default rules compare the public suite with DotLiquid, not with a
+live site. Each case runs with its own data and partials, empty portal settings and objects, and an invalid case passes
+when any Liquid error is raised. For portal context or exact error text, write a renderer test or record a reference
+comparison; reduce an engine issue to a synthetic test in `mirage/test/`.

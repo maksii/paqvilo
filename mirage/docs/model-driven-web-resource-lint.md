@@ -1,14 +1,18 @@
 # Lint model-driven JavaScript web resources
 
-Microsoft's [Power Apps checker ESLint plugin](https://www.npmjs.com/package/@microsoft/eslint-plugin-power-apps) offers static checks for model-driven app JavaScript web resources. Project owners can opt in independently of Paqvilo. This setup is for authored model-driven JavaScript, including form libraries and JavaScript command handlers. It is not a Power Pages JavaScript, canvas app, HTML inline script or PCF bundle checker. Scope the input to your own unpacked Solution resources; keep exports and lint reports in the project.
+Microsoft's [Power Apps checker ESLint plugin](https://www.npmjs.com/package/@microsoft/eslint-plugin-power-apps)
+statically checks model-driven app JavaScript: form libraries and command handlers. It does not check Power Pages
+JavaScript, Canvas apps, inline HTML scripts or PCF bundles. Paqvilo does not run it; a project opts in on its own and
+keeps exports, lint configuration and reports in the project.
 
-From your project directory, install compatible versions and keep the resulting lockfile:
+From the project directory, install the tools and keep the lockfile:
 
 ```sh
-npm install --save-dev --save-exact eslint@10.13.0 @microsoft/eslint-plugin-power-apps@0.6.0
+npm install --save-dev --save-exact eslint @microsoft/eslint-plugin-power-apps
 ```
 
-Create `eslint.power-apps.config.mjs` in that project:
+Create `eslint.power-apps.config.mjs`. This example enables every rule the installed plugin exports as a warning; it
+is not the plugin's `paCheckerHosted` preset:
 
 ```js
 import powerApps from '@microsoft/eslint-plugin-power-apps';
@@ -23,16 +27,24 @@ export default [
 ];
 ```
 
-Point ESLint at the model-driven JavaScript files you maintain. For example, if the unpacked Solution is under the project:
+Point ESLint at the files you maintain, for example an unpacked Solution in the project:
 
 ```sh
 npx --no-install eslint --config eslint.power-apps.config.mjs "solutions/Example/WebResources/**/*.js"
 ```
 
-The example enables all 26 rules exported by plugin version 0.6.0 with default options and warning severity. Its bundled `paCheckerHosted` preset enables 21 rules with a mixture of warnings and errors; this example is not that preset. Choose rules, options and severities for the project. Warnings normally do not fail ESLint; use `--max-warnings=0` if the project deliberately wants warnings to fail CI. Parsing failures still fail. Set `sourceType` appropriately for module-based sources, and exclude generated or third-party files when they are not your lint target. Once dependencies are installed, the lint command runs locally without connecting to the platform.
+Warnings do not fail ESLint; add `--max-warnings=0` if CI should fail on them. Parse errors always fail. Set
+`sourceType: 'module'` for module sources and exclude generated or third-party files. Once installed, the lint runs
+offline.
 
-## Interpretation
+## Reading the results
 
-These rules inspect source patterns, including paths that may not run in a particular test. A clean result does not prove that the native app supports a script, that all unsupported patterns were detected, or that hosted checker results are identical. Review each finding in its context; for example, a DOM rule cannot by itself prove a particular access targets the platform-managed form rather than a resource's own document. The plugin's `avoid-2011-api` rule does not flag every use of `Xrm.Page`, and `do-not-make-parent-assumption` excludes expressions containing `Xrm`.
+The rules inspect source patterns, including code paths a test may never run. A clean result does not prove the
+native app supports a script, that every unsupported pattern was found, or that the hosted checker agrees. The
+`avoid-2011-api` rule does not flag every `Xrm.Page` use, and `do-not-make-parent-assumption` ignores expressions
+containing `Xrm`.
 
-Mirage supports a bounded Client API and maps `Xrm.Page` to its local form context. Its app exposes `Xrm`, and HTML resources can run in frames where same-origin browser access to `parent.Xrm` or the DOM may be possible. Successful local access does not establish support or equivalent behavior in the native app. Mirage reports unsupported simulated Client API calls, but it does not provide a general checker warning for these browser accesses. Use lint alongside project tests and native verification; see the [Client API limits](model-driven-client-api.md) and [Solution customization guide](model-driven-customizations.md).
+Mirage maps `Xrm.Page` to its local form context, and HTML resources in frames may reach `parent.Xrm` or the DOM
+through same-origin access. Mirage reports unsupported client API members, but it does not warn about such browser
+access, and local success does not establish native behavior. Use lint alongside project tests and native
+verification; see the [client API](model-driven-client-api.md).

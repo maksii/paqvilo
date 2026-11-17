@@ -9,7 +9,7 @@ import { fileIdentity, sameFile } from '../lense/file-identity.mjs';
  *        [--json | --markdown] [--out FILE] [--timeout MS]
  *
  * Runs every case of the MIT golden-liquid suite (github.com/jg-rp/golden-liquid, pinned in the
- * rules file; the suite is not vendored, see docs/liquid-conformance.md) through the Mirage
+ * rules file; the suite is not vendored, see docs/liquid-parity.md) through the Mirage
  * renderer with the case's data and partial templates. A case passes when the output equals the
  * suite's Shopify Liquid expectation (or an error is raised where the suite expects one). Every
  * other case is classified by the rules file (default lib/liquid-conformance-rules.json):
@@ -204,7 +204,7 @@ function text(report) {
   return lines.join('\n') + '\n';
 }
 
-/** The generated case tables of docs/liquid-conformance.md. */
+/** The generated case tables of the conformance report (docs/liquid-parity.md). */
 export function markdown(report) {
   const lines = [
     `Cases: ${report.counts.total} (${report.counts.expectError} expect an error). Pass: ${report.counts.pass}. Differ: ${report.counts.differ} (` +

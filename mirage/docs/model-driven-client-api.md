@@ -1,241 +1,184 @@
 # Model-driven client API
 
-Mirage can execute explicitly trusted JavaScript WebResources from the selected
-local Solution sources. Configure top-level `modelDriven: { trustedExtensions: true }`
-in a Mirage project, or put it under the catalogue target's `mirage` settings.
-The default is disabled. The same trust setting gates
-form libraries, JavaScript ribbon commands and supported standard PCF components.
+Mirage runs explicitly trusted JavaScript web resources from the selected local Solution sources. Set
+`modelDriven: { trustedExtensions: true }` in the project (or under the catalogue target's `mirage` settings); it is
+off by default. The same switch gates form libraries, JavaScript ribbon commands and standard PCF components. Setup,
+resource import and PCF hosting are in [Solution customizations](model-driven-customizations.md).
 
-Treat this as running project code in your local browser. It is not a JavaScript
-sandbox. The shell allows same-origin scripts and connections through its content
-security policy, and its supplied client APIs use the current local staff session.
-The client URL returned to scripts is the loopback runtime, never the online
-organization. No online library resolution or expression evaluation is performed.
+Trusted code runs in your local browser with the current local staff session. It is not a sandbox: the shell's CSP
+allows same-origin scripts and connections. `getClientUrl()` is the loopback runtime, never the online organization.
+No library is resolved online and no expression is evaluated.
 
-## Exported events and commands
+Every client object is bounded: reading a member that is not listed below throws
+`Mirage client API does not support <path>.<member>.`, so a script fails visibly instead of receiving `undefined`.
 
-Form libraries load in exported order. Enabled OnLoad, attribute OnChange and
-OnSave handlers receive the exported execution-context argument when configured.
-Promise-returning handlers are awaited. OnLoad runs once per loaded form, rather
-than on every tab switch. A save or `data.refresh` reloads the open form in place:
-the script context keeps working, and only the handlers added from script run
-again, with the reload's load state. `setValue` marks the field dirty without
-implicitly firing OnChange; `fireOnChange` triggers it explicitly. OnSave
-`preventDefault` cancels the local record save, including Save & Close.
+## Events and commands
 
-The supported execution context exposes `getFormContext`, `getEventSource`,
-`getEventArgs` and `getDepth`. OnLoad arguments expose `getDataLoadState` (1 for
-the initial load, 2 after a save, 3 after `data.refresh`). OnSave arguments expose
-`getSaveMode`, `preventDefault`, `isDefaultPrevented`, `preventDefaultOnError`,
-`shouldPreventDefaultOnError`, `disableAsyncTimeout` and `shouldDisableAsyncTimeout`;
-the save mode is the
-`saveMode` passed to `data.save(saveOptions)`, 2 for `entity.save('saveandclose')`,
-and 1 otherwise. OnChange `getEventArgs()` returns `undefined`; its `getEventSource()`
-is the changed attribute. Exported handler parameters
-must be primitive constants; JavaScript expressions are rejected.
+- **Form libraries** load in exported order. Enabled OnLoad, attribute OnChange and OnSave handlers receive the
+  execution context when the export asks for it, then the exported parameters. Parameters must be primitive constants;
+  JavaScript expressions are rejected. Promise-returning handlers are awaited.
+- **OnLoad** runs once per loaded form, not per tab switch. A save or `data.refresh()` reloads the open form in place:
+  only handlers added from script run again, with the new load state.
+- **OnChange.** `setValue` marks the field dirty without firing OnChange; `fireOnChange()` fires it.
+- **OnSave.** `preventDefault()` cancels the local save, including Save & Close. Saving from inside an active
+  lifecycle handler rejects; finish the handler first.
+- **Ribbon commands.** Classic JavaScript actions support `PrimaryControl`, `SelectedControlSelectedItemIds`,
+  `SelectedEntityTypeName` and primitive parameters, and the rules `FormStateRule`, `EntityRule`, `ValueRule` and
+  `SelectionCountRule`. Modern AppAction exports support a JavaScript web resource with the `PrimaryControl` parameter;
+  an explicit zero-sequence modern form action appears before the standard form actions. Unsupported actions,
+  parameters, rules and missing libraries leave the command disabled with the reason. `$LocLabels:` labels use the
+  imported Solution LCID, falling back to the first exported label.
+- **Inactive records.** A two-state row in state 1 opens as disabled form type 4 with Save hidden. A script can call
+  `setDisabled(false)`, `setValue` and save when source and staff permissions allow; form-state rules see `Disabled`.
+  Form XML disabling is the initial presentation only: scripts can unlock a control or set and save its value, but
+  never enable a write that metadata, source ownership or staff field security forbid.
 
-Classic ribbon JavaScript actions support PrimaryControl, selected record IDs,
-selected entity name and primitive parameters. The supported rules are
-FormStateRule, EntityRule, ValueRule and SelectionCountRule. Modern AppAction
-exports support a JavaScript WebResource and the captured PrimaryControl parameter
-type. An explicit zero-sequence modern form action appears before standard form
-actions; other command positions retain their fallback placement. Unsupported actions, parameters, rules and missing exported libraries leave
-commands disabled with an explanation.
+## Supported members
 
-Classic ribbon `$LocLabels:` labels use the imported Solution LCID, matching
-the source-language selection for forms and table labels. If a translation is
-absent, the local parser retains its first-exported-label fallback. The command
-bar and source inspector use the same language selection. This does not add
-per-user language switching to the shell.
+| Object              | Members                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Execution context   | `getFormContext`, `getEventSource` (the changed attribute, else `data.entity`), `getEventArgs`, `getDepth`                                                                                                                                                                                                                                                         |
+| Event arguments     | OnLoad: `getDataLoadState` (1 initial, 2 after save, 3 after refresh). OnSave: `getSaveMode`, `preventDefault`, `isDefaultPrevented`, `preventDefaultOnError`, `shouldPreventDefaultOnError`, `disableAsyncTimeout`, `shouldDisableAsyncTimeout`. OnChange: `getEventArgs()` returns `undefined`                                                                   |
+| `formContext`       | `getAttribute(name?)`, `getControl(name?)`, `data`, `ui`                                                                                                                                                                                                                                                                                                           |
+| Attribute           | `getName`, `getValue`, `getInitialValue`, `setValue`, `getFormat`, `getIsDirty`, `getAttributeType`, `getOptions`, `getOption`, `getText`, `getRequiredLevel`, `setRequiredLevel`, `getSubmitMode`, `setSubmitMode`, `addOnChange`, `removeOnChange`, `fireOnChange`, `controls`; numbers add `getMin`, `getMax`, `getPrecision`; text and memo add `getMaxLength` |
+| Control             | `getName`, `getAttribute`, `getControlType`, `getParent`, `getDisabled`, `setDisabled`, `getVisible`, `setVisible`, `getLabel`, `setLabel`, `setFocus`, `setNotification`, `clearNotification`; Choice and Choices controls add `getOptions`, `addOption`, `removeOption`, `clearOptions`                                                                          |
+| `data`              | `entity`, `getIsDirty`, `isValid`, `save(saveOptions?)`, `refresh(save?)`, `addOnLoad`, `removeOnLoad`                                                                                                                                                                                                                                                             |
+| `data.entity`       | `getId`, `getEntityName`, `getPrimaryAttributeValue`, `getIsDirty`, `isValid`, `attributes`, `addOnSave`, `removeOnSave`, `save(mode?)`                                                                                                                                                                                                                            |
+| `ui`                | `controls`, `getFormType` (1 create, 2 existing, 4 disabled inactive), `formSelector` (`getCurrentItem`, `items`; an item has `getId`, `getLabel`), `tabs` (`getName`, `getLabel`, `setLabel`, `getVisible`, `setVisible`, `sections`), `setFormNotification`, `clearFormNotification`, `close`                                                                    |
+| Tab section         | `getName`, `getLabel`, `setLabel`, `getParent`, `getVisible`, `setVisible`                                                                                                                                                                                                                                                                                         |
+| Collections         | `get(name \| index \| predicate)`, `getLength`, `forEach`                                                                                                                                                                                                                                                                                                          |
+| `Xrm.Page`          | The current `formContext`                                                                                                                                                                                                                                                                                                                                          |
+| `Xrm.Navigation`    | `openAlertDialog`, `openConfirmDialog`, `openUrl` (http(s) only, new window), `openForm` (another imported local form, including `formId`), `navigateTo`                                                                                                                                                                                                           |
+| `Xrm.App.sidePanes` | `createPane`, `getAllPanes`, `getPane`, `getSelectedPane`, `state` (0 collapsed, 1 expanded); a pane can `navigate`, `select` and `close`                                                                                                                                                                                                                          |
+| `Xrm.Utility`       | `getPageContext()` (`input`: `entityrecord` with table, record ID and form ID, or `entitylist` with table and view ID), `getGlobalContext()`                                                                                                                                                                                                                       |
+| Global context      | `getClientUrl`, `getVersion` (`9.2.0.0`), `client` (`getClient`: `Web`, or `Mobile` offline; `getClientState`: `Online`/`Offline`; `isOffline`), `userSettings` (`userId`, `userName`, `languageId`, `isRTL`, `roles`, `securityRoles`, `transactionCurrency`, `transactionCurrencyId`, `dateFormattingInfo`, `getTimeZoneOffsetMinutes`)                          |
+| `Xrm.WebApi`        | `retrieveRecord`, `retrieveMultipleRecords`, `createRecord`, `updateRecord`, `deleteRecord`, `execute`, `executeMultiple`, `isAvailableOffline`, `online`, `offline`                                                                                                                                                                                               |
 
-Record page inputs retain `formId`, `tabName` and create-form defaults through
-`navigateTo` and side-pane navigation. A source-named visible tab becomes selected
-and focused after the form is ready; an unavailable tab reports an error. Current
-form IDs and native ribbon `SelectedControlSelectedItemIds`/`SelectedEntityTypeName`
-parameters supply record context without a separate pane helper. Reusing a pane
-with `getPane(id).navigate(nextInput)` loads the new context; `select()` expands it.
-Existing-record navigation does not overwrite its values with create defaults.
-A form ID missing from the loaded active Main-form catalogue is refused with
-`FormUnavailable`. A source form excluded from the selected app keeps the existing
-eligible-form fallback; omitting the ID keeps the default or preferred selection.
-These inputs follow Microsoft's [navigateTo contract](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/reference/xrm-navigation/navigateto).
+### Attributes and controls
 
-List page inputs support imported `savedquery` views. Missing selected saved views
-report their source limitation rather than switching silently to the default.
-`userquery` personal views reject with `PersonalViewUnsupported`: the local
-Dataverse userquery store is separate from this shell's imported saved-view
-catalogue and does not establish access to a personal view here.
+- Only columns bound on the selected form (body, header and footer controls) are attributes; `getAttribute` and
+  `getControl` return `null` for any other column, including an unbound primary key. Header and footer controls are
+  `header_<column>` and `footer_<column>`; they are not rendered, so their getters return the column defaults and their
+  setters throw. Business process flow stage columns are not attributes.
+- `getMin`, `getMax`, `getPrecision` and `getMaxLength` read imported `minValue`, `maxValue`, `precision` and
+  `maxLength`; a missing value throws the unsupported-API error instead of guessing. Choice attributes have no numeric
+  range methods. An exported empty option list still reports `optionset`.
+- Multiselect attributes return numeric arrays from `getValue`, label arrays from `getText`, and report
+  `multiselectoptionset`.
+- `addOption({ text, value }, index?)` requires numeric `value` (otherwise a `UciError`), `removeOption(value)` and
+  `clearOptions()` change only the offered options: not the column value, OnChange or the exported metadata, and
+  `attribute.getOptions()` keeps returning the source options. Changes survive tab re-rendering. They apply to the
+  calling control, and to every control of the column when a PCF control binds it. Calling them on a read-only text
+  control throws the unsupported-API error.
+- `formSelector.items.get(id)` accepts GUIDs regardless of casing and braces. Switching forms from a script is not
+  supported (`item.navigate` throws).
+- `data.entity.isValid()` checks visible, enabled controls against their source-derived constraints (requiredness,
+  number bounds) and active control notifications. `data.isValid()` also reports native field validation and sets
+  `aria-invalid`. Neither saves nor clears dirty state. Header/footer fields, unsupported controls and
+  `attribute.setIsValid` are outside this validator.
 
-## Bounded client API
+### Saving
 
-| Area           | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Attributes     | Get/set values, initial values, dirty state, metadata-derived type, required level, choice options/text, add/remove/fire OnChange, attribute control collection. Only the columns bound on the selected form (body, header and footer controls) are attributes: `getAttribute(name)` and `getControl(name)` return `null` for any other column, including the primary id when it is not on the form. Header and footer columns have the controls `header_<column>` and `footer_<column>`; they are not rendered, so their getters answer the column defaults and their setters throw a named error. Business process flow stage columns are not attributes                                                                                                                                                                                                                                                                                       |
-| Controls       | Get/set visibility, disabled state and label; focus; notifications; bound attribute                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Form data      | Entity ID/name/primary name, attributes, dirty state, add/remove OnSave, save and refresh                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Form UI        | Create/existing/disabled inactive form type, control collection, form notifications, close; `formSelector.getCurrentItem()` and `items` (the open form; switching forms from a script is not supported); `tabs` and their `sections` with names, labels and `getVisible`/`setVisible` for the open form                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Navigation     | Alert and confirmation dialogs; `openUrl` (http(s) addresses, in a new window); `openForm` (another imported local form, including its app-owned `formId`); `navigateTo` for `entityrecord`, `entitylist` and `webresource` pages, inline (`target: 1`) or as a dialog (`target: 2`, `position: 1` center or `2` side). A dialog resolves when it closes; a record opened in create mode resolves with `savedEntityReference` once it was saved, and every other page resolves with no value. `pageType: 'dashboard'` opens one of the app's Solution dashboards by `dashboardId`, or the app's first dashboard when no id is given, inline or as a dialog, and rejects with `DashboardPageUnsupported` when the app's sources hold no such dashboard; `pageType: 'custom'` (a `name`, optional `entityName` and `recordId`, a GUID) opens the headless canvas host of the canvas app with that logical name (see [Canvas apps](canvas-apps.md)) |
-| App            | `Xrm.App.sidePanes`: `createPane`, `getAllPanes`, `getPane`, `getSelectedPane`, `state`; a pane `navigate`s to the same page types, `select`s and `close`s. Panes stay open across in-app navigation until closed. `state` reads back the value set (0 collapsed, 1 expanded)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Utility        | `getPageContext().input`: `entityrecord` (table, record ID, form ID) on a record form, `entitylist` (table, view ID) on a list page. A list page has its own client, so a closed form never answers there                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Global context | `getVersion()` (`9.2.0.0`, the Web API version served), local client URL, Web client, client and online state from the session's offline mode (`getClient()` `Web`, or `Mobile` while offline; `getClientState()` `Online` or `Offline`; `isOffline()`), and `userSettings` from the [staff context](#staff-context): `userId`, `userName`, `languageId`, `isRTL`, `roles`, `securityRoles`, `transactionCurrency`, `transactionCurrencyId`, `dateFormattingInfo`, `getTimeZoneOffsetMinutes()`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| WebApi         | Retrieve one/multiple records, scalar and multiselect writes, imported single-valued lookup bindings, create/update/delete through the local staff pipeline, plus `execute` and `executeMultiple` (also on `Xrm.WebApi.online`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Call                               | OnSave `getSaveMode()`         | Result                                                                |
+| ---------------------------------- | ------------------------------ | --------------------------------------------------------------------- |
+| `data.save(saveOptions)`           | `saveOptions.saveMode`, else 1 | Promise of `savedEntityReference` (`entityType`, braced `id`, `name`) |
+| `data.entity.save()`               | 1                              | Same                                                                  |
+| `data.entity.save('saveandclose')` | 2                              | Saves, then closes                                                    |
+| `data.entity.save('saveandnew')`   | 59                             | Returns nothing; saves, then opens a blank create form                |
 
-Native Choice and Choices controls support `addOption({ text, value }, index?)`,
-`removeOption(value)` and `clearOptions()`. Options are stored per control,
-including separate controls bound to the same column, and survive form tab
-re-rendering. Mutations update the offered options without changing the column
-value, firing OnChange or modifying exported metadata; `attribute.getOptions()`
-continues to return the source options. Enum values must be safe integers;
-duplicate values and out-of-range indices fail before changing state. PCF and
-read-only text adapters do not support these control mutations.
+- A refused save rejects with `{ errorCode, code, message, title }`: 2200000005 when OnSave prevents it, 2200000007
+  when a required column is empty, 2200000003 when another save is in flight (the first one still resolves). The form
+  stays dirty.
+- A save the staff user cannot make, or one whose changes cannot be carried locally, rejects with an `Error` whose
+  `code` is `SaveDenied` or `SaveUnsupported`. A failed server write rejects.
+- After `saveandnew`, the old context keeps answering with its record ID, form type 2 and saved values, refuses every
+  call that would change the form, and keeps `Xrm.WebApi`. A host that cannot open a new record refuses the mode.
+- Ribbon commands may call `PrimaryControl.data.save()`. Held form contexts are revoked when their form is disposed
+  or the staff identity changes (not by a save); revoked members reject or throw.
 
-`formSelector.items.get(id)` resolves the current exported form by its ID,
-accepting GUID casing and brace differences. Attribute and control collections
-continue to resolve strings by their own logical/control names; index and
-predicate collection lookups remain available.
+### Navigation and side panes
 
-Numeric attributes expose `getMin()`, `getMax()` and `getPrecision()` from imported
-`minValue`, `maxValue` and `precision` metadata. Text and memo attributes expose
-`getMaxLength()` from imported `maxLength`. A missing numeric fact raises the
-named unsupported-API error; the runtime does not infer limits or precision.
-Choice attributes do not expose numeric range methods. These are bounded
-source-metadata reads, rather than a claim to every native attribute subtype.
-An exported empty option list still identifies a Choice attribute as `optionset`;
-adding control options does not change that source type or enable numeric methods.
+`navigateTo` opens `entityrecord`, `entitylist` and `webresource` pages inline (`target: 1`) or as a dialog
+(`target: 2`, `position: 1` center or `2` side). A dialog resolves when closed; a create-mode record resolves with
+`savedEntityReference` once saved, other pages with no value.
 
-`data.entity.isValid()` checks the current values of visible, enabled rendered
-controls against their source-derived HTML constraints, including requiredness
-and number bounds, together with active control error notifications.
-`data.isValid()` checks the same data and also reports native field validation
-and updates `aria-invalid`. These checks do not save or clear dirty state.
-Header/footer fields, unsupported controls, non-table form data and
-`attribute.setIsValid` are outside this bounded validator.
+- `pageType: 'dashboard'` opens one of the app's Solution dashboards by `dashboardId` (or the first), and rejects with
+  `DashboardPageUnsupported` when the sources hold none.
+- `pageType: 'custom'` (`name`, optional `entityName` and GUID `recordId`) opens the headless host of the Canvas app with
+  that logical name ([Canvas apps](canvas-apps.md)).
+- Record inputs keep `formId`, `tabName` and create defaults; a named visible tab is selected and focused, an
+  unavailable tab is an error, and a `formId` outside the loaded main forms is refused with `FormUnavailable`.
+  Existing-record navigation ignores create defaults.
+- List inputs accept imported `savedquery` views; a missing view reports its limitation rather than switching to the
+  default. `userquery` personal views reject with `PersonalViewUnsupported`.
+- Panes stay open across in-app navigation until closed. `getPane(id).navigate(input)` reuses a pane; `select()`
+  expands it and clears its badge unless `keepBadgeOnSelect` is true. `isSelected: false` keeps the current selection.
+  `hideHeader` hides title and close button; `canClose: false` hides only the button. Closing the selected pane
+  selects the last visible one; a closed pane refuses navigation with `PaneClosed`. `hidden` and `title` apply; badges
+  are kept as state but not drawn, and inactive pane content stays mounted (no `alwaysRender` lifecycle).
 
-Selecting a side pane expands the group and clears its badge unless
-`keepBadgeOnSelect` is true. Creating with `isSelected: false` preserves the
-current selection and collapsed state. `hideHeader` hides the title and close
-button; `canClose: false` hides the close button but still permits the script
-to call `close()`. Closing the selected pane selects the last remaining visible
-pane. A closed pane refuses navigation with `PaneClosed`; closing it also rejects
-pending navigation and releases its load listeners. The pane's `hidden` property hides its content, and changing its `title`
-also updates the accessible label. Badge values are retained as API state;
-the shell does not render a badge or icon switcher, and inactive iframe content
-remains mounted rather than implementing the platform's `alwaysRender` lifecycle.
+### Web API
 
-WebApi reads use the canonical organization query engine and current staff
-identity, including when the public Dataverse HTTP listener is disabled.
-Multiple-record reads use table scope rather than the currently selected saved
-view. `$select`, `$filter`, `$orderby`, `$expand`, FetchXML and continuation
-paging have the same supported semantics as the local Dataverse record API.
-`retrieveMultipleRecords` returns `entities`, an optional `nextLink`, and an
-optional FetchXML paging cookie. A continuation URL must belong to this local
-runtime and imported table; callers can also pass its query string. Record
-reads preserve native lookup properties such as `_parentid_value`.
-The same record methods are available through `Xrm.WebApi.online`.
-
-WebApi navigation-property writes using `@odata.bind` resolve imported
-single-valued relationships and exact target entity-set names from the local
-catalogue. Values must be `/entityset(guid)` paths or `null` to clear the lookup.
-Unknown relationships, conflicting values and external URLs fail before a record
-request. The browser adapter does not guess navigation-property names or plural
-entity sets. Many-to-many associations and deep inserts remain unsupported.
-
-Multiselect form attributes expose numeric arrays and label arrays through
-`getValue` and `getText`, and report `multiselectoptionset` as their type. WebApi
-writes accept the native comma-separated choice representation; the shell
-normalizes selections before the shared Dataverse pipeline validates them.
-
-Saving from an active form lifecycle handler rejects the returned promise; finish the
-event before saving. A script save resolves with `savedEntityReference` (`entityType`,
-`id` and `name`); `id` is braced, the same format `data.entity.getId()` returns. A refused save rejects with a plain object holding `errorCode`,
-`code`, `message` and `title`: 2200000005 when OnSave prevents the save, 2200000007
-when a required column is empty, and 2200000003 when a save starts while another is in
-flight; the first save still resolves. The form stays dirty in each case. A save the
-staff cannot make, or one whose changed columns cannot be carried locally, rejects with
-an Error whose `code` is `SaveDenied` or `SaveUnsupported`, since no native shape is
-documented for them. A failed server write rejects. This follows a native
-observation of a main form on a developer environment.
-
-`entity.save('saveandnew')` returns no promise and runs OnSave with save mode 59. The
-record is saved, then the open form becomes a blank create form with a new context for
-`Xrm.Page`. The saved context keeps answering with its record id, form type 2 and saved
-values. Every call on it that would change the form, including control, notification,
-requirement, tab and close calls, data writes, saves and refreshes, is refused with the
-same error. Web API calls stay available. A host that cannot open a new record refuses the mode
-with the unsupported-API error. Ribbon commands may call `PrimaryControl.data.save()`.
-Quick-create forms, separate form windows, unsupported client APIs and unsupported
-event parameter expressions fail visibly. Xrm, PCF, modern-command and client
-scripting APIs not listed here are not supported.
-
-Client methods cannot enable writes denied by metadata, source ownership or staff
-field security. Held form contexts are revoked when their form is disposed or the
-staff identity changes, and not by a save; after revocation, promise-returning members reject and
-synchronous members throw. Portal contact sessions remain separate from staff
-identities and this shell does not inject its client API into Power Pages.
-
-Form XML control disabling defines the initial presentation. Explicit client
-scripts can unlock that control or set its attribute value and save while the
-control stays disabled. Column update metadata, ownership and staff permissions
-continue to govern each write.
-
-An inactive two-state record initially exposes disabled form type 4. Its default
-disabled presentation permits an explicit client `setDisabled(false)`, attribute
-`setValue` and SDK save when source and staff permissions allow the write. The
-standard Save buttons remain hidden. Form-state ribbon rules distinguish this
-disabled form from an editable existing record.
+- Reads use the organization query engine as the current staff user, also when the public Dataverse listener is off.
+  `retrieveMultipleRecords` queries the table, not the selected view, and returns `entities`, an optional `nextLink`
+  and an optional FetchXML paging cookie. `$select`, `$filter`, `$orderby`, `$expand`, FetchXML and continuation paging
+  behave as in the local Dataverse API. Options must start with `?`; a continuation URL must target this runtime and
+  table. `maxPageSize` is 1–5000. Records keep lookup properties such as `_parentid_value`.
+- Writes accept scalar values, comma-separated multiselect values and `@odata.bind` lookups to imported single-valued
+  relationships with exact entity-set names (`/entityset(guid)` or `null`). Unknown relationships, conflicting values
+  and external URLs fail before any request. Many-to-many associations and deep inserts are unsupported.
+- `Xrm.WebApi.offline` reads and writes the staff session's offline copy of the app's mobile offline profile
+  (capability record `model-driven:offline`); the server refuses its CRUD while online. While offline, `Xrm.WebApi`'s
+  record methods use that copy.
 
 ## Xrm.WebApi.execute
 
-`Xrm.WebApi.execute` reads `request.getMetadata()`: operation type 0 sends an action
-(POST, bound to `request.entity` when `boundParameter` is `entity`), type 1 a function
-(GET with `@p1…` parameter aliases; entity parameters become `@odata.id` references and
-enumerations use their `typeName`), and type 2 a `Create`, `Retrieve`, `Update`, `Delete`,
-`Associate` or `Disassociate` request. The organization's own Web API answers as the
-selected staff user (local administrator when none is selected), so custom APIs, custom
-actions and the standard messages the organization implements behave as through the
-Dataverse API, including when its HTTP listener is disabled. The response has `ok`,
-`status`, `statusText`, `headers`, `url`, `json()` and `text()`; a failure rejects with
-`message`, `status` and, for Dataverse codes, `errorCode`. An operation the organization
-does not declare rejects with its 404 error. `executeMultiple` runs top-level requests in
-order; a nested array is one `$batch` change set that commits or rolls back as a whole.
-A change set that fails rejects with the failing request's error: `message`, `status`
-and, for a Dataverse code, `errorCode` (for example 0x80044331 for a column length).
-`Xrm.WebApi.offline` reads and writes the staff session's offline copy of the app's mobile
-offline profile (capability record `model-driven:offline`); the server refuses its create,
-read, update and delete while the session is online, and while the session is offline
-`Xrm.WebApi`'s own record methods use that copy. Online requests go to
-`POST /_apps/api/webapi` (see [model-driven apps](model-driven-apps.md#routes)).
+`execute` reads `request.getMetadata()`:
+
+| `operationType` | Sends                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0               | An action (POST), bound to `request.entity` when `boundParameter` is `entity`                                            |
+| 1               | A function (GET with `@p1…` aliases; entity parameters become `@odata.id` references, enumerations use their `typeName`) |
+| 2               | `Create`, `Retrieve`, `Update`, `Delete`, `Associate` or `Disassociate`                                                  |
+
+The organization's Web API answers as the selected staff user (the local administrator when none is selected), so
+custom APIs, custom actions and the standard messages it implements behave as through the Dataverse API, also when its
+listener is off. The response has `ok`, `status`, `statusText`, `headers`, `url`, `json()` and `text()`. A failure
+rejects with `message`, `status` and, for Dataverse codes, `errorCode`; an undeclared operation rejects with its 404.
+`executeMultiple` (1–1000 requests) runs top-level requests in order; a nested array is one `$batch` change set that commits or rolls back
+together and rejects with the failing request's error. Requests go to `POST /_apps/api/webapi` (see
+[routes](model-driven-apps.md#routes)).
 
 ## Staff context
 
-The model-driven host builds one staff context on the server for the selected staff user
-and serves it with the staff session (`current.context`). The PCF context
-(`userSettings`, `formatting`) and `Xrm.Utility.getGlobalContext().userSettings` read only
-that object. Security roles are the user's role assignments (role ids). The language is
-the user's `usersettings.uilanguageid`, else the organization `languagecode`; the locale is
-`usersettings.localeid`, else the organization `localeid`. Locales resolve through the
-Power Pages language catalogue; another LCID formats with the en-US culture and reports
-`localeResolved: false`. The time zone is `usersettings.timezonecode` (UTC without a
-usersettings row). The currency is the user's `transactioncurrencyid`, else the
-organization base currency. Number and date formatting information comes from that locale,
-with the user's decimal, group, date and time format overrides; the short date pattern keeps
-the .NET four-digit year (en-US `M/d/yyyy`). A staff user reads and updates its own row
-through `/api/data/v9.2/usersettingscollection(<systemuserid>)` (GET, PATCH of `uilanguageid`,
-`localeid`, `timezonecode`, the format columns and `transactioncurrencyid@odata.bind`), a
-registered organization extension; the row lives in the private runtime table
-`usersettings`, seeded rows win on reset, and another user's row answers 403. When the
-staff session cannot be read, components and scripts get the documented anonymous context:
-no user, no roles, language 1033, UTC, no currency and no formatting information.
+The host builds one staff context on the server for the selected staff user and serves it with the staff session.
+The PCF context (`userSettings`, `formatting`) and `Xrm.Utility.getGlobalContext().userSettings` read only that object.
+
+| Value      | Source                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Roles      | The user's role assignments (role IDs)                                                                                    |
+| Language   | `usersettings.uilanguageid`, else the organization `languagecode`                                                         |
+| Locale     | `usersettings.localeid`, else the organization `localeid`; an unknown LCID formats as en-US with `localeResolved: false`  |
+| Time zone  | `usersettings.timezonecode`; UTC without a usersettings row                                                               |
+| Currency   | The user's `transactioncurrencyid`, else the organization base currency                                                   |
+| Formatting | The locale's number and date formats with the user's overrides; the short date keeps a four-digit year (en-US `M/d/yyyy`) |
+
+A staff user reads and updates its own row at `/api/data/v9.2/usersettingscollection(<systemuserid>)` (GET, and PATCH
+of `uilanguageid`, `localeid`, `timezonecode`, the format columns and `transactioncurrencyid@odata.bind`); another
+user's row answers 403. The row lives in the private runtime table `usersettings`, and seeded rows win on reset. Without
+a readable staff session, scripts and components get the anonymous context: no user or roles, language 1033, UTC, no
+currency and no formatting information.
 
 ## Page markers and the Web API on the app address
 
 Like a native app, the shell marks what tools such as Lense X-ray read: each form section, field (container
-`data-id="<control>"`, control `data-id="<control>.fieldControl-<type>"`), tab (`tablist-<tab>`) and subgrid
-(`dataSetRoot_<control>`), and each grid header and cell with its column name.
+`data-id="<control>"`, control `data-id="<control>.fieldControl-<type>"`), tab (`tablist-<tab>`), subgrid
+(`dataSetRoot_<control>`) and each grid header and cell with its column name.
 
-The app's own pages (`/main.aspx` and `/_apps/`, by their same-origin referrer) can read `/api/data/v9.x/` on the app's
-address with `GET` and `HEAD`, as the signed-in staff user (the local administrator without a staff session), through the
-same in-process Web API as `Xrm.WebApi`. Other pages, such as a Power Pages page on the shared address, get no Web API there,
-as on a native portal. Other methods are refused
-with `AppAddressReadOnly`, so a page cannot change data through the session; scripts write through `Xrm.WebApi`, and
-programs use the Dataverse Web API listener with a token.
+Pages of the app (`/main.aspx` and `/_apps/`, by same-origin referrer) may `GET` and `HEAD` `/api/data/v9.x/` on the
+apps address as the staff user (or local administrator), through the same in-process Web API as `Xrm.WebApi`. Other
+methods are refused with `AppAddressReadOnly`; other pages, such as a Power Pages page on a shared address, get no Web
+API there. Programs use the Dataverse Web API listener with a token. Portal contact sessions stay separate from staff
+identities, and this client API is never injected into Power Pages.
+
+Quick-create forms, separate form windows and any member not listed here are unsupported.

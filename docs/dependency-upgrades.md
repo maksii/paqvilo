@@ -1,98 +1,60 @@
-# Toolchain versions and migrations
+# Toolchain versions and dependency upgrades
 
-These are the supported development toolchains and the compatibility constraints
-for Paqvilo 0.9.8. The consolidation PR records the closed Dependabot audit and validation results.
+The development toolchain of Paqvilo 0.9.8, where each version is pinned, and the constraints to respect when
+upgrading. Contributor setup is in [CONTRIBUTING](../CONTRIBUTING.md).
 
-## Toolchains
+## Pinned versions
 
-The PCF and solution MSBuild projects use Microsoft.PowerApps.MSBuild.Pcf/Solution
-2.15.1, reference assemblies 1.0.3 and the current MSBuild toolset. Their deployment
-target remains the platform's .NET Framework contract.
+| Area                     | Version                                                                       | Pinned in                                                             |
+| ------------------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Node.js                  | 26.13.1; consumers need `^26.13.1`                                            | `.node-version`, `package.json` `engines`                             |
+| npm                      | 12.2.2; CI installs it before any package command                             | `package.json` `packageManager`, workflows                            |
+| .NET SDK                 | 11.0.100, later 11.0.1xx patches allowed                                      | `global.json` (`rollForward: latestPatch`)                            |
+| .NET SDK client gates    | `net11.0`, restored with lock files                                           | `mirage/test-sdk/*/Gate/Gate.csproj`                                  |
+| Python SDK client        | CPython 3.15, locked with wheel SHA-256 hashes                                | `mirage/test-sdk/python-dataverse/requirements.lock.txt`              |
+| CI runners               | `ubuntu-26.04`, `windows-2025`                                                | workflows; `.github/actionlint.yaml` registers the Ubuntu 26.04 label |
+| Root compiler and linter | TypeScript 6.0.3, typescript-eslint 8.72.2, ESLint 10.15.0                    | `package.json`                                                        |
+| Browser automation       | playwright-core 1.65.1 in the root, Mirage and the example project            | each `package.json`                                                   |
+| Code Apps                | Vite 8.3.8 (root), @microsoft/power-apps 1.6.0 (example project)              | `package.json`, `examples/project/package.json`                       |
+| PCF examples             | pcf-scripts and pcf-start 1.51.1, TypeScript 5.9.3, ESLint 9.39.5             | `examples/project/components/pcf-*/package.json`                      |
+| PCF/solution MSBuild     | Microsoft.PowerApps.MSBuild.Pcf and .Solution 2.15.1                          | `*.pcfproj`, `*.cdsproj`                                              |
+| Plug-in examples         | `net462`; Microsoft.CrmSdk.CoreAssemblies 9.0.2.60, ReferenceAssemblies 1.0.3 | `*.csproj`                                                            |
+| CodeQL                   | bundle 2.27.4 of the pinned `codeql-action`, verified by archive digest       | `.github/workflows/security.yml`, `scripts/codeql.mjs`                |
+| Workflow linters         | actionlint 1.7.12, ShellCheck 0.11.0, verified by archive digest              | `scripts/check-workflows.mjs`                                         |
 
-| Area                     | Version or policy                                                                                      |
-| ------------------------ | ------------------------------------------------------------------------------------------------------ |
-| Node.js                  | 26.13.1, the latest active LTS release; consumers stay on the 26.x line.                               |
-| npm                      | 12.2.2; CI installs the exact version before package commands.                                         |
-| .NET SDK                 | 11.0.100, with servicing patches within its feature band allowed.                                      |
-| .NET SDK clients         | net11.0; restore locks, executable paths and vulnerability checks use the same target.                 |
-| Python SDK client        | CPython 3.15; dependencies are resolved with 3.15.2 and locked with published wheel SHA-256 hashes.    |
-| Linux CI                 | Ubuntu 26.04, generally available in GitHub Actions.                                                   |
-| Windows CI               | Windows 2025, retained as the current server runner generation.                                        |
-| PCF build and preview    | pcf-scripts and pcf-start 1.51.1; every example control is built with this toolchain.                  |
-| PCF compiler and linter  | TypeScript 5.9.3 and ESLint/@eslint/js 9.39.5, the newest releases within pcf-scripts' declared peers. |
-| Root compiler and linter | TypeScript 6.0.3, typescript-eslint 8.72.2 and ESLint 10.15.0.                                         |
-| Code Apps                | Vite 8.3.8 and @microsoft/power-apps 1.6.0.                                                            |
-| Browser automation       | playwright-core 1.65.1, synchronized across root, Mirage and the example project.                      |
-| Local and hosted CodeQL  | Action v4.39.3 and its default bundle 2.27.4, pinned by commit and platform archive digest.            |
-| Workflow linters         | actionlint 1.7.12 and ShellCheck 0.11.0, already the latest releases.                                  |
+GitHub Actions are pinned to full commit SHAs (the repository requires it). Dependabot
+(`.github/dependabot.yml`) proposes weekly updates for Actions, every npm project (root, Mirage, example projects, the
+four PCF controls, the SDK client packages), the NuGet SDK gates and plug-in projects, and the Python requirements.
 
-All direct npm dependencies and overrides in tracked manifests were checked against
-the npm registry, including the four standalone PCF controls and SDK test packages.
-All GitHub Actions were checked against their current release tags; actions remain
-pinned to full commit SHAs. NuGet references include the generated custom connector
-host, which advances Newtonsoft.Json to 13.0.4 and logging abstractions to 11.0.0.
-The npm and Python locks also refresh compatible transitive packages. Dependabot
-coverage now includes the example project, its four PCF packages, the example C#
-NuGet projects and the Python SDK requirements.
+## When upgrading
 
-## Migration behavior
+- **Root lockfile.** npm 12 neither reads nor packs `npm-shrinkwrap.json`. The package ships `paqvilo-lock.json`, an
+  exact copy of `package-lock.json` that the installed-package bootstrap uses to repair dependencies. After changing
+  root dependencies, copy `package-lock.json` to `paqvilo-lock.json`; `release:check` fails while they differ.
+- **`npm pack --json`.** npm 12 returns a map keyed by package name; the shared packaging reader also accepts the older
+  array and rejects several or non-local archives. Release checks, cache preparation and package smoke use it.
+- **Audit.** `npm run audit:dependencies` audits the root (`paqvilo-lock.json`), Mirage, the company-operations
+  example, the three npm SDK clients and the four PCF controls, and fails on any finding not accepted in
+  `scripts/audit-dependencies.mjs`. The one accepted finding is the dev-only minimatch copy that
+  eslint-plugin-import-x 4.17.1 needs; it stops matching when that version or its dependents change.
+- **PCF peers.** pcf-scripts declares TypeScript 4/5 and ESLint 8/9 peers, which cap the PCF examples' TypeScript and
+  ESLint versions. Installs do not bypass peer validation. The PCF projects override `applicationinsights`,
+  `@opentelemetry/instrumentation-http` and `minimatch` to remove inherited advisories.
+- **TypeScript 7** needs upstream parser support (typescript-eslint) before the root can move; Dependabot ignores
+  TypeScript major updates.
+- **Portal runtime libraries.** jQuery 3.7.1, Moment 2.31.0 and the Bootstrap compatibility layer reproduce the portal
+  runtime surface; Dependabot ignores jQuery and Moment so routine upgrades do not change emulator behavior.
+- **Plug-in examples** keep their `net462` deployment target; their compiler advances with the SDK. The solution
+  projects package `Unmanaged`, matching their exported metadata.
+- **actionlint** 1.7.12 predates the `ubuntu-26.04` label; `.github/actionlint.yaml` adds only that label. Remove it
+  when actionlint knows the label.
+- **Not tooling pins.** Recorded parity cases, public source-capture commits, API protocol versions and sample assembly
+  identities are evidence or compatibility contracts: do not bump them with toolchain upgrades.
+- **Windows shells.** CI runs portable commands in Bash so PowerShell does not consume npm's `--` separator; in
+  interactive PowerShell use `npm.cmd run <script> -- <arguments>`.
 
-- npm 12 returns `npm pack --json` results as a map keyed by package name. The
-  shared packaging reader accepts that format and the older array format, and
-  rejects multiple or nonlocal archive filenames. Release checks, cache preparation
-  and installed-package smoke use the same reader.
-- npm 12 no longer reads or packs `npm-shrinkwrap.json`. The repository uses
-  `package-lock.json` and ships its synchronized snapshot as `paqvilo-lock.json`
-  for dependency inspection and installed-package repair. A repair creates
-  a temporary `package-lock.json` from that snapshot for `npm ci`, then removes only
-  its unchanged temporary file. An existing or concurrently changed lock is preserved.
-  After changing root dependencies with npm 12, copy the updated `package-lock.json`
-  to `paqvilo-lock.json` before validation. Bootstrap still accepts the legacy
-  snapshot in older installed packages. Cache preparation opts in to fetching
-  only its explicitly selected root archive URLs with `--allow-remote=root`.
-- Windows CI runs portable commands in Bash so PowerShell does not consume npm's
-  script-argument separator. The Windows service operation retains explicit `pwsh`.
-  In interactive PowerShell, use `npm.cmd run <script> -- <arguments>` when forwarding arguments through npm.
-- Playwright 1.65.1 includes the Windows TCP port randomization fix upstream. The
-  old feature-list override is retired. Browser tests retain a reviewed upstream
-  default snapshot and exercise launch, persistent contexts and server connections
-  across package copies, real loopback HTTP, caller options and explicit timeouts.
-  Anonymous capture extends the reviewed upstream feature switch to disable Windows account sign-in,
-  while keeping its debugging port as a separate argument.
-- actionlint 1.7.12 predates the Ubuntu 26.04 hosted label. Its configuration adds
-  only that exact generally available label; workflow and shell checks remain active.
-- The four standalone PCF projects lock and audit their complete npm trees. Overrides
-  update the legacy telemetry dependency to Application Insights 3.17.1, select HTTP
-  instrumentation 0.223.2 within its OpenTelemetry 2 family, and use minimatch 11.0.8.
-  These remove the inherited OpenTelemetry and glob denial-of-service advisories.
-  The solution projects explicitly package `Unmanaged`, matching their exported
-  metadata when the current MSBuild release builds a Release configuration.
-- The offline benchmark accepts `--progress` for ordered phase diagnostics on stderr while keeping
-  its JSON result on stdout. Its report also identifies whether the Git baseline was available.
-
-## Compatibility constraints
-
-- TypeScript 7 requires upstream parser support before the root can migrate.
-- PCF tooling currently declares TypeScript 4/5 and ESLint 8/9 peers. Its own latest
-  release therefore constrains those examples even though ESLint 9 is deprecated.
-  Installation does not bypass peer dependency validation.
-- jQuery 3.7.1, Moment 2.31.0 and the Bootstrap compatibility implementation describe
-  a portal runtime surface. Upgrading them as general development tools would alter
-  that surface. The existing Dependabot exclusions remain explicit.
-- Dataverse plug-in examples retain their net462 deployment target. Their build
-  compiler advances with the SDK. Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 and
-  Microsoft.NETFramework.ReferenceAssemblies 1.0.3 are already current.
-- Recorded parity cases, public source-capture commits, API protocol versions and
-  sample assembly identities are evidence or compatibility contracts, not rolling
-  tooling pins. They are preserved.
-
-Upstream references: [Node release metadata](https://nodejs.org/dist/index.json),
-[.NET release metadata](https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json),
-[Python 3.15.2](https://www.python.org/downloads/release/python-3152/),
-[PCF package metadata](https://registry.npmjs.org/pcf-scripts/latest),
-[TypeScript parser package metadata](https://registry.npmjs.org/typescript-eslint/latest),
-[CodeQL defaults](https://github.com/github/codeql-action/blob/v4.39.3/src/defaults.json)
-and [GitHub runner images](https://github.com/actions/runner-images).
-
-Validation results belong in the consolidation PR and its final-head checks. This
-inventory alone does not establish passing tests or merge readiness.
+Upstream metadata: [Node releases](https://nodejs.org/dist/index.json),
+[.NET releases](https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json),
+[pcf-scripts](https://registry.npmjs.org/pcf-scripts/latest),
+[typescript-eslint](https://registry.npmjs.org/typescript-eslint/latest) and
+[GitHub runner images](https://github.com/actions/runner-images).

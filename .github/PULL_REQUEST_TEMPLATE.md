@@ -11,5 +11,6 @@
 <!-- Lense / Mirage / both; portal version; standard/enhanced model or code/SPA; relevant Dataverse/Power Platform components. -->
 
 - [ ] My PR title follows Conventional Commits.
+- [ ] New or changed tests declare their kind (`// @test-kind`, see docs/test-kinds.md).
 - [ ] I used synthetic fixtures and kept portal exports, credentials and live evidence out of this repository.
 - [ ] I updated coverage/docs for any changed or unsupported platform behavior.

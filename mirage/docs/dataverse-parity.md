@@ -1,28 +1,95 @@
-# Dataverse simulation
+# Dataverse queries and portal permissions
 
-Mirage supports FetchXML, portal Web API and list OData contracts over local state. Queries use imported mappings, relationship metadata, column types and permission scopes. Results support platform-shaped choice/lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings fail with diagnostics rather than silently querying unrelated tables. In FetchXML, `count` is the page length (capped at the page-size limit, 5,000 by default); `returntotalrecordcount="true"` reports the matching total independently of the page, capped at 5,000 by default with `total_record_count_limit_exceeded` true beyond it; `total_record_count` is -1 when it is not requested.
+How Mirage answers FetchXML, the portal Web API (`/_api/`), Liquid and list OData over local state, and how portal table
+permissions shape those queries. The organization's own Web API, SOAP and TDS endpoints are in
+[Dataverse API](dataverse-api.md); plug-ins in [plug-ins](dataverse-plugins.md).
 
-The read-only SQL evaluator's `LIKE` uses the configured `CI_AI` or `CI_AS`
-text folding for literal characters and character sets. `ESCAPE` requires one
-character; a pattern ending in an unmatched escape never matches, and null
-operands retain SQL unknown semantics. These cases follow the documented
-[SQL pattern contract](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/like-transact-sql)
-and [Dataverse accent sensitivity](https://learn.microsoft.com/en-us/power-platform/admin/language-collations).
-This bounded folding model does not establish full linguistic collation parity.
+Queries use imported mappings, relationship metadata, column types and permission scopes, and answer platform-shaped
+choice and lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings
+fail with diagnostics instead of querying unrelated tables. In FetchXML, `count` is the page length (capped at the
+page-size limit, 5,000 by default); `returntotalrecordcount="true"` reports the matching total independently of the
+page, capped at 5,000 with `total_record_count_limit_exceeded` true beyond it; `total_record_count` is -1 when not
+requested.
 
-Local identities come from request sessions. Exported table permissions, web roles and parent/contact/account/self relationships control queries and writes when enforcement is enabled. Page access and table access are separate concerns. Metadata/scaffold discovery does not grant a persona permission to business rows.
+Local identities come from request sessions. Exported table permissions, web roles and parent, contact, account and self
+relationships control queries and writes when enforcement is on. Page access and table access are separate; metadata
+discovery never grants a persona access to business rows. Use `webapi-inventory`, `bootstrap-report` and
+`portal-matrix` to find source calls, unresolved table identities and schema gaps.
 
-The local store simulates create/update/delete, validation, bindings, declared backend rules and atomic state-file writes. [Dataverse plugin registrations](dataverse-plugins.md) are imported from selected Solutions; supported write/read stages can execute an explicitly trusted original CLR assembly, project model or mock, or be disabled. Unconfigured steps report skipped business logic. Top-level PreValidation SDK writes and asynchronous SDK requests commit independently; nested PreValidation and stages 20/40 join their caller transaction. [Operations](operations.md) inventories exports and runs supported basic imported request or Dataverse row-trigger flows with separate backend profiles. Completed connector writes survive a later failed action. Unsupported connectors/settings require explicit local choices. New states contain no business records from references.
+## One write pipeline
 
-Every organization write runs one pipeline: Web API and SOAP writes through the records layer (TDS is read-only), and SDK calls from CLR plug-ins, flow Dataverse actions, portal `/_api` writes, portal form writes, activity messages and note, attachment and SharePoint rows through its internal entries. They share the state defaults, record hooks, audit and version columns and alternate-key errors (`0x80048d19` for a calculated-column value, `0x80060892` for a duplicate alternate key). `Merge` (the target update, the subordinate deactivation and the moved children) and the `CalculateRollupField` store write (which keeps `modifiedon`) run the same pipeline. An `@odata.bind` names a navigation property, case-sensitively: a name no relationship declares (a column name, another casing) answers 400 `0x80048d19` "An undeclared property … which only has property annotations in the payload …" on every surface and stores nothing; the system lookups every table carries (`ownerid`, `owninguser`, `owningteam`, `owningbusinessunit`, `createdby`, `modifiedby`, `createdonbehalfby`, `modifiedonbehalfby`, `transactioncurrencyid`) bind on their column name. The portal `/_api` answers it in its generic 400 `9004010A` envelope.
+Every organization write runs one pipeline: Web API and SOAP writes through the records layer, and SDK calls from CLR
+plug-ins, flow Dataverse actions, portal `/_api` and form writes, activity messages and note, attachment and SharePoint
+rows through its internal entries. They share state defaults, record hooks, audit and version columns and alternate-key
+errors (`0x80048d19` for a calculated-column value, `0x80060892` for a duplicate alternate key). `Merge` and the
+`CalculateRollupField` store write (which keeps `modifiedon`) use it too. The portal keeps its own table permissions and
+value rules and wraps an organization error in its CDS envelope (`9004010D`) with the organization's code and message as
+`innererror`.
 
-These internal writers write system-owned rows directly to the store, deliberately, because no user-facing rule (business rules, column security, plug-in steps on user tables) applies to them: `dataverse-duplicates.mjs` (publishing and unpublishing `duplicaterule` and `duplicaterulecondition`), `dataverse-addon-d365.mjs` (`asyncoperation` cancel), `dataverse-predefined.mjs` (`appnotification` rows of `SendAppNotification`). The user-table writes of `dataverse-addon-d365.mjs` (goal rollup, the bulk e-mail draft addressing), `dataverse-bpf.mjs` (the business process flow instance a flow starts) and `dataverse-org-messages.mjs` (the `socialprofile` row `GenerateSocialProfile` creates) run the pipeline's internal entries like every other write. The portal keeps its own table permissions and value rules and wraps an organization error in its CDS envelope (`9004010D`) with the organization's code and message as `innererror`.
+A few internal writers write system-owned rows directly, because no user-facing rule applies to them:
+`dataverse-duplicates.mjs` (publishing duplicate rules), `dataverse-addon-d365.mjs` (`asyncoperation` cancel) and
+`dataverse-predefined.mjs` (`appnotification` rows of `SendAppNotification`). Their user-table writes (goal rollup, bulk
+e-mail drafts, business process flow instances, `GenerateSocialProfile`) use the pipeline.
 
-`MODERN_LIST_RENDERED_CLASSIC` is a preflight requirement (`portal:modern-list` at `contract`), so `--strict` blocks on a site whose modern list include names a map, calendar or code component list. `ENHANCED_AUTHORIZATION` reports a site in the enhanced authorization model; its requirement `portal:enhanced-authorization` is `satisfied` at `behaviour` (see [enhanced authorization](#enhanced-authorization)). See [capabilities and preflight](capabilities-and-preflight.md#report-shape).
+## Navigation binding
 
-An exported unsupported server-logic endpoint answers HTTP 501 with the camelCase fields `requestId`, `success`, `serverLogicName`, `data` and `error`. This is an explicit unsupported result, not a successful execution.
+An `@odata.bind` names a navigation property, case-sensitively. A name no relationship declares (a column name, another
+casing) answers 400 `0x80048d19` "An undeclared property … which only has property annotations in the payload …" on
+every surface and stores nothing; the portal `/_api` answers it in its generic 400 `9004010A` envelope. The system
+lookups every table carries (`ownerid`, `owninguser`, `owningteam`, `owningbusinessunit`, `createdby`, `modifiedby`,
+`createdonbehalfby`, `modifiedonbehalfby`, `transactioncurrencyid`) also bind on their column name. A role-less
+multi-table relationship gets the documented `<lookup>_<table>` navigation name (`objectid_<table>` for notes,
+`regardingobjectid_<table>` for document locations); a single-table custom lookup keeps its schema name.
 
-Use `webapi-inventory`, `bootstrap-report` and `portal-matrix` to find source calls, unresolved table identities and schema gaps. Use a project-owned parity plan for read-only comparisons against an authorized reference browser. Local correctness and live parity are reported separately.
+## Token failures
+
+A portal Web API write without the anti-forgery token answers 401 `90040107`; a wrong token answers 403 `90040107` "The
+anti-forgery cookie token and form field token do not match." (Microsoft's clients refresh the token and retry). Reads
+need no token, and a stale token or bearer header does not change a read. `MissingPortalSessionCookie` (401
+`90040109`) is mapped but no local path raises it. `Webapi/<table>/disableodatafilter` changes neither rows nor errors.
+
+## Fiscal calendar
+
+The fiscal FetchXML operators, the matching Web API query functions and fiscal-period and fiscal-year groupings read
+`FiscalCalendarStart` and `FiscalPeriodType` from settings, else the organization row. Period types 2000 to 2004 split
+the year into 1, 2, 4 or 12 periods, or 28-day periods; a fiscal year is numbered by the calendar year it starts in, and
+bounds are half-open. The period model follows SQL 4 CDS (MIT, see `licenses/sql4cds.txt`) with these deliberate
+differences:
+
+- A date on a period's first day belongs to that period.
+- This, last and next fiscal year follow the fiscal year that contains today.
+- Period boundaries count from the fiscal year's start date, so a start on the 29th to 31st does not drift, and moving by
+  periods steps across years by period index.
+- A period number outside the year (period 5 of a quarterly year) matches nothing, as Learn documents.
+- `in-fiscal-period` is evaluated per value.
+- The last days of a 28-day-period year stay in period 13; a 29 February start falls on 28 February in other years.
+
+## Platform changes
+
+Source bootstrap reports Power Pages platform changes as portal diagnostics (bootstrap report, inspect and the panel);
+persona resolution reports the last row:
+
+| Code                                | Meaning                                                                                                                                                              |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENHANCED_AUTHORIZATION`            | The site runs the [enhanced authorization](#enhanced-authorization) model; requirement `portal:enhanced-authorization` is satisfied at `behaviour`.                  |
+| `LIST_ODATA_FEED_REMOVED`           | Lists with their OData feed enabled, a feature Microsoft is removing.                                                                                                |
+| `TABLE_PERMISSIONS_ALWAYS_ENFORCED` | Lists, basic forms and advanced form steps with Enable Table Permissions off. Mirage enforces table permissions on every form and list, as the platform now does.    |
+| `MODERN_LIST_LOCAL_MARKUP`          | A modern list include (`isModern: 'true'`) is served by the local adapter through the classic grid engine, with local markup.                                        |
+| `MODERN_LIST_RENDERED_CLASSIC`      | A modern include names a map, calendar or code component list; it renders classic. A `portal:modern-list` requirement at `contract`, so `--strict` preflight blocks. |
+| `MODERN_LIST_FEATURES_UNSERVED`     | A served modern list configures other action types; those actions are absent locally.                                                                                |
+| `PERSONA_ACCOUNT_ROLES_NOT_APPLIED` | Web roles of a persona's parent account are reported, not applied: current Power Pages behaviour for them is not documented.                                         |
+
+See [capabilities and preflight](capabilities-and-preflight.md#report-shape). An exported server-logic endpoint that
+Mirage does not support answers 501 with the camelCase fields `requestId`, `success` (false), `serverLogicName`, `data`
+and `error`.
+
+## SQL LIKE
+
+The read-only SQL evaluator's `LIKE` folds literal characters and character sets under the configured `CI_AI` or
+`CI_AS` collation. `ESCAPE` takes one character; a pattern ending in an unmatched escape never matches; null operands
+keep SQL unknown semantics ([LIKE](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/like-transact-sql),
+[Dataverse collations](https://learn.microsoft.com/en-us/power-platform/admin/language-collations)). This is not full
+linguistic collation parity.
 
 ## Access-team membership
 
@@ -38,17 +105,22 @@ lifecycle in Microsoft's [Access Teams whitepaper](https://www.microsoft.com/en-
 
 ## Choosing a read-only reference
 
-An organization Dataverse CLI can supplement explicitly authorized, bounded organization API comparisons. Qualify the selected CLI version, effective identity, exact request and response shape against an independent signed-in browser capture before using its output as evidence. A scriptable JSON option alone does not establish raw OData, HTTP status, headers, annotations or continuation fidelity. Keep the original captures separately; record unavailable fields as limitations rather than normalizing them away.
-
-Organization-user results do not establish Power Pages portal-session authorization, query rewriting or portal error behavior. The [portal Web API](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview) applies its own enabled table/field settings, permissions and session rules. Keep separate portal-persona captures for those claims, including when a CLI and browser read the same records.
-
-Microsoft's preview [Dataverse CLI](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/cli/) is not a Paqvilo dependency or an automatically selected reference. Review its current authentication, tenant consent and environment prerequisites with the owner before adoption; this guide does not authorize changing them. A project experiment should select reviewed record IDs and bounded read-only cases, verify the intended organization and user, compare several fresh captures with the same Mirage query, and preserve failures and output-shape differences. Keep identities, identifiers, query values, credentials and evidence in the project; never put them in toolkit fixtures or public reports.
+Organization-user results (an SDK, the [Dataverse CLI](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/cli/)
+or the [Web API recorder](dataverse-api.md#record-and-compare-web-api-responses)) say nothing about Power Pages
+portal-session authorization, query rewriting or portal errors: the
+[portal Web API](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview) applies its own table and
+field settings, permissions and session rules. Keep separate portal-persona captures for those claims. A CLI's JSON
+output does not preserve raw OData, status, headers, annotations or continuation; qualify it against a signed-in browser
+capture before using it as evidence. The Dataverse CLI is not a Paqvilo dependency. Keep identities, record ids, query
+values and evidence in the owning project.
 
 ## Permission queries and recording
 
 Portal FetchXML reads compile effective root-table grants into outer relationship joins and an OR permission filter before RetrieveMultiple observers execute. The compiler retains separate relationship paths, shares equivalent paths, traverses imported N:N intersections, and applies the configured Dataverse link-entity budget to the expanded query. The returned `xml` is the query used for local execution. `permissionQuery` reports authored/generated join counts, diagnostics and `qualification: "modeled"`: the XML comes from the local compiler and need not equal the hosted Power Pages rewrite byte for byte. Microsoft's [Liquid FetchXML documentation](https://learn.microsoft.com/en-us/power-pages/configure/liquid/template-tags#xml-attribute) describes the resultant query exposed by Liquid.
 
 Independent backend retrieval and FetchXmlToQueryExpression controls distinguish two budgets: 15 ordinary joins and 27 ordinary joins plus existential filter links. A filter's `any`, `not any`, `all` or `not all` root does not consume an ordinary join; its ordinary descendants do. Every node remains in the query and combined count. Thus some 17-node trees succeed while a sixteenth ordinary join or twenty-eighth combined node fails with CDS `0x8004430d`. `QueryLinkEntityLimit` and the simulator experiment `FetchLinkAndFilterLimit` configure those separate limits. The evidenced `fetchLinkBudgetError: "reported-counts"` observation selects the backend's count-specific error text; omission retains the documented generic message.
+
+`paqvilo mirage query-inventory --portal <dir> [--json]` counts the literal `{% fetchxml %}` blocks in exported web templates (root tables, most link-entities and deepest nesting per block, unresolved or dynamic blocks) so you can see how close authored queries are to these budgets before permission joins are added.
 
 The portal Web API validates enabled fields, column permissions and authored linked-table access before executing FetchXML. Generated permission links inspect relationship rows without exposing their columns. Default execution retains authored-table row checks.
 
@@ -119,12 +191,6 @@ Imported many-to-many associations check the source Update/Append grant and the 
 
 `observed.webApiSelfNnPermissionErrors: { x_relationship: "native-classic" }` qualifies the captured portal denial envelope for specific imported self-referencing N:N relationships. A missing endpoint Append or AppendTo grant returns the witnessed `90040106`/AppendTo message for those schemas. The profile requires site evidence; SDK errors, other relationships and unqualified sites retain their independent error contracts.
 
-## Formula columns
-
-Formula columns (SourceType 3) are computed on every read by Mirage's own Power Fx engine (`lib/power-fx.mjs`), so `$filter`, `$orderby`, `$apply` and FetchXML see the computed value. The formula reads the row's columns by name or through `ThisRecord`, follows lookups to the related row (`x_parentid.x_rate`), and reads other formula columns of the row, at most 10 deep. A decimal result keeps the column's precision (default 2). A formula that answers an error value (for example a division by zero) reads null and reports `FORMULA_ERROR` with its error kind once per column. Decimal, currency and whole-number arithmetic is exact; float values are doubles. As natively, the platform computes formula columns, so a formula over a secured column shows its result to callers who cannot read that column, and a `$filter` on the formula column filters by that result (formula columns cannot be secured). Mirage reports `FORMULA_COLUMN_OVER_SECURED_COLUMN` (warning, naming the formula column and the secured columns it reads) when the organization starts, so administrators can secure what they need. A trusted pack's `formulaColumns` function or `powerFx` adapter still takes precedence. Writing a formula column answers 400. See [Dataverse contract modules](dataverse-contract-modules.md#formula-columns).
-
-Source imports read an inline `FormulaDefinition` or the column's referenced `FormulaDefinitionFileName` YAML document. References resolve within the owning entity's `Formulas` directory or the packaged solution's root `Formulas` directory. Unsupported paths, malformed documents and missing formulas remain diagnostic; YAML changes invalidate the source cache and update the running formula.
-
 ## Portal Web API file and image columns
 
 The portal `/_api` serves file and image columns: `PUT` or `PATCH /_api/<set>(<id>)/<column>` with the bytes as the body and the file name in `x-ms-file-name` (header, or the query parameter for names outside ASCII) uploads, `GET /_api/<set>(<id>)/<column>/$value` answers the bytes as `application/octet-stream` with `Content-Disposition: attachment` (the file name, RFC 5987), `X-Content-Type-Options: nosniff`, and the stored type, name and size in the `mimetype`, `x-ms-file-name` and `x-ms-file-size` headers; a stored file is never served as its own type on the portal origin (`/api/data` keeps its documented headers) (image bytes default to the thumbnail; `size=full` requests a full image when its column stores one), and `DELETE /_api/<set>(<id>)/<column>` clears the column. The column must be listed in `Webapi/<table>/fields` (its column permission applies), and the visitor needs the table permission Read on the row to download and Write to upload or delete (403 otherwise, nothing stored). The bytes then go through the organization's file column entry, as on `/api/data`: the column's `MaxSizeInKB`, image checks, storage routing, 404 for an empty file column and 204 for an empty image. An upload without a file name keeps the stored file's name, else `<column>.bin`. A file name with `/`, `\`, NUL, or `.`/`..` alone answers 400 before anything is stored. One request carries the whole file (no `Range` or chunked transfer, a request is bounded at 128 MB).
@@ -154,8 +220,6 @@ An observed `webApiGlobalMetadataVersion` preserves the frozen organization's op
 `observed.webApiErrorDetails: odata-wrapper` additionally formats supported JSON-reader failures from the submitted value and imported Edm column type. It preserves the stable OData exception and nested conversion cause while omitting generated CLR stacks. The default `diagnostic` mode and non-Web-API errors keep their existing diagnostics. Inner errors still require the source setting; IEEE754-compatible Decimal strings and unobserved JSON grammar retain diagnostics rather than assuming a hosted parser contract.
 
 An explicitly registered trusted pack can supply evidenced reader-specific error suffixes under `observed.webApiErrorStacks: response-template`. This is captured response emulation, separate from original CLR execution. It requires immutable source and fresh-variation hashes and preserves exact CRLF bytes. Defaults, unsupported branches, SDK/flow errors and write behavior remain unchanged.
-
-Project parity runners should retain field-by-field requests, status, stored values after both accepted and rejected writes, rendered values, search results and cleanup outcomes. Keep reference cookies, tokens and opaque native hidden-field values out of evidence. Record generated identifiers and timestamps without treating independently generated values as literal mismatches; declare any comparison normalization and retain raw results.
 
 Forms post back to the page by default, with an optional local JSON transport. Mirage does not reproduce opaque ASP.NET view-state or event-validation blobs. See [forms and lists](forms-lists-parity.md) for transport, validation and persistence behavior. Compare saved values and rendered results separately from transport details.
 

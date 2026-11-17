@@ -25,11 +25,9 @@ my-portal-project/
   .paqvilo/                 # ignored state, screenshots and reference evidence
 ```
 
-Install Paqvilo as a dependency, register your pack, and run your own tests from this project. The [starter](../examples/project/README.md) is complete and uses invented data. Your test suite can consume the public modules without editing Paqvilo's core:
-
-Large generated presets may use the explicit [`createOwned()` factory](../mirage/docs/data-packs.md) to transfer
-a fresh private dataset instead of retaining a memoized baseline plus an application copy. Existing `load()`
-presets keep their copy semantics. Generators and their determinism/ownership tests stay in your project.
+Install Paqvilo as a dependency, register your pack, and run your own tests from this project. The
+[demo project](../examples/project/README.md) is a complete example with invented data. Tests consume the public modules
+without editing Paqvilo's core:
 
 ```js
 import { createSimulator, DataStore, discoverPacks, presetLibrary } from 'paqvilo/mirage';
@@ -50,6 +48,9 @@ const simulator = await createSimulator({
 const headers = signInHeaders(simulator, 'your-synthetic-contact-id');
 // Assert your own page/data contracts, then await simulator.close().
 ```
+
+Large generated presets may use the explicit [`createOwned()` factory](../mirage/docs/data-packs.md) to hand over a
+fresh private dataset instead of a memoized baseline plus a copy; `load()` presets keep their copy semantics.
 
 Use absolute pack/source paths when a test's working directory is not predictable. A Mirage project's `dataPacks` is also supported; it resolves modules relative to that project file. Loading a pack executes trusted JavaScript and is an explicit project decision.
 
@@ -116,7 +117,7 @@ The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`,
 
 `context` is a copy, except `SharedVariables`: changing the rest does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
 
-- `sharedVariables` is the operation's shared variables collection as a plain object, the one argument that is not a copy. What a handler sets there is what later steps and stages of the same operation receive, JavaScript or CLR (`IPluginExecutionContext.SharedVariables`). The request `tag` value is read-only: changing it fails the step with 409 `LocalPluginTagImmutable`.
+- `sharedVariables` is the operation's shared variables collection as a plain object, the one argument that is not a copy. What a handler sets there is what later steps and stages of the same operation receive, JavaScript or CLR (`IPluginExecutionContext.SharedVariables`). The request `tag` value is restored before each later step, so a handler's change to it is not seen.
 - A thrown error is the plug-in fault: 400 `0x80040265` with its message. Its `SubErrorCode` annotation is `-2146233088`. The write rolls back.
 - An asynchronous (mode 1) step runs after commit through the same queue as the exported ones. While the Dataverse API is on, each run also writes an asyncoperation system job (operation type System Event): Completed with status Succeeded, or Failed with the handler's message. A succeeded job is removed when its step has `asyncautodelete`. The job is written in the run's own transaction, so the portal response does not change.
 - `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The diagnostic row survives business rollback, including a failed Custom API main operation.

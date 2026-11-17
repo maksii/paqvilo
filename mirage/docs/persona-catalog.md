@@ -1,20 +1,17 @@
 # Persona catalogues and isolated setups
 
-Catalogues describe **which contact to test and why**. Contacts, parent accounts and
-exported web-role memberships remain the identity source. Metadata never creates
-records or grants permissions. Legacy pack `personas` keeps its existing meaning.
-Additive datasets may separately opt in to materializing explicit `personaRoles`
-descriptors; see [data generation](data-packs.md). Catalogue metadata is never an
-input to that operation. Applying a portal data preset can separately replace local
-contact memberships using `personaRoles`; see the [preset contract](data-packs.md).
+A catalogue describes **which contact to test and why**. Contacts, parent accounts and exported web-role memberships
+remain the identity source: catalogue metadata never creates records or grants permissions. A pack's `personas` array
+is a separate, older field and keeps its meaning. Web-role memberships come from data, through a preset's or a dataset
+fragment's `personaRoles` (see [data packs](data-packs.md)), never from the catalogue.
 
 ## Version 1 contract
 
 `personaCatalog` is a data property on a registered pack, a preset body, or a
 `dataset()` fragment. All use the same schema. `validatePersonaCatalog(value,
 'Data pack my-pack')` from `paqvilo/mirage/packs` returns a detached value or throws
-`InvalidPersonaCatalog`, naming the source and field. Version 1 and the public
-helpers follow the [semver policy](../../docs/public-api.md).
+`InvalidPersonaCatalog`, naming the source and field. Version 1 and these helpers are part of the
+[public API](../../docs/public-api.md#persona-catalogues).
 
 ```js
 const personaCatalog = {
@@ -124,7 +121,7 @@ Search ignores accents/case and AND-matches terms across label, contact name, ke
 email, account, roles, group/subgroup labels, tags and full description. Facet values
 combine with OR within a facet and AND between facets. Counts exclude duplicated
 Default/Pinned/Recent cards. **Has web roles** hides entries without effective
-roles. Share filters as `#identity?q=reviewer&tag=own&role=Reviewer`.
+roles. Share filters as `#access?q=reviewer&tag=own&role=Reviewer`.
 
 Pin cards with the star. Five recent choices are remembered per browser/source.
 The configured default appears first in a Default row and in its own group.
@@ -138,10 +135,10 @@ Invalid references fail validation. Import replaces state metadata; Export write
 the effective catalogue. Reset removes only state metadata. Saves use a catalogue
 digest; concurrent edits require a reload before saving.
 
-On the administration address (`adminUrl`), `/_sim/sign-in?persona=reviewer-own&returnUrl=/reviews/` presents one persona and a
-CSRF-protected button. GET never establishes a session. Unknown keys return 404
-with nearby keys. This explicit simulator shortcut is available even when the
-source site disables native local login.
+On the portal address, `/_sim/sign-in?persona=reviewer-own&returnUrl=/reviews/` presents one persona and a sign-in
+button protected by the portal token. GET never establishes a session; without `persona` it answers 400
+`PersonaParameterRequired`, and an unknown key answers 404 with nearby keys. This shortcut works even when the source
+site disables native local login.
 
 ## Isolated contexts and scenarios
 
@@ -250,7 +247,9 @@ New user follows the site's registration and provider switches. `prompt=create` 
 a forced registration test; `newUser: never` still suppresses it. Forced choices name the
 settings that may reject the callback. Forged creation POSTs are checked server-side.
 
-Configure the local chooser in site/default Mirage settings:
+Configure the local chooser in site or default Mirage settings. Only these keys are accepted; `title` and
+`description` are at most 500 characters, `accentColor` is a six-digit hex colour, and the defaults are
+`newUser: auto` and `presentation: page`:
 
 ```yaml
 mirage:

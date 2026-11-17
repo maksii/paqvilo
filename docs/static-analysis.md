@@ -1,38 +1,59 @@
 # Offline Power Platform source analysis
 
-Paqvilo owns a read-only analysis engine for local Power Platform projects. Review a folder, a Mirage project, or all sources declared by a catalogue:
+`paqvilo analyze` (also `paqvilo lense analyze`) reviews local Power Platform sources read-only. It
+never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows,
+connectors or tenant requests.
 
 ```sh
-node bin/paqvilo.mjs analyze --source <folder> --json
-node bin/paqvilo.mjs analyze --project <project.yml> --fail-on warning --json
-node bin/paqvilo.mjs analyze --config <catalogue> --all --json
-node bin/paqvilo.mjs lense doctor --config <catalogue> --all --json
+npx --no-install paqvilo analyze --source <folder> --json
+npx --no-install paqvilo analyze --project <project.yml> --fail-on warning --json
+npx --no-install paqvilo analyze --config <catalogue> --all --json
+npx --no-install paqvilo lense doctor --config <catalogue> --all --json
 ```
 
-For installed projects, use `npx --no-install paqvilo`. The `lense analyze` spelling remains supported. Direct `--source` or `--project` selection does not require a portal, environment or catalogue. Catalogue analysis follows the selected site's portal sources, declared Solution roots, project metadata, Code Apps and Canvas sources. Standalone Dataverse/model-driven runtimes use their declared sources too. Configuration selects inputs without importing packs or providers.
+`--source` and `--project` need no portal, environment or catalogue. With `--config` (and `--site` or
+`--all`), analysis follows each site's portal source, declared Solution roots, project metadata, Code
+Apps and Canvas sources, including standalone Dataverse/model-driven runtimes; `--source` then overrides
+the portal source. Configuration selects inputs without importing packs or providers. Run
+`paqvilo analyze --help` for every option.
 
 ## Findings and gates
 
-`--fail-on` accepts `none`, `error`, `warning` or `hint`. Doctor defaults to `none`, keeping its existing operational verdict independent from source advice. `analyze` defaults to `error`. A selected threshold fails for findings at that level or above, or incomplete supported-source inspection. `none` remains advisory and does not certify incomplete input.
+`--fail-on` is `none`, `error`, `warning` or `hint`; `analyze` defaults to `error` and `doctor` to `none`,
+so doctor's operational verdict stays independent of source advice. A threshold fails on findings at that
+level or above, and on incomplete inspection of supported sources.
 
-Each analysis result has a `verdict`: `ready` when the inspection is complete and no finding reaches the threshold, `incomplete` when supported-source inspection did not finish (whatever the threshold), and `error` when a finding reaches the threshold. The text output prints the verdict as each report's heading (READY, INCOMPLETE or ERROR); a report that fails before analysis, such as a configuration error, keeps the heading ERROR. `ready` remains the gate result, so it is true under `--fail-on none` even when the inspection is incomplete.
+Each result has a `verdict`: `ready` (complete, no finding at the threshold), `incomplete` (inspection did
+not finish, whatever the threshold) or `error` (a finding reached the threshold). Text output uses it as
+the report heading; a report that fails before analysis, such as a configuration error, is headed ERROR.
+`ready` is the gate result, so `--fail-on none` is ready even when incomplete; it certifies nothing.
 
 - **Error:** a proven invalid local source contract.
-- **Warning:** a concrete risk or inconsistency requiring review; intended configurations may be valid.
-- **Hint:** a possible improvement, missing contextual evidence or unresolved dependency.
+- **Warning:** a concrete risk or inconsistency to review; intended configurations may be valid.
+- **Hint:** a possible improvement, missing context or unresolved dependency.
 
-Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation, remediation and references. Messages omit source excerpts, setting values, action names, source URLs and parser error text. Validated metadata GUIDs can identify portal records. Paths remain visible; keep private-project reports under the project's ignored `.paqvilo/`. Human-readable paths escape terminal controls. The text report prints each finding's, skipped file's and not-inspected file's path relative to the current working directory, so a terminal can open it as a link; a line that names only a root keeps its root id. `--json` keeps the root-relative label.
+Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation,
+remediation and references. Messages omit source excerpts, setting values, action names, source URLs and
+parser error text; paths and validated metadata GUIDs remain, so keep private reports under the project's
+ignored `.paqvilo/`. Text output prints file paths relative to the working directory (terminal links) with
+terminal controls escaped; `--json` keeps root-relative labels.
 
-`PAQ-SOURCE-001` identifies syntax that cannot be parsed, including malformed XML or embedded JSON. A readable
-enhanced component envelope with absent, empty or unsupported record content receives `PAQ-SOURCE-002` and
-incomplete coverage instead. Optional or withheld settings do not require disclosing secret values; an explicitly
-empty/null setting inside a supported record payload is valid input.
+`PAQ-SOURCE-001` marks syntax that cannot be parsed, including malformed XML or embedded JSON. A readable
+enhanced component envelope with absent, empty or unsupported record content gets `PAQ-SOURCE-002` and
+incomplete coverage instead. An explicitly empty or null setting in a supported record is valid.
 
-Locations are exact where direct text/YAML positions are available. A finding over a JSON or YAML document read as data (flows, connectors, MCP registrations, Code Apps, package and mobile configuration, Dataverse deployment settings and specs) points at the value its `field` names, or at the object that lacks it; values decoded from an embedded JSON string, such as a flow's `clientdata`, keep the file's approximate anchor. A value reached through a YAML alias or merge key (`<<: *anchor`) is located at the anchor's own position. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. A Dataverse XML finding points at the child element its `field` names when that element is present, otherwise at the owning element, and the position is approximate. IDs depend on rule and location; they are not waivers and can change when source moves.
+Locations are exact where text/YAML positions exist. In a JSON or YAML document read as data (flows,
+connectors, MCP registrations, Code Apps, package and mobile configuration, Dataverse deployment settings
+and specs) a finding points at the value its `field` names, or the object that lacks it; YAML aliases and
+merge keys resolve to the anchor's position. Content decoded from an embedded string (such as a flow's
+`clientdata`) uses an approximate declaration anchor (`exactLocation: false`). A Dataverse XML finding
+points, approximately, at the child element its `field` names, else at the owning element. Finding
+IDs depend on rule and location: they are not waivers and change when source moves.
 
 ## Source domains
 
-The registry separates portal/web-content checks from Dataverse/Solution/model-driven, PCF/Canvas/Code Apps, and flow/connector/MCP adapters. Reports expose individual domain recognition and limitations; rules follow actual source contracts rather than assuming every file belongs to Power Pages.
+Rules follow each source contract rather than assuming every file belongs to Power Pages. Reports show
+recognition and limitations per domain.
 
 | Source domain                       | Inspection boundary                                                                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -48,21 +69,45 @@ The registry separates portal/web-content checks from Dataverse/Solution/model-d
 | Native mobile and extensions        | Source/package declarations and transferable project-quality guidance; native build/dispatcher/host/device evidence remains separate |
 | Governance and process intelligence | Explicit evidence-required capabilities; application exports cannot establish tenant policy, health or business process metrics      |
 
-`coverage.domains` distinguishes recognized source review, partial inspection and absent inputs. `capabilities` describes operation-specific tools and evidence for build, package, query, connector test, deployment, host/device, tenant and process operations. These are requirements, not executed checks or installed-tool proof. Missing PAC/.NET for deployment must not become an offline source-review error. Package declarations do not establish installed versions.
+`coverage.domains` distinguishes reviewed, partially inspected and absent inputs. `capabilities` lists
+what build, package, query, connector test, deployment, host/device, tenant and process operations would
+need; these are requirements, not executed checks, and missing PAC/.NET is never a source-review error.
+Package declarations do not establish installed versions.
 
-Some recommendations need context. Public access may be deliberate; view-based Web API fields need actual view/version evidence; dynamic query builders cannot be inferred from literals; project-specific routes and server-managed-field allowlists are not universal contracts. Unsupported source remains explicit rather than becoming a clean certification.
+Some advice needs context: public access may be deliberate, view-based Web API fields need actual view
+evidence, dynamic query builders cannot be inferred from literals, and project routes or server-managed
+field allowlists are not universal contracts.
 
 ## Bounded local inventory
 
-All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. With several roots, a file is labelled by its path relative to the common folder of the source roots (a project file does not count); a selected root nested in another is read as its own root; a root outside that folder, or roots without one, fall back to a `<root id>/` prefix.
+Default ceilings, shared by all roots: 128 roots; 10,000 files, directories, records, content units and
+findings; 100,000 directory entries; 2 MiB per file; 64 MiB processed in total. API callers may lower
+them. Reads are descriptor-based and confined to their roots.
 
-Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted. Member paths, CRCs, counts and inflated sizes are checked. Compressed and selected inflated bytes share the budget, including nested packages up to three archive levels. Larger/unsupported packages are incomplete; supply unpacked sources when appropriate.
+With several roots, a file is labelled relative to the roots' common folder (a project file does not
+count); a root nested in another is read as its own root; a root outside that folder, or roots without
+one, use a `<root id>/` prefix.
 
-When an unpacked Canvas source (`Src/*.pa.yaml`) has the same unique name as a Solution's packed app, the packed copy is not inspected and is listed under the Canvas domain's `superseded`; the unique name follows the [Canvas apps](../mirage/docs/canvas-apps.md) rule (the folder name, compared without case). A source folder named differently is a separate app.
+Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted:
+member paths, CRCs, counts and inflated sizes are checked, compressed and inflated bytes share the
+budget, and nesting stops at three archive levels. Larger or unsupported packages are incomplete; supply
+unpacked sources. When an unpacked Canvas source (`Src/*.pa.yaml`) has the same unique name as a
+Solution's packed app (the folder name, case-insensitive; see [Canvas apps](../mirage/docs/canvas-apps.md)),
+the packed copy is listed under the Canvas domain's `superseded` instead of being inspected.
 
-Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions, web resource content, Custom API request parameters and response properties, and table chart definitions in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
+Hidden state, discovery files, dependencies, deployment-profile directories and build outputs are
+excluded; `.powerpages-site` is the export-source exception. Links/junctions, unreadable or unsupported
+sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon
+definitions, formula definitions, web resource content, Custom API request parameters and response
+properties, and table chart definitions are recognized without rules: they are listed as limitations
+and do not make inspection incomplete. Deployment-profile syntax is checked separately by
+`lense doctor --lint-profiles`.
 
-`complete` describes bounded supported-source inspection. It does not mean every compiler, security, accessibility or runtime check passed. `sourceDigest` fingerprints paths and original bytes actually processed; partial input yields a partial fingerprint, not a deployment receipt. Reports preserve skips, rule execution, domain limitations and operations not performed.
+`complete` means bounded supported-source inspection finished, not that every compiler, security,
+accessibility or runtime check passed. `sourceDigest` fingerprints the paths and bytes actually
+processed; partial input gives a partial fingerprint, never a deployment receipt.
+
+## API
 
 ```js
 import { analyzeProject, analysisRules, analysisCapabilities } from 'paqvilo/lense';
@@ -70,15 +115,21 @@ import { analyzeProject, analysisRules, analysisCapabilities } from 'paqvilo/len
 const report = analyzeProject('/absolute/project', {
   failOn: 'warning',
   limits: { fileBytes: 1024 * 1024 },
+  sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }],
 });
 ```
 
-For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. File labels follow the rule above. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
+`sourceRoots` adds separately declared sources; root IDs must be unique.
 
-## Extending quality coverage
+## Extending coverage
 
-Keep inventory, pure domain rules, diagnostics, presentation and operation evidence separate. Rules need an actual source contract, positive cases, valid negative controls, malformed/partial input and redaction tests. Native or official-package proof is required for parity claims; owned analyzer tests are contracts/security checks.
+Keep inventory, pure domain rules, diagnostics, presentation and operation evidence separate. A rule
+needs an actual source contract, positive cases, valid negative controls, malformed/partial input and
+redaction tests; native or official-package proof is required before claiming parity. Project policy owns
+intended public access, routes, exceptions and business expectations. External results (SARIF, compiler
+or Solution Checker output, runtime/accessibility evidence) must keep their original severities, errors,
+skips and tool/input versions. `pac solution check` uploads a solution, so it stays a separate explicit
+operation.
 
-Project policy owns intended public access, routes, native targets, exceptions and business expectations. Additional adapters can import revision-bound SARIF, compiler/Solution Checker results and authorized runtime/accessibility evidence while preserving original severities, execution errors, skips and tool/input versions. `pac solution check` uploads a solution; builds, scanners, authentication, live tests and deployment remain separate explicit operations.
-
-The [public provenance catalogue](../lense/analysis/sources.mjs) identifies upstream inputs. Rule references and capabilities identify applicable product contracts. Task-specific reviews, source inventories and audit evidence belong under ignored `.paqvilo/`, outside published documentation and packages.
+The [provenance catalogue](../lense/analysis/sources.mjs) identifies upstream inputs. Task-specific
+reviews and evidence belong under ignored `.paqvilo/`.

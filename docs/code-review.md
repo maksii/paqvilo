@@ -1,77 +1,48 @@
 # Dead-code and duplication review
 
-Run `npm run review:code` after installing the locked development dependencies. It also runs
-inside `npm run quality` and CI. Knip 6.43.0 reviews runtime and test-inclusive graphs;
-jscpd 5.4.2 reviews runtime, tests and example/build support separately. CI never removes
-code or refreshes the reviewed baseline.
+`npm run review:code` runs inside `npm run quality`, the pre-commit hook and CI. It first checks that the five
+generated jQuery compatibility watchers match their single authored fragment
+(`scripts/generate-compat-watchers.mjs --check`), then runs `scripts/code-review.mjs --check`:
 
-`scripts/code-review.config.mjs` names commands, supported public APIs, browser URLs and
-independently spawned workers. URL aliases mirror the asset routers. Package wildcard paths
-are implementation details under [the public API contract](public-api.md). Knip normally
-promotes wildcard package targets to entries, hiding orphan modules. The adapter analyzes a
-temporary source snapshot whose manifest omits those wildcard keys. Named APIs and dependency
-resolution remain intact. It never changes the real manifest, executes inspected runtime code
-or copies private `.paqvilo` evidence.
+| Analysis   | Tool        | Scopes                                                                                                      |
+| ---------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| Dead code  | Knip 6.45.1 | `runtime` (product entries only) and `full` (product and test entries)                                      |
+| Duplicates | jscpd 5.4.3 | `runtime` (`bin/`, `lense/`, `mirage/`), `tests`, `support` (scripts, example components and build support) |
 
-Named and wildcard reexports from supported API entries are followed statically to their
-canonical declarations; public names remain preserved. The API contract test independently
-checks package imports. Runtime-only findings include exported test seams consumed by the
-full unit/browser/SDK graph. Three fake-service/fixture modules under `mirage/testing` also
-have test consumers and intentionally have no product caller.
+Findings are written to `.paqvilo/code-review/findings.json` with per-scope reports beside it, and compared with the
+reviewed baseline `scripts/code-review-baseline.json`. New files, exports, unresolved imports and clone occurrences
+fail; so do tool errors and empty clone scans. Clone keys combine the file pair and a normalized fragment digest, so
+line shifts do not create noise, and occurrences are counted: another copy of an accepted fragment still fails. CI
+never removes code or refreshes the baseline.
 
-`scripts/code-review-baseline.json` records reviewed dispositions. Clone keys contain the file
-pair and normalized fragment digest, so line shifts do not create noise. Occurrences are
-counted: another copy of an accepted fragment still fails. New files, exports, unresolved
-imports and clone occurrences fail. Tool errors and empty clone scans fail too. Synthetic
-canaries verify body-only orphans behind package wildcards, unused exports, copied logic,
-count growth, URL resolution and public reexport preservation.
+## How the graph is modeled
 
-Inspect `.paqvilo/code-review/findings.json` and its per-scope reports before updating a
-baseline. Fix actionable findings first. `node scripts/code-review.mjs --write-baseline`
-requires specific runtime clone dispositions and refuses unresolved imports, full-graph
-orphan files and unused full-graph exports. It keeps the reason of every finding the baseline already holds and gives only new findings the standard reason. Review every resulting baseline diff. Static
-tools cannot establish absence of every dead path or semantic duplicate.
+`scripts/code-review.config.mjs` names the entries: commands, supported public APIs, browser URLs (aliases mirror the
+asset routers) and independently spawned workers. Package wildcard paths are implementation details under the
+[public API contract](public-api.md), and Knip would promote them to entries and hide orphan modules, so the analysis
+runs on a temporary snapshot whose manifest omits the wildcard keys. Named APIs and dependency resolution stay intact;
+the real manifest is never changed, inspected code is never executed, and ignored or linked paths (`.paqvilo/`,
+`node_modules/`, junctions) are refused. Named and wildcard reexports of the public entries are followed statically to
+their declarations, so public names are preserved.
 
-## October 2026 audit dispositions
+Runtime-only findings include exported test seams that only the full unit, browser or SDK graph consumes; such a seam
+may keep a reviewed baseline disposition when removing the export would weaken a direct assertion. The three fake
+modules named below have test consumers and intentionally no product caller.
+`dashboard-icons.icon` is a namespace false positive: both apps pass the module to the renderer, which calls
+`icons.icon`.
 
-All 41 tasks and 199 export candidates were reviewed against current consumers and API
-origins. The 199 modifiers were removed while keeping implementations and local callers.
-Reruns found further unnecessary facade/modifier exports and five additional unused
-declarations; those were also removed. Supported API names remain unchanged.
+## Updating the baseline
 
-| Task    | Resolution                                                                                                                                 |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| A01     | Canonical portal catalogue shared by import/census, including types 33 and 35.                                                             |
-| A02–A07 | Removed unused date module, placeholder/numeric/state/CLR/token wrappers, eight shadow constants and two aliases. Active engines retained. |
-| A08     | Retired unused GUID inventory and its implementation-only test.                                                                            |
-| A09     | Retired test-only migration writer; pure public migration and active CAS/rollback paths retained.                                          |
-| A10     | Legacy operator contract documented and tested through DataStore.                                                                          |
-| A11–A15 | Reviewed all 199 export candidates; further unused facades/modifiers cleaned up on rerun.                                                  |
-| A16     | Shared ordered mapper with strict/clamped adapters; adjacent static prefetch pools included.                                               |
-| A17     | Shared traversal lists in code-unit name order; import order and the fingerprints use that one order.                                      |
-| A18     | Shared bounded XML decoder; invalid numeric references remain text instead of throwing.                                                    |
-| A19     | Shared synthetic metadata-version hash/cache.                                                                                              |
-| A20–A21 | Shared message context/read dispatch and security reader with explicit effective principal.                                                |
-| A22     | Shared PCF services/cleanup; destroy still runs after virtual-unmount failure.                                                             |
-| A23     | Shared CLR parsing/bounds; distinct worker ownership/error policies retained.                                                              |
-| A24     | Shared derived-column validation and source-type enumeration.                                                                              |
-| A25     | Shared byte-preserving HTTP reader with protocol-specific limits.                                                                          |
-| A26     | Shared live Dataverse override composition.                                                                                                |
-| A27     | Shared inspection summary with explicit legacy panel adapter.                                                                              |
-| A28     | Shared owned shutdown/discovery cleanup and combined failure handling; detached EOF preserved.                                             |
-| A29     | Shared JSON string-span scanning with separate redaction policies.                                                                         |
-| A30     | Shared read-grant selection; authorization/calibration remain separate.                                                                    |
-| A31     | One authored watcher generates five standalone scripts; drift/independent-loading tests added.                                             |
-| A32     | Deliberate standalone CSS copy retained with byte-prefix/accessibility drift regression.                                                   |
-| A33–A35 | Shared invented sign-in, reader/text and form fixtures; scenario assertions stay independent.                                              |
-| A36     | Shared owned browser/server/agent setup; acquisition-stage failures covered.                                                               |
-| A37     | Shared example editor helpers; controls, typed outputs and manifests retained.                                                             |
-| A38     | Pinned tools, scoped entry/asset maps, explicit baseline and synthetic canaries.                                                           |
-| A39     | Shared lookup accessor preserving direct-field/null/alias precedence.                                                                      |
-| A40     | Shared parity admission; sign-in/unsettled captures cannot become successful observations.                                                 |
-| A41     | Shared readiness/serve acquisition with exit, partial JSON and timeout disposal.                                                           |
+Fix actionable findings first. Then inspect `findings.json` and run:
 
-Remaining runtime clone dispositions distinguish generated watchers, standalone CSS, locale
-identity, declarative schemas, security seed policy, form dirty-state policy and operation-specific
-transaction/response contracts. `dashboard-icons.icon` is a namespace false positive: both
-apps pass the module to the renderer, which calls `icons.icon` through options.
+```sh
+node scripts/code-review.mjs --write-baseline
+```
+
+It keeps the reason of every finding the baseline already holds and gives a new finding the standard reason for its
+category. It refuses unresolved imports, full-graph orphan files, unused full-graph exports, runtime orphans other than
+the three `mirage/testing` fakes (`amqp-fake-broker`, `azurite-fake`, `owned-fixture`) and runtime clones without a
+category in `reviewedCloneReason`. Review every baseline diff by hand. Static tools cannot prove the absence of every dead
+path or semantic duplicate; `test/code-review.test.mjs` uses synthetic canaries (body-only orphans behind package
+wildcards, unused exports, copied logic, count growth, URL resolution, public reexports) to show the tools still
+detect them.

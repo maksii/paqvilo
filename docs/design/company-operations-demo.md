@@ -1,58 +1,66 @@
 # Company Operations example: data model
 
-Reference design for the synthetic [Company Operations example](../../examples/company-operations/README.md). The example owns its schema, fixtures and qualification tools; reusable provisioning remains in Paqvilo's [Dataverse API](../dataverse-provisioning.md).
+Design of the synthetic [Company Operations example](../../examples/company-operations/README.md): an invented
+organisation and workforce model with simultaneous memberships, twelve combinable roles and deep permission paths. The
+[permission harness](power-pages-permission-test-harness.md) and [plug-in observations](dataverse-plugin-observation.md)
+build on it. These are model contracts, not proof of any environment's installed state.
 
-The model covers organisation, workforce, equipment and maintenance records, simultaneous memberships, twelve combinable roles and deep permission paths. Its [permission harness](power-pages-permission-test-harness.md) and [plugin laboratory](dataverse-plugin-observation.md) define independent browser and backend observations. These are model contracts, not proof of a particular tenant's installed state or permissions.
+`examples/company-operations/prepare-schema.mjs` generates `dataverse/manifest.json` by parsing four sections of this
+document (**Tables columns and keys**, **Choices and twelve roles**, **Access permission projections**, **Single target
+relationships and cascade settings**) plus the schema sections of the two companion documents. Keep those headings and
+table rows exact; any edit to them must regenerate the committed manifest (`npm run schema:prepare`), and the project's
+schema test fails when the two disagree.
 
-## Components and scope
+## Solutions
 
-The separate `examples/company-operations/` project has its own package and checks. Its unpacked solutions are `PaqviloCompanyOperationsCore` for tables/relationships/choices/keys and `PaqviloCompanyOperationsForms` for forms/views, the latter depending on Core. Use publisher prefix `pqvd`, option value prefix `18327`, version `1.0.0.0` and language `1033`. Include invented seed data, a stable component ID registry, relationship inventory and machine-readable permission blueprint in the project.
+| Solution                         | Contents                                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `PaqviloCompanyOperationsCore`   | 19 custom business/reference tables, Account/Contact/Transaction Currency extensions, 17 choices, keys and relationships. |
+| `PaqviloCompanyOperationsForms`  | Named forms and views (depends on Core).                                                                                  |
+| `PaqviloPermissionTestSupport`   | Run, result and probe tables (harness design).                                                                            |
+| `PaqviloPluginEvidence`          | Operation, event and chain-node tables (plug-in design).                                                                  |
+| `PaqviloBehaviorPlugins`         | Plug-in assemblies and steps, plus the result/probe/equipment extension columns.                                          |
+| `PaqviloCompanyOperationsPortal` | The website and its configuration (built by `portal-security/package.mjs`).                                               |
 
-The [Dataverse provisioning toolkit](../dataverse-provisioning.md) supplies an npm API/CLI, a [project-owned schema manifest](../../examples/company-operations/dataverse/manifest.json) and a [merged fixture catalogue](../../examples/company-operations/data/stress-catalogue.json). Create metadata in Dataverse through the API, then export/unpack the server-generated solutions. The manifest covers tables, columns, relationships, choices and keys; separate project modules own forms/views, website security/pages and plugins. The data toolkit supports additive loading, comparison and paged backend retrievals. Do not hand-author table XML as a substitute for server creation/export.
+Publisher prefix `pqvd`, option value prefix `18327`, version `1.0.0.0`, language `1033`. In total: **28 tables, 25
+custom**. Create metadata through the [Dataverse provisioning API](../dataverse-provisioning.md) and export the
+server-generated solutions; never hand-author table XML instead. Segmented native exports need their tables to exist,
+so they are update packages, not first-install packages
+([segmentation limits](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm)).
 
-This document owns Dataverse business metadata and forms/views. The companion documents own the website and recording runtime. Form settings and seeded data do not enforce backend invariants: protective guards permit qualified scalar and disposable-equipment mutations, while structural scope/lifecycle changes require the full projection reconciler before enabling them. These specifications do not grant access to any environment; use an explicitly authorised target.
-
-Keep the existing account demo intact. Its global account grants, including anonymous Read, must not be copied. Business fixtures and acceptance scenarios belong to the new example; no domain-specific code enters `lense/` or `mirage/`.
-
-## Cross-document schema and implementation contract
-
-This model defines the schema; the companion permission harness and plugin design define the portal, plugins and flow. Initialise every declared table/column/relationship/key through the Dataverse API manifest before importing segmented exports. Update import order is Core -> Forms and TestSupport -> PluginEvidence -> BehaviorPlugins, with no reverse dependency from Core. Segmented native exports require their tables to exist and are not standalone first-install packages. A fresh environment uses the toolkit's API bootstrap; full-table packaging requires its own dependency audit. [Microsoft's initial-table segmentation limitation](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm). The complete set has 22 business/reference tables (19 custom plus Account/Contact/Transaction Currency), three custom support tables and three custom evidence tables: **28 tables, 25 custom**. Existing platform metadata/configuration tables are dependencies outside that count.
-
-| Addition                                                                                           | Owner / implementation reference                                                                                                                                                                             |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pqvd_testrun`, `pqvd_testresult`, `pqvd_crudprobe`                                                | `PaqviloPermissionTestSupport`; all columns, keys, six choices, forms/views and Contact-scoped permissions in document 2.                                                                                    |
-| `pqvd_testoperation`, `pqvd_pluginevent`, `pqvd_chainnode`                                         | `PaqviloPluginEvidence`; complete schema, three choices, forms/views and evidence relationships in document 3. ChainNode is user/team-owned to test Assign; business ownership stays as specified below.     |
-| Result-to-operation lookup and probe operation/nonce/scenario/budget columns                       | Extensions owned by `PaqviloBehaviorPlugins`, added after PluginEvidence; exact columns/relationships in document 3.                                                                                         |
-| Observer, pipeline/context plugins, guards, secret-verification flow and configuration definitions | `PaqviloBehaviorPlugins`; registration/stage/image/configuration contract in document 3. Business invariant/projection enforcement remains a required readiness prerequisite for mutable business scenarios. |
-
-Do not reuse business inspection `pqvd_finding` for technical observations. An operation's primary GUID joins caller intent, Liquid/API artifacts and server-owned event parts. One pair ID connects two distinct Liquid/API operation IDs. Actor/role snapshots belong to the run; backend system-user identities are recorded separately and never treated as portal Contacts.
-
-No marker columns are added to business tables. Query capture uses existing root primary-name columns: `account.name`, `contact.fullname`, `transactioncurrency.currencyname`, and custom `pqvd_name`. Fixture validation reserves `CO-UTC:` and `CO-OP:` name prefixes and includes null-name query-adapter fixtures where metadata permits. The null-preserving two-condition guard, logical/physical hashes and unique lane/page/attempt IDs are defined in document 3. These markers correlate requests; they confer no access.
-
-Every deep permission and multi-role collision fixture below must be available to both portal lanes and backend observers. Query-budget stress and plugin-depth stress are separate manifests: the default fifteen FetchXML-link constraint is not the SDK default execution-depth limit. Never weaken scoped business permissions or raise a platform limit to make either suite pass.
+Keep the plain account demo intact and never copy its global account grants (including anonymous Read). Do not reuse
+business `pqvd_finding` for technical observations. No marker columns are added to business tables: query correlation
+uses the existing primary-name columns (`account.name`, `contact.fullname`, `transactioncurrency.currencyname`,
+`pqvd_name`) with the reserved `CO-UTC:` and `CO-OP:` prefixes defined in the plug-in design. Markers correlate
+requests; they confer no access.
 
 ## Official permission model and design consequences
 
-| Platform rule                                                                                                   | Consequence for this specification                                                                                                                                                                              |
-| --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Portal identities are Contacts; web roles provide cumulative access                                             | One person may combine roles. There is no invented deny precedence or ban on conflicting responsibilities. [Power Pages security](https://learn.microsoft.com/en-us/power-pages/security/power-pages-security). |
-| Contact access follows a relationship to the signed-in Contact; Account access uses their associated account    | Multi-organisation membership needs explicit rows/relationships, not one `parentcustomerid`. [Access scopes](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).                         |
-| Child permissions name a relationship and inherit parent roles                                                  | Separate capability trees. A custom Role column is not automatically an authorization filter. [Parent and child permissions](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).         |
-| Polymorphic lookups are unsupported in parent/child permissions                                                 | Every deep-chain lookup is single-target; standard customer lookup is not a chain anchor. [Relationship limitation](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).                  |
-| Web API column permissions do not protect every data surface; enhanced authorization uses a different mechanism | Private HR and finance are separate tables; forms/views are not security boundaries. [Column permissions](https://learn.microsoft.com/en-us/power-pages/security/column-permissions).                           |
-| Multi-level scoped 1:N/N:N permissions have a documented GET query issue; FetchXML is the documented workaround | Preserve the graph and qualify it against the target site/version; never add Global Read as a workaround. [Known issues](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview).             |
+| Platform rule                                                                                                     | Consequence for this model                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Portal identities are Contacts; web roles provide cumulative access                                               | One person may combine roles. No invented deny precedence or ban on conflicting responsibilities. [Power Pages security](https://learn.microsoft.com/en-us/power-pages/security/power-pages-security). |
+| Contact access follows a relationship to the signed-in Contact; Account access uses their associated account      | Multi-organisation membership needs explicit rows and relationships, not one `parentcustomerid`. [Access scopes](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).            |
+| Child permissions name a relationship and inherit parent roles                                                    | Separate capability trees per role. A custom Role column is not an authorization filter. [Parent and child permissions](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).     |
+| Polymorphic lookups are unsupported in parent/child permissions                                                   | Every deep-chain lookup is single-target; the standard customer lookup is never a chain anchor.                                                                                                        |
+| Web API column permissions do not protect every data surface                                                      | Private HR terms and finance are separate tables; forms and views are not security boundaries. [Column permissions](https://learn.microsoft.com/en-us/power-pages/security/column-permissions).        |
+| Multi-level scoped 1:N/N:N permissions have a documented Web API GET issue; FetchXML is the documented workaround | Keep the graph and qualify it per site and version; never add Global Read as a workaround. [Known issues](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview).                   |
 
-Baseline authorization is traditional relationship-based permissions, with no preview Custom Access dependency. There are zero Global roots for business, directory, grant or role-catalogue tables. Power Pages web roles remain distinct from backend Dataverse security roles. [Portal identity and backend connectivity](https://learn.microsoft.com/en-us/power-pages/admin/connectivity).
-
-Microsoft's documentation establishes these semantics, not the execution or performance of this eleven-table graph, and it documents no maximum permission depth. Qualify each target site yourself; the [harness specification](power-pages-permission-test-harness.md) describes the single-route variant and the join-limit boundary.
+Authorization is traditional relationship-based table permissions, with no preview Custom Access dependency, and zero
+Global roots for business, directory, grant or role-catalogue tables. Web roles are distinct from backend Dataverse
+security roles. Microsoft documents no maximum permission depth and nothing about the performance of an eleven-table
+graph, so each target site is qualified by the harness.
 
 ## Organisation membership and employment
 
-Account represents Company, Subsidiary, Region, Branch, Operating unit or Vendor. Organisational Accounts share a root Company; Vendors sit outside the organisation trees. Branches are not Dataverse business units. Company roots have no parent and a null root lookup; their canonical root identity is their own Account GUID. Descendants store that Company GUID in `pqvd_rootaccountid`. Vendors have no canonical organisational root. Dataverse rejects a Company-to-itself root association as a parental hierarchy loop; do not attempt to populate that self-link.
+Account represents Company, Subsidiary, Region, Branch, Operating unit or Vendor. Organisational Accounts share a root
+Company; Vendors sit outside the trees. Branches are not Dataverse business units. Company roots have no parent and a
+null `pqvd_rootaccountid` (Dataverse rejects a Company-to-itself root link as a hierarchy loop); descendants store their
+Company's GUID; Vendors have no organisational root.
 
-Contact is a shared person. `pqvd_orgcontact` represents that person in one organisational Account with their work contact details there. Several memberships and concurrent engagements are supported, including permanent employment in A and external contracting in B, or several engagements within one organisation. There is no one-active-engagement-per-person rule and no global cross-company FTE-total constraint.
-
-Roles are independent from engagement kind. A contractor can also be HR, IT, organisation administrator and CTO. Ending one engagement revokes its sponsored grants, not unrelated appointments or employment in other organisations.
+Contact is a shared person. `pqvd_orgcontact` is that person's membership in one organisational Account, with work
+contact details there. A person may have several memberships and concurrent engagements (for example permanent in A and
+contracting in B); there is no one-active-engagement rule and no cross-company FTE total. Roles are independent of
+engagement kind, and ending one engagement revokes only the grants it sponsors.
 
 ```text
 Company/branch Account
@@ -65,19 +73,24 @@ Account -> Site -> Building -> Room -> Equipment -> Equipment finance
 Account -> Department -> Employment -> Private employment terms
 ```
 
-Do not use `Account -> shared Contact -> all employments` as an operational permission route. Access to a Contact through A could then expose its B engagements. Company-to-contact-to-workforce permissions traverse organisation-specific membership. A shared-Contact display grant, if ever required, is a Read-only leaf with no children.
+Never route operational permissions `Account -> shared Contact -> all employments`: access to a Contact through A would
+expose its B engagements. Workforce permissions traverse the organisation-specific membership; a shared-Contact display
+grant, if ever needed, is a Read-only leaf.
 
 ## Metadata conventions
 
-Create nineteen organisation-owned custom business/reference tables, not activities, virtual or elastic tables. Each has GUID key `<logicalname>id`, `pqvd_name` Text(160), standard created/modified timestamps and Active/Inactive state/status columns. Enable auditing for supported custom business columns. Support and evidence tables follow their companion specifications; ChainNode is user/team-owned. Do not change standard Account/Contact ownership or security roles.
+Nineteen organisation-owned custom business/reference tables (not activity, virtual or elastic), each with GUID key
+`<logicalname>id`, primary name `pqvd_name` Text(160), standard timestamps and Active/Inactive state. Standard
+Account/Contact ownership and security roles are unchanged; ChainNode is user/team-owned to test Assign.
 
-Inventory notation: `!` = Business Required plus mandatory seed/import validation; otherwise nullable. `S` = system-maintained, not ordinary user input. `L(table)` = single-target lookup. `Date` = DateOnly behaviour; `Time` = UserLocal date/time. Decimal workload has precision 2, range 0..1; weekly hours precision 2, range 0..168; money is nonnegative with currency precision. Counts/minutes are nonnegative integers; sequence/attempt start at 1; floor and measured values may be signed. Multiline text is plain text.
-
-All custom column names in the inventory are full logical names. Standard currency fields are platform-created. Reproducible codes/numbers and GUIDs come from the seed registry, not generated autonumbers. Entity sets are explicitly listed and must be preserved in exported metadata. All alternate-key components are required for rows using that key, with no secured key columns, fewer than ten keys per table, at most sixteen columns and 900 bytes per key. Wait for Active indexes before data import. Null key values do not enforce uniqueness. [Key constraints](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/define-alternate-keys-reference-records), [index lifecycle](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/define-alternate-keys-entity).
+Inventory notation: `!` = Business Required plus mandatory seed validation, otherwise nullable. `S` = system-maintained.
+`L(table)` = single-target lookup. `Date` = DateOnly; `Time` = UserLocal date/time. Workload is a decimal 0..1, weekly
+hours 0..168, money nonnegative; counts and minutes are nonnegative; sequence and attempt start at 1; floor and measured
+values may be signed. Codes, numbers and GUIDs come from the seed registry, not autonumbers. Alternate keys have no
+secured columns; wait for Active indexes before importing data; null key values do not enforce uniqueness
+([key constraints](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/define-alternate-keys-reference-records)).
 
 ## Tables columns and keys
-
-The business/reference inventory contains nineteen custom tables plus Account, Contact and Transaction Currency, twenty-two tables total. Custom tables also include the common columns above.
 
 | Table / entity set                                    | Additional columns                                                                                                                                                                                                                                                                                                                                                                                                                                         | Alternate key definitions                                                                                                                                                                                                       |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -106,7 +119,7 @@ The business/reference inventory contains nineteen custom tables plus Account, C
 
 ## Choices and twelve roles
 
-Create these seventeen global choices. Ordered labels in each row map to values 183270000, 183270001, etc.; values may repeat across different choice definitions. Preserve mappings in the registry.
+Ordered labels map to values 183270000, 183270001 and so on within each choice.
 
 | Choice                 | Ordered labels                                                          |
 | ---------------------- | ----------------------------------------------------------------------- |
@@ -128,9 +141,13 @@ Create these seventeen global choices. Ordered labels in each row map to values 
 | `pqvd_checkresult`     | Not run, Pass, Fail, Not applicable                                     |
 | `pqvd_severity`        | Advisory, Minor, Major, Critical                                        |
 
-Choice columns with the same logical name bind to the corresponding global choice. The exceptions are `pqvd_issuecondition` and `pqvd_returncondition`, which both bind to `pqvd_condition`. Standard state/status choices retain their platform definitions; do not replace them with custom work/access states. Set `pqvd_includedescendants` default false, membership/access state default Pending, employment state Draft, assignment state Planned, equipment state Stock, work state New and check result Not run. Leave role principals null by default. Other choices must be supplied explicitly rather than inheriting a meaningful authorization default.
+`pqvd_issuecondition` and `pqvd_returncondition` bind to `pqvd_condition`; every other choice column binds to the
+choice of the same name. Defaults: includedescendants false, membership and access state Pending, employment state
+Draft, assignment state Planned, equipment state Stock, work state New, check result Not run. Other choices have no
+default, so no authorization-relevant value is ever implied.
 
-Seed these role records. Every principal is a nullable Contact lookup on Access permission, with relationship `pqvd_contact_access_<lowercase role code>`.
+Each role principal is a nullable Contact lookup on Access permission with relationship
+`pqvd_contact_access_<lowercase code>`:
 
 | Code             | Name                       | Principal column                 | Typical scope                            |
 | ---------------- | -------------------------- | -------------------------------- | ---------------------------------------- |
@@ -147,15 +164,18 @@ Seed these role records. Every principal is a nullable Contact lookup on Access 
 | `ORGADMIN`       | Organisation administrator | `pqvd_orgadminprincipalid`       | Organisation/subtree                     |
 | `CTO`            | CTO                        | `pqvd_ctoprincipalid`            | Company/subsidiary subtree               |
 
-OrgAdmin administers operational structure/directory, not the environment, website or unrestricted grant provisioning. CTO has technical operational scope, not private payroll.
+OrgAdmin administers operational structure and the directory, not the environment, website or grant provisioning. CTO
+has technical scope, not payroll.
 
 ## Access permission projections
 
-An Access permission row is one grantee/role/scope with optional sponsoring employment. Active/effective rows have exactly one role principal equal to the grantee; all other principals are null. Pending/inactive/suspended/expired/revoked rows have all principals null. Seed materialisation evaluates dates against the fixed clock below; an Active saved-view filter is not authorization.
+An Access permission row is one grantee, role and scope, optionally sponsored by an employment. An Active, effective row
+has exactly one role principal set (to the grantee); every other state has all principals null. A saved-view filter is
+not authorization.
 
-HR root permission: Contact scope via `pqvd_contact_access_hr`, HR web role. IT root: Contact scope via `pqvd_contact_access_it`, IT web role. A contact with both web roles reaches only HR rows in the HR tree and IT rows in the IT tree. A generic Contact root using `pqvd_granteecontactid` would match both roles' rows and cause scope multiplication; do not use it for operational descendants. Any own-grant-metadata root is an isolated Read-only leaf.
-
-Create these six native N:N relationships. Intersect entity name equals relationship schema name. Intersect columns are the participants' primary IDs. There are no payload columns or intersect-table forms.
+Each role's root is Contact-scoped on its own principal relationship (for example `pqvd_contact_access_it`). A generic
+root on `pqvd_granteecontactid` would match every role's rows and multiply scopes, so it is never used for operational
+descendants.
 
 | Relationship                     | Participants                                        | Intersect columns                                     |
 | -------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
@@ -163,24 +183,27 @@ Create these six native N:N relationships. Intersect entity name equals relation
 | `pqvd_access_orgcontacts`        | `pqvd_accesspermission` ↔ `pqvd_orgcontact`         | `pqvd_accesspermissionid`, `pqvd_orgcontactid`        |
 | `pqvd_access_departments`        | `pqvd_accesspermission` ↔ `pqvd_department`         | `pqvd_accesspermissionid`, `pqvd_departmentid`        |
 | `pqvd_access_employments`        | `pqvd_accesspermission` ↔ `pqvd_employment`         | `pqvd_accesspermissionid`, `pqvd_employmentid`        |
-| `pqvd_access_currencyreferences` | `pqvd_accesspermission` -> `pqvd_currencyreference` | `pqvd_accesspermissionid`, `pqvd_currencyreferenceid` | Observable scoped ISO-code references. |
+| `pqvd_access_currencyreferences` | `pqvd_accesspermission` -> `pqvd_currencyreference` | `pqvd_accesspermissionid`, `pqvd_currencyreferenceid` |
 | `pqvd_access_equipments`         | `pqvd_accesspermission` ↔ `pqvd_equipment`          | `pqvd_accesspermissionid`, `pqvd_equipmentid`         |
 
-Native intersections carry associations; Access rows carry dates/roles/reasons. [Dataverse N:N modelling](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-nn-relationships-portal).
+`portal-security/reference-projections.mjs` adds `pqvd_access_currencies` (to `transactioncurrency`) and
+`pqvd_access_referenceaccounts` (to Vendor accounts) for the scoped reference leaves. Intersect entity names equal the
+relationship names, with no payload columns.
 
-Materialisation rules:
-
-- Organisation grants associate the anchor Account plus descendants only when includedescendants=true. Never add ancestors, siblings or another root Company. Links provide no universal children; each role's tree supplies only its allowed privileges.
-- Department grants associate the selected department and its active employments directly. This avoids a membership-to-all-engagements bridge when one person works in several departments. Necessary Account/membership profile access is a separate leaf.
-- Employee/Contractor grants associate the selected engagement and membership. Equipment projection includes only Issued assignments for that engagement; other jobs require other grants.
-- Employee directory membership links cover active memberships below that engagement's root Company. Contractor links cover active memberships represented by engagements in its department. Directory membership leaves have no Employment children. Safe Account profiles are also leaves.
-- Non-Active grants have no intersections. Revocation/expiry clears principals and links; business-row dates/state alone do not revoke access. Seed data materialises correct projections; no automated reconciliation is included.
-
-Consumers also associate each Contact with website web roles matching effective grants. Website roles alone give no organisational scope; the business role catalogue alone does not install website roles. Grant/principal/scope association writes remain provisioner-only.
+- Organisation grants link the anchor Account and, only with includedescendants, its descendants; never ancestors,
+  siblings or another Company.
+- Department grants link the department and its active employments directly, avoiding a membership-to-all-engagements
+  bridge for people in several departments.
+- Employee/Contractor grants link the selected engagement and membership; their equipment projection holds only Issued
+  assignments for that engagement. Directory membership links (Employee: the root Company; Contractor: its department)
+  have no Employment children.
+- Non-Active grants have no intersections. Revocation or expiry clears principals and links; business-row state alone
+  revokes nothing. Seed data materialises the projections; no reconciler is installed, so association writes stay
+  provisioner-only.
 
 ## Single target relationships and cascade settings
 
-The referenced table is on the left; the referencing table holds the lookup. The lookup name is the proposed single-valued navigation name. Preserve actual exported names and ID columns in the relationship inventory. Never infer field/navigation names from labels.
+The referenced table holds the primary key; the referencing table holds the lookup.
 
 | Relationship schema                   | Referenced table      | Referencing table        | Lookup                         |
 | ------------------------------------- | --------------------- | ------------------------ | ------------------------------ |
@@ -223,19 +246,27 @@ The referenced table is on the left; the referencing table holds the lookup. The
 | `pqvd_orgcontact_inspections`         | `pqvd_orgcontact`     | `pqvd_inspection`        | `pqvd_inspectororgcontactid`   |
 | `pqvd_inspection_findings`            | `pqvd_inspection`     | `pqvd_finding`           | `pqvd_inspectionid`            |
 
-Additionally create twelve Contact principal relationships from the role catalogue. Reuse standard `account_parent_account` for organisation parents; make it the intended hierarchical Account relationship where supported. Only one self-referential relationship per table is designated hierarchical. Root-account and employment-manager relationships are not hierarchical. [Hierarchy limitation](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/define-query-hierarchical-data).
+Plus the twelve Contact principal relationships from the role table. Organisation parents reuse the standard
+`account_parent_account`; root-account and employment-manager relationships are not hierarchical.
 
-New 1:N relationships: Assign/Share/Unshare/Reparent = NoCascade; Delete = Restrict. Merge = NoCascade for custom parents, Cascade for Account/Contact parents: Dataverse enforces that merge behaviour, and the manifest declares it explicitly. Optional links also use Restrict for history retention. Currency relationships are platform-generated. Native N:N cleanup deletes links, not participants. Preserve standard Account parent cascade settings and inventory them; changes to those settings require separate review. Cascade behaviour does not grant portal scope. Cross-root Account/Contact merge needs separate invariant enforcement before any merge workflow. [Relationship behaviour](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-entity-relationships).
+New 1:N relationships use NoCascade for Assign, Share, Unshare and Reparent, and Restrict for Delete, including optional
+links, so history is retained. Merge is NoCascade for custom parents and Cascade for Account/Contact parents, because
+Dataverse enforces that. Standard Account parent cascades are unchanged. Cascade behaviour grants no portal scope.
 
 ## Observable currency reference contract
 
-`pqvd_currencyreference` is organization-owned immutable reference data, with platform primary ID `pqvd_currencyreferenceid` and required primary name `pqvd_name`. Seed one USD and one EUR reference, each mapped to its reused system Currency identity. Do not mirror or modify environment exchange rates. A trusted fixture writer owns maintenance; portal Create/Update/Delete and projection association mutations are rejected, including primary-name edits. Enforce unique required ISO-code and system-currency keys after their indexes become Active. Preflight native metadata support for the custom lookup to `transactioncurrency` before provisioning.
-
-Retain all standard `transactioncurrencyid` Money lookups in Employment Terms and Equipment Finance. The six existing reference roles (CompanyManager, BranchManager, HR, Procurement, Auditor, CTO) receive independent Read-only CurrencyReference leaves under their own Access roots via `pqvd_access_currencyreferences`. Preserve separate scoped system-Currency Read leaves via `pqvd_access_currencies`; only the existing qualified HR/Procurement reference-binding paths receive Append To. The custom reference is never substituted for a Money lookup or granted Global visibility. Native system-Currency observation gaps remain explicit; an eligible custom-root observer does not qualify the system table.
+`pqvd_currencyreference` is immutable reference data mapped one-to-one (by alternate keys, not a native 1:1) to the
+reused system currencies; it never mirrors or changes exchange rates. It gives the plug-in observer and the harness a
+custom currency table to observe (R21), since direct observation of system Currency is not assumed; system-Currency
+gaps stay explicit. Money fields keep the standard
+`transactioncurrencyid` lookup. Six roles (Company manager, Branch manager, HR, Procurement, Auditor, CTO) get
+Read-only reference leaves through `pqvd_access_currencyreferences` and separate system-currency Read leaves through
+`pqvd_access_currencies`; only HR and Procurement get Append To for money bindings. Portal Create, Update and Delete and
+projection writes are rejected. No reference table has Global visibility.
 
 ## Counted permission paths
 
-The signed-in Contact is an anchor, not an extra counted permission level. Mandatory IT workforce path:
+The signed-in Contact is the anchor, not a counted level. Mandatory IT workforce path:
 
 | Level | Table                   | Scope and relationship                   | Parent      |
 | ----- | ----------------------- | ---------------------------------------- | ----------- |
@@ -251,17 +282,24 @@ The signed-in Contact is an anchor, not an extra counted permission level. Manda
 | 10    | `pqvd_inspection`       | Parent, `pqvd_checklistitem_inspections` | IT level 9  |
 | 11    | `pqvd_finding`          | Parent, `pqvd_inspection_findings`       | IT level 10 |
 
-Eleven nodes and ten Parent edges exceed eight under either counting convention. Retain this path and populated fixtures even when IT has a shorter equipment route. Inspections record repeated verification; findings record real defects, not meaningless depth padding.
+Eleven nodes and ten Parent edges exceed eight under either counting convention. The path is kept even though IT also
+has a shorter equipment route; inspections and findings are real records, not depth padding.
 
-Employee/Contractor path: Access -> Employment via `pqvd_access_employments` -> Assignment -> Request -> Order -> Task -> Checklist -> Inspection -> Finding. Nine nodes/eight Parent edges. Directory/profile grants are separate leaves without workforce children.
+Employee/Contractor path: Access -> Employment (`pqvd_access_employments`) -> Assignment -> Request -> Order -> Task ->
+Checklist -> Inspection -> Finding, nine nodes. Directory and profile grants are separate leaves without workforce
+children.
 
-Clone permission trees per role, not per person/org. Stable node IDs are `<ROLE>-<PATH>-<TABLESTEM>`, e.g. `IT-WORKFORCE-ACCESSPERMISSION` to `IT-WORKFORCE-FINDING`. Every child has one explicit parent and the root's web role. Shared table rows may be reached by several independent trees; do not reuse an aggregated Account Read grant as another role's parent.
-
-Secondary routes, only for roles permitted below: Account -> Equipment -> Requests -> service descendants; Account -> Site -> Building -> Room; Account -> Department -> Employment; Employment -> Terms; Equipment -> Finance; and Access -> projected Equipment. Equipment-assignment history can be read through Equipment or Employment according to the role. Account/membership profiles and any canonical Contact display are leaf grants.
+Trees are cloned per role, never per person or organisation, with node keys `<ROLE>-<PATH>-<TABLE>` (for example
+`IT-WORKFORCE-ACCESSPERMISSION` to `IT-WORKFORCE-FINDING`). Every child has one parent and its root's web role. Several
+trees may reach the same rows; one role's aggregated Account Read is never another role's parent. Secondary routes
+(only for roles granted them): Account -> Equipment -> Requests -> service descendants; Account -> Site -> Building ->
+Room; Account -> Department -> Employment; Employment -> Terms; Equipment -> Finance; Access -> projected Equipment.
 
 ## Role privileges and collisions
 
-R=Read, C=Create, U=Write/Update. No general Delete. Access roots are Read-only. Association rights are explicit, not blanket. Row privileges are additive; absence of U in one role is not a deny against another. This matrix supplies no field-level approval rules.
+R = Read, C = Create, U = Write. No business role has Delete; Access roots are Read-only; association rights are
+explicit. Privileges are additive: a missing U in one role never denies another. `portal-security/blueprint.json` holds
+the exact per-node flags.
 
 | Role           | Organisation / departments           | Directory memberships       | Employment                   | Private terms | Equipment / assignment    | Finance | Locations | Service chain                                     |
 | -------------- | ------------------------------------ | --------------------------- | ---------------------------- | ------------- | ------------------------- | ------- | --------- | ------------------------------------------------- |
@@ -278,131 +316,73 @@ R=Read, C=Create, U=Write/Update. No general Delete. Access roots are Read-only.
 | ORGADMIN       | RCU                                  | RCU                         | R operational                | —             | R / R                     | —       | RCU       | R                                                 |
 | CTO            | R                                    | R                           | R operational                | —             | RCU / RCU                 | R       | R         | RCU                                               |
 
-Every cell is bounded by its own role grant. Branch manager + Employee is valid: company directory Read broadens intentionally while branch equipment Write stays narrow. HR + IT in the same org gives both permissions; HR in A + IT in B gives terms access only A and equipment Write only B. OrgAdmin/CTO do not implicitly give HR access. Own-contract editing can be permitted by HR; separation-of-duties approval is business logic outside this model, not a fabricated table-permission denial.
+Every cell is bounded by its own grant's scope. Branch manager plus Employee broadens directory Read while keeping branch
+equipment Write narrow. HR in A plus IT in B gives terms only in A and equipment Write only in B. OrgAdmin and CTO give
+no HR access. Separation-of-duties approval is business logic outside this model, not a fabricated permission denial.
 
-For ordinary lookup binding require allowed C/U plus referencing-record Append and target-record Append To, with Read for target selection. Rights may legitimately come from different roles if scopes cover both records. Native N:N association has its own privilege checks; scope projections are provisioner-only. New records need validated parent/scope assignment and subsequent projection maintenance; C alone does not automatically give future Read. [Dataverse access rights](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/security-access-rights).
+Lookup binding needs C or U on the source, Append on the referencing record and Append To plus Read on the target; the
+rights may come from different roles when both scopes cover the records. Creating a record does not by itself give
+future Read: the new row needs a valid parent and projection maintenance.
+([Dataverse access rights](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/security-access-rights)).
 
-## Dataverse forms
+## Forms and views
 
-Create new named main forms using normal platform controls, no scripts/PCF/iframes/custom actions. Do not replace standard forms. Every custom table has one Administration form; terms/finance names below are their Administration forms. Portable forms are minimal reusable Dataverse forms, not Power Pages Basic Forms. Locked controls are presentation, not security. [Form metadata](https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-overview).
+`forms/catalogue.mjs` generates the named forms, public views and Lookup/Quick Find adjustments; `npm run forms:apply`
+installs them. The rules it follows:
 
-| Table                   | Required form names and sections / related subgrids                                                                                                                                                                                            |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account`               | `CO Organisation Administration`: identity/kind/parent/root; contacts/departments/equipment/sites. `CO Organisation Profile`: name/number/kind only, no parent/root display.                                                                   |
-| `contact`               | `CO Person Administration`: person code and business identity; memberships. No portable shared-Contact form.                                                                                                                                   |
-| `pqvd_accessrole`       | `CO Access Role Administration`: code/name/description/principal mapping.                                                                                                                                                                      |
-| `pqvd_accesspermission` | `CO Access Permission Administration`: grantee/role/scope/sponsor/dates/state; read-only principals/scope key; five association subgrids.                                                                                                      |
-| `pqvd_orgcontact`       | `CO Organisation Contact Administration`: identity/state/work profile; engagements. `CO Organisation Contact Profile`: display name/work email/phone/state only.                                                                               |
-| `pqvd_department`       | `CO Department Administration`: Account/code/manager/description; engagements. `CO Department Profile`: name/code/description.                                                                                                                 |
-| `pqvd_employment`       | `CO Employment Administration`: membership/department/manager/kind/workload/dates/state; assignments. `CO Employment Summary`: number/kind/title/workload/dates/state; no terms subgrid.                                                       |
-| `pqvd_employmentterms`  | `CO Private Employment Terms`: employment/contract/currency/salary/rate/hours/notice, backend restricted.                                                                                                                                      |
-| `pqvd_site`             | `CO Site Administration`: Account/code/address/kind; buildings. `CO Site Summary`: code/address/kind.                                                                                                                                          |
-| `pqvd_building`         | `CO Building Administration`: site/code/floors; rooms.                                                                                                                                                                                         |
-| `pqvd_room`             | `CO Room Administration`: building/code/floor/capacity/kind; equipment.                                                                                                                                                                        |
-| `pqvd_equipment`        | `CO Equipment Administration`: organisation/location/tag/serial/type/model/state/condition/warranty; assignments/requests. `CO Equipment Summary`: tag/name/type/model/state/condition/warranty; no costs/ancestry/current-assignment display. |
-| `pqvd_equipmentfinance` | `CO Equipment Finance`: equipment/currency/values/supplier/invoice/cost centre, backend restricted.                                                                                                                                            |
-| `pqvd_assignment`       | `CO Assignment Administration`: equipment/employment/issue/return/actor/conditions/state; requests. `CO Assignment Summary`: number/dates/conditions/state.                                                                                    |
-| `pqvd_servicerequest`   | `CO Service Request Administration`: equipment/assignment/requester/description/category/priority/time/state; orders. `CO Service Request Summary`: number/name/description/category/priority/time/state.                                      |
-| `pqvd_workorder`        | `CO Work Order Administration`: request/responsible/due/state; tasks.                                                                                                                                                                          |
-| `pqvd_worktask`         | `CO Work Task Administration`: order/sequence/assignee/estimate/actual/state; checklist.                                                                                                                                                       |
-| `pqvd_checklistitem`    | `CO Checklist Item Administration`: task/sequence/instruction/result; inspections.                                                                                                                                                             |
-| `pqvd_inspection`       | `CO Inspection Administration`: checklist/attempt/inspector/time/result/value/unit; findings.                                                                                                                                                  |
-| `pqvd_finding`          | `CO Finding Administration`: inspection/sequence/severity/description/state.                                                                                                                                                                   |
-
-No system Currency form. Create `CO Currency Reference Administration` with name/ISO code/symbol/precision/system Currency; expose it to the trusted backend maintenance role only. Administration subgrids use the named backend public views below and relationship context; portable forms omit all security/private fields and relationship subgrids not explicitly listed. Backend form access is governed by backend roles, not by the custom business role catalogue.
-
-Create `CO Currency References` and `CO Currency Reference Lookup Candidates`: primary name, ISO code, symbol, precision and system Currency; Active records, ISO code then GUID order. The portable view omits the system lookup when only display metadata is needed. Main, Quick Create, Lookup and Quick Find metadata must agree; keep all reference fields immutable to portal callers.
-
-## Dataverse views
-
-Create public SavedQuery views, not personal views. Each has explicit FetchXML attributes, matching LayoutXML, primary GUID row ID, stable component GUID and deterministic sort. QueryType: Public 0, Lookup 64, Quick Find 4. Custom tables have one generated system Lookup/Quick Find view to adjust, not multiple system Lookup views. Standard Account/Contact system views remain intact; named public lookup candidates below are consumer-selectable. [Saved views and view types](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-views).
-
-Each custom table additionally has `CO <display name> All`, displaying primary name, business code/number or sequence, state and required parent lookup for backend use; use the restricted All views specified for terms/finance instead of duplicating them. Sort by code/number/sequence then GUID. One default public view per custom table: Active/Open where listed, restricted All for terms/finance, Checklist Items/Inspection Results/Open Findings for those tables.
-
-| Table                   | Required named public views                                                                              | Columns besides primary GUID; filter and sort                                                                                                                |
-| ----------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `account`               | `CO Active Organisations`, `CO Organisation Profiles`, `CO Organisation Lookup Candidates`, `CO Vendors` | name/number/kind; Active non-Vendor for first three, Vendor for last; number/GUID. Profiles omit parent/root.                                                |
-| `contact`               | `CO Person Lookup Candidates`, `CO People Administration`                                                | person code/full name; Active candidates, all administration; code/GUID. No private or joined membership fields.                                             |
-| `pqvd_accessrole`       | `CO Active Access Roles`                                                                                 | code/name; Active; code/GUID. Backend only.                                                                                                                  |
-| `pqvd_accesspermission` | `CO Active Access Permissions`, `CO Suspended Access Permissions`, `CO Access Permission Diagnostics`    | number/role/scope/kind/state/dates; Active, Suspended/Expired/Revoked, all respectively; number/GUID. Diagnostics include principals only in backend layout. |
-| `pqvd_orgcontact`       | `CO Active Organisation Contacts`, `CO Directory Contacts`                                               | code/display name/work email/phone/state; Active membership; display name/code/GUID. Directory excludes canonical Contact lookup and Employment data.        |
-| `pqvd_department`       | `CO Active Departments`, `CO Department Summaries`                                                       | code/name/description; Active; code/GUID. Summaries omit manager.                                                                                            |
-| `pqvd_employment`       | `CO Active Engagements`, `CO Ended Engagements`, `CO Engagement Summaries`                               | number/title/kind/FTE/dates/state; Active, Ended, all respectively; number/GUID. No terms or joined Contact fields.                                          |
-| `pqvd_employmentterms`  | `CO Private Employment Terms All`                                                                        | name/employment/contract/salary/rate/currency; all; name/GUID, backend restricted.                                                                           |
-| `pqvd_site`             | `CO Active Sites`, `CO Site Summaries`                                                                   | code/name/kind/address; Active; code/GUID.                                                                                                                   |
-| `pqvd_building`         | `CO Active Buildings`                                                                                    | code/name/floors; Active; code/GUID.                                                                                                                         |
-| `pqvd_room`             | `CO Active Rooms`                                                                                        | code/name/floor/capacity/kind; Active; code/GUID.                                                                                                            |
-| `pqvd_equipment`        | `CO Available Equipment`, `CO Assigned Equipment`, `CO Retired Equipment`, `CO Equipment Summaries`      | tag/name/type/manufacturer/model/condition/state/warranty; Stock, Assigned, Retired, all respectively; tag/GUID. No finance or custody join.                 |
-| `pqvd_equipmentfinance` | `CO Equipment Finance All`                                                                               | name/equipment/cost/replacement/currency/invoice/cost centre; all; name/GUID, backend restricted.                                                            |
-| `pqvd_assignment`       | `CO Open Assignments`, `CO Assignment History`, `CO Assignment Summaries`                                | number/issue/return/conditions/state; Issued, all, all respectively; issue descending, number/GUID. No canonical Contact join.                               |
-| `pqvd_servicerequest`   | `CO Open Service Requests`, `CO Service Request Summaries`                                               | number/name/category/priority/time/state; exclude Completed/Cancelled for Open, all summaries; priority descending, number/GUID.                             |
-| `pqvd_workorder`        | `CO Open Work Orders`                                                                                    | number/name/due/state; exclude Completed/Cancelled; due/number/GUID.                                                                                         |
-| `pqvd_worktask`         | `CO Open Work Tasks`                                                                                     | sequence/name/estimate/actual/state; exclude Completed/Cancelled; sequence/GUID.                                                                             |
-| `pqvd_checklistitem`    | `CO Checklist Items`                                                                                     | sequence/name/instruction/result; all; sequence/GUID.                                                                                                        |
-| `pqvd_inspection`       | `CO Inspection Results`                                                                                  | attempt/time/result/value/unit; all; attempt/GUID.                                                                                                           |
-| `pqvd_finding`          | `CO Open Findings`, `CO Finding History`                                                                 | sequence/severity/description/state; exclude Completed/Cancelled or all; sequence/GUID.                                                                      |
-
-No currency view. Lookup adjustments for each custom table show name and business code/number or sequence, apply Active state where appropriate and use default-view safe sorting. Quick Find searches name/code/number, or name only for sequence tables; never salary, principal columns or secrets. Portable summary/directory views select primary-table fields only, with no all-columns selection or unrestricted Contact/Account joins.
-
-Operational Active/Available/Assigned/Open views require standard Active state as well as the listed business-state filter. History/All/Diagnostics views deliberately include inactive rows. For Lookup and Quick Find on private terms/finance, expose name and contract reference or invoice reference only; do not add monetary values or searches. When a public default view lacks a code/number (terms/finance) or uses attempt (inspection), use name or attempt respectively before the GUID. Suggested grid widths are 220 for primary name, 140 for code/number/date and 120 for choices/numbers, with descriptions 300; FetchXML and LayoutXML must agree on every displayed field.
-
-Consuming queries/subgrid relationships apply company/department/engagement context. Views are not authorization filters. Do not use Dataverse `eq-userid` on Contact lookups to implement portal self-access: those identities differ. Lookup names may be displayed without related-row access, so portable profiles omit hidden ancestry. [Lookup display behaviour](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-1n-relationships-portal). This model creates no Web API site settings or column-exposure views; the permission harness owns Web API settings.
+- New named main forms with platform controls only (no scripts, PCF, iframes or custom actions); standard Account and
+  Contact forms and system views stay intact. Each custom table has an Administration form; portable profile/summary
+  forms and views select primary-table fields only, omitting private, security and hidden-ancestor fields.
+- Public views have explicit FetchXML attributes matching LayoutXML, deterministic sort ending with the GUID, and
+  operational filters that also require Active state. Private terms and finance views and searches expose names and
+  references only, never amounts; Quick Find never searches salary, principals or secrets.
+- Views are not authorization. Never use `eq-userid` on Contact lookups for portal self-access: portal Contacts and
+  Dataverse users are different identities. Lookup names display without related-row access, so portable profiles omit
+  ancestry. Web API site settings belong to the harness, not this model.
 
 ## Integrity rules for seed checks and backend enforcement
 
-1. Organisation trees/reporting chains are acyclic. Organisational parents have the same root; Vendors cannot become ancestors. Root/projection columns are maintained by privileged processes.
-2. Employment department belongs to the membership's Account; manager engagement belongs to the same root. Concurrent employment within/across orgs is valid. One membership per Account/Contact does not limit employment count.
-3. Fixed-term employees require an end date; external contracts require a Vendor supplier and end date. End is not before start. Terms use salary for employees, day rate for contractors, with currency/contract reference. Minimum required fields are seed/backend validations, not merely Business Required flags. [Required-column enforcement boundary](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/troubleshoot-forms).
-4. Organisation scope has no department selector. Department scope requires matching department. Engagement scope requires matching employment belonging to the grantee. For Organisation/Department scope an optional employment can sponsor the grant; it does not redefine its scope. includedescendants is false for Department/Engagement. Scope keys/selectors must agree.
-5. Active principals are exclusive and match role/grantee/clock/state. All non-effective grants clear principals and intersections. Scope edits revoke old projections first. A grant can remain independent of an ended engagement when it has no employment sponsor.
-6. Asset room lies inside its owning Account/subtree. Issued assignment belongs to active employment inside that owning Account/subtree. Cross-company custody/transfer is not a silent fixture shortcut. Current-assignment projection equals the sole Issued assignment; nullable-date keys cannot implement that invariant. Mutable execution requires transaction/concurrency control.
-7. Request assignment, when present, references its equipment. Requester/issuer/responsible/assignee/inspector memberships belong to the service chain's root. Every task/check/inspection/finding has its specified parent; no writable redundant Account/Contact scope shortcuts.
-8. Employee service history linked to their engagement remains readable after return; current-equipment projection is removed. No private HR notes or costs are stored on that shared history chain. Currency/base-value/owner/created-by metadata remain platform semantics; business custody is not ownerid.
+1. Organisation trees and reporting chains are acyclic; organisational parents share the root; Vendors are never
+   ancestors.
+2. An employment's department belongs to its membership's Account; a manager engagement is in the same root. One
+   membership per Account and Contact does not limit employment count.
+3. Fixed-term employees need an end date; external contracts need a Vendor supplier and an end date; end is not before
+   start. Terms use salary for employees and a day rate for contractors.
+4. Organisation scope has no department selector; Department scope needs a matching department; Engagement scope needs
+   an employment of the grantee; includedescendants is false for Department and Engagement scope.
+5. Active principals are exclusive and match role, grantee, clock and state; scope edits revoke old projections first.
+6. An asset's room lies inside its owning Account subtree; an Issued assignment belongs to an active employment there;
+   the current-assignment projection equals the sole Issued assignment (nullable-date keys cannot enforce this).
+7. A request's assignment references its equipment; requester, issuer, responsible, assignee and inspector memberships
+   belong to the service chain's root.
+8. Employee service history stays readable after return while the current-equipment projection is removed; business
+   custody is never `ownerid`.
 
-## Fixtures and independent collision expectations
+## Fixtures
 
-Seed three Companies: Arcwell Group, Northstar Group, Kestrel Studio. Arcwell has Services and Manufacturing subsidiaries; Services has Riverton/Hillview branches, Manufacturing Eastbank. Northstar has Services/Lakeside. Each branch has one operating unit. Kestrel is a small company with no subsidiaries. Add two Vendors: sixteen Accounts total, comprising three Companies, three subsidiaries, four branches, four units and two Vendors.
+Three invented Companies (Arcwell Group with Services and Manufacturing subsidiaries, Northstar Group, Kestrel Studio),
+branches with one operating unit each, two Vendors, departments, Contacts with concurrent engagements, equipment with
+Issued and Returned history, and five complete deep chains under different roots. The fixed clock is
+`2026-10-12T09:00:00Z`; GUIDs are deterministic. Existing currency identities and rates are reused. Counts are in the
+[project guide](../../examples/company-operations/README.md).
 
-Seed two departments per branch plus one at Kestrel, twenty-four Contacts with at least thirty active engagements plus ended examples, forty-eight assets including stock/retired records, Issued/Returned history and two complete eleven-node chains under different roots. At least twelve directory members in one scope exercise paging. Use versioned seed/stable GUIDs/fixed clock `2026-10-12T09:00:00Z`, no Date.now-dependent expectations.
+Each catalogue `scenarios` entry is an independently authored oracle: a persona, target IDs, the privilege and whether
+it is allowed, with the reason. Sixteen cover role combinations (`multi-org-worker`, `hr-a-it-b`, `hr-it-same-org`,
+`small-company-many-hats`, `read-wide-write-narrow`, `two-branch-manager`, `subsidiary-manager`,
+`branch-manager-employee`, `team-and-it`, `shared-contact-bridge`, `multi-grant-one-target`, `role-without-scope`,
+`expired-one-org`, `deep-allow-deny`, `append-union`, `revoked-parent-tree`) and twelve cover single roles; the stress
+catalogue adds one. Role conflicts are cases to explain, never reasons to drop an assignment.
 
-The prepared catalogue keeps that main inventory and adds thirty-six disposable A/B canary records for CRUD tests. The base contains 822 records/references, 338 N:N links, 24 personas, 28 permission scenarios and 44 backend query checks. The merged stress catalogue contains 844 records/references, 479 links, 25 personas and 29 scenarios and is the environment comparison baseline. Five complete deep paths exceed the two-path minimum. Existing currency identities/rates are reused rather than changing shared environment rates; resolved IDs and observations remain ignored local evidence. Seed run/operation rows are explicitly incomplete placeholders and never represent observed portal/plugin execution. The backend query runner validates data under the application identity; the permission scenarios still require website-bound permissions and the signed-in Contact.
+Load order: currencies and role catalogue; Account and Contact identities; Account parent and root links; memberships and
+departments; engagements and terms; locations and equipment; assignment history; the service chain; then
+current-assignment, manager and principal/scope projections. A two-pass loader handles the deferred reporting and
+equipment/current-assignment cycles; imports match declared business keys, never display names.
 
-Seed/import order is currency and role catalogue; Account/Contact identities; Account parent/root links; organisation memberships/departments; engagements/terms; locations/equipment; assignment history; request/order/task/check/inspection/finding records; then current-assignment, manager and access-principal/scope projections. Use a two-pass loader for deferred reporting and equipment/current-assignment cycles; Company roots keep a null root lookup. A projection is never populated before its validated target exists. Deterministic GUID allocation belongs to the registry; imports match declared business keys rather than display names.
+## Source5 cohort
 
-Manifest aliases include A-RIV, A-HILL, A-EAST, B-LAKE, C-STUDIO, assets EQ-A-RIV/EQ-A-HILL/EQ-B-LAKE and terms TERM-A/TERM-B. Expected outcomes below are independent oracles, not evaluator-generated output.
-
-| Scenario ID               | Same person's engagements/grants                                     | Allowed outcome                                                                                  | Denial or collision explanation                                                                                                               |
-| ------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `multi-org-worker`        | Permanent A-RIV + contractor B-LAKE, corresponding engagement grants | Own two engagements/history, A company directory and B department directory                      | Other B departments, HR terms/finance denied. Home account A does not remove B access.                                                        |
-| `hr-a-it-b`               | HR A-RIV, IT B-LAKE                                                  | U TERM-A, U EQ-B-LAKE, R assignments in both                                                     | U EQ-A-RIV and R/U TERM-B denied; globally held web roles cannot multiply scopes.                                                             |
-| `hr-it-same-org`          | HR + IT A-RIV                                                        | U terms and assets there                                                                         | HR's R-only asset grant does not deny IT U; no A-HILL/B access.                                                                               |
-| `small-company-many-hats` | Contractor engagement C-STUDIO plus HR/IT/ORGADMIN/CTO there         | Union of all these roles in C                                                                    | No cross-company rights or implicit System Administrator. HR may permit own terms U; approval restriction is not inferred.                    |
-| `read-wide-write-narrow`  | Auditor Arcwell subtree, IT only A-RIV                               | R assets A-RIV/A-HILL/A-EAST, U A-RIV                                                            | U A-HILL/A-EAST denied; broad Account Read is not IT's parent.                                                                                |
-| `two-branch-manager`      | Branch manager A-RIV + A-HILL                                        | R/U operational records in both and their units                                                  | No A-EAST, root Company profile or B without another grant.                                                                                   |
-| `subsidiary-manager`      | Company manager at Arcwell Services                                  | Services/A-RIV/A-HILL/units                                                                      | Manufacturing/A-EAST/Northstar denied; no implicit ancestor access.                                                                           |
-| `branch-manager-employee` | Branch manager + Employee A-RIV                                      | Branch writes, company-directory Read                                                            | Directory broadening is intentional; operational Write stays narrow. Combination valid.                                                       |
-| `team-and-it`             | Team leader one A-RIV department, IT A-HILL                          | Team workforce/service A-RIV and IT A-HILL                                                       | No other A-RIV department via the same person's additional engagement.                                                                        |
-| `shared-contact-bridge`   | Person in A-RIV and B-LAKE; viewer HR A-RIV only                     | A membership/employment/terms                                                                    | A profile/shared person cannot grant B engagements/grants/terms.                                                                              |
-| `multi-grant-one-target`  | Auditor/CTO/IT paths overlap on EQ-A-RIV                             | One row, several grant provenance entries                                                        | No duplicate rows/inflated counts or Write acquired by merging unrelated roots.                                                               |
-| `role-without-scope`      | Mapped web role, no corresponding effective access row               | No operational access through that role                                                          | No default Authenticated/Anonymous business grants.                                                                                           |
-| `expired-one-org`         | Ended A-sponsored grants, Active B engagement/grants                 | B remains; A history retained backend                                                            | A projections cleared; Contact/B roles not globally revoked.                                                                                  |
-| `deep-allow-deny`         | IT A-RIV; deepest chains A-RIV/B-LAKE                                | Intended A Finding entitlement via all eleven nodes; qualify the single-route variant separately | B Finding must not disclose. The baseline dual-route graph may fail the platform join limit before either allowed/denied result is evaluated. |
-| `append-union`            | One role supplies C/U/Append, another scoped Append To               | Valid binding when all record/privilege checks pass                                              | Read alone insufficient, cross-company target denied, grant links provisioner-only.                                                           |
-| `revoked-parent-tree`     | Inactive parent permission in a consumer fixture                     | Independent active trees still contribute                                                        | Its own descendants ineffective even if child permission records Active. Business row state is not permission-record state.                   |
-
-At least one persona for each single role plus these combination scenarios. The same Contact can appear in reset scenario variants. Role conflicts are cases to explain, not reasons to discard assignments.
-
-## Validation contract
-
-Validate metadata independently from portal behavior. Components must belong to their intended solutions; updates preserve sibling fields and record identities. Check:
-
-1. Nineteen custom business/reference tables, specified standard extensions, seventeen core choices, twelve role records, all keys, listed 1:N edges plus twelve principals, and the declared N:N projections. Include support/evidence metadata from the companion specifications; the committed Source4 manifest contains 28 tables, 26 choices and 73 relationships. The separate Source5 plan adds the relationship described below. Registry includes logical/schema names, GUIDs, entity sets, navigation/intersect columns, solution ownership and language.
-2. All forms/public views above, custom Lookup/Quick Find adjustments and stable IDs. Standard Account/Contact default forms/views remain intact. Portable forms/views exclude private/security/hidden-ancestor fields.
-3. Invented fixtures with collision expectations and complete deep paths, correctly projected principals/scopes. Structural validation checks keys/choices/lookups/root consistency/revocation/role exclusivity; do not label it a live permission test.
-4. Machine-readable permission blueprint: node ID, table, scope, relationship, parent ID, role code and individual Read/Create/Write/Delete/Append/AppendTo flags. Role codes map to the consuming site's actual web-role IDs. Contact/Parent relationship metadata and parent node references must resolve before emitting a permission record; merely putting a role code into a description is insufficient. The blueprint contains directory/profile leaves, separate role trees and the eleven-node workforce path, with no website ID or automatically installed site components.
-5. Offline graph/metadata checks: all referenced fields exist; no required fixture lookup dangles; key components are non-null/unique; choice values valid; organisation and permission graphs acyclic; relationship ancestry stays role-specific; mandatory path counts eleven nodes/ten Parent edges; form/view fields and subgrids resolve. Cycles in the business relationship graph, such as equipment/current-assignment, are intentional and are not permission-tree cycles.
-6. Solution pack/schema check and dependency report where local tooling supports them. Environment import validation is separately authorised; archive creation is not an import pass. Run project checks in its own package. A change to reusable toolkit code needs regression tests and the toolkit's `npm run validate`.
-
-Model expectations are not observed site behaviour. Qualify role-root relationship selection, collisions, N:N traversal, deep queries, associations and revocation against each intended site/version.
-
-Source5 is a separate qualification cohort: the support solution adds nullable `pqvd_crudprobe.pqvd_equipmentid` through `pqvd_equipment_crudprobes`, with RemoveLink Delete and no other cascading behavior. It introduces no table or permission grant and preserves all 253 permission node IDs. Money/currency reference design stays unchanged. See the [harness specification](power-pages-permission-test-harness.md) for the second Room and cooperating probe fixtures and the [plugin specification](dataverse-plugin-observation.md) for their exact intent/actor/Before-image guard contracts. Each schema revision needs its own provisioned metadata and independent recordings.
+Source5 is an optional, separately qualified schema revision: the support solution adds a nullable
+`pqvd_crudprobe.pqvd_equipmentid` through `pqvd_equipment_crudprobes` (Delete RemoveLink, everything else NoCascade),
+and `pqvd_testoperation.pqvd_variant` grows from 40 to 128 characters because `TARGET:<GUID>` alone needs 43. It adds
+no table or permission and keeps all 253 permission node IDs. The default `prepare-schema.mjs` run reproduces Source4;
+Source5 needs `--cohort source5 --out <separate file>` and its own provisioning and recordings. The harness and plug-in
+designs define its fixtures and guards.

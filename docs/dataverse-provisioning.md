@@ -1,8 +1,15 @@
 # Dataverse schema provisioning
 
-`paqvilo dataverse` creates schema in Dataverse through its Web API and exports the server-generated solution. Its implementation and public API are reusable; a project's manifest owns table names, publisher, relationships, component ownership and XML templates. This is an explicit provisioning workflow, independent of Lense overlays and Mirage simulation.
+`paqvilo dataverse` creates schema through the Dataverse Web API, exports the server-generated solution
+and seeds reproducible data. It is an explicit workflow, separate from Lense overlays and Mirage
+simulation. The toolkit is generic; the project's manifest owns table names, publisher, relationships,
+component ownership and XML templates. Run `paqvilo dataverse --help` for every command.
 
-Node 26.13.1+ (26.x LTS), PAC and an authenticated administrator are required for initial app registration. Metadata operations then use the application's own client credentials, without switching the active PAC profile. Only the public Microsoft cloud is supported. Windows connections use DPAPI CurrentUser; other hosts can supply an environment-secret reference. Access tokens stay in memory. Do not commit connections, registration recovery files, real exports or provisioning journals.
+Requirements: Node `^26.13.1`, and PAC with an authenticated administrator for the initial app
+registration. Later metadata operations use the application's own client credentials without switching
+the active PAC profile. Only the public Microsoft cloud is supported. Windows connections use DPAPI
+CurrentUser; other hosts use an environment-secret reference. Tokens stay in memory. Never commit
+connections, registration recovery files, real exports or journals.
 
 ## Application and connection
 
@@ -12,30 +19,55 @@ paqvilo dataverse inspect --connection .paqvilo/dataverse/connection.json
 paqvilo dataverse verify --connection .paqvilo/dataverse/connection.json
 ```
 
-Registration uses `pac admin create-service-principal` and the explicitly selected active environment. PAC creates the Entra application/service principal and attempts Power Platform/Dataverse registration. Its default role is System Administrator; this wrapper defaults explicitly to System Customizer. Required tenant permissions are separate from Dataverse security roles. The command can fail after creating the Entra app, including errors reported with process exit code zero. [PAC registration contract](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/admin#pac-admin-create-service-principal).
+`register` runs `pac admin create-service-principal` against the active PAC environment (or
+`--environment`). PAC creates the Entra application and service principal and attempts the Power
+Platform/Dataverse registration; this wrapper's default role is System Customizer instead of PAC's System
+Administrator. Tenant permissions are separate from Dataverse roles. PAC can fail after creating the
+Entra app, including with exit code zero
+([PAC contract](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/admin#pac-admin-create-service-principal)).
 
-The wrapper captures output privately, encrypts recovery evidence before parsing it, and never prints credentials. An existing connection or registration marker prevents a duplicate creation attempt. Before any PAC call, `register` also reads every `*.json` file directly in the folder of `--connection` and refuses with `REGISTRATION_EXISTS` when one records the same environment origin (compared case-insensitively) or the same application name. The refusal names the file to reuse; run `paqvilo dataverse inspect --connection FILE` or `paqvilo dataverse verify --connection FILE` on it instead. Only the environment and name fields are read; a file without an environment, and an unreadable or malformed file, is ignored. Then `register` runs `pac admin list-service-principal --filter NAME --max 50` through the same PAC runner, before `pac admin create-service-principal`. The listing covers applications in the tenant, and the tenant listing is the registry: it refuses with `REGISTRATION_EXISTS` when a listed application's name equals the requested name, matched by application name and compared case-insensitively as a whole cell (a longer name that only starts with it does not match). If that listing fails, registration stops with a plain error saying existing applications could not be checked, and no application is created. PAC output is never printed. Pass `--allow-additional-application` only when a second Entra application for the same environment is intended; it skips both the file scan and the listing. If registration is partial, inspect the `.registration.json` state, complete the existing application's user/role assignment, and obtain a credential for **that same application**. The toolkit does not automatically create another app or escalate roles.
+Duplicate protection, before any application is created:
+
+1. An existing connection or registration marker stops the attempt.
+2. Every `*.json` directly in the `--connection` folder is read for its environment and name fields;
+   one with the same environment origin or application name (case-insensitive) refuses with
+   `REGISTRATION_EXISTS`, naming the file to reuse with `inspect` or `verify`. Unreadable files and files
+   without an environment are ignored.
+3. `pac admin list-service-principal --filter NAME --max 50` must list no application whose whole name
+   equals the requested one (case-insensitive); otherwise `REGISTRATION_EXISTS`. If the listing fails,
+   registration stops.
+
+`--allow-additional-application` skips steps 2 and 3 when a second application is intended. PAC output
+is captured privately (recovery evidence is encrypted before parsing) and never printed. After a partial
+registration, inspect the `.registration.json` state, complete that application's user/role assignment
+and obtain a credential for the same application; the toolkit never creates another app or escalates
+roles.
 
 ```sh
 paqvilo dataverse connect --registration .paqvilo/dataverse/connection.json.registration.json --secret-file .paqvilo/dataverse/credential.txt --connection .paqvilo/dataverse/connection.json --role "System Customizer" --consume-secret-file
 ```
 
-The secret file can contain the value alone; a JSON object with `clientId`, `tenantId`, `value`, `secretId`, optional `expiration`; labelled lines; or a two-line CSV with those headers. Client/tenant identity fields are validated. A provided application ID must match registration. Connect authenticates, verifies the expected organisation, records application-user roles, saves the DPAPI-protected secret, and optionally removes the temporary plaintext file after successful persistence. Secret ID is metadata, not the credential used to authenticate. Credential expiry stays unknown unless supplied; token expiry is a different value.
+The secret file holds the value alone, a JSON object (`clientId`, `tenantId`, `value`, `secretId`,
+optional `expiration`), labelled lines, or a two-line CSV with those headers. Identity fields are
+validated and must match the registration. `connect` authenticates, verifies the organization, records
+the application user's roles, saves the DPAPI-protected secret and, with `--consume-secret-file`, deletes
+the plaintext file after saving. `secretId` is metadata; credential expiry is unknown unless supplied.
 
-Connection records and secret files must be inside ignored `.paqvilo/`. DPAPI ciphertext works only for its originating Windows user/machine. For a non-Windows runner, author a private connection with `schemaVersion:1`, environmentUrl, tenantId, clientId, optional organisationId, `credentialSource:"environment"` and `secretEnvironmentVariable:"PROJECT_DATAVERSE_SECRET"`. Inject that variable through the runner's secret store. Never put a literal secret in committed JSON or command arguments.
+Connection records and secret files must be inside ignored `.paqvilo/`. DPAPI ciphertext works only for
+the Windows user and machine that wrote it. For another runner, write a private connection with
+`schemaVersion: 1`, `environmentUrl`, `tenantId`, `clientId`, optional `organisationId`,
+`credentialSource: "environment"` and `secretEnvironmentVariable: "PROJECT_DATAVERSE_SECRET"`, and inject
+that variable from the runner's secret store. Never put a secret in committed JSON or arguments.
 
-Application authentication intentionally sends the locally configured client credential to Microsoft Entra. The token provider fixes the origin to `https://login.microsoftonline.com`, validates tenant/client GUIDs before constructing the request, confines the scope to the configured HTTPS organization and disables redirects. A connection file can never redirect the credential to another host.
+The token request always goes to `https://login.microsoftonline.com`, with tenant and client GUIDs
+validated, the scope confined to the configured HTTPS organization and redirects disabled, so a
+connection file cannot send the credential elsewhere.
 
-For caller-generated test credentials or private runtime configuration, the public
-`paqvilo/dataverse` API also exports `saveProtectedState(file, value, { purpose,
-exclusive })` and `loadProtectedState(file, { purpose })`. They store plain JSON
-values encrypted with Windows DPAPI CurrentUser under ignored `.paqvilo/`, with
-atomic fsynced persistence. Exclusive creation is the default; replacing credentials
-requires `exclusive: false`. A bounded purpose label is verified both outside and
-inside the encrypted payload. Save generated credentials before consuming them in
-an external operation. Save returns metadata only; load decrypts into memory, and
-the caller must keep that value out of logs. There is no plaintext fallback on other
-platforms. This API stores credentials; it does not create or authenticate identities.
+`saveProtectedState(file, value, { purpose, exclusive })` and `loadProtectedState(file, { purpose })`
+store caller-generated credentials as JSON encrypted with DPAPI CurrentUser under ignored `.paqvilo/`,
+with atomic fsynced writes. Creation is exclusive by default (`exclusive: false` replaces); the purpose
+label is checked inside and outside the ciphertext. Save returns metadata only; load decrypts into
+memory. There is no fallback on non-Windows platforms, and these functions create no identities.
 
 ## Manifest and execution
 
@@ -77,31 +109,75 @@ paqvilo dataverse keys --manifest dataverse/manifest.json --connection .paqvilo/
 paqvilo dataverse export --connection .paqvilo/dataverse/connection.json --solution ExampleSchema --out .paqvilo/exports/ExampleSchema.zip --unpack solutions/ExampleSchema
 ```
 
-Without a connection, plan performs no network requests. With one, it reads existing metadata and reports create/exists/drift, plus the solution membership that apply will write: `membership:add` for components and primary-name/lookup attributes missing from an existing solution, `membership:scope-root` for declared table roots that apply re-scopes (a RemoveSolutionComponent followed by an AddSolutionComponent on the live environment), and `blocked` for undeclared IncludeAll table roots. These appear in `membership` and in `summary.membershipAdd`, `summary.rootScoping` and `summary.blocked`. Components that apply will create are listed as `membership:add` with a null object ID, and membership for a solution that apply will create is not listed. A table created by apply can receive a root that apply narrows after creation; the plan cannot list it. The plan never writes. `--out` saves complete API payloads and prints a short summary; `--json` also prints the full plan. Apply verifies the organisation, preflights every component, refuses blocked undeclared table roots before its first write, rechecks each identity before creation and repairs solution membership. A compatible rerun performs no writes when membership is already complete. Incompatible metadata blocks creation before the first write. Existing solution publisher identity is checked separately from its display name.
+**plan** without a connection makes no requests. With one it reads metadata and reports
+create/exists/drift and the solution membership apply will write: `membership:add` (missing components
+and primary-name/lookup attributes; a null object ID for components apply will create),
+`membership:scope-root` (declared table roots apply re-scopes with RemoveSolutionComponent then
+AddSolutionComponent) and `blocked` (undeclared IncludeAll roots), summarized in `summary.membershipAdd`,
+`summary.rootScoping` and `summary.blocked`. Membership of solutions apply will create, and roots apply
+narrows on tables it creates, cannot be listed. Plan never writes; `--out` saves full payloads and
+prints a summary, `--json` prints the plan.
 
-The ordered components are publisher, solutions, global choices, table shells, scalar columns, relationships/lookups, alternate keys, forms and public views. `MSCRM.SolutionUniqueName` and explicit component membership keep ownership/export scope precise; standard tables are included without their unrelated subcomponents. Primary-name attributes are explicitly included in custom-table solutions. [Table creation and solution association](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-entity-definitions-using-web-api), [component membership](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/addsolutioncomponent?view=dataverse-latest).
+**apply** verifies the organization, preflights every component, refuses blocked roots before its first
+write, rechecks each identity before creating it and repairs solution membership. Incompatible metadata
+blocks creation before the first write; a compatible rerun with complete membership writes nothing. The
+publisher identity of an existing solution is checked separately from its display name. Order:
+publisher, solutions, global choices, table shells, scalar columns, relationships/lookups, alternate
+keys, forms, public views. `MSCRM.SolutionUniqueName` and explicit membership keep export scope precise;
+standard tables join without unrelated subcomponents, and primary-name attributes are added explicitly.
 
-Table creation can add an Include Subcomponents root even when later components belong to another solution. Before export, `apply` scopes declared table roots and restores explicit metadata membership. `scope-solutions --manifest FILE --connection FILE --out PRIVATE_JOURNAL` performs the same repair independently. Re-adding an existing root does not narrow it, so the repair journals membership, removes only the unmanaged solution membership, re-adds the table with explicit subcomponents, preserves existing non-table memberships and restores declared primary-name/column/relationship/key/form/view memberships. Dataverse records and metadata remain present. Reconcile project-specific forms/views afterward when they live outside the schema manifest; then inspect exported dependency direction. Rerunning restores declared memberships after interruption. [Root-component behaviours](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/solutioncomponent#rootcomponentbehavior), [remove membership](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/removesolutioncomponent?view=dataverse-latest).
+Apply is additive: no deletes, no overwrites, no general update migration. Metadata updates would need a
+PUT with every property preserved and labels merged, which ordinary PATCH logic cannot do
+([update semantics](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-entity-definitions-using-web-api#update-table-definitions)).
+Forms and views come from project-owned XML; default views are not edited. The one completion step:
+Dataverse can ignore lookup auditing in relationship deep insert, so apply verifies each new lookup and,
+if needed, enables only its audit flag with a full typed PUT using `MSCRM.MergeLabels`. `audit-lookups`
+repeats that after an interruption without touching targets, cascades or other columns.
 
-Scoped exports are update packages for existing tables. Create the manifest's schema through this API toolkit before importing them into a fresh environment. Microsoft requires Include All Objects for a first-time native table import; a standalone initial ZIP therefore needs separate full-table packaging and dependency qualification. [Initial table imports and segmentation](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm).
+**scope-solutions** (also run by apply): table creation can add an Include Subcomponents root even when
+later components belong to another solution, and re-adding a root does not narrow it. The repair
+journals membership, removes only the unmanaged solution membership, re-adds the table with explicit
+subcomponents and restores declared primary-name, column, relationship, key, form and view memberships,
+keeping other memberships. Records and metadata stay. Rerun after an interruption; reconcile forms and
+views kept outside the manifest yourself
+([root behaviours](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/solutioncomponent#rootcomponentbehavior)).
 
-Apply is additive. It does not delete columns/tables or overwrite existing definitions. Metadata updates require PUT with complete preserved properties and deliberate label merging; ordinary PATCH logic is unsuitable. Destructive reconciliation and general update migration are not supported. Forms/views are created from project-owned XML; the toolkit does not invent production form layouts or edit server-generated default views automatically. [Metadata update semantics](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-entity-definitions-using-web-api#update-table-definitions).
+Scoped exports are update packages for existing tables. A fresh environment needs the schema created
+through this toolkit first; a first-time native table import requires Include All Objects
+([segmented solutions](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm)).
 
-One narrow creation-completion step is supported: Dataverse can ignore lookup auditing in relationship deep insert. Apply verifies the newly created lookup and, when necessary, enables only its audit flag through a full typed PUT preserving labels/properties with `MSCRM.MergeLabels`. `audit-lookups --manifest FILE --connection FILE` completes this setting after an interrupted creation. It does not change lookup targets, cascade settings or general column definitions. Boolean metadata reads expand OptionSet, and alternate-key comparison treats component ordering as unordered. Platform-enforced cascade settings remain actual differences and must be explicitly reflected in the project manifest.
+**keys** exits 2 until every alternate key is Active. **publish** targets only declared tables and
+choices. **export** writes an unmanaged ZIP from Dataverse and unpacks it with PAC; importing or
+deploying code components is separate.
 
-## Supported components and constraints
+Live requests are confined to the configured HTTPS API origin; cross-origin or cross-path continuations
+and redirects are rejected. Reads allow 30 seconds; schema mutations, publishing and exports 180 seconds.
+A failed or uncertain mutation is never retried automatically. The ignored journal stores component
+IDs, payload hashes and checkpoints, and a rerun starts with fresh reconciliation. A schema change is
+many requests, not a transaction: partial completion is possible.
 
-- Tables: label, plural label, organisation or user ownership, optional `notes: true` (attachments through annotations) and `activities: true`; both default to false.
-- Columns: string, memo, integer, decimal, double, money, Boolean, DateTime with explicit behaviour, global choice and multi-select choice. Use `maxLength`, numeric min/max/precision, required level, audit flag and optional defaults. DateOnly uses DateOnly behaviour. Each new table has an explicit primary-name definition and organisation or user/team ownership.
-- `existing:true` declares a standard/external table; it must exist remotely. `existingColumns` permits known standard fields in keys. Only declared custom extensions are created. `column.solution` can assign a later extension to a different solution; keys inherit table ownership unless overridden.
-- Choices provide explicit integer values and labels. Columns bind `GlobalOptionSet@odata.bind`; they do not recreate an existing global choice as a local one. Offline plans reference names; apply resolves them to the server's MetadataId for the binding URI. Name-key write bindings fail with a GUID parsing error, so they are not used. [Choice API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-optionsets).
-- One-to-many relationships contain parent, child and lookup name/label/required level. Lookup creation uses relationship deep insert. Defaults are Delete Restrict and other cascades NoCascade. Many-to-many definitions specify intersect name and optional two intersect attributes; self relationships require distinct intersect sides. [Relationship creation](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-entity-relationships-using-web-api).
-- Alternate keys have explicit names and column lists. Validation rejects unsupported declared types, missing columns and obvious oversized index definitions. Dataverse's asynchronous key creation is checked separately; `keys` exits 2 until every key is Active. Nullable key values, backend-required validation and uniqueness failures still need project tests. [Key constraints](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/define-alternate-keys-entity).
-- Forms: stable id, table, solution, name, type (default 2), formXml or formXmlFile. Views: stable id, table, solution, name, queryType (default 0), fetchXml/layoutXml or file references. Files resolve relative to the manifest. Dataverse validates the supplied XML; project tests must qualify layout/query compatibility.
+## Supported components
 
-Live requests are confined to the configured HTTPS API origin. Cross-origin/path continuations and redirects are rejected. Reads allow 30 seconds; schema mutations, publishing and exports allow 180 seconds because table creation can exceed the read deadline. A failed/uncertain mutation is not automatically retried. The ignored journal stores component IDs, payload hashes and checkpoints; rerunning starts with fresh reconciliation. Partial completion is possible across many metadata requests; this is not an atomic schema transaction. Publish targets only declared tables/choices. Export writes an unmanaged ZIP from Dataverse, then PAC unpacks it; import/deployment of code components is separate.
-
-## Public npm API and current project
+- **Tables**: label, plural label, organization or user ownership, explicit primary name, optional
+  `notes: true` and `activities: true` (both default false). `existing: true` declares a standard table
+  that must exist remotely; only declared custom extensions are created, and `existingColumns` lets keys
+  use known standard fields.
+- **Columns**: string, memo, integer, decimal, double, money, Boolean, DateTime with explicit behaviour
+  (DateOnly uses DateOnly behaviour), global choice and multi-select choice; `maxLength`, numeric
+  min/max/precision, required level, audit flag and optional defaults. `column.solution` assigns an
+  extension to another solution; keys inherit table ownership unless overridden.
+- **Choices**: explicit integer values and labels. Columns bind `GlobalOptionSet@odata.bind` with the
+  server's MetadataId (name-key bindings fail with a GUID parsing error)
+  ([choice API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-optionsets)).
+- **Relationships**: one-to-many with parent, child and lookup name/label/required level, created by deep
+  insert, defaulting to Delete Restrict and NoCascade otherwise; many-to-many with intersect name and
+  optional intersect attributes (distinct sides for self relationships). Platform-enforced cascades are
+  real differences and must be reflected in the manifest.
+- **Alternate keys**: explicit names and column lists; unsupported types, missing columns and obviously
+  oversized indexes are rejected. Nullable values and uniqueness still need project tests.
+- **Forms**: stable id, table, solution, name, type (default 2), `formXml` or `formXmlFile`. **Views**:
+  stable id, table, solution, name, queryType (default 0), `fetchXml`/`layoutXml` or file references.
+  Files resolve relative to the manifest; Dataverse validates the XML.
 
 ```js
 import { readManifest, compileManifest, planManifest, connectedClient, loadConnection } from 'paqvilo/dataverse';
@@ -112,22 +188,40 @@ const client = connectedClient(await loadConnection('./.paqvilo/dataverse/connec
 const observedPlan = await planManifest(manifest, { client }); // read only
 ```
 
-The [Company Operations project](../examples/company-operations/README.md) owns conversion from the three implementation specifications. Its manifest includes 28 tables (25 new), 26 choices, 73 relationships and 29 keys. The project also owns seeded catalogues, named forms/views, portal security/templates/assets, plugin assemblies/steps/images and qualification tools. External collector/flow deployment and structural projection reconciliation remain separate dependencies. Business-specific conversion and tests stay in that project.
-
-Core tests use invented schemas and loopback fixtures only. They cover payload order, idempotency, origin confinement, drift, no blind write retry, identity checks and credential-output redaction. These tests and a live read-only plan do not prove live creation/export for every supported metadata type; qualify that with an authorized disposable solution. Runtime changes require `npm run validate`.
+Toolkit tests use invented schemas on loopback; they do not prove live creation or export of every
+metadata type. Qualify that with an authorized disposable solution. The
+[Company Operations project](../examples/company-operations/README.md) is a complete project-owned
+example (manifest, seeded catalogues, forms and views, portal security and plug-ins).
 
 ## Reproducible data and retrievals
 
-`data-plan`, `data-apply`, `data-compare` and `data-query` accept `--catalogue FILE`; connected operations use the same `--connection FILE` as schema provisioning. Plan can run offline. Connected plan reads without writing; apply refuses incompatible fixtures, fills missing rows/deferred links and adds missing associations. Compare/query return exit code 2 when checks fail. Use `--out FILE` for ignored reports and exclusive apply journals. The npm API exports `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries` and `retrieveFetchXml` from `paqvilo/dataverse`.
+`data-plan`, `data-apply`, `data-compare` and `data-query` take `--catalogue FILE` and, when connected,
+the same `--connection FILE`. Plan can run offline; connected plan only reads. Apply refuses
+incompatible fixtures, creates missing rows, fills deferred links and adds missing associations; it never
+deletes or repairs drift. Compare and query exit 2 when a check fails. `--out FILE` writes ignored reports
+and exclusive apply journals.
 
-A schemaVersion 1 catalogue declares datasetId/version/fixed clock, tables with logical/entity-set/primary-key names and alternate-key columns, records with stable GUIDs and scalar `fields`, lookup `refs` keyed by other record aliases (or null), `deferredRefs` for cycles, N:N `associations` with relationship/from/to aliases, and queries with FetchXML/selected columns/expected rows. `@ref:alias` resolves expected GUIDs; `{{ref:alias}}` resolves query GUIDs and `{{operationId}}` receives a fresh marker. Projects own persona/scenario oracles and domain integrity tests. The generic toolkit contains no business schema.
+A schemaVersion 1 catalogue declares datasetId, version and fixed clock; tables (logical, entity-set and
+primary-key names, alternate-key columns); records with stable GUIDs, scalar `fields`, lookup `refs` to
+other record aliases (or null) and `deferredRefs` for cycles; N:N `associations` (relationship, from, to);
+and queries with FetchXML, selected columns and expected rows. `@ref:alias` resolves expected GUIDs,
+`{{ref:alias}}` query GUIDs, `{{operationId}}` a fresh marker and `{{markerUtc}}` a fresh UTC timestamp
+while the dataset clock stays fixed.
 
-The loader verifies entity sets/primary keys and Active alternate keys, discovers actual lookup and association navigation properties, and detects business-key collisions before creating anything. Stable-GUID creation uses PATCH with `If-None-Match: *`; completion of deferred references uses the row ETag. Multiple-choice arrays serialize to the Web API comma-separated value. Existing reference records can be matched explicitly and reused without overwriting them. Missing reference rows use the declared stable-GUID fallback. There is no automatic destructive reset or drift repair. [Conditional upsert](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/update-delete-entities-using-web-api), [association navigation](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/associate-disassociate-entities-using-web-api).
+The loader verifies entity sets, primary keys and Active alternate keys, discovers lookup and association
+navigation properties and detects business-key collisions before creating anything. Stable-GUID creation
+uses PATCH with `If-None-Match: *`; deferred references use the row ETag. Multi-select values serialize as
+comma-separated strings. Existing reference records can be matched and reused without overwriting.
 
-Comparison covers only declared values and associations, including explicit null lookups and absent/extra links. Query checks compare complete canonical rows with multiplicity; they retain counts, page XML, operation IDs, query errors and missing/unexpected rows in local reports. FetchXML paging requests more-records/cookie annotations, decodes server cookies twice, XML-escapes them and increments the page. A full page without a terminal annotation is followed by another request; the following empty/short page proves completion. Cookie-free fallback is bounded to 50,000 rows and all paging has a page limit. Exceeding either bound fails the check. [FetchXML paging](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/page-results?tabs=webapi).
+Compare checks only declared values and associations (explicit null lookups and absent or extra links
+included). Query checks compare complete canonical rows with multiplicity. FetchXML paging follows
+more-records and paging-cookie annotations (cookies decoded twice, XML-escaped), requests another page
+after a full page without a terminal annotation, and is bounded by a page limit and, without cookies,
+50,000 rows; exceeding a bound fails the check.
 
-`{{markerUtc}}` gets a fresh UTC timestamp per query while the dataset clock stays fixed. Use unique linked-attribute aliases such as `scopedaccountid`: the Web API omits an Account link's ID when it is aliased as `accountid`. DateOnly expectations use calendar-date strings, not midnight date/time strings.
-
-An administrator application's successful query proves fixture integrity. Power Pages applies the signed-in Contact's website role/table-permission configuration, so persona expectations execute through that portal. The [merged example catalogue](../examples/company-operations/data/stress-catalogue.json) separates backend checks from 29 permission scenarios and their prerequisites. It has 844 fixture/reference records, 479 association links and 25 personas, including separate CRUD canaries and incomplete trigger fixtures. Observations are created by execution.
-
-Form metadata uses the platform's `formid` primary key. Published FetchXML is compared structurally because Dataverse adds `savedqueryid` and reformats XML; normalization preserves filters, values, joins, selected columns and ordering. The example's form toolkit discovers object-type codes, modifies the existing custom Lookup/Quick Find views and preserves standard Account/Contact views. Quick Find view record updates can fail through the Web API, so the example edits only the affected view nodes in a native exported solution, imports asynchronously, publishes each solution before exporting the next dependency, and verifies full readback. Import journals retain job IDs for reconciliation after interruption. See [view customization](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-views) and [asynchronous solution import](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/importsolutionasync).
+Gotchas: alias linked attributes uniquely (for example `scopedaccountid`), because the Web API omits an
+Account link's ID aliased as `accountid`. DateOnly expectations are calendar-date strings. An
+administrator application's query proves fixture integrity only; persona expectations must run through
+the portal, which applies the signed-in contact's web roles and table permissions. Form metadata uses
+the `formid` key, and published FetchXML is compared structurally because Dataverse adds `savedqueryid`
+and reformats it.

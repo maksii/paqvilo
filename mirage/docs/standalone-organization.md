@@ -42,13 +42,33 @@ npx --no-install paqvilo mirage stop --project ./mirage.project.yml
 
 ## Shared composition
 
-Both hosts (the Power Pages simulator and this standalone runtime) compose the organization through `composeOrganizationHost` in `mirage/lib/organization-host.mjs`. It owns the pack handler maps, the operation and plug-in catalogues (memoised on the committed store revision and the loaded sources), the providers object (`api.providers`: storage router, message buses, outbox, connector runtime, secret resolver when `secrets` is configured, service fixtures, Power Fx evaluator and the declared local services; pack provider factories are called once), the organization runtime, its backend, the Dataverse API with managed identity, and one close order: backend, flow run timers, organization, API, managed identity, then the instantiated providers. Selecting `clr` for a plug-in step through `PATCH /_sim/api/config` prepares the step's trusted CLR runtime before the choice is stored; a runtime that cannot be prepared refuses the change. The organization api also carries `api.packs` and `api.packExport(name)`. Repeated `*_NOT_SIMULATED` diagnostics from one extension install are reported once per code, with the tables they name.
+Both hosts (the Power Pages simulator and this standalone runtime) compose the organization through
+`composeOrganizationHost` in `mirage/lib/organization-host.mjs`, so they share one implementation of the pack handler
+maps, the operation and plug-in catalogues, the providers (`api.providers`: storage router, message buses, outbox,
+connector runtime, secret resolver when `secrets` is configured, service fixtures, Power Fx evaluator and declared local
+services; each pack provider factory is called once), the organization runtime, its backend and the Dataverse API with
+managed identity. They close in one order: backend, flow run timers, organization, API, managed identity, then the
+providers. Selecting `clr` for a plug-in step through `PATCH /_sim/api/config` prepares that step's trusted CLR runtime
+first and refuses the change if it cannot. Repeated `*_NOT_SIMULATED` diagnostics from one extension install are
+reported once per code, with the tables they name.
 
-Every request runs in one request context (`mirage/lib/request-context.mjs`). A Web API or portal request's `x-ms-correlation-request-id` (a plain token up to 128 characters), or else its own id, becomes the context's `correlationId`. Committed events carry it as `correlationId`, beside their chain, and the plug-in web hooks, asynchronous jobs and row-triggered flows they start report it. `createSimulator` accepts `clock`, `ids` and `scheduler` (see `fixedClock`, `sequentialIds` and `createScheduler` in `paqvilo/mirage/testing`) for both hosts. The local identity provider and the portal sign-in consumer share this clock: tokens, codes, nonces, state and the external sign-in cookie are issued and validated on it, so a fixed clock far from wall time signs in.
+Every request runs in one request context (`mirage/lib/request-context.mjs`). An incoming
+`x-ms-correlation-request-id` (1 to 128 letters, digits, `.`, `_`, `:` or `-`), or else the request's own id, becomes
+its `correlationId`; committed events, plug-in web hooks, asynchronous jobs and row-triggered flows started by the
+request report it. `createSimulator` accepts `clock`, `ids` and `scheduler` (`fixedClock`, `sequentialIds`,
+`createScheduler` from `paqvilo/mirage/testing`) on both hosts. The local identity provider and portal sign-in use the
+same clock, so a fixed clock far from wall time still signs in.
 
-The standalone runtime loads `deploymentProfiles` as the Power Pages host does: the default profile (or the pin saved in state) supplies environment variable values and connection reference bindings to the Solution data, the preflight source graph and `GET /_sim/api/environment` (`profileSelection`). Selecting a profile through `PUT /_sim/api/environment/profiles` is a Power Pages host feature and answers 501 here. A source reload (`reload()` or the watcher) re-registers custom APIs, duplicate rules, classic workflow definitions and activations and plug-in registrations from the reloaded Solution in the same transaction as the Solution data, so a reload equals a restart: a definition gone from the sources is deactivated and removed. `SOURCE_EXTENSIONS_REFRESHED` lists the added, changed and removed rows per table. A reload that fails keeps the previous registrations. A reload whose Solution scan reports an error that the last accepted scan did not have (for example `SOLUTION_ROOT_READ_FAILED` for a root renamed or unreadable during a checkout, or `SOLUTION_XML_INVALID`) is rejected before anything changes: `reload()` rejects with `SOURCE_RELOAD_REJECTED` (status 409), its `details.diagnostics` list the new errors, and registrations, Solution data and metadata stay as they were. The watcher reports the rejection as `RELOAD_FAILED`. An error already present at startup does not block later reloads; the next reload after the source is repaired succeeds.
+The standalone runtime loads `deploymentProfiles` like the Power Pages host: the default profile (or the pin saved in
+state) supplies environment variable values and connection reference bindings to the Solution data, the preflight
+source graph and `GET /_sim/api/environment` (`profileSelection`). Switching profiles at run time
+(`PUT /_sim/api/environment/profiles`) is a Power Pages host feature and answers 501 here. Source reloads re-register
+Solution components and reject a scan with new errors, as described in
+[sources and bootstrap](bootstrap-and-sources.md); `reload()` rejects with `SOURCE_RELOAD_REJECTED` (409) and its
+`details.diagnostics` list the new errors.
 
-Status (`GET /_sim/api/status`) adds `inventory` (Solution inventory counts per component and level), `providers` (provider descriptors, never a value or secret) and `services` (service fixture records).
+`GET /_sim/api/status` adds `inventory` (Solution inventory counts per component and level), `providers` (descriptors,
+never values or secrets) and `services` (service fixture records).
 
 ## Choose a surface
 
@@ -86,4 +106,4 @@ Administration links follow the runtime's capabilities. API-only profiles offer 
 
 ## Validate your project
 
-Keep organization data, captured metadata, connection details, scenarios and acceptance tests in your separate project. Use invented fixtures for reusable toolkit tests. Verify the specific app navigation, form/view/control support, identities, reads and mutations your integration needs. A discovered operation or imported app is not proof of complete platform parity. See [model-driven limits](model-driven-apps.md), [API evidence](dataverse-parity-suite.md) and [project extensions](../../docs/project-extensions.md).
+Keep organization data, captured metadata, connection details, scenarios and acceptance tests in your separate project. Use invented fixtures for reusable toolkit tests. Verify the specific app navigation, form/view/control support, identities, reads and mutations your integration needs. A discovered operation or imported app is not proof of complete platform parity. See [model-driven limits](model-driven-apps.md), [API evidence](dataverse-api.md#record-and-compare-web-api-responses) and [project extensions](../../docs/project-extensions.md).

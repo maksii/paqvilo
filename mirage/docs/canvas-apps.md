@@ -1,106 +1,205 @@
 # Canvas apps in Mirage
 
-Mirage renders supported exported Canvas sources locally and runs their Power Fx formulas against simulated state and caller-secured local data. It is an approximation of the Power Apps player. Unsupported contracts and rendering approximations remain visible in the inspector and preflight.
+Mirage renders supported exported Canvas app sources and runs their Power Fx formulas against simulated state and
+caller-secured local data. It approximates the Power Apps player; unsupported contracts and rendering approximations
+stay visible in the inspector and preflight. It does not edit, pack, import or deploy Canvas apps.
 
 ## Setup and sources
 
-Keep exports, configuration and app-specific acceptance tests in a separate project. Check toolkit dependencies with `node scripts/ensure-dependencies.mjs --check --json --browser msedge`. Configure `canvas.sources` (or catalogue `mirage.canvas.sources`) with project-relative `.msapp` files or extracted app folders. Solution Canvas apps join the same inventory automatically. Start with `paqvilo mirage serve --project <project-file>` or:
+Configure `canvas` (catalogue `mirage.canvas`) as `{ enabled, sources, codeComponents }`:
+
+- `sources` lists project-relative `.msapp` files or extracted app folders. Solution Canvas apps join the same
+  inventory automatically.
+- `enabled: false` disables the surface. `codeComponents: true` admits PCF ([Components and PCF](#components-and-pcf)).
+- Changes to these settings need a restart. Missing paths report `CANVAS_SOURCE_MISSING`.
 
 ```sh
 node bin/paqvilo.mjs mirage init --config <catalogue> --site <site>
 node bin/paqvilo.mjs mirage dev --config <catalogue> --site <site> --debug-port <free-port>
 ```
 
-Select a local staff user in `/_sim/` on the administration address (`adminUrl`), open `/_apps/canvas/` on the apps address (`appsUrl`), choose an app and explicitly Start it. The app list and the player are shown in the administration's shell: the same sidebar, top bar and style sheets as `/_sim/`, and they follow the browser's light or dark color scheme; the app's stage stays light and draws the app's own colors. The app list's Source column and the player's origin line name where each app comes from. On a Power Pages host an enhanced-authorization visitor must map to a Dataverse user; anonymous and standard-authorization visitors are refused with `401 CanvasPrincipalRequired`. A cloud sign-in does not sign in to this local session. The dev browser's session file does not keep the staff-selection cookie, because the cookie is signed by one runtime process, so after a runtime restart no staff user is selected until one is chosen in `/_sim/`. A browser that kept its tab open across a runtime restart still sends the earlier selection; the apps refuse it with `401 StaffPrincipalUnavailable` until a staff user or the local administrator is chosen again in `/_sim/`, which lists the staff users and says why.
+Or `paqvilo mirage serve --project <project-file>`. Then select a staff user in `/_sim/` on the administration address
+(`adminUrl`), open `/_apps/canvas/` on the apps address (`appsUrl`), choose an app and press Start. The app list and
+player use the administration shell and the browser's color scheme; the app stage keeps the app's own colors. The
+Source column and the player's origin line name each app's source.
 
-The reader prefers current `Src/*.pa.yaml` and also accepts retired `Src/*.fx.yaml` plus `DataSources/*.json`, reporting `CANVAS_SOURCE_LEGACY_FXYAML`. Microsoft documents current source as read-only review material, not an external editing/packing contract. Download current source from Studio or `pac canvas download` with source extraction (`-d`). An older kit without YAML can be re-saved in Studio. For legacy compatibility, PAC 2.13.1's deprecated `pac canvas unpack --msapp <copy.msapp> --sources <new-folder> --layout Experimental` can produce `.fx.yaml`; preserve warnings and original files. Checksum warnings do not establish trustworthy executable PCF bundles. PAC is optional and never invoked by Mirage. See [Microsoft source documentation](https://learn.microsoft.com/power-apps/maker/canvas-apps/power-apps-yaml) and [PAC Canvas commands](https://learn.microsoft.com/power-platform/developer/cli/reference/canvas), reviewed October 27, 2026.
-
-`canvas` accepts `{ enabled, sources, codeComponents }`. `enabled: false` disables the surface. Missing paths report `CANVAS_SOURCE_MISSING` and missing preflight requirements. Configuration changes require restart. Both hosts (the Power Pages host and the standalone host) watch the configured source folders, and with source watching enabled, edits within them reload inventory and invalidate old runtime instances. An open player reloads and shows its update notice, `Source updated. Start the app again.`; it never silently reruns OnStart. Revision polling pauses in hidden tabs. Media bytes and exported enums participate in the revision.
-
-A folder or `.msapp` in `canvas.sources` whose unique name equals a Solution Canvas app's unique name replaces that app in the inventory: the configured source is the editable one, and the app keeps the Solution's display name. The unique name of a folder is the folder's own name (its last path segment), and of an `.msapp` file its file name without `.msapp`; the comparison ignores case. A folder named differently is a second app beside the Solution's. Each path in `canvas.sources` is read once, and of two sources with the same unique name the first one listed is served; the other is reported as `CANVAS_SOURCE_DUPLICATE`.
+- **Identity.** The app runs as the selected staff user. On a Power Pages host an enhanced-authorization visitor must
+  map to a Dataverse user; anonymous and standard-authorization visitors get `401 CanvasPrincipalRequired`. A cloud
+  sign-in does not sign in to the local session. After a runtime restart, a tab that kept the earlier staff selection
+  gets `401 StaffPrincipalUnavailable` until a staff user or the local administrator is chosen again in `/_sim/` (see
+  [staff identity](model-driven-apps.md#staff-identity-and-permissions)).
+- **Source formats.** The reader prefers current `Src/*.pa.yaml`. It also accepts retired `Src/*.fx.yaml` with
+  `DataSources/*.json` and reports `CANVAS_SOURCE_LEGACY_FXYAML`. Get current source from Studio or
+  `pac canvas download` with source extraction (`-d`). Microsoft documents this source as review material, not an
+  editing or packing contract ([source code](https://learn.microsoft.com/power-apps/maker/canvas-apps/power-apps-yaml)).
+  PAC is optional and Mirage never runs it.
+- **Reload.** Both hosts watch the configured source folders. With source watching on, an edit reloads the inventory
+  and invalidates running instances; an open player shows `Source updated. Start the app again.` and never reruns
+  OnStart by itself. Revision polling pauses in hidden tabs. Media bytes and exported enums are part of the revision.
+- **Overrides.** A `canvas.sources` folder or `.msapp` whose unique name equals a Solution Canvas app's unique name
+  (case-insensitive) replaces that app and keeps the Solution's display name. A folder's unique name is its last path
+  segment; an `.msapp` file's is its file name without `.msapp`. Of two sources with the same unique name, the first
+  listed is served and the other reports `CANVAS_SOURCE_DUPLICATE`.
 
 ## Supported local behavior
 
-| Area             | Coverage                                                                                                                                                                  | Limits                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Controls         | Labels, text input, buttons, drop-downs, searchable multi-select ComboBox, check boxes, toggles, date picker, slider, radio, number input, progress/spinner, shapes/icons | Browser presentation; modern/version-specific properties and theme defaults approximate native behavior                                                                              |
-| Galleries/layout | Row scope, selection, AllItemsCount, paging beyond the initial 50 rows, automatic layout inside gallery templates, horizontal/vertical containers, fill/align/padding/gap | AllItems/AllItemsCount materialize the bounded source, without native viewport-dependent loading; no native virtualization guarantee; wrapped auto-layout sizing remains approximate |
-| State/navigation | Global/screen state, local collections, Navigate/Back, history, screen context and lifecycle, Reset; approximate Fade/Cover/UnCover with reduced-motion support           | Not every native event ordering/timing is reproduced                                                                                                                                 |
-| Forms            | Edit/display forms and cards, local binding, validation, submit/reset behavior                                                                                            | Presentation approximates native forms                                                                                                                                               |
-| Timers           | Start/AutoStart/Reset/Repeat/AutoPause, Value/Running, start/end events and deterministic tick actions                                                                    | Browser Web Locks elect one visible tab clock; use explicit ticks if unavailable; not a real-time scheduler                                                                          |
-| Media            | Exported local images/audio/video, media state and native events; persistent playback across redraw with Element.moveBefore                                               | Browser codecs/autoplay; older DOM implementations can interrupt playback                                                                                                            |
-| Add picture      | PNG/JPEG/GIF/WebP picker up to 1 MiB, MIME/signature checks, Media and OnChange/Reset; FileName local compatibility output                                                | No generic Attachments, cloud upload, camera capture or device APIs; FileName is not claimed as a documented native contract                                                         |
-| HTML/icons       | Safe allowlisted markup/typography and local images; approximate text glyph icons                                                                                         | Links inert; scripts/iframes/external media omitted; no arbitrary HTML/CSS                                                                                                           |
+| Area             | Coverage                                                                                                                                                                  | Limits                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Controls         | Labels, text input, buttons, drop-downs, searchable multi-select ComboBox, check boxes, toggles, date picker, slider, radio, number input, progress/spinner, shapes/icons | Modern and version-specific properties and theme defaults are approximations                                    |
+| Galleries/layout | Row scope, selection, `AllItemsCount`, paging beyond the first 50 rows, auto-layout in gallery templates, horizontal/vertical containers, fill/align/padding/gap          | `AllItems` materializes the bounded source; no native virtualization; wrapped auto-layout sizing is approximate |
+| State/navigation | Global and screen state, collections, `Navigate`/`Back`, history, screen context and lifecycle, `Reset`; approximate Fade/Cover/UnCover with reduced-motion support       | Not every native event order or timing                                                                          |
+| Forms            | Edit/display forms and cards, binding, validation, submit and reset                                                                                                       | Presentation approximates native forms                                                                          |
+| Timers           | Start, AutoStart, Reset, Repeat, AutoPause, `Value`/`Running`, start/end events, deterministic `tick` actions                                                             | Web Locks elect one visible tab's clock; not a real-time scheduler                                              |
+| Media            | Exported images, audio and video, media state and events; playback survives redraw where the browser has `Element.moveBefore`                                             | Browser codecs and autoplay rules                                                                               |
+| Add picture      | PNG/JPEG/GIF/WebP up to 1 MiB with MIME and signature checks, `Media`, OnChange/Reset; local `FileName` output                                                            | No generic attachments, cloud upload, camera or device APIs; `FileName` is not a documented native contract     |
+| HTML/icons       | Allowlisted markup, typography and local images; text glyph icons                                                                                                         | Links inert; scripts, iframes and external media removed; no arbitrary HTML/CSS                                 |
 
-Authored OnSelect runs on buttons, gallery rows and selectable labels/images/icons. Input runs OnChange; Boolean changes also run OnCheck/OnUncheck once. ComboBox supports SearchText/SelectedItems and authored item display labels. Invalid/disabled interactions refuse rather than pretend success. Unknown control types remain named `CanvasControlUnsupported` gaps. Omitted properties use the local catalogue's defaults, which do not establish every version's Studio theme/default behavior. See [Combo box](https://learn.microsoft.com/power-apps/maker/canvas-apps/controls/control-combo-box), [Timer](https://learn.microsoft.com/power-apps/maker/canvas-apps/controls/control-timer), [Add picture](https://learn.microsoft.com/power-apps/maker/canvas-apps/controls/control-add-picture) and [responsive layout](https://learn.microsoft.com/power-apps/maker/canvas-apps/create-responsive-layout).
-
-A text input's `TriggerOutput` decides when typing reaches the app. The default follows Microsoft's: a classic Text input with `DelayOutput` false, and a modern Text input whose `TriggerOutput` is `Keypress`. By default each keystroke updates its `Text`, so formulas that read it, such as a gallery filter, update while the user types. With `TriggerOutput` Delayed, or `DelayOutput` true, the value is sent half a second after the last keystroke. With `TriggerOutput` FocusOut, nothing is sent while the user types. A commit (Enter, or leaving the field) sends the value and runs `OnChange`, once for the typing since the previous commit. Keystrokes and delayed values use the `text` action, which sets the value without running `OnChange`.
-
-A control's accessible name is its `AccessibleLabel` when it is set. Without one, a button is named by its visible text and a check box or toggle by its `Text` (or `Label`). An image's `alt` is its `AccessibleLabel`. An image, icon or shape with an empty `AccessibleLabel` is hidden from assistive technology unless it has an enabled `OnSelect`. Containers, galleries, forms and cards carry no name. The source name stays in the `data-control` attribute for tests.
-
-Choose a resolution preset to resize the runtime, or select browser-responsive sizing. The app's Display settings (screen size, scale to fit, lock aspect ratio, lock orientation and orientation) are read from the `.msapp`'s `Properties.json` (or the retired `CanvasManifest.json`). Where the source does not carry them, provide evidence-backed `observed.canvasDisplay.<appUniqueName>` with optional `designWidth`, `designHeight` (1–8192), `scaleToFit`, `lockAspectRatio`, `lockOrientation` and `orientation` (`Portrait`/`Landscape`), plus `observed.evidence`; an observed field overrides the source's. Scale-to-fit requires both design dimensions; absent settings are not guessed. Scaling/letterboxing and orientation lock are local geometry approximations shown in the inspector. The Resolution list opens at the running instance's size, else the size chosen earlier in this browser tab for this app, else the app's own screen size, else 1366 × 768.
-
-The player's Zoom setting is Fit to window by default, or 100%. Fit scales the drawn stage down to the space beside the inspector and to the window height, and never above 100%. Zoom only scales the view: `App.Width` and `App.Height` and the formulas that read them keep the chosen resolution. It is the player's own setting, not the app's Scale to fit setting (`scaleToFit`).
+- OnSelect runs on buttons, gallery rows and selectable labels, images and icons. Input runs OnChange; Boolean
+  changes also run OnCheck/OnUncheck once. ComboBox supports `SearchText`, `SelectedItems` and authored display labels.
+  Invalid or disabled interactions are refused. Unknown control types are `CanvasControlUnsupported` gaps. Omitted
+  properties use the local catalogue's defaults.
+- **Text input timing** follows `TriggerOutput`. By default (classic `DelayOutput` false, modern `Keypress`) each
+  keystroke updates `Text`. `Delayed` (or `DelayOutput` true) sends the value 500 ms after the last keystroke;
+  `FocusOut` sends nothing while typing. A commit (Enter or leaving the field) sends the value and runs OnChange once
+  for the typing since the previous commit. Keystrokes use the `text` action, which does not run OnChange.
+- **Accessible names.** A control's name is its `AccessibleLabel`; without one, a button uses its text and a check box
+  or toggle its `Text` (or `Label`). An image, icon or shape with an empty `AccessibleLabel` is hidden from assistive
+  technology unless it has an enabled OnSelect. Containers, galleries, forms and cards carry no name. The source name
+  stays in `data-control`.
+- **Display.** Screen size, scale to fit, lock aspect ratio, lock orientation and orientation come from the `.msapp`'s
+  `Properties.json` (or the retired `CanvasManifest.json`). Where the source lacks them, set
+  `observed.canvasDisplay.<appUniqueName>` with `designWidth`, `designHeight` (1–8192), `scaleToFit`,
+  `lockAspectRatio`, `lockOrientation` and `orientation` (`Portrait`/`Landscape`) plus `observed.evidence`; an observed
+  field overrides the source. Scale-to-fit needs both design dimensions. Scaling, letterboxing and orientation lock are
+  local approximations shown in the inspector.
+- **Resolution and zoom.** The Resolution list opens at the running instance's size, else the size chosen earlier in
+  this tab for the app, else the app's screen size, else 1366 × 768; browser-responsive sizing is also offered. The
+  player's Zoom (Fit to window, the default, or 100%) only scales the view, never above 100%; `App.Width`,
+  `App.Height` and formulas keep the chosen resolution. Zoom is not the app's `scaleToFit`.
 
 ## Components and PCF
 
-Canvas component definitions expand per instance with qualified child names, Self/Parent/ThisComponent bindings, data input/output properties, local state and AccessAppScope restrictions. Enhanced function/action/event properties preserve typed arguments, optional defaults and behavior scope. Explicit Reset(component) invokes OnReset; explicitly exported RaiseOnReset inputs trigger it after a settled action, with bounded feedback detection. Exact intra-chain event ordering is not reproduced. Unknown legacy directions are warned about, not invented. Missing/recursive/excessive expansions and unsupported contracts are diagnosed. See [component properties](https://learn.microsoft.com/power-apps/maker/canvas-apps/component-properties) and [OnReset behavior](https://learn.microsoft.com/power-apps/maker/canvas-apps/component-behavior).
+Canvas component definitions expand per instance with qualified child names, `Self`/`Parent`/`ThisComponent`
+bindings, data input/output properties, local state and `AccessAppScope` restrictions. Enhanced function, action and
+event properties keep typed arguments, optional defaults and behavior scope. `Reset(component)` runs OnReset;
+exported `RaiseOnReset` inputs trigger it after a settled action, with bounded feedback detection. Exact intra-chain
+event order is not reproduced. Missing, recursive or excessive expansions and unsupported contracts are diagnosed;
+unknown legacy directions are warned about.
 
-PCF requires `canvas.codeComponents: true` and an exact exported Solution manifest/resources. Admitted scalar standard controls receive init/updateView/getOutputs/destroy, typed property bindings, outputs and declared events. Virtual controls additionally require matching local platform libraries through `modelDriven.clientSources.pcf`; no CDN fallback is supplied. Canvas WebAPI and dataset contracts are unavailable. Required unsupported features, missing/ambiguous manifests and unsupported property contracts produce `CANVAS_PCF_*` refusals. Manifest `pfx-default-value` is evaluated only without an authored binding; unresolved Studio `%...%` import placeholders refuse. Complete localization/binary resource services and native context fidelity remain gaps. Trust only code you intend to execute locally; manifest admission is not proof of native package equivalence. See [PCF limitations](https://learn.microsoft.com/power-apps/developer/component-framework/limitations) and [manifest properties](https://learn.microsoft.com/power-apps/developer/component-framework/manifest-schema-reference/property).
+PCF requires `canvas.codeComponents: true` and the exact exported Solution manifest and resources. Admitted scalar
+standard controls get `init`/`updateView`/`getOutputs`/`destroy`, typed property bindings, outputs and declared events.
+A virtual control also needs its platform libraries as `<Library>@<version>.js` files in `modelDriven.clientSources`
+(see [PCF inputs and limits](model-driven-customizations.md#pcf-inputs-and-limits)); there is no CDN fallback. Refusals
+use `CANVAS_PCF_*` codes: `CANVAS_PCF_TRUST_REQUIRED`, `CANVAS_PCF_MANIFEST_UNAVAILABLE`, `CANVAS_PCF_DATASET_UNSUPPORTED`
+(dataset controls and the Canvas WebAPI are not available), `CANVAS_PCF_FEATURE_UNSUPPORTED`,
+`CANVAS_PCF_PROPERTY_UNSUPPORTED`, `CANVAS_PCF_DEFAULT_UNSUPPORTED`, `CANVAS_PCF_RESOURCE_UNAVAILABLE` and
+`CANVAS_PCF_EVENT_UNSUPPORTED`. A manifest `pfx-default-value` applies only without an authored binding; unresolved
+Studio `%...%` placeholders refuse. Localization and binary resource services are incomplete. Admission runs code you
+chose to trust; it does not prove native package equivalence.
 
 ## Formulas and data
 
-Properties are evaluated lazily with dependency invalidation; cycles report `CANVAS_FORMULA_CYCLE`. Behavior uses one serialized action queue. Component functions preserve typed values and stay in the same action journal, so connector replay does not duplicate local side effects or random calls. RGBA/ColorValue/ColorFade produce local CSS color values, not native opaque Color objects. Blank/comment-only serialized formulas evaluate blank; invalid formulas still error.
+- Properties evaluate lazily with dependency invalidation; cycles report `CANVAS_FORMULA_CYCLE`. Behavior formulas run
+  through one serialized action queue. Component functions share its journal, so connector replay does not repeat
+  local side effects or random calls. `RGBA`, `ColorValue` and `ColorFade` return CSS color values. Blank or
+  comment-only formulas evaluate blank; invalid formulas error.
+- Table sources bind only to configured local providers under the caller's permissions. A declared but unavailable
+  table reports `CANVAS_DATASOURCE_UNAVAILABLE`; no provider is invented. Collections from legacy source stay local.
+- `UpdateIf` changes collections or caller-secured tables. `Errors(source[, record])` lists the caller's tracked write
+  failures; a successful write or `Refresh` clears them, and providers without error tracking refuse.
+- Exported logical-to-display field aliases work in formulas and writes. Exact exported option-set roots and labels
+  become enums (ambiguous mappings are omitted with a diagnostic); enum `Choices` keep typed numeric values and labels,
+  reject cross-enum comparisons and serialize as `{Value: number, Label: text}`. Column `Choices` from direct exported
+  columns are a local `{Value: label, Id: number}` approximation. `DataSourceInfo` reads exported metadata and the
+  caller's permissions.
+- Delegable Dataverse queries push down; other queries read up to 500 rows with a delegation warning. This is not
+  native delegation behavior. Connector actions need a configured local implementation; cloud connectors never run. One
+  behavior formula may wait for at most 50 connector answers.
 
-Table sources bind only to configured local providers and caller permissions. Declared but unavailable tables report `CANVAS_DATASOURCE_UNAVAILABLE`; no provider is fabricated. Collections declared by legacy source remain local collections. UpdateIf applies row-scoped changes to collections or caller-secured local tables. Canvas Errors(source[, record]) exposes the runtime/principal’s tracked write failures; successful writes and Refresh clear them. Providers without error tracking refuse explicitly. Explicit exported logical-to-display field aliases are retained for formula lookup and writes. Exact exported option-set display roots/labels become enums; ambiguous mappings are omitted with diagnostics. DataSourceInfo reads exported metadata and current caller permissions. Choices supports exact source-declared enum roots and direct exported columns with explicit metadata; lookup reads are caller-secured and bounded. Enum Choices retains typed numeric backing and display labels, rejects cross-enum comparisons, and serializes `{Value: number, Label: text}` for the player. Direct column choices remain a local `{Value: label, Id: number}` approximation; comparisons with raw Dataverse numeric values lack native option-set identity. Search and nondelegable queries report limits; they do not claim delegation parity. Unknown names/functions and missing schema stay errors. Connector/service actions require configured local implementations; this does not execute cloud connectors automatically.
+## Debugging and routes
 
-## Debugging and APIs
+The inspector shows evaluated properties with source file and line, variables, context, collections, screens and
+history, data sources, forms, errors, notifications, launches, diagnostics and recent activity. `?view=inspect` gives
+headless action forms. There is no Power Fx step debugger or Studio editor; use browser developer tools, or attach
+Playwright/CDP to the debug port. A failed action can return a snapshot with earlier effects: check its errors and HTTP
+status, not only the screen.
 
-The player inspector exposes evaluated properties, source formula file/line, variables, context, collections, screen/history, data sources, forms, errors, notifications, launches, diagnostics and recent activity. `?view=inspect` offers headless action forms. Use browser developer tools for script/network/CSP failures, or attach Playwright/CDP to a free debug port after readiness. There is no Power Fx breakpoint/step debugger or Studio editor. Failed actions can return a snapshot containing earlier effects; inspect the action errors and HTTP status rather than treating a screen change as proof of success.
+| Route                          | Behavior                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------ |
+| `GET /_apps/canvas/`           | App list; JSON with `Accept: application/json`                                       |
+| `GET /_apps/canvas/<app>`      | Player; `?view=inspect` for headless inspection                                      |
+| `GET /_apps/canvas/api/<app>`  | Source inventory, admission and diagnostics; `?revision=1` returns only the revision |
+| `GET /_apps/api/canvas/<app>`  | Current snapshot; never starts the app                                               |
+| `POST /_apps/api/canvas/<app>` | One serialized action; returns result, errors and snapshot                           |
 
-| Route                          | Behavior                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `GET /_apps/canvas/`           | App list; JSON with Accept: application/json                                                |
-| `GET /_apps/canvas/<app>`      | Player; `?view=inspect` for headless inspection                                             |
-| `GET /_apps/canvas/api/<app>`  | Source inventory, admission and diagnostics; `?revision=1` for a lightweight revision probe |
-| `GET /_apps/api/canvas/<app>`  | Current snapshot; never starts the app                                                      |
-| `POST /_apps/api/canvas/<app>` | One serialized action, result/errors/snapshot                                               |
+`POST` needs a principal and the apps token in `x-sim-csrf` (or a form's `_csrf` field); the administration token is
+also accepted. Actions: `start`, `reset` (optional parameters and viewport), `select`, `input`, `text`, `navigate`,
+`back`, `run`, `evaluate`, `refresh`, `resize`, `gallery-window`, `tick`, `media`, `add-media`, `codecomponent` and
+`codecomponent-event`; fields are validated in `mirage/lib/canvas-http.mjs` and `canvas-runtime.mjs`. Use `tick` to
+advance time instead of waiting. Bodies are limited to 64 KiB, except `add-media` (1 MiB decoded image). Responses are
+`no-store`, same-origin assets are bounded, SVG assets are sandboxed and source HTML never becomes executable markup.
 
-POST requires the local apps token in `x-sim-csrf` (or the `_csrf` field of a form post) and a principal; the administration token is accepted as well. Actions include `start`/`reset` (optional parameters and viewport), `select`, `input`, `text`, `navigate`, `back`, `run`, `evaluate`, `refresh`, `resize`, `gallery-window`, `tick`, `media`, `add-media`, `codecomponent` and `codecomponent-event`. Headless callers can advance deterministic time with tick rather than waiting. For exact fields and validation, see `canvas-runtime.mjs` and its focused tests. Ordinary bodies are bounded to 64 KiB; add-media permits a larger request but still enforces 1 MiB decoded image input. Responses are no-store, same-origin assets are bounded, SVG assets are sandboxed, and HTML source is never inserted as unrestricted executable markup.
+A trusted pointer or key press in the player starts its own trace activity, linked to the page load; see
+[request tracing](tracing.md#what-joins-and-what-starts-a-new-trace).
 
-A trusted pointer press (which includes a click) or key press in the player makes the next call start its own trace activity, linked to the page load; see [request tracing](tracing.md#what-joins-and-what-starts-a-new-trace).
-
-Preflight combines Solution and project sources. Incomplete YAML/schema, unresolved name collisions and missing component contracts block complete coverage even when some screens play. Live preflight uses prepared component/PCF admission; static inventory cannot prove executable PCF admission. `canvas:app/<name>` covers hosted behavior. `canvas:rendering` remains contract-level and reports visual approximations (modern controls, HTML/icons, browser-dependent media) even when interactive. A satisfied verdict covers the bounded local contract, not full native fidelity.
+**Preflight.** `canvas:app/<name>` covers hosted behavior. Incomplete YAML or schema, unresolved name collisions and
+missing component contracts block complete coverage even when some screens play. Live preflight uses prepared
+component and PCF admission; static inventory cannot prove PCF admission. `canvas:rendering` stays at contract level
+and lists visual approximations. A satisfied verdict covers the local contract, not native fidelity.
 
 ## Power Fx
 
-The optional [PAC differential check](power-fx-oracle.md) compares a fixed pure corpus with Microsoft's console evaluator. It established corrections for selected `IfError` replacement coercion and exact numeric `Text` formatting. It does not replace the local interpreter or establish complete host parity.
+Mirage's interpreter (`mirage/lib/power-fx.mjs`) implements the documented grammar (operators, `;` chaining, `As`,
+`With`, records, tables, string interpolation, `[@Name]` disambiguation), typed values (number, text, Boolean, date,
+time and date/time with time zones, GUID, records, tables, blank, error values with `ErrorKind` codes, untyped values
+from `ParseJSON`) and the functions of the formula-column reference plus the table, behavior and text functions that
+Functions, low-code plug-ins and Canvas apps use.
 
-Mirage includes a Power Fx interpreter (`mirage/lib/power-fx.mjs`): the documented grammar (operators, `;` chaining, `As`, `With`, records, tables, string interpolation, `[@Name]` disambiguation), typed values (number, text, Boolean, date, time and date/time with time zone semantics, GUID, records, tables, blank, error values with the documented `ErrorKind` codes, untyped values from `ParseJSON`) and the function table: every function of the formula-column reference plus the table, behaviour and text functions that Functions, low-code plug-ins and canvas apps use. Unknown functions answer 400 `PowerFxFunctionUnsupported` naming the function; connector functions are not part of the engine. `Now`, `Today` and date parts read in the host's time zone (UTC by default); `UTCNow` and `UTCToday` read in UTC. A numeric overflow, an invalid date text (`DateValue("2023-02-30")`) and a failed element of `ForAll` are error values that `IfError` handles. Adding a number to a date/time adds wall-clock days, as `DateAdd(..., TimeUnit.Days)` does, also across daylight-saving changes. The capability record `power-fx` is at behaviour. The preflight shows no `power-fx:evaluator` requirement while the engine is enabled.
+- An unknown function answers 400 `PowerFxFunctionUnsupported`; connector functions are not part of the engine.
+- `Now`, `Today` and date parts use the host time zone (UTC by default); `UTCNow` and `UTCToday` use UTC. Adding a
+  number to a date/time adds wall-clock days, as `DateAdd(..., TimeUnit.Days)` does, across daylight-saving changes.
+- Numeric overflow, an invalid date (`DateValue("2023-02-30")`) and a failed `ForAll` element are error values that
+  `IfError` handles.
 
-`createPowerFxEvaluator({ adapter, engine })` in `mirage/lib/canvas-power-fx.mjs` is the single Power Fx entry point. Its contract is:
+`createPowerFxEvaluator({ adapter, engine })` in `mirage/lib/canvas-power-fx.mjs` is the single entry point:
 
-- `check(expression, { symbols })` resolves to `{ ok, diagnostics, returnType? }`;
-- `evaluate(expression, { symbols, values, principal })` resolves to `{ value }`;
-- `checkSync` and `evaluateSync` take the same arguments and answer synchronously. Formula columns and `api.fxEvaluator` read through them, because record hooks are synchronous;
-- `describe()` returns the capability record `power-fx`. Its kind is `provider` and its operations are `evaluate`, `evaluateSync`, `check` and `checkSync`, each with its own level.
+| Member                                                 | Result                                                                                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `check(expression, { symbols })`                       | Resolves to `{ ok, diagnostics, returnType? }`                                                                   |
+| `evaluate(expression, { symbols, values, principal })` | Resolves to `{ value }`                                                                                          |
+| `checkSync`, `evaluateSync`                            | Same arguments, synchronous; formula columns and `api.fxEvaluator` use them because record hooks are synchronous |
+| `describe()`                                           | Capability record `power-fx`, kind `provider`, with a level per operation                                        |
 
-The default evaluator is the core engine (`source: 'core'`). `createPowerFxEvaluator({ engine: false })` disables it: `evaluate` and `evaluateSync` answer 501 `PowerFxNotImplemented`, `check` answers `{ ok: false, diagnostics: [{ code: 'POWERFX_NOT_IMPLEMENTED' }] }`, `describe().level` is `contract` and the record requires `adapter:powerFx`.
+- The default is the core engine (`source: 'core'`, level `behaviour`); preflight then shows no `power-fx:evaluator`
+  row. With `engine: false`, `evaluate` and `evaluateSync` answer 501 `PowerFxNotImplemented`, `check` answers
+  `{ ok: false, diagnostics: [{ code: 'POWERFX_NOT_IMPLEMENTED' }] }`, the level is `contract` and the record requires
+  `adapter:powerFx`.
+- A trusted data pack can export `powerFx: { evaluate | evaluateSync, check? | checkSync? }` to replace the engine;
+  `validatePowerFxAdapter` checks that at least one evaluate member exists and every member present is a function. The
+  synchronous operations are `behaviour` only when the adapter answers synchronously; otherwise the synchronous path
+  refuses with 501 `PowerFxAsyncAdapter`. A result without `{ value }` fails with `PowerFxAdapterInvalid`. Without
+  `check`/`checkSync`, checking fails with `POWERFX_CHECK_NOT_IMPLEMENTED`.
+- The same entry point backs `ExecuteFxExpression` (`api.fxEvaluator`), formula columns
+  ([Dataverse](dataverse-parity.md)), Dataverse Functions and automated low-code plug-ins
+  ([Dataverse plugins](dataverse-plugins.md)). `describeCustomApis(api)` describes those as `function:<uniquename>` and
+  `automated:<uniquename>`: `behaviour` while an evaluator answers, `contract` with the engine disabled.
+  `powerFxRequirements(store, powerFx)` adds a `power-fx:evaluator` preflight row per such operation only when the
+  engine is disabled and no adapter is registered, so `--strict` blocks.
 
-A trusted data pack can export `powerFx: { evaluate | evaluateSync, check? | checkSync? }`, which replaces the core engine. The adapter needs `evaluate` or `evaluateSync` (at least one); every member present must be a function, and `validatePowerFxAdapter` checks that shape. The synchronous operations are `behaviour` only when the adapter answers synchronously (an `evaluateSync`, or an `evaluate` that is not an async function). On the synchronous path an async-only adapter, or one that returns a promise, is refused with 501 `PowerFxAsyncAdapter`. An adapter that returns no `{ value }` fails with `PowerFxAdapterInvalid`. If the adapter has no `check` or `checkSync`, checking fails with `POWERFX_CHECK_NOT_IMPLEMENTED`; it is not reported as success.
+The optional [PAC differential check](power-fx-oracle.md) compares a fixed corpus with Microsoft's console evaluator.
 
-This entry point also backs the Dataverse `ExecuteFxExpression` message (`api.fxEvaluator`), formula columns (see [Dataverse](dataverse-parity.md)), Dataverse Functions and automated low-code plug-ins (see [Dataverse plugins](dataverse-plugins.md)). `describeCustomApis(api)` is the capability record of the Functions and plug-ins (`function:<uniquename>`, `automated:<uniquename>`): `behaviour` while an evaluator answers, `contract` with the engine disabled. `powerFxRequirements(store, powerFx)` returns one preflight row `power-fx:evaluator` per such operation only when the engine is disabled and no adapter is registered, so `--strict` blocks then.
-
-## Validation and remaining boundaries
-
-Run focused suites from a prepared toolkit checkout, then full validation:
+## Validation and limits
 
 ```sh
 node --test mirage/test/canvas*.test.mjs mirage/test/power-fx*.test.mjs
-node --test --test-concurrency=1 test-browser/canvas*.test.mjs
+node --test --import=./test/browser-bootstrap.mjs --test-concurrency=1 test-browser/canvas*.test.mjs
 npm run validate
 ```
 
-Toolkit fixtures use invented schemas and local ephemeral ports. Coverage includes current YAML and synthetic archives, legacy syntax, components/functions/state isolation, restricted PCF lifecycle, local media/SVG isolation, multi-select/search, timer ownership, paging, source edits/revisions and responsive geometry. Browser tests check 1366×768, 768×1024 and 390×844 behavior. A fixture seeds an invented report from exported schema/choice metadata, renders its source gallery row and opens its detail screen through the authored button. Related tables are empty; report entry, attachment saving and services are not validated locally. Local coverage does not establish cloud or native parity, or acceptance of a complete kit. Creator Kit reference bundles that report PCF checksum warnings are not run as trusted components.
+Toolkit fixtures use invented schemas and ephemeral ports; browser tests run at 1366×768, 768×1024 and 390×844. They do
+not establish cloud or native parity. Creator Kit bundles that report PCF checksum warnings are not run as trusted
+components.
 
-Remaining boundaries include native pixel/theme/version fidelity, advanced hardware/device controls, arbitrary attachments, full HTML/CSS, every enhanced component/legacy metadata contract, PCF resource/context completeness and specialized controls, full native delegation/connector semantics, and browser-specific media behavior. The runtime does not edit/pack/import/deploy Canvas apps or establish a native Studio round trip. Unknown features remain diagnostics/refusals. External editing/merging of current source is supported by Microsoft through Power Platform Git integration; see [source-code restrictions](https://learn.microsoft.com/power-apps/maker/canvas-apps/power-apps-yaml#source-code-payaml).
+Not reproduced: native pixel, theme and version fidelity; hardware and device controls; arbitrary attachments; full
+HTML/CSS; every enhanced component and legacy metadata contract; complete PCF resources and context; native delegation
+and connector semantics; a Studio round trip. Unknown features stay diagnostics or refusals.

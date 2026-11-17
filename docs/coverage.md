@@ -1,6 +1,6 @@
 # Coverage
 
-Paqvilo supports two local-first, pro-code workflows. **Lense** previews local resources against a live Power Pages backend. **Mirage** renders exported sources with local data and supported platform adapters. Use this matrix to choose the right workflow for a change.
+**Lense** previews local resources against a live Power Pages backend. **Mirage** renders exported sources with local data and supported platform adapters. Use this matrix to choose the workflow for a change.
 
 | Area                              | Lense                                                                                                                                 | Mirage                                                                                                                                                     |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -21,7 +21,7 @@ Paqvilo supports two local-first, pro-code workflows. **Lense** previews local r
 
 A portal export identifies pages, templates, assets and access rules. Unpacked Solution sources add forms, views, fields and component manifests. Missing managed metadata and dynamic references can leave a binding unresolved. Inspect labels exported references and observed browser elements separately.
 
-Mirage supports selected platform contracts, not every Power Pages feature. PCF dataset hosting requires an explicit Liquid table/view binding. Native list/subgrid PCF hosting is diagnosed and falls back to the native grid. React/virtual controls, platform libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish complete platform parity.
+Mirage supports selected platform contracts, not every Power Pages feature. Code-site (`.powerpages-site`) exports are imported, but SPA builds use their own tooling. PCF dataset hosting requires an explicit Liquid table/view binding. Native list/subgrid PCF hosting is diagnosed and falls back to the native grid. React/virtual controls, platform libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish complete platform parity.
 
 For details, read [forms and lists](../mirage/docs/forms-lists-parity.md), [PCF](../mirage/docs/code-components.md), [operations](../mirage/docs/operations.md), [plugins](../mirage/docs/dataverse-plugins.md), [Dataverse](../mirage/docs/dataverse-parity.md) and [parity evidence](../mirage/docs/parity-evidence.md). Add business-specific behavior through [project extensions](project-extensions.md).
 

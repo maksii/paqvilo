@@ -2,9 +2,19 @@
 
 Every test file declares what kind of truth its assertions encode, so a reader knows whether a failing assertion
 means "the code regressed" or "the expectation may be refined". `scripts/check-test-tags.mjs` enforces the tags on
-every test file a change adds or modifies. Test files that predate the rule are listed in
-`scripts/test-kinds-legacy.json`: the checker skips a listed file while it has no `@test-kind` line at all and checks it
-in full once one is added, so tag the whole file when you start. New files are never added to the list.
+every test file a change adds, modifies or deletes (`*.test.js`, `*.test.mjs`, `*.test.cjs`, and a `test.mjs` runner
+module that calls a test function), and on changed parity case and known-gap files. Test files that predate the rule
+are listed in `scripts/test-kinds-legacy.json`: the checker skips a listed file while it has no `@test-kind` line at
+all and checks it in full once one is added, so tag the whole file when you start. New files are never added to the
+list.
+
+| Command                                         | Checks                                                    | Run by              |
+| ----------------------------------------------- | --------------------------------------------------------- | ------------------- |
+| `node scripts/check-test-tags.mjs --staged`     | The index against `HEAD`                                  | pre-commit hook     |
+| `node scripts/check-test-tags.mjs --base <rev>` | `HEAD` against its merge base with `<rev>`                | local `ci:verify`   |
+| `node scripts/check-test-tags.mjs --event`      | The pull request or push range of the GitHub event        | CI change-scope job |
+| `node scripts/check-test-tags.mjs <file...>`    | Tag syntax of the named files only (no parity protection) | by hand             |
+| `node scripts/check-test-tags.mjs --report`     | Counts per kind and replay cases; never fails             | by hand             |
 
 ## Tag syntax
 
@@ -14,8 +24,11 @@ A file-level tag in the first 40 lines applies to every test in the file. The re
 // @test-kind parity: replays recorded oracle cases from mirage/test/parity/cases; every expected value is read from a case file built from two or more captures
 ```
 
-A tag on the line(s) directly above a `test(`, `it(`, `describe(`, `suite(` or loop that declares tests overrides
-the file kind for that test until the next tagged or top-level test:
+A tag directly above a `test(`, `it(`, `describe(`, `suite(` (including `.only`/`.skip`/`.todo`), or a `for (` or
+`[...].forEach(` loop that declares tests, overrides the file kind for that declaration. Comment and blank lines may sit
+between the tag and the declaration. The region ends before the next declaration at the same or a shallower
+indentation, so a tag on an indented `it(` covers only that test; the innermost region wins. A file without a
+file-level tag needs a tag on every top-level test:
 
 ```js
 // @test-kind unproven: local model of service-protection backoff; no native capture yet
@@ -23,8 +36,9 @@ test('backoff waits for the retry-after window', ...);
 ```
 
 Several kinds may be combined with `+` when an assertion set genuinely spans them (`parity+security`). Every tag
-needs a reason after the colon; `parity` and `observation` need the evidence source (where and how it was
-observed, never secrets, tokens, private record ids or business data).
+needs a reason after the colon (at least 8 characters); `parity` and `observation` need the evidence source (at least
+20 characters: where and how it was observed, never secrets, tokens, private record ids or business data). A file has
+at most one file-level tag.
 
 Node `t.test(...)` subtests, including `await t.test(...)`, also accept a tag immediately above the call.
 Their nested proof region ends with the subtest body; the surrounding fixture setup and diagnostic policy

@@ -1,9 +1,12 @@
 # Simulation levels and pack DATA files
 
-Select a level in Setup, a Mirage project, a catalogue site's `mirage` settings,
-or the CLI. The same policy applies to organization Web API/SOAP requests,
-model-driven forms, local administration, Power Pages forms/API, plug-ins and
-background work. Authorization still runs before an operation can commit.
+The simulation level decides where local writes go. It applies to every mutation surface: organization Web API and
+SOAP requests, model-driven forms, `/_sim/` administration, Power Pages forms and `/_api`, plug-ins and background work.
+Authorization still runs before an operation commits; a level grants no identity extra access. (Fidelity levels such as
+`contract` or `behaviour`, which say how much of a platform feature Mirage implements, are a separate concept: see
+[capabilities and preflight](capabilities-and-preflight.md).)
+
+Set it in a Mirage project, a catalogue site's `mirage` settings, `/_setup/`, or with `--simulation`:
 
 ```yaml
 simulation:
@@ -14,28 +17,25 @@ simulation:
 paqvilo mirage start --project ./mirage.project.yml --simulation dry-run
 ```
 
-| Level        | Record edits                                         | Schema changes                          | Restart                                                                    |
-| ------------ | ---------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
-| `dry-run`    | Allowed in memory                                    | Refused                                 | Reloads source and pack DATA; memory edits and local credentials disappear |
-| `simulation` | Writes existing, explicitly declared pack DATA files | Refused                                 | Reads updated pack DATA                                                    |
-| `deep`       | Writes declared pack DATA                            | Allowed with a declared schema location | Reads updated DATA and normalized schema                                   |
+| Level        | Record edits                                  | Schema changes                            | After restart                                                             |
+| ------------ | --------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
+| `dry-run`    | Kept in memory                                | Refused (`SimulationSchemaDisabled`, 403) | Reloads source and pack DATA; memory edits and local credentials are gone |
+| `simulation` | Written to declared, existing pack DATA files | Refused (`SimulationSchemaDisabled`, 403) | Reads the updated pack DATA                                               |
+| `deep`       | Written to declared pack DATA files           | Allowed when a `schemaPath` is declared   | Reads the updated DATA and normalized schema                              |
 
-Source/bootstrap imports establish the runtime's initial schema in every level.
-Creating a table, adding a column or importing schema through a running API is a
-schema mutation and requires `deep`. This policy also covers schema changes made
-by trusted extension code inside the transaction.
+`simulation` takes only `level`; any other key, or another value, fails at startup. Source and bootstrap imports
+establish the initial schema at every level. Creating a table, adding a column or importing schema through a running
+API is a schema change, including one made by trusted extension code inside the transaction.
 
-Existing configurations that omit `simulation` retain their previous private
-local-state persistence. Administration labels that mode `local-state`; it is not
-presented as pack writeback. Guided creation defaults to `dry-run`.
+A configuration that omits `simulation` keeps the older private local-state persistence: every write goes to the
+ignored state file and schema changes are allowed. Administration labels it `local-state`; it is not pack writeback.
+New guided configurations select `dry-run`.
 
 ## Declare existing writable DATA
 
-A registered trusted pack may declare `dataFiles`. Modules still execute only
-when explicitly registered through project/catalogue `dataPacks`, CLI
-`--pack-module`, or the embedded pack options. See [external packs](data-packs.md).
-
-For example, a project's pack module can contain:
+A trusted pack declares its writable files in `dataFiles`, an explicit data property (not a getter). Packs load only
+when registered through project or catalogue `dataPacks`, `--pack-module` or the embedded pack options; see
+[data packs](data-packs.md).
 
 ```js
 export default {
@@ -76,114 +76,77 @@ The project supplies an existing `data/records.json`:
 }
 ```
 
-Supply the `sample_item` table and columns through a selected Solution, a pack
-preset, or embedded initial mappings. The DATA declaration owns storage; it does
-not guess column types, grant permissions or declare application navigation.
+The `sample_item` table and columns come from a selected Solution, a pack preset or embedded mappings: the DATA
+declaration owns storage only, never types, permissions or navigation.
 
-`file` is relative to the registered pack module. It must resolve to a regular
-existing JSON file inside that pack directory, including after resolving links.
-Executable modules, discovery files, `.paqvilo` state, portal exports and Solution
-files are not inferred as write targets. The runtime never rewrites the pack's
-JavaScript to save a record.
+Each entry accepts only `file`, `tables`, `newTablesPath` and `schemaPath`, and must declare at least one location.
+`file` is a relative `.json` path from the pack module's directory, without `..`, `.git` or `.paqvilo` segments, and
+must resolve (after links) to an existing regular file inside that directory. Each file has one entry. Nothing else is
+inferred as a write target; the runtime never rewrites the pack's JavaScript.
 
-`tables` assigns each logical table one owner and an existing JSON array path.
-Primary keys must be present, unique and consistent with table metadata. A path
-of `[]` owns a root array. Multiple tables may occupy separate paths in one file;
-multiple files may own separate tables. Overlapping locations and duplicate
-ownership fail before startup.
+`tables` maps each logical table to `{ path, idColumn }`: an existing JSON array (a path of `[]` is the root array) and
+its primary key column. Keys must be present, unique and consistent with table metadata. Several tables may share a
+file at separate paths, and several files may own separate tables; overlapping locations, unsafe property names
+(`__proto__`, `constructor`, `prototype`) and a table with two owners fail before startup.
 
-`newTablesPath` optionally names an existing object for tables created in deep
-simulation. Only one file may provide this default owner. Existing tables still
-need their own declared locations. `schemaPath` optionally names an existing
-object for normalized local metadata; only one schema owner is allowed. A deep
-runtime without that owner allows record edits but refuses schema mutations.
+`newTablesPath` optionally names an existing object for tables created in `deep`; only one file may provide it, and
+existing tables still need their own locations. `schemaPath` optionally names an existing object for normalized local
+metadata; only one schema owner is allowed, and a `deep` runtime without it allows record edits but refuses schema
+changes. Pack schema holds normalized schema only (never secret stores, password hashes or identity settings). Custom
+API definitions, request parameters and response properties are schema: changing them needs `deep` and a `schemaPath`.
 
-Create, update and delete modify these DATA arrays directly. They retain record
-identity, unmodified row properties and unrelated JSON siblings. JSON whitespace
-may be reformatted. Pack DATA is authoritative on startup, even when the private
-runtime checkpoint has been removed.
+Create, update and delete modify the DATA arrays directly, keeping record identity, unmodified row properties and
+unrelated JSON siblings (whitespace may be reformatted). Pack DATA is authoritative on startup, even when the private
+checkpoint was removed.
 
 ## Private runtime and identity state
 
-Persistent levels require a private `stateFile`; CLI/project startup places it
-under ignored `.paqvilo/`. Platform identity, role, audit and job infrastructure
-and credential hashes persist there. They do not become business DATA merely
-because a table has no declared pack owner. Undeclared business writes fail with
-`SimulationDataTargetRequired`; they never silently fall back to a sidecar.
+`simulation` and `deep` require a private `stateFile` for transaction recovery; CLI and project startup place it under
+ignored `.paqvilo/`. Identity, role, audit and job infrastructure and credential hashes persist there and never become
+business DATA. A business write to a table without an owner fails with `SimulationDataTargetRequired` (409); it never
+falls back to a sidecar. A schema change in `deep` without a `schemaPath` fails with `SimulationSchemaTargetRequired`
+(409).
 
-The control plane is private runtime state at every level: process definitions
-and their activation rows (`workflow`), environment variable definitions and
-values, connection references and the Power Pages configuration tables of both
-data models (the configuration tables documented for the portals Web API, and
-the `powerpagesite`/`powerpagecomponent`/`mspp_*` tables), together with the
-deployment-profile pin and the operation choices (`/_sim/api/operations`,
-including explicit local flow activation). At level `simulation` only business
-tables need a pack DATA owner, so flow activation, a deployment-profile switch
-and a preset apply all work there; the preset's business rows are written to its
-DATA file. Process run history (`workflowlog`, `processsession`) is
-runtime-owned like `asyncoperation` and `plugintracelog`: at simulation and deep
-simulation it is kept in the private runtime state, so a classic workflow run on
-a business table needs a DATA owner only for the business table itself.
+The control plane is private runtime state at every level, so only business tables need a DATA owner:
 
-Workflow rows have one writer: the organization seeds each Solution definition
-with its exported activation state and its activation row, and a state
-replacement (a `/_sim/` save) keeps them; the Solution component rows of forms,
-views, site maps and apps are materialized from the Solution sources. A preset that replaces an
-organization table (for example `customapi`) keeps the rows the Solution sources
-seeded in that table: the preset's rows win by id, the Solution's other rows
-stay.
+- process definitions and their activation rows (`workflow`), environment variable definitions and values, connection
+  references, and the Power Pages configuration tables of both data models (including
+  `powerpagesite`/`powerpagecomponent`/`mspp_*`);
+- the deployment-profile pin and operation choices (`/_sim/api/operations`, including local flow activation);
+- run history (`workflowlog`, `processsession`, `asyncoperation`, `plugintracelog`).
 
-Dry run does not load or save that checkpoint and disables persistent source,
-asset, evidence and certificate caches. Record edits, local registrations and
-password/secret hashes stay in memory. Configuration edits explicitly saved
-through Setup remain configuration edits.
+Flow activation, a profile switch and a preset apply therefore work at `simulation`; a preset's business rows go to its
+DATA file. Solution definitions seed workflow rows (with their exported activation state) and the component rows of
+forms, views, site maps and apps; a `/_sim/` state replacement keeps them, and a preset that replaces an organization
+table such as `customapi` wins by id while the Solution's other rows stay.
 
-Pack schema contains only normalized schema sections. Application secret stores,
-password hashes and simulator identity settings are excluded. Ordinary record
-audit lookups may retain their non-secret user IDs and display names.
-Custom API definitions, request parameters and response properties also belong
-to schema: their rows define public operation signatures. Changing them requires
-deep simulation and a declared `schemaPath`; that DATA location preserves them
-across restarts independently of the private checkpoint.
-
-Portal visitors continue to use contact identity and table permissions.
-Organization users and application registrations continue to use Dataverse
-roles, ownership and field security. Selecting a simulation level grants neither
-identity additional access.
+`dry-run` neither loads nor saves the checkpoint and disables persistent source, asset, evidence and certificate caches;
+record edits, local registrations and password or secret hashes stay in memory. Configuration explicitly saved through
+Setup is still saved.
 
 ## Publication, conflicts and recovery
 
-The storage adapter participates in the DataStore commit boundary. It prepares
-every changed pack file and the private checkpoint, checks their loaded digests,
-then publishes under owned file locks with a recovery journal. An unsuccessful
-publication does not emit committed events. A late publication failure restores the earlier
-file contents and rolls back memory; it is not a successful partial write.
-Dataverse operations that deliberately commit independently, such as elastic
-main operations, retain their separate transaction semantics.
+The storage adapter joins the `DataStore` commit: it prepares every changed pack file and the private checkpoint,
+checks their loaded digests, then publishes under owned file locks with a recovery journal. A failed publication emits
+no committed events; a late failure restores the earlier files and rolls back memory. Operations that commit
+independently by design (such as elastic tables) keep their own semantics.
 
-External changes cause `PackDataConflict`. Restart from the updated files before
-retrying; the runtime does not silently merge or overwrite them. If rollback
-cannot safely restore a file because its contents changed again, writes stop with
-`PersistenceRecoveryRequired`. Preserve the journal and backups while resolving
-the conflict. Recovery reclaims a lock only when a validated transaction journal
-names its exact owner token and allowed paths, the recorded process is proven
-absent, and the on-disk token still matches. Active, foreign, legacy and
-unverifiable locks remain untouched. Recovery refuses changed physical paths or
-symlinked companion files rather than restoring through them.
+- A pack file changed outside the runtime causes `PackDataConflict` (409). Restart from the updated files before
+  retrying; nothing is merged or overwritten.
+- If rollback cannot restore a file because it changed again, writes stop with `PersistenceRecoveryRequired` (500).
+  Keep the journal and backups while resolving it.
+- Recovery reclaims a lock only when a validated journal names its exact owner token and paths, the recorded process is
+  proven gone and the on-disk token still matches; active, foreign, legacy and unverifiable locks stay. It refuses
+  changed physical paths and symlinked companion files.
 
-These guarantees serialize cooperating runtimes and detect outside edits. They
-do not claim that separate files become atomically visible to unrelated readers
-at one filesystem instant.
+This serializes cooperating runtimes and detects outside edits; separate files do not become visible to unrelated
+readers at one instant.
 
 ## Inspect and change a level
 
-`GET /_sim/api/simulation` reports the effective level, business and control-plane
-persistence, exact declared file targets, schema capability, changed-record count
-and readiness. It returns no row values or credentials. Model-driven commands and
-administration record actions combine these capabilities with their own supported
-controls and applicable authorization.
+`GET /_sim/api/simulation` reports the effective level, record persistence, declared file targets, schema capability,
+changed-record count and readiness, without row values or credentials.
 
-Save a new level through Setup and restart the instance. Changing configuration
-never flushes in-memory edits into pack files. Restart always rereads the selected
-source and DATA files. For runtimes without Power Pages, use the same policy with
-the [standalone runtime configuration](../../docs/setup.md).
+Save a new level through `/_setup/` and restart. Changing configuration never flushes in-memory edits into pack files,
+and a restart always rereads the selected source and DATA files. Runtimes without Power Pages use the same policy; see
+[standalone organization](standalone-organization.md).

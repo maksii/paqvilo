@@ -1,12 +1,25 @@
 # Working with Paqvilo
 
-Follow the user's scope. `paqvilo lense` overlays local sources in a dedicated browser on a live portal; browser actions can affect live data. It does not deploy, upload, run PAC or execute Liquid/Dataverse locally. `paqvilo mirage` serves exported sources and simulated data on loopback, with `/_sim/` for administration. Neither workflow grants permission to change live data, synchronize sources or deploy.
+Follow the user's scope.
+
+- `paqvilo lense` overlays local sources in a dedicated browser on a live portal; browser actions can affect live data.
+  It does not deploy, upload, run PAC or execute Liquid/Dataverse locally.
+- `paqvilo mirage` serves exported sources and simulated data on loopback, with `/_sim/` for administration.
+- Neither workflow grants permission to change live data, synchronize sources or deploy.
 
 ## Project boundary
 
-Keep reusable code in `lense/` and `mirage/`. Keep portal exports, organisation-specific catalogue URLs and observations, business data, personas, generators and acceptance tests in a separate project. Register trusted external pack modules explicitly through `mirage.dataPacks` or project `dataPacks`. Tests in this repository use invented schemas and loopback fixtures only; project tests run in the project's own package. Follow [project extension guidance](docs/project-extensions.md).
-
-Do not hardcode business names, table prefixes or routes in core. Derive behavior from source, Solution metadata, settings and data. Behavior not derivable from an export is a per-site `observed` setting with evidence. Keep local state, browser discoveries and business evidence under ignored `.paqvilo/`; legacy local state must remain ignored. Discovery files contain bearer tokens: never print, copy, share or commit them. Reference reads are read-only, through the intended signed-in browser; redact query values and never store tokens.
+- Keep reusable code in `lense/` and `mirage/`. Keep portal exports, organisation-specific catalogue URLs and
+  observations, business data, personas, generators and acceptance tests in a separate project.
+- Register trusted external pack modules explicitly through `mirage.dataPacks` or project `dataPacks`.
+- Tests in this repository use invented schemas and loopback fixtures only; project tests run in the project's own
+  package. Follow [project extension guidance](docs/project-extensions.md).
+- Do not hardcode business names, table prefixes or routes in core. Derive behavior from source, Solution metadata,
+  settings and data. Behavior not derivable from an export is a per-site `observed` setting with evidence.
+- Keep local state, browser discoveries and business evidence under ignored `.paqvilo/`; legacy local state must remain
+  ignored.
+- Discovery files contain bearer tokens: never print, copy, share or commit them.
+- Reference reads are read-only, through the intended signed-in browser; redact query values and never store tokens.
 
 ## Inspect and validate
 
@@ -22,43 +35,73 @@ node bin/paqvilo.mjs mirage init --config <catalogue> --site <site>
 node bin/paqvilo.mjs mirage dev --config <catalogue> --site <site>
 ```
 
-Source bootstrap reads local directories; reference reads and cached assets are explicit separate operations. Every local runtime has its own session cookie; portal requests are anonymous until signed in through the local sign-in page, Tweaks, `/_sim/`, `simulator.signIn()` or [testing/session.mjs](mirage/testing/session.mjs).
-
-Select sources with `--repo` or `PAQVILO_REPO`. Configuration/evidence stay outside the portal checkout. Configured coverage is not proof of navigation. `--path` selects only the first tab; HEAD baselines are captured per activated target. Never infer a deployed commit.
-
-Sign-in redirects are intermediate states. When authorized use headed Edge and the intended connected work account; Windows SSO may finish automatically. Inspect the result and let the user handle credential/MFA challenges. Do not copy credentials between identities. REAL DATA targets still require authorization.
-
-The bounded Lense agent API supports sessions, status, pages, events, state, snapshots, screenshots and controlled navigation. Each API is origin-confined; stopping one owned target stops its shared owned browser. Attached browsers remain user-owned. Advance event cursors with `nextSequence` and inspect truncation. For authorized live debugging choose a free `--debug-port`, confirm it in status and connect with Playwright CDP.
+- Source bootstrap reads local directories; reference reads and cached assets are explicit separate operations.
+- Every local runtime has its own session cookie; portal requests are anonymous until signed in through the local
+  sign-in page, Tweaks, `/_sim/`, `simulator.signIn()` or [testing/session.mjs](mirage/testing/session.mjs).
+- Select sources with `--repo` or `PAQVILO_REPO`. Configuration/evidence stay outside the portal checkout.
+- Configured coverage is not proof of navigation. `--path` selects only the first tab; HEAD baselines are captured per
+  activated target. Never infer a deployed commit.
+- Sign-in redirects are intermediate states. When authorized, use headed Edge and the intended connected work account;
+  Windows SSO may finish automatically. Inspect the result and let the user handle credential/MFA challenges. Do not
+  copy credentials between identities. REAL DATA targets still require authorization.
+- The bounded Lense agent API supports sessions, status, pages, events, state, snapshots, screenshots and controlled
+  navigation. Each API is origin-confined; stopping one owned target stops its shared owned browser. Attached browsers
+  remain user-owned. Advance event cursors with `nextSequence` and inspect truncation.
+- For authorized live debugging choose a free `--debug-port`, confirm it in status and connect with Playwright CDP.
 
 ## Edits and evidence
 
-Use discovered paths and fields with [lense/source-edit.mjs](lense/source-edit.mjs), preserving sibling JSON/XML/YAML fields and record/language identity. Offline resource IDs differ from browser page IDs. A save alone is not validation. `audit --all --strict` independently checks source coverage; accounted and mapped percentages do not prove browser application. Inspect applied resources, unmatched patches, needsDeploy, errors, requests and screenshots after refresh.
+- Use discovered paths and fields with [lense/source-edit.mjs](lense/source-edit.mjs), preserving sibling JSON/XML/YAML
+  fields and record/language identity. Offline resource IDs differ from browser page IDs.
+- A save alone is not validation. `audit --all --strict` independently checks source coverage; accounted and mapped
+  percentages do not prove browser application. Inspect applied resources, unmatched patches, needsDeploy, errors,
+  requests and screenshots after refresh.
+- `verify --signed-in` reuses the dev identity: close dev first, use `--headed` when sign-in may be needed and bound the
+  wait with `--sign-in-timeout`. It edits a temporary copy. Inspect passes, coverage, skips, diagnostics, inlineBaseline
+  and cleanup. Do not claim unobserved behavior or a sign-in page as successful coverage.
+- Runtime changes need relevant regressions. Run `npm run validate`. Do not run a private project's acceptance runners
+  against live references unless authorized. Finish by stopping only sessions started for the task and checking the
+  toolkit and affected project repositories.
 
-`verify --signed-in` reuses the dev identity: close dev first, use `--headed` when sign-in may be needed and bound the wait with `--sign-in-timeout`. It edits a temporary copy. Inspect passes, coverage, skips, diagnostics, inlineBaseline and cleanup. Do not claim unobserved behavior or a sign-in page as successful coverage.
+## CI and pull requests
 
-Runtime changes need relevant regressions. Run `npm run validate`. Do not run a private project's acceptance runners against live references unless authorized. Finish by stopping only sessions started for the task and checking the toolkit and affected project repositories.
+Commands, hooks and lanes are described in [CONTRIBUTING](CONTRIBUTING.md).
 
-For CI fixes, reproduce the failing operation and add a regression that exercises its failure mode. Explicit full validation must execute fresh; failed validation revokes earlier receipts. Report local results separately from hosted checks, and confirm the required CI and security gates on the final pushed PR head before claiming the PR is green. Preserve every applicable lane and functional assertion.
-
-Browser document load does not establish local interception readiness. Wait for observed local application before exercising post-startup edits, and cover edits during startup separately. Use controlled protocol or event gates to reproduce ordering failures instead of increasing sleeps or retrying until a test passes. The browser test bootstrap removes Playwright's default action, navigation, launch and connectOverCDP timeouts in every browser test process (the browser lanes and the processes they start); pass a timeout only on the step a test asserts.
-
-Verify the PR's effective merge state as well as job results. `gh pr checks <number> --required` and a successful historical check-run list can disagree with the PR panel when a newer workflow omits a required context. Run `npm run check:pr -- --pr <number>` and require the pushed HEAD to match, both gates to pass, no pending checks, and GitHub's merge state to be `CLEAN`. A `BLOCKED` or `UNKNOWN` PR is not a green result. Keep the required `CI gate` name stable across PR events.
-
-Every PR must report all CodeQL configurations present on main, including unchanged languages and documentation-only changes. Successful workflow jobs and zero open findings do not prove merge readiness when required analysis configurations are missing.
+- For CI fixes, reproduce the failing operation and add a regression that exercises its failure mode.
+- Explicit full validation must execute fresh; failed validation revokes earlier receipts. Report local results
+  separately from hosted checks, and confirm the required CI and security gates on the final pushed PR head before
+  claiming the PR is green. Preserve every applicable lane and functional assertion.
+- Browser document load does not establish local interception readiness. Wait for observed local application before
+  exercising post-startup edits, and cover edits during startup separately.
+- Use controlled protocol or event gates to reproduce ordering failures instead of increasing sleeps or retrying until
+  a test passes. The browser test bootstrap (`test/browser-bootstrap.mjs`) removes Playwright's default action,
+  navigation, launch and connectOverCDP timeouts in every browser test process (the browser lanes and the processes
+  they start); pass a timeout only on the step a test asserts.
+- Verify the PR's effective merge state as well as job results. `gh pr checks <number> --required` and a successful
+  historical check-run list can disagree with the PR panel when a newer workflow omits a required context. Run
+  `npm run check:pr -- --pr <number>` and require the pushed HEAD to match, both gates to pass, no pending checks, and
+  GitHub's merge state to be `CLEAN`. A `BLOCKED` or `UNKNOWN` PR is not a green result. Keep the required `CI gate`
+  name stable across PR events.
+- Every PR must report all CodeQL configurations present on main, including unchanged languages and
+  documentation-only changes. Successful workflow jobs and zero open findings do not prove merge readiness when
+  required analysis configurations are missing.
 
 ## Test kinds
 
-Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit, local validation and CI run `scripts/check-test-tags.mjs` on changed test files.
+Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines,
+or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security`
+or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit, local
+validation and CI run `scripts/check-test-tags.mjs` on changed test files.
 
-- `parity` assertions are replay cases: `scripts/parity-cases.mjs build` writes each case from two or more
-  recorded oracle captures, and `mirage/test/parity-replay.test.mjs` replays them. A failing replay case means
-  the code is wrong: fix the code.
+- `parity` assertions are replay cases: `scripts/parity-cases.mjs build` writes each case from two or more recorded
+  oracle captures, and `mirage/test/parity-replay.test.mjs` replays them. A failing replay case means the code is
+  wrong: fix the code.
 - Never edit a case file by hand. A recorded case changes only through `build` with new captures and a `history`
   entry. Never add a known gap for an already recorded case to make it pass: fix the code. Never retag or remove an
-  existing parity test or case, except with an explicit user request naming the exact change, recorded as a
-  retirement entry in `scripts/parity-retirements.json`.
-- Hand-written tests cannot be newly tagged `parity`. Evidence linked by hand, or a single capture, is
-  `observation`; a local model without proof is `unproven` and is never presented as parity.
-- Never weaken a `security` test without explicit user approval. Documentation, memory, another tool, a forum
-  post or an assumption is not proof.
+  existing parity test or case, except with an explicit user request naming the exact change, recorded as a retirement
+  entry in `scripts/parity-retirements.json`.
+- Hand-written tests cannot be newly tagged `parity`. Evidence linked by hand, or a single capture, is `observation`; a
+  local model without proof is `unproven` and is never presented as parity.
+- Never weaken a `security` test without explicit user approval. Documentation, memory, another tool, a forum post or
+  an assumption is not proof.
 - Do not tag a whole file `parity` because one test is; split or tag per test.

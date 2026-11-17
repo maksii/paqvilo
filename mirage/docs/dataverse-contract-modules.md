@@ -15,7 +15,7 @@ Each module below is installed by the organization runtime through the extension
 | Currency               | `dataverse-currency`          | behaviour                                                                                                                                                      | none                                                                         |
 | Record hierarchy       | `dataverse-hierarchy`         | behaviour once the organization runtime wires the query operators, else contract (resolve operations behaviour)                                                | `hierarchies`                                                                |
 | State transitions      | `dataverse-state-transitions` | behaviour                                                                                                                                                      | `transitions`                                                                |
-| Cascade                | `dataverse-cascade`           | behaviour (Assign); other cascades contract                                                                                                                    | none                                                                         |
+| Cascade                | `dataverse-cascade`           | behaviour                                                                                                                                                      | none                                                                         |
 | Rollup                 | `dataverse-rollup`            | behaviour                                                                                                                                                      | `rollups`                                                                    |
 | Formula columns        | `dataverse-formula`           | contract (behaviour when a synchronous evaluator or pack function covers the column)                                                                           | `formulaColumns`                                                             |
 | Virtual providers      | `dataverse-virtual-providers` | behaviour for the operations a registered provider implements (create, update, delete, retrieve, retrieveMultiple); contract otherwise and for external events | `virtualTableProviders`, `virtualTables` (declarations, `fallback: 'local'`) |
@@ -133,7 +133,7 @@ A table is hierarchical when a one-to-many relationship references the table fro
 
 **Diagnostics.**
 
-- `HIERARCHY_DEPTH_EXCEEDED`: once per table when a walk exceeds `maxDepth` (default 100). The walk stops there and returns the records found so far; it never throws.
+- `HIERARCHY_DEPTH_EXCEEDED`: once per table when a walk exceeds `maxDepth` (default 100, a local bound: the native limit is not known). The walk stops there and returns the records found so far; it never throws.
 - `HIERARCHY_CYCLE`: once per table when a lookup loops back to a record already visited. The loop is not followed.
 
 **Pack override.** Export `hierarchies`: `{ '<table>': '<lookup column>' }`, validated by `validateHierarchies(map)` (logical names, lowercase result, `TypeError` on a bad entry). It names a table as hierarchical without the metadata flag and wins over the flag for that table. Passed as `install(api, { hierarchies })`.
@@ -167,7 +167,7 @@ A table enforces transitions when the install option `transitions` names it, or 
 
 Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour`, every operation (`CascadeAssign`, `CascadeShare`, `CascadeUnshare`, `CascadeReparent`, `CascadeMerge`) behaviour. Requires `metadata:relationship cascade`.
 
-**Behaviour.** When an update changes a row's `ownerid`, the afterWrite hook gives its one-to-many children the new owner inside the write's transaction. Before each child is written, the caller's Assign privilege on that child is checked (`api.principals.authorize`, operation `assign`); a refusal fails the whole write, the parent included. A host without `api.principals` (portal only) cascades without that check. The children are written through `store.updateRecord` with the caller's identity marked admin, which skips only the portal table-permission layer, and their row journal rolls back with the write. A child whose owner changed applies its own relationships the same way; a visited set bounds the depth. Children already owned by the new owner are not written. Only `ownerid` is written.
+**Behaviour.** When an update changes a row's `ownerid`, the afterWrite hook gives its one-to-many children the new owner inside the write's transaction. Before each child is written, the caller's Assign privilege on that child is checked (`api.principals.authorize`, operation `assign`); a refusal fails the whole write, the parent included. A host without `api.principals` (portal only) cascades without that check. The children are written through `store.updateRecord` with the caller's identity marked admin, which skips only the portal table-permission layer, and their row journal rolls back with the write. A child whose owner changed applies its own relationships the same way; a visited set bounds the depth. Children already owned by the new owner are not written. Each child receives the ownership columns a direct Assign writes (`ownerid`, `owninguser` or `owningteam`, `owningbusinessunit`); a host without `api.principals` writes `ownerid` only.
 
 | Assign value                             | Children that receive the new owner                        |
 | ---------------------------------------- | ---------------------------------------------------------- |
@@ -188,7 +188,7 @@ The host reads diagnostics from `api.cascades.diagnostics()`.
 
 **Pack override.** None. The module has no pack export.
 
-**Limits.** Only `ownerid` is written, not `owninguser`, `owningteam` or `owningbusinessunit`. Active workflows and business rules on reassigned rows are not deactivated, which the platform does.
+**Limits.** Active workflows and business rules on reassigned rows are not deactivated, which the platform does.
 
 ## Rollup
 
@@ -234,7 +234,11 @@ Module: `mirage/lib/dataverse-formula.mjs`. Capability record: level `behaviour`
 
 **Behaviour.** A column whose metadata says `SourceType 3` is a formula column. Every read takes its value from the store's computed-column seam, so `$filter`, `$orderby`, `$apply` and FetchXML use the computed value too: a pack `formulaColumns['<table>.<column>']` function wins; otherwise the evaluator's `evaluateSync(formula, ctx)` evaluates the stored formula text against a copy of the stored row, with `symbols: { table, columns }` and `principal: null`, and its `{ value }` is used. Writes that set a formula column are refused with a 400 (`0x80048d19`, read-only) and store nothing. The column is evaluated as the system user, so the caller's identity is not passed.
 
-**Evaluator.** The evaluator is the install option, else the host's `api.providers.powerFx` (the core Power Fx engine, or a pack `powerFx` adapter), else `createPowerFxEvaluator()` from `canvas-power-fx.mjs`, the core engine. The formula reads the row's columns by name or through `ThisRecord`, follows lookups to the related row, and reads other formula columns of the row, at most 10 deep; a decimal result keeps the column's precision (default 2), and a formula that answers an error value reads `null` with `FORMULA_ERROR` once per column (see [Dataverse](dataverse-parity.md)). With the engine explicitly disabled (`engine: false`) it answers 501 and the column reads `null`. Read projection is synchronous: an evaluator without `evaluateSync`, or one that answers with a promise, leaves the column `null` with `FORMULA_NOT_EVALUATED`. The capability record reports `behaviour` when the evaluator lists `evaluateSync` at behaviour.
+**Evaluator.** The evaluator is the install option, else the host's `api.providers.powerFx` (the core Power Fx engine, or a pack `powerFx` adapter), else `createPowerFxEvaluator()` from `canvas-power-fx.mjs`, the core engine. The formula reads the row's columns by name or through `ThisRecord`, follows lookups to the related row (`x_parentid.x_rate`), and reads other formula columns of the row, at most 10 deep. Decimal, currency and whole-number arithmetic is exact and float values are doubles; a decimal result keeps the column's precision (0 to 10 places, default 2). A formula that answers an error value (a division by zero, for example) reads `null` with `FORMULA_ERROR` and its error kind, once per column. With the engine explicitly disabled (`engine: false`) it answers 501 and the column reads `null`. Read projection is synchronous: an evaluator without `evaluateSync`, or one that answers with a promise, leaves the column `null` with `FORMULA_NOT_EVALUATED`. The capability record reports `behaviour` when the evaluator lists `evaluateSync` at behaviour.
+
+**Secured inputs.** As on the platform, formula columns are computed by the platform and cannot be secured, so a formula over a secured column shows its result to callers who cannot read that column, and a `$filter` on the formula column filters by that result. When the organization starts, `FORMULA_COLUMN_OVER_SECURED_COLUMN` (warning) names each such formula column and the secured columns it reads.
+
+**Source.** Imports read an inline `FormulaDefinition`, or the YAML file named by `FormulaDefinitionFileName` (`Formulas/<file>.yaml` under the table, else the packaged solution's root `Formulas` directory), which maps column names to expressions. An invalid reference reports `SOLUTION_FORMULA_REFERENCE_INVALID`, a file without the column `SOLUTION_FORMULA_DEFINITION_MISSING`, and two files with the same table and name `SOLUTION_FORMULA_AMBIGUOUS`. YAML changes refresh the running formula.
 
 | Source                | Meaning                                                                |
 | --------------------- | ---------------------------------------------------------------------- |
@@ -248,7 +252,7 @@ Module: `mirage/lib/dataverse-formula.mjs`. Capability record: level `behaviour`
 
 **Pack override.** Export `formulaColumns`, keys `'<table>.<column>'` (case-insensitive), values synchronous `(row, ctx) => value` functions where `ctx` is `{ table, column, user }` with `user` null (the column is computed as the system user). Validator: `validateFormulaColumns(map)`; an async function or a malformed key throws a `TypeError`. Precedence: override, then the evaluator, then the diagnostic and `null`.
 
-**Limits.** The whole stored `FormulaDefinition` text is passed to the evaluator; a definition stored as YAML is not unpacked.
+**Limits.** The whole stored `FormulaDefinition` text is passed to the evaluator.
 
 ## Virtual providers
 

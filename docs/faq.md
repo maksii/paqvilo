@@ -1,49 +1,58 @@
 # Frequently asked questions
 
-## Do I need to know npm or clone the repository?
-
-No cloning is required. Install Node.js, which includes npm and npx. npm downloads Paqvilo into your project; npx runs that installed copy. [Getting started](getting-started.md) explains each command and opens a populated demo without a Power Pages account.
-
 ## Should I start with Lense or Mirage?
 
-Use **Lense** when you need the real portal backend, live sign-in or online components while editing local frontend sources. Use **Mirage** for a local portal, simulated data and repeatable scenarios. Both provide Inspect source navigation. See the [coverage matrix](coverage.md).
-
-## Can I work without repeating terminal commands?
-
-Yes. Generate the demo with `--scaffold`, open its prepared VS Code workspace and use **F5**. Tasks install dependencies, start the dedicated browser and attach the debugger. Inspect opens the relevant source in your editor. Follow the [editor workflow](demo.md#prefer-vs-code-tasks).
-
-## Do I need .NET or PAC to run the demo?
-
-No. The local demo needs Node.js and a supported browser. Install the .NET SDK to rebuild its C# plugins, and PAC to deploy or export your own online site. The sample includes compiled plugins and deployment archives.
+Use **Lense** when you need the real portal backend, live sign-in or online components while editing local frontend
+sources. Use **Mirage** for a local portal with simulated data and repeatable scenarios. The
+[coverage matrix](coverage.md) compares them area by area.
 
 ## How is Lense different from Fiddler or DevTools overrides?
 
-Lense derives resource mappings from Power Pages exports, preserves record and field identity, compares Git baselines and connects rendered components to their source files. Its panel combines resource comparison, diagnostics and source navigation. See the [workflow comparison](../README.md#beyond-fiddler-and-devtools-overrides).
+| Existing workflow                                                                                                                                                                                                                                                           | What it provides                                                 | What Paqvilo adds                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [Fiddler Classic AutoResponder](https://www.telerik.com/fiddler/fiddler-classic/documentation/knowledge-base/autoresponder) / [Fiddler Everywhere rules](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/rules-presets/modify-traffic/modify-reponse-body) | Request matching, local file responses and response modification | Power Pages export mapping, Git baseline comparisons and refresh on source saves                  |
+| [Chrome DevTools Local Overrides](https://developer.chrome.com/docs/devtools/overrides) / [Edge Overrides](https://learn.microsoft.com/en-us/microsoft-edge/devtools-guide-chromium/javascript/overrides)                                                                   | Replace browser resources with local copies                      | Portal record and field identity, supported inline edits and integrated Online / Local comparison |
+| [Power Platform CLI and VS Code](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview)                                                                                                                                                                | Source editing and portal download/upload                        | A local Liquid and Dataverse simulation for independent development and repeatable tests          |
+
+DevTools and Fiddler remain useful for general browser and HTTP debugging.
+
+## Do I need .NET or PAC to run the demo?
+
+No. The demo needs Node.js and Edge or Chrome; it ships compiled plug-ins and deployment archives. Install the .NET SDK
+only to rebuild its C# plug-ins, and PAC only to deploy or export a site.
 
 ## Does saving a file deploy it or change Dataverse?
 
-Saving changes a local file. Lense can preview supported resources in its browser; Mirage can render them locally. Neither action deploys the site. Lense's portal actions still use live Dataverse, so submitting or deleting a record can affect that environment. Mirage actions use local state unless you explicitly configure a live provider.
+No. Saving changes a local file, which Lense previews in its browser and Mirage renders locally. Lense's portal actions
+still use live Dataverse, so submitting or deleting a record affects that environment. Mirage actions use local state
+unless you explicitly configure a live provider or pass `--allow-live-writes`.
 
 ## Why does my own Mirage portal start empty?
 
-An export contains portal configuration, not your business records. Add generated rows, a project data pack or explicit local records. Local personas are separate from your Microsoft account. Portal requests start anonymous until local sign-in unless your project explicitly configures a shared identity. The [demo](demo.md) includes both data and personas.
+An export contains portal configuration, not business records. Add generated rows (`mirage data scaffold`), a
+[data pack](../mirage/docs/data-packs.md) or local records. Portal requests are anonymous until you sign in as a local
+persona; local personas are separate from your Microsoft account.
 
 ## Why add a Solution export?
 
-Portal files identify the basic form or list. Solution metadata identifies the underlying FormXml, selected views, table fields, relationships and exported code components. Add unpacked Solution roots to resolve these links in Inspect and supply native rendering metadata in Mirage. See [configuration](configuration.md).
+Portal files name the basic form or list. Unpacked Solution metadata supplies the FormXml, views, table fields,
+relationships and code components behind them, which Inspect links to and Mirage renders from. See
+[configuration](configuration.md).
 
 ## Why does Inspect show an unknown or static reference?
 
-Liquid can choose components dynamically, and exports can omit managed metadata or live identity. A static reference may belong to a branch that was not rendered. The selected summary separates **Owner**, **Local source**, enclosing components, context and alternatives. Exact ownership can coexist with unavailable local source; serving a script does not establish execution. Inspect does not infer missing bindings, a deployed revision or a live user's effective permission. Add the relevant sources, use **Refresh inspection**, and compare the rendered controls with the [selection evidence](lense.md#selection-evidence). Replaced elements must be selected again; stale source actions stay disabled.
-
-## Can I deploy the demo to my own environment?
-
-Yes. The installed demo includes portal and Solution exports, unpacked Solution sources, PCF projects and registered C# plugins. Follow its [deployment guide](../examples/project/deployment/README.md), provide your environment's configuration and seed your own demo rows. Deployment is separate from running Mirage.
+Liquid can choose components dynamically, exports can omit managed metadata, and a static reference may belong to a
+branch that did not render. Inspect does not infer missing bindings, a deployed revision or a live user's effective
+permission. Add the missing sources, use **Refresh inspection**, and read the [selection evidence](lense.md#selection-evidence)
+states.
 
 ## What if a component works online but differs locally?
 
-Check diagnostics and the [coverage matrix](coverage.md). Unsupported PCF hosts, flow actions, external services or missing metadata can require a mock or [project extension](project-extensions.md). Verify important scenarios against your authorized online portal before release.
+Check diagnostics and the [coverage matrix](coverage.md). Unsupported PCF hosts, flow actions, external services or
+missing metadata can need a mock or a [project extension](project-extensions.md).
 
-## Does Mirage execute my Dataverse plugin DLL?
+## Does Mirage execute my Dataverse plug-in DLL?
 
-Not by default. It imports the assembly, type and step registrations, then offers placeholders, rejection/target-patch mocks and trusted project handlers. Placeholders keep CRUD available and report that the business logic was skipped. On Windows, explicitly configured original-assembly mode can execute a trusted plugin DLL locally. The demo includes matching local models for its registered C# plugins. See [plugin simulation](../mirage/docs/dataverse-plugins.md).
+Not by default. Mirage imports the assembly, type and step registrations and runs trusted project handlers, mocks or
+visible placeholders that report the skipped logic. On Windows, an explicitly configured original-assembly mode can run a
+trusted plug-in DLL locally. See [plug-in simulation](../mirage/docs/dataverse-plugins.md).

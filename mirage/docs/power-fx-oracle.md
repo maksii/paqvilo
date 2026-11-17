@@ -1,38 +1,50 @@
 # Power Fx differential checks with PAC
 
-This optional development tool compares a fixed corpus of pure formulas with Microsoft's PAC console evaluator. It is not a runtime dependency and is not part of the default CI commands. Its unit tests use synthetic process results, so CI does not require PAC, credentials or a Dataverse connection.
+An optional development tool that evaluates a fixed corpus of pure formulas with Microsoft's PAC console evaluator
+(`pac power-fx`) and compares the results with Mirage's interpreter. It is not a runtime dependency and not part of CI;
+its own unit tests use synthetic process results, so CI needs no PAC, credentials or Dataverse connection.
 
-Run from a prepared toolkit checkout with a Windows PAC executable:
+From a toolkit checkout with a Windows PAC installation:
 
 ```powershell
 New-Item -ItemType Directory -Force .paqvilo | Out-Null
-node scripts/power-fx-oracle.mjs --pac "$env:LOCALAPPDATA\Microsoft\PowerAppsCLI\Microsoft.PowerApps.CLI.2.13.1\tools\pac.exe" > .paqvilo/power-fx-report.json
+node scripts/power-fx-oracle.mjs --pac "<path-to>\pac.exe" > .paqvilo/power-fx-report.json
 ```
 
-Use the actual `pac.exe` for your installation, rather than its `pac.cmd` launcher. `--pac` can be omitted when `pac.exe` is on PATH. The runner produces one JSON report and exits nonzero for differences, unavailable PAC, an unrecognized output format, unsafe authentication context, timeouts or process errors. There is no successful skip when PAC is absent. It accepts no external formulas or environment argument: only the built-in pure corpus is executed.
+- Pass the actual `pac.exe`, not the `pac.cmd` launcher; omit `--pac` when `pac.exe` is on `PATH`. The only accepted
+  argument is `--pac`: the runner takes no formulas or environment, and runs only its built-in corpus.
+- It prints one JSON report and exits 1 for any difference, missing PAC, unrecognized output, unsafe authentication
+  context, timeout or process error. A missing PAC is a failure, never a skip.
+- Code: `mirage/test-support/power-fx-oracle.mjs` (corpus and runner) and `scripts/power-fx-oracle.mjs` (command).
+  Neither ships as a runtime dependency.
 
-The development implementation is in `mirage/test-support/power-fx-oracle.mjs`; the command is `scripts/power-fx-oracle.mjs`. Neither is shipped as a runtime dependency. The corpus covers text, arithmetic, date-only values with explicit culture, table and record projections, errors and coercion. Large numeric values are compared as formatted text, preserving every digit. Runtime errors are compared by Power Fx error kind, with messages retained as diagnostic information. Unresolved error-kind probes fail the comparison. Host differences are listed separately and remain in the report.
+## How the comparison works
 
-## What was observed
+- **Isolation.** PAC runs in a child process with fresh `LOCALAPPDATA`, `APPDATA` and `USERPROFILE` directories, and the
+  runner evaluates nothing unless `pac auth list` confirms that no profile exists there. It never reads, copies,
+  selects or clears your own profiles, and removes only its temporary directory. This is checked per run, not a
+  documented PAC guarantee; offline execution is not enforced.
+- **Output.** PAC exits 0 even when a formula errors, and its redirected output mixes a UTF-8 banner with UTF-16LE
+  echoed formulas and results. The parser checks order, completeness and expression errors instead of trusting the
+  exit code, and rejects output it does not recognize. Process time (45 s) and output size are bounded.
+- **Values.** Large numbers are compared as formatted text, keeping every digit. Runtime errors are compared by Power
+  Fx error kind, with messages kept as diagnostics; an unresolved error-kind probe fails. Host differences are listed
+  separately in the report.
+- **Corpus.** Text and numeric formatting, arithmetic, date-only values, table and record projections, errors and
+  coercion. Culture-sensitive cases request `en-US` explicitly, because PAC's console language can differ from
+  Mirage's `en-US` default, and date-only cases avoid time-zone-dependent instants.
 
-On October 26, 2026, PAC `2.13.1+g251dee1` on Windows evaluated the pure corpus without an authentication profile. A child process received fresh `LOCALAPPDATA`, `APPDATA` and `USERPROFILE` directories; `pac auth list` confirmed that no profiles existed before evaluation. This is an empirically checked isolation mechanism for the tested installation, not a documented cross-version guarantee. The runner refuses to evaluate formulas unless that empty-profile check succeeds. It never reads, copies, selects or clears the user's existing profile files.
-
-PAC returned process exit code zero even when a formula produced an error. Redirected output combined a UTF-8 banner with UTF-16LE echoed formulas and results. The parser checks ordering, completeness and expression errors rather than treating exit code zero as a pass. It rejects unrecognized output instead of guessing. Process time and output size are bounded, and each run removes only its own temporary profile directory.
-
-The observed PAC language was `en-150`; Mirage's default was `en-US`. Culture-sensitive corpus cases explicitly request `en-US`, and date-only cases avoid time-zone-dependent instants. These checks do not establish date/time parity for every host or locale. A rejecting-proxy experiment succeeded, but proxy settings can be bypassed: unrestricted offline execution has **not** been proven.
-
-## Corrections established by the comparison
-
-- `IfError(1/0,"x")` produces a number-conversion error. `IfError(Text(1/0),"x")` returns text. Mirage now coerces a selected replacement when the failing expression's type can be inferred without evaluating unselected branches. Numeric replacements retain exact decimal precision and Float identity. Dynamic types that cannot be inferred retain their previous behavior and report `POWER_FX_IFERROR_TYPE_UNKNOWN`; a complete native type checker remains outside this implementation.
-- Numeric `Text` formatting preserves large exact decimals instead of first converting them to a JavaScript double. Regression cases also cover the observed Float presentation, rounding, grouping, percentages and literals. This does not claim complete native custom-format support.
-- Numeric placeholders retain intervening literals, distinguish literal percent signs from scaling placeholders, and apply repeated percentages, trailing comma scaling and positional zero padding. These cases were checked against isolated PAC 2.13.1 on October 27, 2026. Custom-format language markers and multiple format sections remain outside this baseline; the PAC console rejects some formats documented for Canvas apps.
-
-The checked-in regressions use sanitized expected values established by PAC. Machine-specific commands and raw research evidence stay under ignored `.paqvilo/`; no auth profiles or business data are fixtures.
-
-A subsequent review added exact numeric scalar comparisons, scientific notation, `Blank()` and numeric locale-separator cases. The parser preserves significant digits instead of first rounding both sides to JavaScript numbers. Numeric `Text` uses the requested locale's decimal/group separators and reports invalid language tags; culture-specific grouping patterns beyond the tested cases remain a gap.
+Regression tests (`mirage/test/power-fx-oracle*.test.mjs`, `power-fx-text-oracle.test.mjs`) keep sanitized expected
+values. Raw evidence stays under ignored `.paqvilo/`; no profiles or business data are fixtures.
 
 ## Scope
 
-PAC is a console host. Canvas apps, Dataverse formula columns and other Power Fx hosts enable different functions and apply different context rules. A matching pure corpus is evidence for those cases, not proof of complete Canvas, Dataverse or Power Fx parity. The current runner targets the tested Windows PAC output; Linux, macOS, other PAC versions and localized console messages have not been validated.
+PAC is a console host. Canvas apps, Dataverse formula columns and other hosts enable different functions and context
+rules, so a matching pure corpus is evidence for those formulas only, not Canvas, Dataverse or full Power Fx parity.
+Known limits of the local interpreter that this check exposes: `IfError` coerces a replacement only when the failing
+expression's type can be inferred (otherwise `POWER_FX_IFERROR_TYPE_UNKNOWN`), and numeric `Text` does not support
+custom-format language markers, multiple format sections or culture-specific grouping beyond the tested cases. The
+runner targets Windows PAC output; other platforms, PAC versions and localized console messages are not supported.
 
-See Microsoft's [PAC Power Fx command reference](https://learn.microsoft.com/power-platform/developer/cli/reference/power-fx) and [IfError type-compatibility rules](https://learn.microsoft.com/power-platform/power-fx/reference/function-iferror#type-compatibility).
+See the [PAC Power Fx command reference](https://learn.microsoft.com/power-platform/developer/cli/reference/power-fx)
+and [IfError type compatibility](https://learn.microsoft.com/power-platform/power-fx/reference/function-iferror#type-compatibility).

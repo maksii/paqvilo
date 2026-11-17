@@ -8,25 +8,18 @@ From an empty working folder, run:
 npx paqvilo mirage demo
 ```
 
-npx downloads and runs the published toolkit. The command creates `paqvilo-example/`, loads the sample data and opens a dedicated browser. Keep the terminal running. Choose **Sign in**, select **Alex Example 01**, then open **Approach > Web API > Arcwell Services**.
-
-For VS Code, add `--scaffold` and open `paqvilo-example/paqvilo-demo.code-workspace`. Select **Demo: Mirage and browser debugger** in **Run and Debug**, then press **F5**. Prepared tasks install dependencies, start the browser and run acceptance tests. The included `AGENTS.md` guides coding agents through the demo's commands and local/live boundaries. Inspect opens the related sources in your editor. See the [VS Code walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md#prefer-vs-code-tasks).
+npx downloads and runs the published toolkit. The command creates `paqvilo-example/`, loads the sample data and opens a dedicated browser. Keep the terminal running. Choose **Sign in**, select **Alex Example 01**, then open **Approach > Web API > Arcwell Services**. For VS Code, add `--scaffold` and follow the [VS Code walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md#prefer-vs-code-tasks).
 
 ## Explore the workflow
 
-Search and page through accounts, compare Active/All/Inactive views, and save a typed account field. Select contacts or parent accounts through searchable, paged lookups. Their dialogs support Tab, Enter and Escape. Search related contacts and test create, read, edit and delete. Add more than eight contacts to check contact paging.
+The [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md) lists what to try: CRUD, lookups,
+paging, notes and attachments, the Liquid pages, plug-in validation and backend operations. Press **Alt+Shift+P** for
+**Inspect** source links and **Tweaks** persona controls; **Manage data and personas** holds records, presets and
+**Backend operations**.
 
-The Web API and PCF account lists keep the selected view and account search in the
-URL. Reloading after a source edit restores those filters; browser Back restores
-the previous query.
-
-Download the service brief, edit its note and confirm the attachment is preserved. Add another note with a small attachment. Compare the same records through **Out of the box** and **PCF**, then open **Extended** for server logic and a location request/response simulation.
-
-Open **Liquid** for parameterized partials, a manifest-backed component, custom views and filtered FetchXML. On **Web API**, try a short account name or contact last name to check plugin validation; save a valid name and email with surrounding spaces to inspect normalization. Eight exported plugin steps have matching local models and editable C# sources.
-
-Press **Alt+Shift+P** for **Inspect** source links and **Tweaks** persona controls. Open **Manage data and personas** for records, presets and **Backend operations**. Follow the complete [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md).
-
-Use **Alex Example 01** for editor access and **Alex Demo 01** for reader access. Readers can view accounts, related contacts and notes; their write requests are denied. Exported web roles and table permissions provide global account access and contact access scoped through parent accounts.
+Use **Alex Example 01** for editor access and **Alex Demo 01** for reader access. Readers can view accounts, related
+contacts and notes; their write requests are denied. Exported web roles and table permissions give global account access
+and contact access scoped through parent accounts.
 
 ## Try simulated Microsoft Entra
 
@@ -87,7 +80,7 @@ Keep business data, observations and project tests in your own project. See [pro
 
 ## Use it as a starting point
 
-This project and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
+This project enforces LF line endings with `.gitattributes`. `npx paqvilo doctor --setup --json` checks dependency and browser readiness; `node editor-workspace.mjs` generates editor paths from the resolved catalogue. For your own site, `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /` captures deployed styles (the invented demo has no reference portal). For a new project, start from `paqvilo init` instead: see [getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
 
 ## Code Apps adapter example
 

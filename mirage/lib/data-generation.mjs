@@ -489,7 +489,7 @@ async function generateDataCommand({
     );
     const generatedMs = performance.now() - started;
     // Re-check immediately before writing; the store applies its own lock and
-    // digest checks (docs/state-write-integrity.md).
+    // digest checks (mirage/docs/state-storage.md#write-integrity).
     await assertOfflineState(outputPath);
     await writeOfflineState(ownResource, source, outputPath, output);
     return {

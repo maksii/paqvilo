@@ -2,96 +2,94 @@
 
 ![Mirage: a simulated portal shown as a solid page above its shifting reflection.](../docs/assets/mirage-visual.png)
 
-Mirage runs local Power Pages exports, solution-based model-driven apps and a simulated Dataverse organization API. Choose the surfaces your project needs, with independent developer runtimes and repeatable data.
+Mirage is a local simulator. It serves Power Pages exports, solution-based model-driven apps and a simulated Dataverse
+organization API on loopback addresses, with its own local data. Forms, lists, settings and permissions come from the
+exported sources and Solution metadata; personas, datasets and project rules come from data packs that your project
+registers explicitly.
 
-Mirage derives forms, lists, settings and permissions from exported sources and Solution metadata. Your project's registered data packs supply personas, datasets and simulated business rules.
+Mirage does not deploy, upload, run PAC or contact a live environment unless you ask for an explicit reference read or
+enable live writes. Local rendering covers selected platform contracts: see the [coverage matrix](../docs/coverage.md),
+and claim parity only where replay cases built from recorded reference captures prove it
+([test kinds](../docs/test-kinds.md)).
 
-[Interactive demo](../docs/getting-started.md#try-the-demo) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
+[Getting started](../docs/getting-started.md) | [Configuration](../docs/configuration.md) |
+[Mirage reference](docs/README.md)
 
-## Start your workspace
+## Start a runtime
 
-For an app or API project without Power Pages, use the [standalone organization guide](docs/standalone-organization.md). It needs Solution exports and optional trusted packs, without a portal export or live environment. [Simulation levels](docs/simulation-levels.md) select memory-only edits, direct pack DATA updates, or schema-capable deep simulation. Configure these in `/_setup/`; changes apply after restart.
-
-Install Paqvilo and configure your export using [getting started](../docs/getting-started.md), then run from your portal project:
+From your project, with a catalogue (`paqvilo.config.yml`):
 
 ```sh
 npx --no-install paqvilo mirage init --config ./paqvilo.config.yml --site portal
 npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 ```
 
-Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Open the `adminUrl` address that the runtime prints for local administration; `/_sim/` on the portal address redirects there.
-
-Mirage appends local debugger metadata to exported scripts and stylesheets, including
-inline scripts and model-driven client resources. Set `mirage.sourceMaps: false`
-on a catalogue site, or `sourceMaps: false` in a Mirage project, to serve their
-original asset bytes without generated debugger trailers. This setting takes effect
-on restart. The catalogue's top-level `sourceMaps` controls Lense overlays separately.
-When using Mirage as a local Lense reference, disabling Mirage maps removes the need
-for a trailer-stripping proxy. The runtime still accepts only its listening Host and
-registered identity-provider reply origin; arbitrary proxy origins are unsupported.
-
-Open **Model-driven apps** from the administration page or visit `/main.aspx` on the `appsUrl` address for the local Power
-Pages Management app. It supports grids, saved views, search, filters, columns and
-record editing, and loads additional apps/forms/views from solution metadata.
-Portal customization edits stay in local runtime state and update the Mirage
-preview. See [model-driven apps](docs/model-driven-apps.md) for supported controls,
-architecture and limits.
-
-**Backend operations** inventories exported server logic and cloud flows. Review supported defaults, set a JSON response mock or explicitly enable trusted local code. [Operation modes](docs/operations.md) explain the execution boundary. [PCF hosting](docs/code-components.md) covers standard field and explicitly bound dataset controls.
-
-New states contain exported configuration and empty business tables. Use [data scaffolding](../docs/getting-started.md#3-work-locally-with-mirage) for generated rows or a [data pack](docs/data-packs.md) for your own scenarios. The portal starts anonymous; sign in locally before testing protected pages.
+For apps or APIs without a Power Pages export, use a `mirage.project.yml` and `--project` instead; see
+[standalone organization](docs/standalone-organization.md).
 
 ## Pick the session that fits
 
-| Command          | Session behavior                                                                                             |
-| ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| `demo`           | Copy a populated, editable example and open the development browser                                          |
-| `init`           | Write a per-site runtime project from your catalogue                                                         |
-| `dev`            | Start local runtimes and open the integrated browser; stop newly started runtimes when this dev session ends |
-| `start`          | Start owned runtimes in the background                                                                       |
-| `status`, `stop` | Inspect or stop background sessions in the same project scope                                                |
-| `serve`          | Run a foreground runtime without the integrated browser; stop with Ctrl+C                                    |
+| Command          | What it does                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `demo`           | Copies a populated, editable example and opens the development browser                         |
+| `init`           | Writes a per-site runtime project from your catalogue                                          |
+| `dev`            | Starts runtimes and opens the development browser; stops the runtimes it started when it ends  |
+| `start`          | Starts owned runtimes in the background                                                        |
+| `status`, `stop` | Inspects or stops background runtimes in the same project scope                                |
+| `serve`          | Runs one foreground runtime without the development browser; stop with Ctrl+C                  |
+| `inspect`        | Prints what the importer read from the sources (`--json`)                                      |
+| `data`           | `data scaffold` and `data generate` write local datasets ([data packs](docs/data-packs.md))    |
+| `preflight`      | Reports missing prerequisites for a scenario ([preflight](docs/capabilities-and-preflight.md)) |
+| `trace`          | Reads the activity of a running runtime ([request tracing](docs/tracing.md))                   |
+
+`paqvilo mirage --help` lists the other tools (render, inventories, parity and verification runners).
 
 ```sh
 npx --no-install paqvilo mirage status --config ./paqvilo.config.yml --json
 npx --no-install paqvilo mirage stop --config ./paqvilo.config.yml --site portal
-
-# Direct foreground runtime without the Lense browser:
 npx --no-install paqvilo mirage serve --source ./portal-export --solution-root ./solutions/Core --port 0
-npx --no-install paqvilo mirage inspect --source ./portal-export --json
 ```
 
-Run lifecycle commands with the same catalogue or `--project` used to start the session. A runtime already running before `dev` keeps running when its browser closes. Multi-portal catalogues support one runtime per site and selector navigation; each site has isolated state and a session cookie.
+Run lifecycle commands with the same catalogue or `--project` that started the session. A runtime that was already
+running before `dev` keeps running when the browser closes. A multi-portal catalogue runs one runtime per site, each with
+its own state and session cookie.
 
-Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. Ordinary project commands use readable `npx paqvilo mirage stop --project ...` arguments. On Windows, hints work in Command Prompt and PowerShell. Copy them as printed: an encoded `node -e` command preserves unsafe shell characters, a required ownership working directory or a group of separately scoped runtimes.
+`start` prints a stop command. Copy it exactly: it keeps the project or catalogue selectors and runtime overrides (port,
+state), and an encoded `node -e` form preserves characters the shell would otherwise interpret. A long command refers to
+a payload file in the runtime's ownership state directory under ignored `.paqvilo/`; replay checks its size and digest
+and fails if the file is missing or changed. Keep that directory under your own control. If a printed command no longer
+works, run `status` with the same selectors and stop the runtime by its `--state` file and actual `--port` (port `0`
+cannot identify an older session).
 
-Large encoded hints can refer to an immutable payload file in the runtime's ownership state directory, normally
-under ignored `.paqvilo/`. Keep that file while you need
-the printed command. Replay checks the payload size and digest and rejects nonregular files before reading; missing
-or changed payloads fail. If a copied hint is no longer usable, use `status` and `stop` with the same project/catalogue
-selectors to identify and stop the intended runtime.
+## Addresses and sign-in
 
-Keep the ownership directory and its parents under trusted control during publication and cleanup. Concurrent Paqvilo publishers coordinate their own files; arbitrary replacement by another actor is outside this trust boundary. Portable pathname cleanup is not an atomic compare-and-unlink operation.
+A runtime prints its portal address, `adminUrl` (the `/_sim/` administration workspace) and, on the Power Pages host,
+`appsUrl` (model-driven apps at `/main.aspx`). `/_sim/` on the portal address redirects to `adminUrl`. Each address is a
+separate loopback origin; see [simulation administration](docs/sim-administration.md).
 
-If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
+Portal requests are anonymous until a browser signs in locally: through the portal's sign-in page, Lense **Tweaks**,
+`/_sim/`, `simulator.signIn()` or the [testing helpers](../docs/public-api.md#test-many-visitors-concurrently). The
+session is a per-runtime cookie, so signing one browser in never signs another in. [Persona catalogues](docs/persona-catalog.md)
+group test identities and isolated setups.
 
-## Build scenarios you can repeat
+## Data and persistence
 
-On the `adminUrl` address, use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
+A new state holds the exported configuration and empty business tables. Generate rows with `mirage data scaffold`, or
+supply your own scenarios in a [data pack](docs/data-packs.md). The [simulation level](docs/simulation-levels.md)
+decides whether record edits stay in memory (`dry-run`) or are written to declared pack DATA files (`simulation`,
+`deep`). Large states use streamed checkpoints; see [state storage](docs/state-storage.md).
 
-Local identity comes from a per-runtime cookie. The `_sim` session and Lense Tweaks control
-only that browser's identity. [Persona catalogues](docs/persona-catalog.md) add grouped
-selection, custom presentation and isolated setups for profiles, variables and overrides.
-Use the [public testing API](../docs/public-api.md#test-many-visitors-concurrently) for
-independent automated visitors. The [project starter](../examples/project/README.md)
-demonstrates an external pack and a test against invented sources.
+## Debugger trailers
 
-Large state files use streamed checkpoints and row journals. Read them with the public
-`readStateFile` API, and use separate state paths for independent runtimes. See
-[state storage](docs/state-storage.md) for persistence, concurrency and memory limits.
+Mirage appends debugger metadata to exported scripts, stylesheets, inline scripts and model-driven client resources. Set
+`mirage.sourceMaps: false` on a catalogue site, or `sourceMaps: false` in a Mirage project, to serve the original bytes
+(applies on restart). The catalogue's top-level `sourceMaps` controls Lense overlays separately. Each listener accepts
+only its own `Host` and the registered identity-provider reply origin, so a proxy in front of Mirage is not supported.
 
-## Understand the simulation boundary
+## Boundaries
 
-Local `_sim` changes affect simulated data, permissions, settings, scenarios and runtime providers. Live-reference reads and cached assets are explicit operations with separate provenance. Live writes remain disabled unless the runtime flag and administration switch both permit them; neither is authorization to perform a business operation.
-
-Local rendering supports selected platform contracts. Review the [coverage matrix](../docs/coverage.md); claim parity only for recorded reference comparisons. See [documentation](docs/README.md) and [project extension guidance](../docs/project-extensions.md).
+`/_sim/` changes affect only local data, permissions, settings, scenarios and providers. Live reference reads and cached
+assets are explicit operations with their own provenance. Live create, update and delete stay disabled unless both
+`--allow-live-writes` and the `/_sim/` live-writes switch allow them; neither is authorization to change live data.
+Project data, personas and tests belong in a separate project: see [project extensions](../docs/project-extensions.md)
+and the [project starter](../examples/project/README.md).

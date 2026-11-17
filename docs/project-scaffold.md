@@ -69,8 +69,8 @@ authenticated/denied access, uses isolated state and blocks unexpected browser h
 ## Editor refresh
 
 ```sh
-npx paqvilo init --refresh-editor
-npx paqvilo init --refresh-editor --workspace-only
+npx --no-install paqvilo init --refresh-editor
+npx --no-install paqvilo init --refresh-editor --workspace-only
 ```
 
 Refresh uses effective configuration, including personal overrides and `PAQVILO_REPO`, to discover project/export/Solution and mapped deployment-file repositories. Real/nested paths are deduplicated without reading deployment values. Resolved folders stay in the ignored workspace; tracked tasks and launches use workspace-relative paths when both locations share a filesystem volume. Windows paths on different drives require absolute editor references: review those generated files before committing, or keep the catalogue and exports on the same drive. Keep configuration/evidence with the catalogue when selecting another export worktree.
@@ -81,11 +81,10 @@ Generated editor documents have a `paqvilo.scaffold` marker and content hash. Re
 
 Proposals target the catalogue selected for refresh. Paths containing shell interpolation or control characters require manual quoting; refresh reports the required review without generating an executable npm proposal for those paths.
 
-Generated optional guides connect prerequisites/version ownership, command effects,
-path bases and a multi-repository recipe, pack ownership, local state/personas and
-acceptance. Copy `docs/configuration.example.yml` to a new project-root catalogue
-before selecting it, so its documented relative paths use the intended base. The
-default catalogue stays minimal and those placeholder origins remain inert. Installed
-package docs match the installed version; online main can differ.
-
-Templates live in `templates/project/`, separately from `examples/project/`. They contain no customer data, personas, observations or deployed sources. The short generated `AGENTS.md` links to maintained online setup/configuration, Lense, Mirage and project-extension guides. Links derive from the toolkit package's repository metadata; the installed CLI and bundled docs are the fallback when online documentation differs from the installed version. See [project extensions](project-extensions.md), [configuration](configuration.md) and [getting started](getting-started.md).
+Generated guides (`README.md`, `AGENTS.md`, `docs/workflows.md`, `docs/configuration.md`, `docs/data-lifecycle.md`,
+`docs/acceptance.md` and each pack's `README.md`) link to the online docs of this repository's main branch; the installed
+CLI's `--help` and `node_modules/paqvilo/docs/` match the installed version when they differ. `docs/configuration.example.yml`
+is an optional two-site recipe: copy it to the project root before passing it as `--config`, so its relative paths use
+that base. Templates live in `templates/project/`, separately from the demo in `examples/project/`, and contain no
+customer data, personas, observations or deployed sources. See [project extensions](project-extensions.md),
+[configuration](configuration.md) and [getting started](getting-started.md).

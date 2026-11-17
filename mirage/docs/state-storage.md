@@ -1,15 +1,24 @@
 # Local state storage
 
-Mirage streams JSON state reads and checkpoint writes. The total document never needs
-to fit in one JavaScript string or Buffer. As with other in-memory stores, the decoded
-rows, active operations and any snapshots requested by callers must fit in available RAM;
-one scalar string is still subject to the engine's string limit.
+A Mirage runtime keeps its records, settings and simulator state in one state file (normally under `.paqvilo/`) and,
+when a preset streams generated records, a paged record folder beside it. File bytes and note bodies live in a storage
+provider instead; see [storage providers](storage-providers.md#routing).
 
-States below 16 MiB remain plain JSON. At or above that size, the same state path holds a
-`mirage-state-journal-v1` checkpoint followed by committed row transactions. The file is
-self-contained: copying or backing it up includes the checkpoint and every committed edit.
+## Formats
 
-Use the supported reader for both formats:
+- A state below 16 MiB is plain JSON.
+- At or above 16 MiB the same path holds a `mirage-state-journal-v1` checkpoint followed by committed row
+  transactions. The file is self-contained: a copy includes the checkpoint and every committed edit. A file named
+  `.json` may therefore hold a journal. Plain JSON and journal files without paged records keep their format until a
+  preset streams records.
+- `persistence: { journalThresholdBytes }` on `DataStore` or `createSimulator` changes the threshold (a nonnegative
+  integer; `0` journals every size). It is compared with the actual streamed checkpoint size.
+
+Reads and checkpoint writes stream, so the document never has to fit in one JavaScript string or Buffer. The decoded
+rows, running operations and requested snapshots must still fit in memory, and one scalar string is still subject to
+the engine's string limit.
+
+## Read and change state
 
 ```js
 import { DataStore, readStateFile } from 'paqvilo/mirage';
@@ -17,101 +26,109 @@ const state = await readStateFile('./.paqvilo/state.json');
 const simulator = await readStateFile('./.paqvilo/state.json', { sections: ['simulator'] });
 const store = await new DataStore({ file: './.paqvilo/state.json' }).init();
 await store.update('items', 'record-id', { name: 'Updated' });
-await store.compact(); // schedule during an idle period, when desired
+await store.compact(); // optional, during an idle period
 ```
 
-`readStateFile` is also exported by `paqvilo/mirage/fixtures`. Do not `JSON.parse` a state
-file yourself: a large state is a journal, not JSON. Section projections avoid retaining unselected checkpoint
-rows and skip reconstructing discarded fragmented values, although integrity verification
-still reads and checksums every journal byte. Small JSON values use a bounded native parse;
-larger documents retain streaming parsing. A journal entry larger than one line is written
-as fragment records: each line embeds a bounded JSON value directly, so large metadata
-sections are escaped once and parsed natively line by line. Journals written with the
-earlier escaped-chunk fragments remain readable. `snapshot()` intentionally
-copies its requested data; select sections/tables when a complete copy is unnecessary.
-For optimistic fixture replacement, use `store.snapshotDigest()` and
-`replaceState(next, { expectedDigest })`; this hashes bounded chunks without building
-an entire snapshot string. Existing `expectedSnapshot` callers remain supported.
+- `readStateFile` (also exported by `paqvilo/mirage/fixtures`) reads both formats. Never `JSON.parse` a state file
+  yourself. A `sections` projection does not keep unselected rows, but integrity verification still reads and
+  checksums every journal byte.
+- `snapshot()` copies what it returns; select sections or tables when a complete copy is not needed. Use the streamed
+  administration state export for a complete JSON file.
+- For optimistic replacement, take `store.snapshotDigest()` and pass it as `replaceState(next, { expectedDigest })`
+  (`expectedSnapshot` is still accepted). A stale digest fails with 409 `StateConflict` and applies nothing.
+- To change a running runtime, use the administration API or a `DataStore` transaction in that process. Stop the
+  runtime before replacing, restoring or migrating its state file.
 
-File bytes and note bodies can live outside the state file. When a Dataverse runtime has a
-storage router (see [storage providers](storage-providers.md#routing)), file entries in
-`state.dataverse.files` keep a `key` instead of base64 `data`, and note and attachment rows keep an
-internal `__blobkey` instead of the body. The state file format and `readStateFile` do not change:
-moving bytes out of an older state is a runtime step when the runtime loads or resets. It puts the
-inline bytes into the provider, rewrites the entries and rows in one `DataStore` transaction (written as a
-full checkpoint), and reports one `STORAGE_MIGRATED` diagnostic
-with counts. A second load finds nothing inline and changes nothing. A state migrated this way needs
-the same storage root to read its bytes back; without a router those reads answer `StorageUnavailable`.
+## Write integrity
 
-Checkpoints are written to an exclusive temporary file, synced, checked for external
-changes and atomically renamed. Ordinary core CRUD, deep inserts, associations, cascades
-and declarative secondary effects retain undo entries for changed rows. A successful
-large-state write appends row operations and a SHA-256 commit marker, then syncs before
-acknowledging the write. The persisted digest advances with the appended bytes. Restart
-verifies the checksums and ignores an unfinished transaction left by an interrupted write;
-the next locked commit removes that unfinished tail. A damaged committed checksum fails
-with `StateIntegrity` rather than accepting altered data.
+- **Checkpoints** are written to an exclusive temporary file, synced, checked for external changes and renamed into
+  place. Invalid or unpersistable replacements fail before the current checkpoint is replaced.
+- **Journal commits** append the row operations and a SHA-256 commit marker, then sync before the write is
+  acknowledged. Restart verifies the checksums and ignores a transaction left unfinished by an interrupted write; the
+  next locked commit removes that tail. A damaged committed checksum fails with `StateIntegrity`.
+- **Writers** are serialized by an exclusive sibling lock. Before writing, the store compares the file identity, byte
+  length and nanosecond modification time with what it loaded (plus the change time on POSIX; Windows excludes it
+  because NTFS can update it on a plain read). Any difference is a `StateConflict`, even for an equal-size edit. Two
+  stale runtimes never merge their in-memory state: share one runtime between browser sessions and give independent
+  scenarios separate state paths.
+- **Offline commands** (`mirage data generate`, `data scaffold`) refuse a state that a running Mirage uses, and write
+  through the same lock, digest and atomic-replace protocol. Temporary files and locks are removed on success or
+  failure.
 
-The existing exclusive sibling lock serializes writers. File identity, byte length and
-nanosecond modification timestamps are checked before writing. On POSIX the change timestamp
-is checked too. Windows excludes ChangeTime: NTFS can update it on an ordinary read when
-last-access updates are enabled. Reads, backup copies and first-attempt restarts therefore
-retain ownership without weakening inode, size or modification-time checks. The exact-byte digest
-is computed at load/checkpoint and advanced incrementally, avoiding a full file hash for
-each PATCH. A changed file identity, size or modification timestamp is a `StateConflict`,
-including an equal-size edit whose modification timestamp changes.
-Two stale runtimes cannot merge independent in-memory snapshots implicitly. Multiple browser
-sessions should share one runtime; independent scenarios should use different state paths.
-These checks assume a normal local filesystem, not a remote filesystem that fails to report
-changes. In particular, Windows cannot detect an in-place edit that keeps the same file
-identity and byte length and restores the exact previous modification timestamp. A following
-write can be acknowledged: plain JSON checkpoints overwrite that external edit, while a journal
-append retains the altered bytes and the next reload rejects their checksum with `StateIntegrity`.
-The digest is not re-hashed before each write. Do not edit the active state file with tools that
-preserve these metadata values. Stop the runtime before replacing or restoring state, keep backups,
-and use the administration API or a `DataStore` transaction for normal record edits.
+Known limit: the checks assume a local filesystem that reports changes. Windows cannot detect an in-place edit that
+keeps the file identity and length and restores the exact modification time; the next write then overwrites it (plain
+JSON) or the next reload rejects its checksum (journal). Do not edit the active state file with such tools, and keep
+backups.
 
-The HTTP audit ledger includes `saveMs` and `saveMode` (`journal` or `checkpoint`) for
-successful persisted writes. `DataStore.lastSave` and `onSave(timing)` expose the same timing
-to embedded hosts. The append journal grows with changes; `compact()` queues an atomic
-checkpoint without cloning rows. Full state replacement, presets and arbitrary `transact`
-callbacks also checkpoint. External trusted plugin handlers that execute retain full state
-rollback copies, and their cost can still scale with the state. A plug-in SDK call journals
-its own writes in a savepoint. An independent PreValidation commit copies the state once. Journaling does not make all query/filter/relationship operations indexed or
-remove the memory cost of complete admin state exports.
+State, lock and record-owner files stay private under ignored `.paqvilo/`. The protocol protects local integrity; it
+grants no permission to read or write a reference environment.
 
-An incremental row transaction also names the tables it wrote: the tables of its row operations, tables it
-allocated or removed and, defensively, any table whose row count changed. A storage adapter receives that set as
-`save(state, { tables })`. Full transactions and promoted ones pass no set. The simulation adapter then hashes only
-the named tables to decide which pack DATA files to rewrite, and keeps the earlier hashes for the rest. This saves
-a hash of every table per transaction. The write-integrity guarantees are unchanged. Pack files are still verified
-against their digests before and during publication. The private runtime file is still written whole in the same
-transaction. The schema hash still covers the complete normalized schema, because schema changes are refused below
-deep simulation, even in dry run, and sections have no row journal. Like the row journal, the table set relies on
-ordinary writes going through the store's row operations. A full transaction falls back to hashing every table.
+### What journals and what checkpoints
 
-`DataStore` and `createSimulator` accept `persistence: { journalThresholdBytes: 0 }` to journal every size,
-or choose another nonnegative byte threshold. The threshold is checked against the actual
-streamed checkpoint size. Invalid or unpersistable replacements fail before the current
-checkpoint is replaced; there is no total-document string-size rejection for large presets.
+| Write                                                                                                           | Persistence                                          |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Core CRUD, deep inserts, associations, cascades, declarative secondary effects, native form and multistep saves | journaled row transaction with undo entries          |
+| A plug-in SDK call                                                                                              | its own savepoint inside the caller's journal        |
+| Full state replacement, presets, arbitrary `transact` callbacks                                                 | full checkpoint                                      |
+| A trusted handler or CLR step that actually executes                                                            | promotes its unit to a full rollback copy/checkpoint |
+| An independent PreValidation commit                                                                             | copies the state once                                |
 
-The ordinary suite covers corruption, torn writes, stale/concurrent writers, rollback,
-fragmented metadata/rows and legacy JSON. Run the explicit volume check with at least
-2 GiB free RAM:
+`compact()` queues an atomic checkpoint without cloning rows; the journal otherwise grows with changes. Journaling does
+not index every query and does not remove the memory cost of a complete state export. The HTTP audit ledger records
+`saveMs` and `saveMode` (`journal` or `checkpoint`) for persisted writes; embedded hosts read the same values from
+`DataStore.lastSave` and `onSave(timing)`.
+
+An incremental transaction also passes the tables it wrote to the storage adapter as `save(state, { tables })`, so the
+simulation adapter rehashes only those tables to decide which pack DATA files to rewrite; a full transaction passes no
+set and every table is rehashed.
+
+## Paged record storage
+
+An owned preset can stream generated records into paged storage through its runtime context. The schema, forms,
+permissions, field security, calculated columns and record APIs still come from the selected Solution definitions.
+
+```js
+createOwned({ records }) {
+  function* items() {
+    for (let index = 0; index < 100000; index++) {
+      yield { x_itemid: inventedId(index), x_name: `Invented ${index}` };
+    }
+  }
+  return {
+    mappings: { x_item: { idColumn: 'x_itemid', nameColumn: 'x_name' } },
+    tables: { x_item: records.table(items(), { primaryKey: 'x_itemid' }) },
+  };
+}
+```
+
+- The input is a synchronous iterable; each yielded row is serialized independently, so a source object can be
+  reused. Schema defaults and deterministic autonumbers apply before storage. `primaryKey` builds a persistent
+  string-key index with the store's GUID and text comparison; other key shapes use the ordinary query path.
+- Runtime table arrays behave as ordinary mutable arrays of JSON rows. Snapshots and record results are detached
+  ordinary data; a complete snapshot materializes every requested record. Presets that return ordinary arrays keep
+  their existing ownership and copying.
+- Pages live in `<state-file>.records`; a record page holds up to 64 KiB of JSON and every read verifies its payload
+  digest. The journal references immutable page files by digest, and each runtime writes its own page file.
+- The state file and its `.records` folder belong together. The folder's `.record-owner.json` holds an owner key the
+  journal also records, so the pair loads together after a move or restore, and another state cannot adopt the
+  folder. A missing referenced page file fails start with `StateIntegrity` and leaves the state file unchanged. Back
+  up both; the administration JSON export is self-contained.
+- `DataStore.compact()` also rewrites live record versions and collects unreferenced files, protected by file leases
+  of active readers. A folder with files but no owner marker is used unowned, reported as `unverified-directory`, and
+  nothing in it is collected. Close the runtime to release its handles and leases.
+- Offline `data generate` and `data scaffold` keep paged input; a separate `--out` copies referenced pages into its own
+  record folder. `mergeDataset()` returns ordinary detached arrays.
+
+## Volume check
 
 ```sh
 paqvilo mirage verify-storage --json
 ```
 
-It saves/reloads 600,000 synthetic rows with a 1 KiB payload, verifies a file larger than
-the engine string limit, checks digest/restart consistency and requires 20 sequential
-single-row updates to complete in under five seconds. It also performs 20 real Web API
-PATCHes against 300,000 rows, exercises concurrent HTTP clients, checks the audit timings
-and verifies external conflicts.
-
-Source checkouts can also run
-`node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs`.
-The published command uses a disposable directory and removes it on completion; it does
-not inspect or modify a project's state. Run it on the filesystem used for local states.
-
-Native basic-form insert/edit postbacks, JSON form submissions and multistep saves use incremental row transactions. The record, associations and annotation attachments share one rollback boundary. Trusted handlers or CLR steps that actually execute promote the unit to a full checkpoint; audit saveMode reports the resulting persistence mode. verify-storage includes a native form save with a 5,000 ms bound.
+It uses a disposable directory (about 2 GiB free memory and 1 GiB temporary disk) and never touches a project's
+state: it saves and reloads 600,000 synthetic rows with 1 KiB payloads, checks digest and restart consistency, runs
+single-row updates, Web API PATCHes against 300,000 rows, concurrent HTTP clients and a native form save with their
+time limits, checks the audit `saveMode` and verifies external-conflict detection. Run it on the filesystem that holds
+your local states. From a source checkout,
+`node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs` runs the same check without the
+time limits.

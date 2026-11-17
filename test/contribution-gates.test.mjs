@@ -48,7 +48,7 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   });
   for (const file of [
     'mirage/README.md',
-    'mirage/docs/object-parity.md',
+    'mirage/docs/liquid-parity.md',
     'examples/company-operations/plugins/README.md',
     'AGENTS.md',
     'LICENSE',
