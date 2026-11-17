@@ -25,7 +25,16 @@ const GIT_SETTINGS = ['core.autocrlf=false', 'core.hooksPath=', 'commit.gpgsign=
     'advice.detachedHead=false',
   ])
   .flatMap((setting) => ['-c', setting]);
-const runGit = childProcess.execFileSync;
+const nativeRunGit = childProcess.execFileSync;
+let activeGitTimings = null;
+function runGit(...args) {
+  const end = activeGitTimings?.start('oracle');
+  try {
+    return nativeRunGit(...args);
+  } finally {
+    end?.();
+  }
+}
 function git(cwd, ...args) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   return runGit('git', [...GIT_SETTINGS, ...args], {
@@ -55,7 +64,7 @@ function fixture(t) {
 }
 
 /** Records the Git subcommand of every Git process the product starts, synchronous or not. */
-function gitStarts(t) {
+function gitStarts(t, timings) {
   const started = [];
   let marked = 0;
   const subcommand = (args) => args.find((arg, index) => !arg.startsWith('-') && args[index - 1] !== '-c');
@@ -63,7 +72,24 @@ function gitStarts(t) {
     const original = childProcess[name];
     return t.mock.method(childProcess, name, function (file, args, ...rest) {
       if (file === 'git') started.push(subcommand(args));
-      return original.call(this, file, args, ...rest);
+      if (file !== 'git' || !timings) return original.call(this, file, args, ...rest);
+      const end = timings.start(name === 'execFile' ? 'async' : 'sync');
+      if (name === 'execFileSync') {
+        try {
+          return original.call(this, file, args, ...rest);
+        } finally {
+          end();
+        }
+      }
+      try {
+        const child = original.call(this, file, args, ...rest);
+        child.once('close', end);
+        child.once('error', end);
+        return child;
+      } catch (error) {
+        end();
+        throw error;
+      }
     });
   });
   syncBuiltinESMExports();
@@ -85,6 +111,68 @@ function gitStarts(t) {
     /** The Git processes started since the last mark. */
     since: () => started.slice(marked),
   };
+}
+
+/** Fixed labels and elapsed times only: no Git arguments, paths, environment, output or errors. */
+function gitPhaseTimings(t) {
+  const allowed = new Set([
+    'fixture',
+    'initial baselines',
+    'commit on the working branch',
+    'branch moved to HEAD',
+    'packed branch moved back',
+    'tag shadows the branch',
+    'branch deleted',
+    'branch recreated',
+    'complete',
+  ]);
+  const began = performance.now();
+  const calls = [];
+  const phases = [];
+  let phase = 'fixture';
+  let reported = false;
+  const rounded = (value) => Math.round(value * 1000) / 1000;
+  const timing = {
+    phase(label) {
+      phase = allowed.has(label) ? label : 'other';
+      phases.push({ phase, elapsedMs: rounded(performance.now() - began) });
+    },
+    start(mode) {
+      mode = ['oracle', 'sync', 'async'].includes(mode) ? mode : 'other';
+      const call = { phase, mode, startedMs: performance.now(), endedMs: null };
+      calls.push(call);
+      return () => {
+        call.endedMs ??= performance.now();
+      };
+    },
+    report() {
+      if (reported) return;
+      reported = true;
+      const now = performance.now();
+      t.diagnostic(
+        JSON.stringify({
+          kind: 'git-baseline-phase-timings',
+          elapsedMs: rounded(now - began),
+          phase,
+          callsStarted: calls.length,
+          callsCompleted: calls.filter((call) => call.endedMs !== null).length,
+          phases,
+          calls: calls.map((call) => ({
+            phase: call.phase,
+            mode: call.mode,
+            completed: call.endedMs !== null,
+            elapsedMs: rounded((call.endedMs ?? now) - call.startedMs),
+          })),
+        }),
+      );
+    },
+  };
+  // A timeout may abandon the body before its finally runs. Publish before fixture cleanup in that case too.
+  t.after(() => {
+    if (activeGitTimings === timing) activeGitTimings = null;
+    timing.report();
+  });
+  return timing;
 }
 
 /** A promise with its resolve function. */
@@ -308,44 +396,67 @@ test('scoped scans of a followed baseline list what a full Git scan lists for in
   assert.equal((await same('folder replaced by the file', [app], ['diff'])).has(app), false);
 });
 
+/** Drain independent reads before any rejection can let fixture cleanup or the next mutation start. */
+async function readBaselinesTogether(pending) {
+  const results = await Promise.allSettled(pending);
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  return results.map((result) => result.value);
+}
+
 test('followed branch, tag and merge-base baselines move with their refs and with HEAD', async (t) => {
-  const fx = fixture(t);
-  const app = fx.file(APP);
-  git(fx.dir, 'branch', 'deployed');
-  const named = await followedBaseline(fx.dir, 'deployed', app);
-  const forked = await followedBaseline(fx.dir, 'merge-base:deployed', app, () =>
-    resolved(fx.dir, 'merge-base', 'HEAD', 'deployed'),
-  );
-  const starts = gitStarts(t);
-  const both = async (step) => {
-    await named.moved(step);
-    await forked.moved(step);
-  };
-  const commit = (text) => {
-    fx.write(APP, text);
-    fx.commit();
-  };
-  commit('window.local = 1;');
-  await both('commit on the working branch');
-  assert.deepEqual(await starts.during(() => named.baseline.changedFilesAsync({ files: [app] })), ['diff']);
-  assert.deepEqual(await starts.during(() => forked.baseline.changedFilesAsync({ files: [app] })), ['diff']);
-  git(fx.dir, 'branch', '-f', 'deployed', 'HEAD');
-  await both('branch moved to HEAD');
-  git(fx.dir, 'pack-refs', '--all');
-  commit('window.local = 2;');
-  git(fx.dir, 'branch', '-f', 'deployed', 'HEAD~1');
-  await both('packed branch moved back');
-  // A tag of the same name wins over the branch: Git resolves refs/tags before refs/heads.
-  git(fx.dir, 'tag', 'deployed', 'HEAD');
-  await both('tag shadows the branch');
-  assert.equal(named.baseline.commit, commitOf(fx.dir, 'HEAD'));
-  git(fx.dir, 'tag', '-d', 'deployed');
-  git(fx.dir, 'branch', '-D', 'deployed');
-  await both('branch deleted');
-  assert.equal(named.baseline.available, false);
-  git(fx.dir, 'branch', 'deployed', 'HEAD');
-  await both('branch recreated');
-  assert.equal(named.baseline.available, true);
+  const timings = gitPhaseTimings(t);
+  activeGitTimings = timings;
+  const starts = gitStarts(t, timings);
+  try {
+    const fx = fixture(t);
+    const app = fx.file(APP);
+    git(fx.dir, 'branch', 'deployed');
+    timings.phase('initial baselines');
+    const [named, forked] = await readBaselinesTogether([
+      followedBaseline(fx.dir, 'deployed', app),
+      followedBaseline(fx.dir, 'merge-base:deployed', app, () => resolved(fx.dir, 'merge-base', 'HEAD', 'deployed')),
+    ]);
+    const both = async (step) => {
+      timings.phase(step);
+      await readBaselinesTogether([named.moved(step), forked.moved(step)]);
+    };
+    const commit = (text) => {
+      fx.write(APP, text);
+      fx.commit();
+    };
+    timings.phase('commit on the working branch');
+    commit('window.local = 1;');
+    await both('commit on the working branch');
+    assert.deepEqual(await starts.during(() => named.baseline.changedFilesAsync({ files: [app] })), ['diff']);
+    assert.deepEqual(await starts.during(() => forked.baseline.changedFilesAsync({ files: [app] })), ['diff']);
+    timings.phase('branch moved to HEAD');
+    git(fx.dir, 'branch', '-f', 'deployed', 'HEAD');
+    await both('branch moved to HEAD');
+    timings.phase('packed branch moved back');
+    git(fx.dir, 'pack-refs', '--all');
+    commit('window.local = 2;');
+    git(fx.dir, 'branch', '-f', 'deployed', 'HEAD~1');
+    await both('packed branch moved back');
+    // A tag of the same name wins over the branch: Git resolves refs/tags before refs/heads.
+    timings.phase('tag shadows the branch');
+    git(fx.dir, 'tag', 'deployed', 'HEAD');
+    await both('tag shadows the branch');
+    assert.equal(named.baseline.commit, commitOf(fx.dir, 'HEAD'));
+    timings.phase('branch deleted');
+    git(fx.dir, 'tag', '-d', 'deployed');
+    git(fx.dir, 'branch', '-D', 'deployed');
+    await both('branch deleted');
+    assert.equal(named.baseline.available, false);
+    timings.phase('branch recreated');
+    git(fx.dir, 'branch', 'deployed', 'HEAD');
+    await both('branch recreated');
+    assert.equal(named.baseline.available, true);
+    timings.phase('complete');
+  } finally {
+    if (activeGitTimings === timings) activeGitTimings = null;
+    timings.report();
+  }
 });
 
 test('a relative revision is resolved by Git on every scan and a full commit id never again', async (t) => {
