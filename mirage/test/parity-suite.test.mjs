@@ -648,14 +648,15 @@ test('parity-suite prints a path error verbatim and still redacts tokens and GUI
   assert.equal(state.status, 1, state.stderr);
   assert.equal(state.stderr, `--state file not found: ${missing}. Pass an existing file.\n`);
 
-  // The runtime's state names a source directory whose path carries a bearer-like token and a GUID.
+  // The runtime's state names a source directory whose path carries a bearer-like token and a GUID. The GUID ends
+  // in a space: joined to the next segment by "/" it would be one 40-character run, replaced as a token on POSIX only.
   const token = 'Bearer ' + 'a1B2c3D4e5'.repeat(5);
   const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     res.end(
       JSON.stringify({
         config: { mode: 'local', pageMode: 'local', endpoints: [] },
-        status: { sourceDir: path.join(root, `${token} ${guid}`, 'absent') },
+        status: { sourceDir: path.join(root, `${token} ${guid} source`, 'absent') },
       }),
     );
   });
