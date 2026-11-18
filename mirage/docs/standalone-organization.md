@@ -56,7 +56,9 @@ and say that the file no longer exists.
 
 A catalogue site whose `mirage.runtime.kind` is `model-driven` or `dataverse-api` starts the same runtime with
 `--config FILE [--site ID]` (default: the catalogue's default site), using that site's `solutionRoots` and `dataPacks`.
-Passing `--runtime dataverse-api` for a Power Pages site starts an empty organization without the site's roots or packs.
+`--runtime dataverse-api` with `--config` or `--site` of a Power Pages site starts an organization with that site's
+`solutionRoots` and `dataPacks`; without `--config`, `--site` and `--project` it starts an empty organization that
+belongs to the folder ([which runtimes status and stop select](toolkit-integration.md#which-runtimes-status-and-stop-select)).
 
 A version 1 project file with an unknown key still loads; `inspect` and the runtime's diagnostics report
 `PROJECT_CONFIG_KEY_UNKNOWN` (`Unknown project configuration key '<key>' is ignored.`).

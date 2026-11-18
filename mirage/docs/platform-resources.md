@@ -93,9 +93,12 @@ Blocking failures come first (in JSON and in the human summary on stderr, which 
 
 Two narrower read-only captures use the same connected browser (`--cdp`, required) on a `--site`/`--env` whose origin is
 HTTPS, and print a JSON report; exit 1 when the capture fails. Both refuse `--preset`, and both stop with "Could not
-connect to the loopback browser debugging endpoint" when nothing answers at `--cdp`.
+connect to the loopback browser debugging endpoint" when nothing answers at `--cdp`. The state file keeps the
+reference origin it was created with; a capture whose origin differs stops with `<command>: the state file <file>
+routes live requests to <saved origin>, not <origin>; pass --state with a state file for this portal.`
 
-- `mirage capture-stylesheets --stylesheet <path>` (repeatable, 1–32 paths) records the native bytes of an exported
+- `mirage capture-stylesheets --stylesheet <path>` (repeatable, 1–32 paths; more stop with `capture-stylesheets
+accepts one to 32 --stylesheet paths.` before the runtime starts) records the native bytes of an exported
   static `.css` web file. Each path must map to exactly one exported stylesheet, without query or fragment, and the
   native response must be HTTP 200 with a CSS content type; failures use `OBSERVED_STYLESHEET_*` codes.
 - `mirage capture-snippet-composition --path <page> --parent-snippet <name> --child-snippet <name>` records how the
@@ -106,7 +109,8 @@ connect to the loopback browser debugging endpoint" when nothing answers at `--c
   `LIVE_BRIDGE` (`The connected browser must complete portal sign-in.`), a served sign-in page with
   `Composition observation reached the portal sign-in page; choose the page that shows both snippets.`, any other
   status with `Composition observation requires an HTTP 200 HTML page.` On success the report's `profile` names both
-  snippets, their source hashes, the origin and the page, `observation.provider` is `native-page-html` and
+  snippets, their source hashes, the origin and the page, `observation.provider` is `native-page-html` (or
+  `native-browser-dom` when the composition appeared only in the connected browser, see below) and
   `applied: true` means the profile was saved to the site's state; page HTML is not stored. A pair whose child is not such a button fails with
   `SNIPPET_COMPOSITION_INVALID`, for example `Observed action must be an existing exported button.` When the served HTML
   holds no match, capture opens the page in the connected browser (GET and HEAD only) and waits up to 10 seconds for

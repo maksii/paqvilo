@@ -64,7 +64,8 @@ async function project(t, mode) {
 
 /** Starts a runtime writer in a child, asks it to write one record and waits until that write reaches `gate`. */
 async function gatedWriter(t, options, gate) {
-  const child = spawn(process.execPath, [CHILD, JSON.stringify({ options, gate })], {
+  const child = spawn(process.execPath, [CHILD], {
+    env: { ...process.env, WRITER_LOCK_CHILD: JSON.stringify({ options, gate }) },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     windowsHide: true,
   });

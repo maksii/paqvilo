@@ -115,7 +115,8 @@ classifies a control as a `standard` field, a `standard` dataset or `virtual`.
   ships no React or Fluent; without them the control shows `PCF_VIRTUAL_UNSUPPORTED` with the missing files.
 - Bundles must be production builds (`npm run build -- --buildMode production`). The local app serves scripts under
   `script-src 'self'`, so a development build that loads its modules with `eval` is refused and the control shows
-  `The local bundle did not register <constructor>.`
+  `The local bundle did not register <constructor>. A development build that loads its modules with eval is refused
+by the page's script policy: build the control in production mode.`
 - Field and dataset components get the staff context and its formatting, and per-column `security` (`secured` true for
   field-secured columns). Outputs are checked against the bound property and the record pipeline. Components declaring
   required WebAPI use the local staff adapter; other required unimplemented features prevent execution. Unimplemented

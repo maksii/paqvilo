@@ -1289,8 +1289,9 @@
       show(title, visible);
     },
   });
-  function formOf(panel) {
-    const wrapper = panel.closest('[id^="EntityFormControl"], [id^="WebFormControl"]') ?? panel;
+  function formOf(wrapper) {
+    // A wrapper without a form panel (a record-not-found or success message) is still a form, with no controls.
+    const panel = wrapper.querySelector('.crmEntityFormView') ?? wrapper;
     let config;
     try {
       config = JSON.parse(wrapper.querySelector('script[data-paqvilo-mirage-form-config]')?.textContent || '{}');
@@ -1322,8 +1323,8 @@
     const jq = (element) =>
       typeof globalThis.jQuery === 'function' ? globalThis.jQuery(element ?? []) : (element ?? {});
     const form = {
-      id: wrapper.id,
-      name: panel.getAttribute('data-form-name') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+      id: wrapper.id.replace(/^(?:EntityFormControl|WebFormControl)_/, ''),
+      name: panel.getAttribute('data-form-name') || undefined, // NOSONAR: actual attributes exclude inherited dataset values
       get controls() {
         return controlsIn(panel);
       },
@@ -1340,8 +1341,20 @@
       },
     };
     if (!multiStep) return form;
-    // The step's own facts (platform.mjs submitConfig.clientStep): a next step after this one, a previous step before it.
-    const step = config.clientStep ?? {};
+    // As the platform client API (host chunk 296, class of multistep forms): a step exists while its Next (or the last
+    // step's Submit, also #NextButton) or Previous button is present and visible as jQuery's :visible decides; going
+    // to a missing step throws.
+    const visibleButton = (buttonId) => {
+      const element = button(buttonId);
+      return element && (element.offsetWidth || element.offsetHeight || element.getClientRects().length)
+        ? element
+        : null;
+    };
+    const go = (buttonId, which) => {
+      const element = visibleButton(buttonId);
+      if (!element) throw new Error(`No ${which} step available in the multi-step form.`);
+      element.click();
+    };
     return Object.assign(form, {
       get nextButton() {
         return jq(button('NextButton'));
@@ -1349,21 +1362,26 @@
       get previousButton() {
         return jq(button('PreviousButton'));
       },
-      hasNextStep: () => step.hasNextStep === true,
-      hasPreviousStep: () => step.hasPreviousStep === true,
-      goToNextStep: () => {
-        const next = button('NextButton');
-        if (!next) throw new Error('This step has no Next or Submit button.');
-        next.click();
-      },
-      goToPreviousStep: () => {
-        const previous = button('PreviousButton');
-        if (!previous) throw new Error('This step has no previous step.');
-        previous.click();
-      },
+      hasNextStep: () => Boolean(visibleButton('NextButton')),
+      hasPreviousStep: () => Boolean(visibleButton('PreviousButton')),
+      goToNextStep: () => go('NextButton', 'next'),
+      goToPreviousStep: () => go('PreviousButton', 'previous'),
     });
   }
-  const pageForms = () => [...document.querySelectorAll('.crmEntityFormView[data-form-name]')].map(formOf);
+  // As the platform client API (host chunk forms.getAll): basic forms are the EntityFormControl_<32 hex> wrappers, then
+  // multistep forms are the WebFormControl_<32 hex> wrappers holding exactly one form view; a form's id is the part
+  // after the prefix (observed on a live portal 2026-11-18). Modal, quick view and page control wrappers have no such
+  // ID and are not forms of the page. Any suffix is accepted, as a source form ID that is not a GUID still names its
+  // wrapper; the form view inside a wrapper (<wrapper>_EntityFormView) is excluded.
+  const wrappers = (prefix) =>
+    [...document.querySelectorAll(`div[id^="${prefix}"]`)].filter((wrapper) => !wrapper.id.endsWith('_EntityFormView'));
+  const pageForms = () =>
+    [
+      ...wrappers('EntityFormControl_'),
+      ...wrappers('WebFormControl_').filter(
+        (wrapper) => wrapper.querySelectorAll('div.crmEntityFormView').length === 1,
+      ),
+    ].map(formOf);
 
   const portal = () => globalThis.Microsoft?.Dynamic365?.Portal ?? {};
   // The language picker's links: /<code> before the path without the active language's segment (liquid.mjs languageDrop).
@@ -1383,10 +1401,7 @@
     currentPage: {
       forms: {
         getAll: pageForms,
-        getFormById: (id) =>
-          pageForms().find(
-            (form) => form.id === id || form.getHtmlElement().querySelector('.crmEntityFormView')?.id === id,
-          ),
+        getFormById: (id) => pageForms().find((form) => form.id === id),
         getFormByName: (name) => pageForms().find((form) => form.name === name),
       },
       lists: { getAll: pageLists, getListById: (id) => pageLists().find((list) => list.id === id) },

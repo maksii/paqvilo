@@ -33,7 +33,7 @@ const beforeExpiry = () => expiry - 1;
 const rawReport = (project = '.') => fs.readFileSync(new URL(index.projects[project].file, fixtures));
 const report = (project = '.') => JSON.parse(rawReport(project));
 const evidence = (project = '.') => {
-  const lock = fs.readFileSync(new URL('package-lock.json', inputDirectory(project)));
+  const lock = fs.readFileSync(new URL('lock.json', inputDirectory(project)));
   return {
     manifest: fs.readFileSync(new URL('package.json', inputDirectory(project))),
     lock,
@@ -64,7 +64,7 @@ function fixtureRoot(t) {
       accepted ? new URL('package.json', inputDirectory(project)) : path.join(source, 'package.json'),
       path.join(cwd, 'package.json'),
     );
-    const lock = accepted ? new URL('package-lock.json', inputDirectory(project)) : path.join(source, name);
+    const lock = accepted ? new URL('lock.json', inputDirectory(project)) : path.join(source, name);
     fs.copyFileSync(lock, path.join(cwd, name));
     if (project === '.') fs.copyFileSync(lock, path.join(cwd, 'package-lock.json'));
   }

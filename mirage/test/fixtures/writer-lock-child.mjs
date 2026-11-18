@@ -1,11 +1,11 @@
 // Child writer for writer-lock-recovery.test.mjs: a Mirage runtime whose next record write stops at one named
-// file-system step (the gate) and waits there until the parent ends it. argv[2] is JSON { options, gate }, where gate is
+// file-system step (the gate) and waits there until the parent ends it. WRITER_LOCK_CHILD is JSON { options, gate }, where gate is
 // { name, op, suffix, flag?, when: 'before' | 'after' }: the first `op` call (fs/promises) after the parent sends `write`
 // with an argument ending in `suffix` (and naming `flag`) reports `{ gate: name }` before or after the call completes.
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 
-const { options, gate } = JSON.parse(process.argv[2]);
+const { options, gate } = JSON.parse(process.env.WRITER_LOCK_CHILD);
 let armed = false;
 const matches = (args) =>
   args.some((arg) => typeof arg === 'string' && arg.endsWith(gate.suffix)) && (!gate.flag || args.includes(gate.flag));

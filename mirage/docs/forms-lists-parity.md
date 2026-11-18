@@ -74,7 +74,8 @@ the attach-file control) successful controls to the form action, including modal
   Microsoft documents the setting for them.
 - **Other write failures**, including an ordinary plug-in exception (0x80040224), show "An error occurred while
   processing your request. Please try again." unless the site sets `observed.formSubmissionErrorMessage` with
-  `evidence`; that setting never changes a plug-in refusal. Permission failures use the portal access-denied wording.
+  `evidence`; that setting never changes a plug-in refusal. A permission failure inside the write uses the portal
+  access-denied wording unless that setting is set, which replaces it too.
 
 ## Actions, lookups and modals
 
@@ -148,11 +149,20 @@ platform bundles, otherwise from `/__sim-static/pages-client-api.js`.
 | `webAPI.downloadFileFromColumn(set, id, column, { size })` | A Blob typed from the `mimetype` header; `size` is `full` (default) or `thumbnail` for image columns. Errors are the request's `AjaxError`                                                                                                                                  |
 | `languages.getAll()`, `languages.setActive(code)`          | The site's published languages (else the page language). `setActive` loads the page under `/<code>` like the language picker; an unknown code throws `TypeError` without navigating                                                                                         |
 
-Forms: `id` is the control element ID (`EntityFormControl_…`, `WebFormControl_…`) and `name` the form name; `controls`,
+`getAll` lists every basic form wrapper (`EntityFormControl_…`), then every multistep form wrapper
+(`WebFormControl_…`) that holds one form view, as the platform's client API does. A wrapper that shows only a message
+(record not found, a success message that hides the form) is a form without controls or name; modal and quick view
+documents have no such wrapper and list no form.
+
+Forms: `id` is the part of the wrapper element ID after `EntityFormControl_` or `WebFormControl_` (the form's ID
+without hyphens, as a live portal answers; `getFormById` takes this value, not the element ID) and `name` the form
+name; `controls`,
 `tabs` (with `sections`, `getName`, `getVisible`, `setVisible`), sections (`controls`, `getName`, `getVisible`,
 `setVisible`), `isMultiStep`, `getVisible`, `setVisible`, `getHtmlElement` and `getControlByLogicalName`. A multistep
-form adds `nextButton`/`previousButton` (jQuery, empty when absent), `hasNextStep`, `hasPreviousStep`, `goToNextStep`
-(clicks Next or Submit) and `goToPreviousStep` (throws without a previous step). Forms and controls have no events.
+form adds `nextButton`/`previousButton` (jQuery, empty when absent), `hasNextStep` and `hasPreviousStep` (the Next, or
+the last step's Submit, and Previous button is present and visible, as on the platform), `goToNextStep` and
+`goToPreviousStep` (click that button, or throw "No next step available in the multi-step form." or "No previous step
+available in the multi-step form."). Forms and controls have no events.
 
 Controls have `getName`, `getLogicalName`, `getType`, `getValue`, `setValue`, `getVisible`, `setVisible`, `getDisabled`,
 `setDisabled`, `getRequired`, `setRequired`, `addValidator`, `removeValidator` and `clearValidators`, plus the members

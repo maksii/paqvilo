@@ -7768,8 +7768,10 @@ export async function createSimulator(options) {
             await organizationHost.refreshSources();
             await organizationHost.loadCanvas();
           };
+          // Findings of the previous revision are dropped; those the publication raised (SOURCE_EXTENSIONS_REFRESHED) stay.
+          const previousFindings = diagnostics.length;
           await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
-          diagnostics.length = 0;
+          diagnostics.splice(0, previousFindings);
           revision++;
           bootstrapTimings.lastReload = {
             at: new Date().toISOString(),

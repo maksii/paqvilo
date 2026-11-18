@@ -145,13 +145,19 @@ organization's metadata. Large datasets use far less memory.
   option of `generate` and `scaffold`. `paqvilo --help` lists `--version`; `mirage --help` lists `--state-dir` and the
   `setup` alias; `mirage baseline-suite --help` explains `LABEL`. `baseline-inventory.mjs --check` compares the
   committed inventories without writing.
-- **Options.** A repeated single-value option is refused by every command (`--X may be given only once`).
-  `mirage status` and `mirage stop` accept only their own options and list other toolkit-owned runtimes outside the
-  selection as `others`; `stop` still finds the runtimes of a `--project` file that has been deleted, and `stop` with
-  nothing to stop exits 0 with one line naming what it selected (`No toolkit-owned Mirage session for <site>.` with
-  `--site`); in a folder without a catalogue that is `the runtimes started in <folder> without a catalogue site`.
-  `status` labels each runtime with the site it was started for, also when two sites share a source folder.
-  `liquid-conformance --json --markdown` is a usage error (exit 2).
+- **Options.** A repeated single-value option is refused by every command (`--X may be given only once`; with `--json`,
+  Mirage answers `invalid_argument`), and so do the repository scripts `ci`, `parity-cases`, `pr-readiness`,
+  `runtime-performance`, `benchmark`, `benchmark-xray` and `power-fx-oracle`. `conventional-commit.mjs` refuses extra
+  arguments, and `runtime-performance.mjs` refuses a `--records` value that is not a positive whole number (`--records
+must be a positive safe integer.`, exit 2). A setting outside its enumerated values names them and the value given
+  (`runtime.kind must be one of power-pages, model-driven or dataverse-api; got "x".`). A runtime started in the
+  foreground with `mirage serve` is labelled `foreground` by `status`; `stop` leaves it running and names its URL and
+  PID (`foreground` in `--json`). `mirage status` and `mirage stop` accept only their own options and list other
+  toolkit-owned runtimes outside the selection as `others`; `stop` still finds the runtimes of a `--project` file that
+  has been deleted, and `stop` with nothing to stop exits 0 with one line naming what it selected (`No toolkit-owned
+Mirage session for <site>.` with `--site`); in a folder without a catalogue that is `the runtimes started in <folder>
+without a catalogue site`. `status` labels each runtime with the site it was started for, also when two sites share a
+  source folder. `liquid-conformance --json --markdown` is a usage error (exit 2).
 - **Messages.** A documented public function or class called without a required argument throws a `TypeError` naming
   the call and the argument, such as `initialState(portal) requires a portal (the importPortal result).`; so do the
   methods of a `connectRuntime()` handle, which send no request, `trace.subscribe()`, `signIn()`, the Code Apps
@@ -164,7 +170,13 @@ organization's metadata. Large datasets use far less memory.
   (`InvalidLogFilter`), each naming the `parameter`. A start whose state file pins a deployment profile that is not
   configured names the pinned profile, the configured ones and the state file (`Select a configured deployment
 profile: the locally pinned profile "<name>" is not configured (configured: …). Remove
-simulator.deploymentProfilePin from <state file>, or restore the profile.`). A trusted CLR plug-in descriptor with
+simulator.deploymentProfilePin from <state file>, or restore the profile.`). A `FLOW_ACTION` message ends with one full
+  stop. A canvas driver request without an action answers `A canvas action is required; use <actions>.` A model-driven
+  PCF control whose local bundle does not register its constructor is reported as `The local bundle did not register
+<constructor>.`, with the reason that a development build loading its modules with eval is refused and that the
+  control must be built in production mode. A portal write without a verification token answers `Missing portal
+verification token.`, and one with a token from another session `The portal verification token is not valid for
+this session.` A trusted CLR plug-in descriptor with
   more than 100 `dependencies` or `symbols` is refused with a message naming the limit.
 - **Project files.** An unknown key in a version 1 project file is reported as `PROJECT_CONFIG_KEY_UNKNOWN` by
   `mirage inspect` and at startup while the file still loads. A deployment profile environment variable that no
@@ -173,22 +185,26 @@ simulator.deploymentProfilePin from <state file>, or restore the profile.`). A t
   without a mapping. The metadata API honours `ChangeTrackingEnabled` (off when omitted, enforced on change tracking)
   and `IsSecured` on a column POST, and column PUT/DELETE and key DELETE accept `LogicalName='x'` addressing. TDS
   refuses a column the caller reads masked as a `WHERE`, `ORDER BY`, grouping or aggregate operand (`0x80041155`), as
-  the Web API does. Privilege refusals count the caller's real roles and privileges. The Code Apps bridge runs
-  built-in Web API functions with their parameters and answers refusals with the Web API's status and code;
+  the Web API does. Privilege refusals count the caller's real roles and privileges. The Code Apps bridge runs built-in
+  Web API functions with their parameters and answers refusals with the Web API's status and code;
   `executeDataverseAction` takes only the name of an unbound action or function. A calculated column reads the same
   value whatever `$select` lists; in a chain deeper than five calculated columns the column reads null on every surface
-  with `CALCULATED_UNSUPPORTED` naming it. A contact or lead write composes `fullname` from the name parts in the
-  organization's `fullnameconventioncode` order and replaces a supplied `fullname`. Every signed-in user can read the
-  `privilege` table. Rollup columns have their `_date` and `_state` columns and their exported formula, and attribute
-  formats read as names. `Xrm.WebApi.retrieveRecord` and `updateRecord` work on the caller's own `usersettings` row.
-  Exported server logic that reaches its time limit answers 500 `ServerLogicTimeout`, and one that throws answers 500
-  `ServerLogicFailed` with the exception's message, instead of 501 `LocalOperationUnsupported`.
+  with `CALCULATED_UNSUPPORTED` naming it, and so does a column calculated through a cycle of calculated columns. A
+  contact or lead write composes `fullname` from the name parts in the organization's `fullnameconventioncode` order and
+  replaces a supplied `fullname`. Every signed-in user can read the `privilege` table. Rollup columns have their `_date`
+  and `_state` columns and their exported formula, and attribute formats read as names. `Xrm.WebApi.retrieveRecord` and
+  `updateRecord` work on the caller's own `usersettings` row. Exported server logic that reaches its time limit answers
+  500 `ServerLogicTimeout`, and one that throws answers 500 `ServerLogicFailed` with the exception's message, instead of
+  501 `LocalOperationUnsupported`.
 - **Baseline comparison.** A scenario that cannot be compared has the verdict `ERROR`, like `PASS`, `ALLOWED` and
   `FAIL`. `parity-suite` (page DOM and shell), baseline compare and `verify` ignore toolkit-owned markup and headers
   through one shared definition: provenance attributes are ignored and injected elements dropped. The runtime
   `parity-suite` starts serves web files without appended source maps. `baseline-suite` live capture checks record
   aliases and `--ids` before any hook runs. `capture-snippet-composition` refuses in one line with a
-  `SNIPPET_COMPOSITION_INVALID` reason, also when the page served is the sign-in page.
+  `SNIPPET_COMPOSITION_INVALID` reason, also when the page served is the sign-in page. `capture-stylesheets` refuses
+  more than 32 paths before it starts a runtime, and both captures refuse a state file whose saved reference origin
+  differs from the requested portal instead of reading that other origin. On the Power Pages host an accepted source
+  reload keeps its `SOURCE_EXTENSIONS_REFRESHED` diagnostic beside `SOURCES_RELOADED`.
   `liquid-conformance` splits `staleRules` into `passingRules` and `missingRules`. `mirage verify` reports the first
   line of a browser error and saves the whole text as `artifacts.error`.
 - **Dataverse CLI.** A remote `dataverse plan` lists the membership writes and blocked roots of `apply`; reads retry on
@@ -220,13 +236,14 @@ simulator.deploymentProfilePin from <state file>, or restore the profile.`). A t
   chain-step seal), probes, plug-in events through one maintenance intent each, test operations and the run.
   `verify-live.mjs` exits 2 when any case fails, names other assemblies with synchronous steps before the run and
   reports cases they abort as `SuiteBudgetExceeded` (see the example's plug-ins README). The lab's guards accept the
-  platform's own root Delete wrapper for the sole trusted writer; the owned-evidence deletion contract binds the
-  payload hash in the intent's name, and `deploy.mjs` switches it on for the `EvidenceWriteGuard` steps. The plug-in
-  plan's `readiness` flags come from the installed steps, and `forms:audit` lists the solution additions `forms:apply`
-  would make (`membershipAdd`). The example plug-in projects, here and in `examples/project`, no longer embed the
-  commit hash or the build folder, so a new commit or another checkout alone does not show as an assembly change. The project baseline provisioning converges
-  and reports `manual-step-mismatch` when a stored rollup definition differs from the declared one; `data.mjs reset`
-  sends `Edm.Int64` fixture values as JSON numbers with their exact digits and reports `changes` and `unchanged`.
+  platform's own root Delete wrapper for the sole trusted writer; the owned-evidence deletion contract binds the payload
+  hash in the intent's name, and `deploy.mjs` switches it on for the `EvidenceWriteGuard` steps. The plug-in plan's
+  `readiness` flags come from the installed steps, and `forms:audit` lists the solution additions `forms:apply` would
+  make (`membershipAdd`). The example plug-in projects, here and in `examples/project`, no longer embed the commit hash
+  or the build folder, so a new commit or another checkout alone does not show as an assembly change. The project
+  baseline provisioning converges and reports `manual-step-mismatch` when a stored rollup definition differs from the
+  declared one; `data.mjs reset` sends `Edm.Int64` fixture values as JSON numbers with their exact digits and reports
+  `changes` and `unchanged`.
 - **`_sim` layout** is consistent, works at phone width and follows dark mode.
 - **Redaction** covers connection strings, URL credentials and invitation codes.
 
@@ -243,6 +260,12 @@ simulator.deploymentProfilePin from <state file>, or restore the profile.`). A t
 - Mirage no longer ends with a V8 fatal error when a worker thread finishes, and a listener error is recorded as
   `LISTENER_ERROR` instead of ending the process.
 - Trace timelines stay correct after a system clock step (VM or WSL time sync, laptop resume).
+- `$pages.currentPage.forms.getAll()` lists forms by their `EntityFormControl_…` and `WebFormControl_…` wrappers, as
+  Power Pages does: a form that shows only a message (record not found, success) is listed without controls, and modal
+  and quick view documents list none. A form's `id` is the wrapper ID's part after the prefix, and `getFormById` takes
+  that value, as on a live portal. A multistep form's `hasNextStep` and `hasPreviousStep` follow the visible Next (or
+  Submit) and Previous buttons, and `goToNextStep` and `goToPreviousStep` throw the platform's "No next step available
+  in the multi-step form." (or previous) instead of clicking a hidden button.
 - Switching the model-driven target on a slow machine no longer ends the dev session; the Tweaks tab recovers from a
   slow or dropped runtime read.
 - `lense verify` follows a start page that reloads itself or returns from sign-in, and reports interruption as
@@ -285,6 +308,15 @@ simulator.deploymentProfilePin from <state file>, or restore the profile.`). A t
   case; a listing it cannot read refuses registration instead of creating another application.
 - `dataverse apply` sets the declared primary-name length after creating a table (Dataverse stores 850 at create) and
   verifies it.
+- The standalone host changes and resets an operation through `PATCH` and `DELETE /_sim/api/operations/<key>`,
+  answers an unknown administration path with 404 `Admin endpoint not found.` and a `summary` or `strict` query flag
+  that is not a boolean with 400 `InvalidQueryParameter`, and records a refused token request, such as one for an
+  unknown client, as a `DATAVERSE_API` diagnostic, as the Power Pages host does. A flow's `CONNECTOR_AUTH_UNSUPPORTED`
+  warning is reported once in diagnostics and preflight on both hosts.
+- An exported plug-in handler that answers a promise fails like its exception: a step handler with 400 `0x80040224`
+  and the transaction rolled back, a plug-in type handler with `0x80040265` and its `SubErrorCode`.
+- The sign-in page remembers the persona that signed in as a recent choice. `mirage demo` restores the sample dataset
+  on every start and keeps source edits.
 - The standalone host's deployment-profile switch answers 501 with where to set `deploymentProfiles.default` and that
   a restart applies it.
 - Dataverse platform behaviour: each managed import adds a layer for every component, and managed tables, keys,
@@ -338,6 +370,8 @@ simulator.deploymentProfilePin from <state file>, or restore the profile.`). A t
   Home.
 - The CLI rejects extra or misplaced arguments it used to ignore, and every command refuses a repeated single-value
   option instead of keeping the last value. Check scripts that call it.
+- No dependency risk acceptance is in force (`scripts/dependency-risk-acceptance.json` holds `{}`), and an acceptance
+  is valid only with an `approval`.
 - Reach the administration and apps on the printed `adminUrl` and `appsUrl`. A script that sends `Origin` or
   `Sec-Fetch-Site` to `/_sim/` or `/_apps/` on the portal address gets 403 `AdminOriginRequired` or
   `AppsOriginRequired`; clients without those headers keep the portal address. A request whose `Host` is not the

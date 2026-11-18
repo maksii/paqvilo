@@ -122,7 +122,9 @@ test('the sign-in page remembers the persona that signed in as a recent choice',
   // A signed-in visitor is sent on from the sign-in page, so the picker is seen again after the session ends.
   await context.clearCookies();
   await page.goto(app.url + '/SignIn');
-  await page.locator('[data-persona-shortcuts="recent"]:not([hidden]) [data-persona-row="person-1"]').waitFor();
+  const recent = page.locator('[data-persona-shortcuts="recent"]:not([hidden]) [data-persona-row="person-1"]');
+  await recent.first().waitFor();
+  assert.ok((await recent.count()) >= 1);
 });
 
 test('a pending persona launch keeps the picker and its caption bound to the submitted persona', async (t) => {

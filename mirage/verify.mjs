@@ -548,6 +548,16 @@ function isRelevantOrigin(value, relevantOrigins) {
   }
 }
 
+/** The local simulator state; a refused or silent --local origin is named instead of reported as "fetch failed". */
+async function fetchLocalState(origin, timeout) {
+  try {
+    return await fetch(new URL('/__sim/api/state', origin), { signal: AbortSignal.timeout(timeout) });
+  } catch (error) {
+    if (error.name === 'TimeoutError' || error instanceof TypeError) throw localUnreachable(origin, error, timeout);
+    throw error;
+  }
+}
+
 /** Read-only, strict observed comparison. Owns only two new pages in the attached identity. */
 export async function verifyParity(
   {
@@ -682,16 +692,6 @@ export async function verifyParity(
     await fs.writeFile(result.artifacts.report, JSON.stringify(result, null, 2));
   }
   return result;
-}
-
-/** The local simulator state; a refused or silent --local origin is named instead of reported as "fetch failed". */
-async function fetchLocalState(origin, timeout) {
-  try {
-    return await fetch(new URL('/__sim/api/state', origin), { signal: AbortSignal.timeout(timeout) });
-  } catch (error) {
-    if (error.name === 'TimeoutError' || error instanceof TypeError) throw localUnreachable(origin, error, timeout);
-    throw error;
-  }
 }
 
 if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

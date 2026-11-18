@@ -1158,6 +1158,9 @@ Live access uses the selected connected browser identity. Exact parity requires 
             throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
           if (command === 'capture-stylesheets' && !args.stylesheet?.length)
             throw new Error('capture-stylesheets requires --stylesheet PATH (repeatable).');
+          // The runtime refuses the same list (OBSERVED_STYLESHEET_PATHS); say so before starting it and the browser.
+          if (command === 'capture-stylesheets' && new Set(args.stylesheet).size > 32)
+            throw new Error('capture-stylesheets accepts one to 32 --stylesheet paths.');
           if (command === 'capture-snippet-composition' && (!args['parent-snippet'] || !args['child-snippet']))
             throw new Error('capture-snippet-composition requires --parent-snippet NAME and --child-snippet NAME.');
           // Refused before the runtime starts (and prints its startup events): the capture reads the live HTTPS portal.
@@ -1246,6 +1249,12 @@ Live access uses the selected connected browser identity. Exact parity requires 
             allowLiveWrites: args['allow-live-writes'] === true,
           });
           try {
+            // A state file keeps the reference origin chosen earlier; a capture must read the portal it was given.
+            const savedOrigin = simulator.live.status().origin;
+            if (capturing && savedOrigin !== new URL(origin).origin)
+              throw new Error(
+                `${command}: the state file ${stateFile} routes live requests to ${savedOrigin}, not ${new URL(origin).origin}; pass --state with a state file for this portal.`,
+              );
             if (args.cdp) await simulator.live.connect(args.cdp);
             if (capturing) {
               const state = simulator.state();

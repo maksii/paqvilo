@@ -74,9 +74,10 @@ endpoint on a loopback host and a valid health port, then sends `GET /health` to
 redirects. It never throws and reports `SERVICEBUS_EMULATOR_CONNECTION_MISSING`, `_NOT_DEVELOPMENT`,
 `_ENDPOINT_INVALID`, `_PORT_INVALID`, `_NOT_LOOPBACK`, `_UNREACHABLE` or `_UNHEALTHY`.
 
-Emulator facts that affect tests: it runs as Docker containers (the emulator and SQL Server); entities come from its
-`config.json` at container start and are lost on restart (Paqvilo's own job rows stay authoritative); one namespace, 256
-KB messages.
+Emulator facts that affect tests: it runs as Docker containers (the emulator and SQL Server), which start only when
+whoever runs them sets `ACCEPT_EULA=Y`, accepting the licence terms of the emulator and of SQL Server; entities come
+from its `config.json` at container start and are lost on restart (Paqvilo's own job rows stay authoritative); one
+namespace, 256 KB messages.
 
 ### Check against the real emulator
 

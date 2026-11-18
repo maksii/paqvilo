@@ -314,10 +314,9 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
       [state.status.bootstrap.signInPath.path, state.status.bootstrap.signInPath.source],
       ['/SignIn', 'observed'],
     );
-    const [statusJson, statusText] = await Promise.all([
-      run('mirage', 'status', '--config', config, '--repo', fx.dir, '--json'),
-      run('mirage', 'status', '--config', config, '--repo', fx.dir),
-    ]);
+    // One status at a time: each asks the runtime for its facts, and two askers at once delay each other's answer.
+    const statusJson = await run('mirage', 'status', '--config', config, '--repo', fx.dir, '--json');
+    const statusText = await run('mirage', 'status', '--config', config, '--repo', fx.dir);
     const listed = JSON.parse(statusJson.stdout).sessions.find((item) => item.pid === session.pid);
     assert.equal(listed.owned, true);
     assert.equal(listed.ready, true);

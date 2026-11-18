@@ -70,8 +70,9 @@ platform's markup and `/_services/` wire format are not documented. The grid cal
 - Permissions follow the documented Power Pages rules: the parent table permission needs Read and Append To (and Write
   to upload); the Document Location permission needs Read to list, Create, Write and Append to upload or create a
   folder, and Delete to delete (otherwise 403 `PermissionDenied`). Writes need the portal verification token in the
-  `__RequestVerificationToken` header (otherwise 403 `Forbidden`). A create-mode form shows a notice instead of the grid
-  because the parent record must exist.
+  `__RequestVerificationToken` header (otherwise 403 `Forbidden`). An upload or a new folder needs a default
+  `sharepointsite` row (otherwise 400 `SharePointDefaultSiteMissing`). A create-mode form shows a notice instead of
+  the grid because the parent record must exist.
 - Uploads are bounded by the site settings `SharePoint/MaxUploadSize` (MB, default 10, at most 50) per file and
   `SharePoint/MaxTotalUploadSize` (MB) per request (413 `SharePointFileTooLarge`), from
   [Manage SharePoint documents](https://learn.microsoft.com/power-pages/configure/manage-sharepoint-documents). An

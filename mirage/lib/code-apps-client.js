@@ -189,7 +189,7 @@ const entityPath = (name) => {
 const operationPath = (name) => {
   if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name))
     throw new Error(
-      `executeDataverseAction takes the name of an unbound action or function (for example WhoAmI), not ${JSON.stringify(name) ?? String(name)}; bound actions and functions are not supported.`,
+      `executeDataverseAction takes the name of an unbound action or function (for example WhoAmI), not "${String(name)}"; bound actions and functions are not supported.`,
     );
   return name;
 };

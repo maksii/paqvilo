@@ -111,6 +111,9 @@ install option, else `api.providers.storage`; both hosts pass one.
   `STORAGE_OBJECTS_MISSING` (error). A missing object never fails a read: the body reads as `null` with
   `STORAGE_OBJECT_MISSING`, and a `$value` read answers 404 with that code. A key whose provider this runtime lacks
   answers 503 `StorageUnavailable`.
+- **Administration writes.** `/_sim/api/records` writes the store directly, outside the record pipeline, so a body
+  written there stays inline in state until the next start or reset moves it. Write through the Web API or the portal
+  to route a body at once.
 - **Code that reads rows directly** sees a null body and `__blobkey` (plug-ins and audit included) and reads the body
   with `attachmentBody(api, logical, row)`. `api.storageRouting` exposes `settle()`, `sweep()` and `diagnostics()`.
 

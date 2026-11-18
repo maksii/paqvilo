@@ -128,6 +128,80 @@ test('a capture without an HTTPS portal origin is refused in one line before the
   }
 });
 
+// @test-kind contract: mirage/docs/platform-resources.md: capture-stylesheets takes one to 32 paths and refuses more before it starts a runtime or connects a browser
+test('capture-stylesheets refuses more than 32 paths in one line before the runtime starts', async (t) => {
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-capture-paths-'));
+  ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(source, 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Invented home\nadx_partialurl: /\n',
+  );
+  const paths = Array.from({ length: 33 }, (_, index) => ['--stylesheet', `/invented-${index}.css`]).flat();
+  const { code, stdout, stderr } = await resolvedModules(
+    t,
+    tool('cli'),
+    [
+      'capture-stylesheets',
+      ...paths,
+      '--source',
+      source,
+      '--origin',
+      'https://portal.invalid',
+      '--cdp',
+      'http://127.0.0.1:9',
+      '--state',
+      path.join(source, 'state.json'),
+    ],
+    [],
+  );
+  assert.equal(code, 1);
+  assert.equal(stdout, '');
+  assert.equal(
+    stderr.replace(/\nRESOLVED:.*\n$/, '').trim(),
+    'capture-stylesheets accepts one to 32 --stylesheet paths.',
+  );
+});
+
+// @test-kind contract: mirage/docs/platform-resources.md: a capture reads the portal origin it was given, never a different reference origin kept in the state file
+test('a capture refuses a state file that routes live requests to another origin before it connects a browser', async (t) => {
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-capture-state-'));
+  ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(source, 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Invented home\nadx_partialurl: /\n',
+  );
+  const state = path.join(source, 'state.json');
+  const capture = (origin) =>
+    resolvedModules(
+      t,
+      tool('cli'),
+      [
+        'capture-stylesheets',
+        '--stylesheet',
+        '/invented.css',
+        '--source',
+        source,
+        '--origin',
+        origin,
+        '--cdp',
+        'http://127.0.0.1:9',
+        '--state',
+        state,
+      ],
+      [],
+    );
+  // The first capture creates the state with its origin, then finds no browser at the discard port.
+  const first = await capture('https://first.invalid');
+  assert.match(first.stderr, /Could not connect to the loopback browser debugging endpoint/);
+  const second = await capture('https://second.invalid');
+  assert.equal(second.code, 1);
+  assert.match(
+    second.stderr,
+    /capture-stylesheets: the state file .+ routes live requests to https:\/\/first\.invalid, not https:\/\/second\.invalid; pass --state with a state file for this portal\./,
+  );
+  assert.doesNotMatch(second.stderr, /Could not connect/);
+});
+
 // @test-kind contract: docs/cli.md: a Mirage command keeps the toolkit's JSON codes for a missing catalogue, an unknown command and a repeated option, through paqvilo mirage and mirage/cli.mjs alike
 test('a Mirage command in a folder without a catalogue reports the toolkit codes in its JSON envelope', async (t) => {
   const paqvilo = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
